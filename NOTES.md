@@ -514,7 +514,8 @@ covered by the t1 layer.
   `ok` and `chip-not-autodetected` go through the probe — the second one matters, because
   RP235x genuinely cannot be auto-detected and flashing works anyway — and everything else
   goes over USB. The status is **refreshed first**, since the whole decision rests on whether
-  a probe is usable right now.
+  a probe is usable right now — with a progress notification, because spawning probe-rs takes
+  long enough that a silent pause looks like a stall.
 * **One dialog, not two.** There is no separate "the probe is unusable, go over USB?" step:
   the confirmation before the copy already names the board, and it now opens with the reason
   the probe was not used. Nothing happens silently, and nothing has to be clicked twice.

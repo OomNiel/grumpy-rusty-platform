@@ -114,8 +114,15 @@ export function registerProjectCommands(
         vscode.commands.registerCommand('rustyPlatform.flash', () =>
             withProject(async (project) => {
                 // Always look again: the route depends on whether a probe is usable *now*, and the
-                // cached status may predate plugging the board in.
-                const status = await state.refresh();
+                // cached status may predate plugging the board in. The check takes a moment
+                // (probe-rs is spawned), so say what the pause is for.
+                const status = await vscode.window.withProgress(
+                    {
+                        location: vscode.ProgressLocation.Notification,
+                        title: 'Rusty Platform: looking for a debug probe…',
+                    },
+                    () => state.refresh(),
+                );
                 const kind = status.probeDiagnosis.kind;
 
                 if (flashRouteFor(kind) === 'probe') {
