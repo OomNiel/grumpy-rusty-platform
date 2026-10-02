@@ -2,18 +2,23 @@
     "version": "0.2.0",
     "configurations": [
         {
-            // F5 opens a second VS Code window (the "Extension Development Host") with this
-            // extension loaded. Commands are then run from *that* window's command palette.
+            // F5 starts the Extension Development Host: a second window with this extension
+            // loaded AND a generated project open, so the Rusty Platform commands have
+            // something to act on. Run them from that window's palette (Ctrl+Shift+P).
+            //
+            // If the new window shows some *other* project, F5 was pressed while a different
+            // window had focus - each window launches its own configuration.
             "name": "Run Extension",
             "type": "extensionHost",
             "request": "launch",
             "args": [
-                "--extensionDevelopmentPath=${workspaceFolder}"
+                "--extensionDevelopmentPath=${workspaceFolder}",
+                "${workspaceFolder}/tests/tmp/demo-pico2w-blinky"
             ],
             "outFiles": [
                 "${workspaceFolder}/out/**/*.js"
             ],
-            "preLaunchTask": "compile"
+            "preLaunchTask": "prepare demo project"
         }
     ]
 }

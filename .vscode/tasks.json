@@ -22,6 +22,30 @@
                 "reveal": "silent",
                 "clear": true
             }
+        },
+        {
+            // The extension development host opens this folder (see launch.json), so the
+            // Rusty Platform commands have a project to act on straight away.
+            "label": "make demo project",
+            "type": "shell",
+            "command": "node",
+            "args": [
+                "tests/tools/make-demo-project.js"
+            ],
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "silent",
+                "clear": true
+            }
+        },
+        {
+            "label": "prepare demo project",
+            "dependsOn": [
+                "compile",
+                "make demo project"
+            ],
+            "dependsOrder": "sequence",
+            "problemMatcher": []
         }
     ]
 }
