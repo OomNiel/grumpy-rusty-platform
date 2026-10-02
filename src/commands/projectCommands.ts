@@ -2,10 +2,40 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { RustyState } from '../state';
 import { ActiveProject, readActiveProject } from '../project/activeProject';
+import { ToolchainStatus } from '../toolchain/detect';
 import { describeUf2Info } from '../flash/bootsel';
 import { flashRouteFor, routeReason, uf2FamilyForProject } from '../flash/route';
 import { UsbFlashConfirmation, flashProjectOverUsb } from '../flash/usbFlashRunner';
 import { defmtPrefix, runInTerminal } from './terminal';
+
+const PROBE_CHECK_NOTICE_DELAY_MS = 500;
+
+/**
+ * Refreshes the toolchain status, naming the work only once it has taken long enough to be
+ * noticed. The check spawns `probe-rs`, which is slow enough on some machines to look like a
+ * stall — but a toast that blinks in and out on a fast one is worse than a brief pause, so a
+ * quick check stays silent.
+ */
+async function refreshWithNotice(
+    state: RustyState,
+    delayMs = PROBE_CHECK_NOTICE_DELAY_MS,
+): Promise<ToolchainStatus> {
+    const work = state.refresh();
+    const slow = new Promise<'slow'>((resolve) => {
+        setTimeout(() => resolve('slow'), delayMs);
+    });
+
+    if ((await Promise.race([work.then(() => 'done' as const), slow])) === 'done') {
+        return work;
+    }
+    return vscode.window.withProgress(
+        {
+            location: vscode.ProgressLocation.Notification,
+            title: 'Rusty Platform: looking for a debug probe…',
+        },
+        () => work,
+    );
+}
 
 /** Build / Flash / Monitor / Clean, wired to the integrated terminal. */
 export function registerProjectCommands(
@@ -114,15 +144,8 @@ export function registerProjectCommands(
         vscode.commands.registerCommand('rustyPlatform.flash', () =>
             withProject(async (project) => {
                 // Always look again: the route depends on whether a probe is usable *now*, and the
-                // cached status may predate plugging the board in. The check takes a moment
-                // (probe-rs is spawned), so say what the pause is for.
-                const status = await vscode.window.withProgress(
-                    {
-                        location: vscode.ProgressLocation.Notification,
-                        title: 'Rusty Platform: looking for a debug probe…',
-                    },
-                    () => state.refresh(),
-                );
+                // cached status may predate plugging the board in.
+                const status = await refreshWithNotice(state);
                 const kind = status.probeDiagnosis.kind;
 
                 if (flashRouteFor(kind) === 'probe') {
