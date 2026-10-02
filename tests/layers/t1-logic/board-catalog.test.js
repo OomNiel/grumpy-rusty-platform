@@ -1,6 +1,6 @@
 'use strict';
 
-const { test, ok, equal, notOk, contains, notContains } = require('../../lib/harness');
+const { test, ok, equal, notOk, contains, notContains, matches } = require('../../lib/harness');
 const { compiled } = require('../../lib/harness');
 const {
     BOARDS,
@@ -9,9 +9,10 @@ const {
     BOARD_CATALOG_VERSION,
 } = compiled('boards/catalog');
 
-test('the catalog contains the two Pico boards', () => {
-    ok(boardById('pico'), 'board "pico" missing');
-    ok(boardById('pico2'), 'board "pico2" missing');
+test('the catalog contains the wired boards and their wireless siblings', () => {
+    for (const id of ['pico', 'pico2', 'picow', 'pico2w']) {
+        ok(boardById(id), `board "${id}" missing`);
+    }
 });
 
 test('board ids are unique', () => {
@@ -104,19 +105,61 @@ test('every board declares exactly one chip feature', () => {
     }
 });
 
-test('every board has an LED pin, notes and a vendor', () => {
+test('every board describes its LED and where the LED lives', () => {
     for (const board of BOARDS) {
-        matches_pin(board.ledPin, board.id);
+        ok(board.led, `${board.id} has no LED description`);
+        if (board.led.kind === 'gpio') {
+            matches(board.led.pin, /^PIN_\d+$/, `${board.id} has an invalid LED pin`);
+        } else {
+            equal(board.led.kind, 'cyw43', `${board.id} LED kind`);
+            ok(Number.isInteger(board.led.index) && board.led.index >= 0, `${board.id} needs a CYW43 LED index`);
+        }
         ok(board.notes && board.notes.length > 10, `${board.id} needs notes for the wizard`);
         ok(board.vendor, `${board.id} needs a vendor`);
     }
 });
 
-function matches_pin(pin, id) {
-    if (!/^PIN_\d+$/.test(pin)) {
-        throw new Error(`${id} has an invalid LED pin: ${pin}`);
+test('wireless boards declare CYW43 wiring, wired boards do not', () => {
+    for (const board of BOARDS) {
+        if (board.wireless === 'none') {
+            notOk(board.cyw43, `${board.id} is wired but carries CYW43 wiring`);
+            equal(board.led.kind, 'gpio', `${board.id} should drive its LED from a GPIO`);
+            continue;
+        }
+        equal(board.wireless, 'cyw43', `${board.id} wireless chip`);
+        ok(board.cyw43, `${board.id} needs CYW43 wiring`);
+        equal(board.led.kind, 'cyw43', 'the W boards drive the LED through the CYW43, not GPIO25');
+        for (const key of ['pwrPin', 'csPin', 'dioPin', 'clkPin', 'pio', 'dmaCh0', 'dmaCh1', 'clockDivider']) {
+            ok(board.cyw43[key], `${board.id} cyw43.${key} is missing`);
+        }
     }
-}
+});
+
+test('the W boards mirror their wired siblings pin-for-pin', () => {
+    const picow = boardById('picow');
+    const pico2w = boardById('pico2w');
+    equal(picow.family, boardById('pico').family);
+    equal(picow.target, boardById('pico').target);
+    equal(picow.probeChip, boardById('pico').probeChip);
+    equal(picow.memory.flash.length, boardById('pico').memory.flash.length);
+    equal(picow.linkArgs, boardById('pico').linkArgs);
+
+    equal(pico2w.family, boardById('pico2').family);
+    equal(pico2w.target, boardById('pico2').target);
+    equal(pico2w.probeChip, boardById('pico2').probeChip);
+    equal(pico2w.memory.flash.length, boardById('pico2').memory.flash.length);
+    equal(pico2w.linkArgs, boardById('pico2').linkArgs);
+    contains(pico2w.embassyFeatures.join(','), 'binary-info', 'the RP2350 W still needs the image definition');
+});
+
+test('the PIO clock divider differs between the two silicon revisions', () => {
+    equal(boardById('picow').cyw43.clockDivider, 'DEFAULT_CLOCK_DIVIDER');
+    equal(
+        boardById('pico2w').cyw43.clockDivider,
+        'RM2_CLOCK_DIVIDER',
+        'the RP2350 PIO SPI runs too fast with the default divider',
+    );
+});
 
 test('allTargets is sorted, unique and covers every board', () => {
     const targets = allTargets();

@@ -1,7 +1,16 @@
 import * as vscode from 'vscode';
 import { BOARDS } from '../boards/catalog';
 import { BoardProfile } from '../boards/types';
-import { crateNameFrom, generateProjectFiles, isAcceptableProjectName } from '../generate/files';
+import {
+    AppTemplate,
+    crateNameFrom,
+    defaultTemplateFor,
+    generateProjectFiles,
+    isAcceptableProjectName,
+    requiredFirmware,
+    templatesFor,
+} from '../generate/files';
+import { installFirmwareIntoProject } from '../toolchain/cyw43FirmwareRunner';
 import { runInTerminal } from './terminal';
 
 async function pickBoard(preferredId: string | undefined): Promise<BoardProfile | undefined> {
@@ -18,6 +27,29 @@ async function pickBoard(preferredId: string | undefined): Promise<BoardProfile 
         { title: "Grumpy's Rusty Platform — select a board", placeHolder: 'Board', ignoreFocusOut: false },
     );
     return picked?.board;
+}
+
+/**
+ * Wireless boards can generate more than one kind of application, so ask which one.
+ * Wired boards have a single option and are not asked about at all.
+ */
+async function pickTemplate(board: BoardProfile): Promise<AppTemplate | undefined> {
+    const options = templatesFor(board);
+    if (options.length === 1) {
+        return options[0]?.id ?? defaultTemplateFor(board);
+    }
+    const picked = await vscode.window.showQuickPick(
+        options.map((info) => ({
+            label: info.label,
+            detail: info.description,
+            template: info.id,
+        })),
+        {
+            title: `${board.name} — what should it do?`,
+            placeHolder: 'Application template',
+        },
+    );
+    return picked?.template;
 }
 
 async function pickParentFolder(): Promise<vscode.Uri | undefined> {
@@ -75,10 +107,15 @@ async function ensureWritableTarget(target: vscode.Uri): Promise<boolean> {
     return choice === 'Overwrite generated files';
 }
 
-export function registerNewProjectCommand(): vscode.Disposable {
+export function registerNewProjectCommand(output: vscode.OutputChannel): vscode.Disposable {
     return vscode.commands.registerCommand('rustyPlatform.newProject', async (boardId?: string) => {
         const board = await pickBoard(boardId);
         if (!board) {
+            return;
+        }
+
+        const template = await pickTemplate(board);
+        if (!template) {
             return;
         }
 
@@ -105,7 +142,7 @@ export function registerNewProjectCommand(): vscode.Disposable {
             return;
         }
 
-        const files = generateProjectFiles({ board, projectName });
+        const files = generateProjectFiles({ board, projectName, template });
         for (const file of files) {
             const segments = file.path.split('/');
             const directory = vscode.Uri.joinPath(target, ...segments.slice(0, -1));
@@ -116,9 +153,28 @@ export function registerNewProjectCommand(): vscode.Disposable {
             );
         }
 
+        // Wireless boards need the CYW43 blobs next to the generated firmware/README.md.
+        const blobNames = requiredFirmware(board, template).map((blob) => blob.fileName);
+        if (blobNames.length > 0) {
+            try {
+                await installFirmwareIntoProject(target, blobNames, { output });
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                output.appendLine(`CYW43 firmware failed: ${message}`);
+                output.show(true);
+                const choice = await vscode.window.showErrorMessage(
+                    `Project created, but the wireless firmware could not be fetched: ${message.split('\n')[0]}`,
+                    'Show Log',
+                );
+                if (choice === 'Show Log') {
+                    output.show(true);
+                }
+            }
+        }
+
         const crateName = crateNameFrom(projectName);
         const action = await vscode.window.showInformationMessage(
-            `Created ${crateName} for ${board.name} (${files.length} files).`,
+            `Created ${crateName} for ${board.name} (${template}, ${files.length} files).`,
             'Open Project',
             'Build Now',
             'Later',

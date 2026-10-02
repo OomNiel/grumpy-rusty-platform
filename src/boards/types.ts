@@ -31,6 +31,30 @@ export interface BoardMemory {
     flashReserve?: { name: string; region: MemoryRegion };
 }
 
+/**
+ * How the on-board LED is reached. On the W boards it hangs off the CYW43
+ * wireless chip rather than a GPIO pin, so a plain `PIN_25` blink would be wrong.
+ */
+export type BoardLed =
+    | { kind: 'gpio'; pin: string }
+    | { kind: 'cyw43'; index: number };
+
+/** Which wireless silicon, if any, the board carries. */
+export type WirelessChip = 'none' | 'cyw43';
+
+/** CYW43 SPI wiring, as peripheral names on the RP chip. */
+export interface Cyw43Wiring {
+    pwrPin: string;
+    csPin: string;
+    dioPin: string;
+    clkPin: string;
+    pio: string;
+    dmaCh0: string;
+    dmaCh1: string;
+    /** PIO SPI clock divider constant from `cyw43-pio` (RP2040 and RP2350 differ). */
+    clockDivider: string;
+}
+
 export interface BoardProfile {
     /** Stable id used in settings and the project manifest. */
     id: string;
@@ -46,8 +70,12 @@ export interface BoardProfile {
     /** Link arguments the generated `build.rs` must pass to the linker. */
     linkArgs: string[];
     memory: BoardMemory;
-    /** On-board LED pin, as an embassy-rp peripheral name. */
-    ledPin: string;
+    /** The on-board LED. */
+    led: BoardLed;
+    /** Wireless silicon, or `none` for the plain boards. */
+    wireless: WirelessChip;
+    /** CYW43 wiring — present exactly when `wireless === 'cyw43'`. */
+    cyw43?: Cyw43Wiring;
     /** Human-readable note shown in the wizard. */
     notes: string;
 }

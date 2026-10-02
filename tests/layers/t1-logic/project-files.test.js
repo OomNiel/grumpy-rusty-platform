@@ -28,12 +28,14 @@ function filesFor(boardId, projectName = 'Test Project') {
     };
 }
 
-test('every board generates the same set of files', () => {
+test('every board generates the expected file list', () => {
     for (const board of BOARDS) {
         const { files } = filesFor(board.id);
+        const expected =
+            board.wireless === 'none' ? EXPECTED_PATHS : [...EXPECTED_PATHS, 'firmware/README.md'];
         equal(
             files.map((f) => f.path),
-            EXPECTED_PATHS,
+            expected,
             `${board.id} generated an unexpected file list`,
         );
     }
@@ -134,7 +136,7 @@ test('RP2350 memory.x declares the image-definition sections and no boot2', () =
 });
 
 test('every board exposes a drive region and app + drive fill the whole chip', () => {
-    const chipKilobytes = { pico: 2048, pico2: 4096 };
+    const chipKilobytes = { pico: 2048, picow: 2048, pico2: 4096, pico2w: 4096 };
     for (const board of BOARDS) {
         const reserve = board.memory.flashReserve;
         ok(reserve, `${board.id} should expose a drive region`);

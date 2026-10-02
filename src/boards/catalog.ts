@@ -1,4 +1,4 @@
-import { BoardProfile } from './types';
+import { BoardProfile, Cyw43Wiring } from './types';
 
 /**
  * Features every board needs:
@@ -41,7 +41,8 @@ export const BOARDS: BoardProfile[] = [
             flashReserve: { name: 'FS', region: { origin: '0x10180000', length: '512K' } },
             extraRam: [],
         },
-        ledPin: 'PIN_25',
+        led: { kind: 'gpio', pin: 'PIN_25' },
+        wireless: 'none',
         notes: 'Dual Cortex-M0+ @ 133 MHz, 264 KB RAM, 2 MB flash.',
     },
     {
@@ -68,10 +69,75 @@ export const BOARDS: BoardProfile[] = [
                 { name: 'SRAM9', region: { origin: '0x20081000', length: '4K' } },
             ],
         },
-        ledPin: 'PIN_25',
+        led: { kind: 'gpio', pin: 'PIN_25' },
+        wireless: 'none',
         notes: 'Dual Cortex-M33 @ 150 MHz (RISC-V deferred), 520 KB SRAM, 4 MB flash — 3 MB app + 1 MB drive.',
     },
+    {
+        id: 'picow',
+        name: 'Raspberry Pi Pico W',
+        vendor: 'Raspberry Pi',
+        family: 'RP2040',
+        probeChip: 'RP2040',
+        target: 'thumbv6m-none-eabi',
+        embassyFeatures: [...COMMON_EMBASSY_FEATURES, 'rp2040'],
+        linkArgs: ['--nmagic', '-Tlink.x', '-Tlink-rp.x', '-Tdefmt.x'],
+        memory: {
+            boot2: true,
+            bootInfoSections: false,
+            // Same split as the plain Pico: 1.5 MB application + 512 KB drive.
+            flash: { origin: '0x10000100', length: '1536K - 0x100' },
+            ram: { origin: '0x20000000', length: '264K' },
+            flashReserve: { name: 'FS', region: { origin: '0x10180000', length: '512K' } },
+            extraRam: [],
+        },
+        led: { kind: 'cyw43', index: 0 },
+        wireless: 'cyw43',
+        cyw43: cyw43Wiring('DEFAULT_CLOCK_DIVIDER'),
+        notes: 'RP2040 + CYW43439 Wi-Fi & Bluetooth. The on-board LED hangs off the wireless chip.',
+    },
+    {
+        id: 'pico2w',
+        name: 'Raspberry Pi Pico 2 W',
+        vendor: 'Raspberry Pi',
+        family: 'RP2350',
+        probeChip: 'RP235x',
+        target: 'thumbv8m.main-none-eabihf',
+        embassyFeatures: [...COMMON_EMBASSY_FEATURES, 'rp235xa', 'binary-info'],
+        linkArgs: ['--nmagic', '-Tlink.x', '-Tdefmt.x'],
+        memory: {
+            boot2: false,
+            bootInfoSections: true,
+            // Same split as the plain Pico 2: 3 MB application + 1 MB drive.
+            flash: { origin: '0x10000000', length: '3072K' },
+            ram: { origin: '0x20000000', length: '512K' },
+            flashReserve: { name: 'FS', region: { origin: '0x10300000', length: '1024K' } },
+            extraRam: [
+                { name: 'SRAM8', region: { origin: '0x20080000', length: '4K' } },
+                { name: 'SRAM9', region: { origin: '0x20081000', length: '4K' } },
+            ],
+        },
+        led: { kind: 'cyw43', index: 0 },
+        wireless: 'cyw43',
+        // RP2350 needs a larger divider: the PIO SPI is too fast otherwise.
+        cyw43: cyw43Wiring('RM2_CLOCK_DIVIDER'),
+        notes: 'RP2350 + CYW43439 Wi-Fi & Bluetooth. LED via the wireless chip, not GPIO25.',
+    },
 ];
+
+/** Pico W and Pico 2 W share the same CYW43 wiring; only the clock divider differs. */
+function cyw43Wiring(clockDivider: string): Cyw43Wiring {
+    return {
+        pwrPin: 'PIN_23',
+        csPin: 'PIN_25',
+        dioPin: 'PIN_24',
+        clkPin: 'PIN_29',
+        pio: 'PIO0',
+        dmaCh0: 'DMA_CH0',
+        dmaCh1: 'DMA_CH1',
+        clockDivider,
+    };
+}
 
 export function boardById(id: string | undefined): BoardProfile | undefined {
     return id === undefined ? undefined : BOARDS.find((b) => b.id === id);

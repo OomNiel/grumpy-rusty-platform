@@ -5,6 +5,9 @@ Grumpy's Rusty Platform for VS Code.
 
 - Target: `thumbv6m-none-eabi`
 - debug probe chip id: `RP2040`
+- template: `blinky`
+
+The on-board LED is on `PIN_25`.
 
 ## Build / flash
 

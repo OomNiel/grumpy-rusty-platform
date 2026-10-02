@@ -274,3 +274,65 @@ Decisions taken:
   Wired boards keep the plain GPIO blinky, and the generator must reject a wireless
   template on a non-wireless board.
 
+---
+
+## 9. Wireless implemented (2026-10-02)
+
+### The big lesson: Embassy's `main` examples are AHEAD of the published crates
+
+Copying `examples/rp*` from `main` produced code that does **not** compile against the
+versions we pin — the examples track unreleased APIs. Verified differences that cost
+real debugging time:
+
+| Area | `main` example (do NOT copy) | published crate (what compiles) |
+|---|---|---|
+| `PioSpi::new` | 9 args, two DMA channels | **8 args, one** `dma::Channel` (`cyw43-pio` 0.10.0) |
+| Network stack | `StackStorage` + `Stack::new` + `add_iface_borrowed` + `iface.set_dhcpv4` | `embassy_net::new(driver, Config::dhcpv4(..), &mut StackResources<N>, seed) -> (Stack, Runner)` (`embassy-net` 0.9.1) |
+| `cyw43::Runner` | `Runner<'static, BUS, Cyw43439>` | **`Runner<'a, BUS>`** — two parameters (`cyw43` 0.7.0) |
+| `net_task` | `Runner<'static>` | `Runner<'static, cyw43::NetDriver<'static>>`, and it takes `mut runner` |
+| Atomics | — | **`portable-atomic` with `critical-section` is mandatory on `thumbv6m`**: `static_cell` needs an atomic compare-exchange and the Cortex-M0+ has none |
+
+Rule going forward: **write templates against the published crate sources**, then let
+`--e2e` prove it. Read `main` for intent, never for signatures.
+
+### What is generated
+
+The wizard now asks wireless boards what the application should do:
+
+| Template | Generated behaviour |
+|---|---|
+| `wifi` | joins the network, DHCP, logs `Wi-Fi is up - IP a.b.c.d`, blinks the CYW43 LED |
+| `blinky` | CYW43 LED only, no networking code (smallest wireless image) |
+| `wifi-bluetooth` | the Wi-Fi template plus `cyw43/bluetooth` + `bt-hci` and a commented BT starting point |
+
+Wired boards still get one `blinky` option and are not asked.
+
+* **Credentials come from the build environment**: `option_env!("WIFI_SSID")` /
+  `WIFI_PASSWORD`, with placeholders as the fallback. Secrets never enter the source
+  tree, and the hardware layer can flash a working Wi-Fi build:
+  `HIL_BOARD=picow HIL_TEMPLATE=wifi WIFI_SSID=… WIFI_PASSWORD=… node tests/runner.js --hil`
+* **Bluetooth stays dependencies plus a skeleton**, as agreed — there is no upstream
+  CYW43 BT example, so a BLE demo would have nothing to check against. The
+  `trouble-host` line remains commented out: it exposes ~95 features and guessing a set
+  is exactly the kind of thing this project should not do.
+* **Blobs** are fetched from the pinned Embassy commit
+  `b12a6d9efcd2711037abca1b63a661a9ef726444` into a shared cache
+  (`~/.grumpy-rusty-platform/firmware/cyw43-b12a6d9e/`), SHA-256 verified, then copied
+  into each project's `firmware/` together with the binary licence. The t4 layer fetches
+  them through the same pinned metadata, so a wrong hash or URL fails the suite instead
+  of a user's project.
+* The **on-board LED on a W board is not GPIO25** — it is CYW43 GPIO0 via
+  `control.gpio_set(0, …)`, while `PIN_25` is the chip select. The board model now carries
+  `led: { kind: 'gpio' | 'cyw43' }`, so that cannot be got wrong by accident.
+
+### Verification status
+
+* 144 hermetic tests green. Golden snapshots now cover **every board × template**
+  (86 files), so template drift is caught immediately.
+* `--e2e` builds six projects (both wired boards, both W boards, all three wireless
+  templates) and asserts the wireless image is larger than the wired one, proving the
+  231 KB firmware really is linked in.
+* **Still unverified: runtime.** Flashing a real W board needs the Debug Probe firmware
+  press (§7) and, for the Wi-Fi templates, real credentials.
+
+
