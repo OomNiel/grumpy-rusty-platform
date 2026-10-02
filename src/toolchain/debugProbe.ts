@@ -1,3 +1,5 @@
+import * as fs from 'fs';
+import * as path from 'path';
 import { ProbeDiagnosisKind } from './detect';
 
 /**
@@ -6,10 +8,12 @@ import { ProbeDiagnosisKind } from './detect';
  * The Debug Probe ships with firmware that probe-rs may refuse to open
  * ("The firmware on the probe is outdated... minimum supported firmware version
  * is 2.2.0"). Recovery is the RP2040/RP2350 BOOTSEL dance: hold the button while
- * plugging in, then copy a `.uf2` onto the `RPI-RP2` volume.
+ * plugging in, then copy a `.uf2` onto the BOOTSEL volume — `RPI-RP2` on an RP2040,
+ * `RP2350` on an RP2350.
  *
- * Everything here is pure so the steps and the pinned hashes are testable.
- * The physical actions live in probeFirmwareRunner.ts.
+ * Everything here is pure (or plain filesystem access) so the steps, the pinned hashes
+ * and the volume identification are testable. The VSCode-facing actions live in
+ * probeFirmwareRunner.ts.
  */
 
 /** Version we instruct users to install. */
@@ -76,13 +80,27 @@ export function downloadUrlFor(image: DebugProbeImage, version: string = DEBUGPR
     return `${DEBUGPROBE_RELEASE_BASE}/${releaseTagFor(version)}/${image.fileName}`;
 }
 
-/** The volume an RP2040/RP2350 exposes while in BOOTSEL (mass-storage) mode. */
-export const BOOTSEL_VOLUME_LABEL = 'RPI-RP2';
+/**
+ * Volume labels a BOOTSEL mass-storage volume can present. The label comes from the
+ * boot ROM's FAT image, so it identifies the silicon family:
+ *
+ *   RP2040 (pico-bootrom-rp2040) -> `RPI-RP2`  — what an authentic Debug Probe uses
+ *   RP2350 (pico-bootrom-rp2350) -> `RP2350`
+ *
+ * Both must be accepted: the Debug Probe is RP2040-based, a Pico 2 is RP2350.
+ */
+export const BOOTSEL_VOLUME_LABELS = ['RPI-RP2', 'RP2350'];
+
+/** Describes the volume in user-facing text without committing to one label. */
+export const BOOTSEL_VOLUME_DESCRIPTION = `BOOTSEL volume (${BOOTSEL_VOLUME_LABELS.join(' or ')})`;
+
+/** File the boot ROM puts on every BOOTSEL volume; used to confirm we found the right thing. */
+export const BOOTSEL_INFO_FILE = 'INFO_UF2.TXT';
 
 /**
  * Places a BOOTSEL volume typically mounts, in the order we should probe them.
- * A candidate only counts once `INFO_UF2.TXT` is found inside it (see the runner),
- * which rules out an unrelated folder that merely shares the name.
+ * A candidate only counts once `INFO_UF2.TXT` is found inside it (see
+ * `findBootselVolume`), which rules out an unrelated folder that merely shares the name.
  */
 export function bootselMountCandidates(
     platform: NodeJS.Platform,
@@ -90,23 +108,206 @@ export function bootselMountCandidates(
     user: string,
 ): string[] {
     if (platform === 'darwin') {
-        return [`/Volumes/${BOOTSEL_VOLUME_LABEL}`];
+        return BOOTSEL_VOLUME_LABELS.map((label) => `/Volumes/${label}`);
     }
     if (platform === 'win32') {
-        // BOOTSEL volumes usually take the first free drive letter.
+        // Windows mounts by drive letter, not by label, so every letter is a candidate.
         return 'DEFGHIJKLMNOPQRSTUVWXYZ'.split('').map((letter) => `${letter}:\\`);
     }
-    return [
-        `/media/${user}/${BOOTSEL_VOLUME_LABEL}`,
-        `/run/media/${user}/${BOOTSEL_VOLUME_LABEL}`,
-        `/media/${BOOTSEL_VOLUME_LABEL}`,
-        `/mnt/${BOOTSEL_VOLUME_LABEL}`,
-        `${home}/${BOOTSEL_VOLUME_LABEL}`,
-    ];
+    const candidates: string[] = [];
+    for (const label of BOOTSEL_VOLUME_LABELS) {
+        candidates.push(
+            `/media/${user}/${label}`,
+            `/run/media/${user}/${label}`,
+            `/media/${label}`,
+            `/mnt/${label}`,
+            `${home}/${label}`,
+        );
+    }
+    return candidates;
 }
 
-/** File the boot ROM puts on every BOOTSEL volume; used to confirm we found the right thing. */
-export const BOOTSEL_INFO_FILE = 'INFO_UF2.TXT';
+/**
+ * Directories whose *children* are mounted volumes. Scanning these as a fallback means a
+ * volume mounted under a name we did not predict — an unlabelled FAT, a desktop that
+ * renames the mount point — is still found. It stays safe because every candidate must
+ * contain `INFO_UF2.TXT` before it counts as a volume.
+ */
+export function bootselMountParents(platform: NodeJS.Platform, user: string): string[] {
+    if (platform === 'darwin') {
+        return ['/Volumes'];
+    }
+    if (platform === 'win32') {
+        return [];
+    }
+    return [`/media/${user}`, `/run/media/${user}`, '/media', '/run/media', '/mnt'];
+}
+
+// ------------------------------------------------------------- volume identity
+
+/**
+ * What the board sitting in BOOTSEL mode says about itself. `INFO_UF2.TXT` is a version
+ * line followed by `Key: value` lines; the boot ROMs insert `Model` and `Board-ID` and
+ * nothing else:
+ *
+ *   RP2040  (pico-bootrom-rp2040/bootrom/info_uf2.txt)
+ *     UF2 Bootloader v3.0 / Model: Raspberry Pi RP2 / Board-ID: RPI-RP2
+ *   RP2350  (pico-bootrom-rp2350/src/nsboot/info_uf2_txt.h)
+ *     UF2 Bootloader v1.1 / Model: Raspberry Pi RP2350 / Board-ID: RP2350
+ *
+ * Parsing is deliberately generic: those strings can be white-labelled through OTP, and
+ * the file contains no serial number, so a human has to confirm which board is meant.
+ */
+export interface Uf2VolumeInfo {
+    /** Where this was read from. */
+    volume: string;
+    /** First line, e.g. `UF2 Bootloader v1.1`. */
+    header: string;
+    /** Every `Key: value` line the file carries, in order. */
+    fields: { key: string; value: string }[];
+    model?: string;
+    boardId?: string;
+}
+
+/** Parses the contents of an `INFO_UF2.TXT`. */
+export function parseUf2Info(volume: string, text: string): Uf2VolumeInfo {
+    const lines = text
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line !== '');
+
+    const fields: { key: string; value: string }[] = [];
+    for (const line of lines) {
+        const separator = line.indexOf(':');
+        if (separator <= 0) {
+            continue;
+        }
+        fields.push({ key: line.slice(0, separator).trim(), value: line.slice(separator + 1).trim() });
+    }
+
+    const pick = (key: string): string | undefined =>
+        fields.find((field) => field.key.toLowerCase() === key)?.value;
+
+    const first = lines[0];
+    return {
+        volume,
+        header: first !== undefined && !first.includes(':') ? first : '',
+        fields,
+        model: pick('model'),
+        boardId: pick('board-id'),
+    };
+}
+
+/** True when `dir` holds the `INFO_UF2.TXT` that only a boot ROM writes. */
+export function isBootselVolume(dir: string): boolean {
+    try {
+        return fs.existsSync(path.join(dir, BOOTSEL_INFO_FILE));
+    } catch {
+        return false;
+    }
+}
+
+/** Reads and parses `INFO_UF2.TXT`; undefined when it is missing or unreadable. */
+export function readUf2Info(volume: string): Uf2VolumeInfo | undefined {
+    try {
+        return parseUf2Info(volume, fs.readFileSync(path.join(volume, BOOTSEL_INFO_FILE), 'utf8'));
+    } catch {
+        return undefined;
+    }
+}
+
+/**
+ * Finds a BOOTSEL volume: the labelled paths first, then the children of the mount roots.
+ * Nothing is accepted without `INFO_UF2.TXT` inside, so an ordinary USB stick cannot be
+ * mistaken for a board in BOOTSEL mode.
+ */
+export function findBootselVolume(candidates: string[], parents: string[] = []): string | undefined {
+    for (const candidate of candidates) {
+        if (isBootselVolume(candidate)) {
+            return candidate;
+        }
+    }
+    for (const parent of parents) {
+        let entries: string[];
+        try {
+            entries = fs.readdirSync(parent);
+        } catch {
+            // A mount root we cannot list is simply not a candidate.
+            continue;
+        }
+        for (const entry of entries) {
+            const child = path.join(parent, entry);
+            if (isBootselVolume(child)) {
+                return child;
+            }
+        }
+    }
+    return undefined;
+}
+
+/** Indented, human-readable identity lines for the confirmation dialog. */
+export function describeUf2Info(info: Uf2VolumeInfo): string {
+    const lines = [`  volume: ${info.volume}`];
+    if (info.header) {
+        lines.push(`  ${info.header}`);
+    }
+    if (info.model) {
+        lines.push(`  Model: ${info.model}`);
+    }
+    if (info.boardId) {
+        lines.push(`  Board-ID: ${info.boardId}`);
+    }
+    if (!info.model && !info.boardId) {
+        lines.push(`  (${BOOTSEL_INFO_FILE} has no Model/Board-ID lines)`);
+    }
+    return lines.join('\n');
+}
+
+/** Which silicon a volume's identity points at, as far as we can tell. */
+export type SiliconFamily = 'rp2040' | 'rp2350' | 'unknown';
+
+/**
+ * Classifies a volume by the identity strings it advertises. Tolerant on purpose: a
+ * white-labelled board reports a custom `Board-ID`, which we refuse to guess about.
+ */
+export function volumeSilicon(info: Uf2VolumeInfo): SiliconFamily {
+    const text = `${info.model ?? ''} ${info.boardId ?? ''}`.toUpperCase();
+    if (text.includes('RP2350')) {
+        return 'rp2350';
+    }
+    if (text.includes('RPI-RP2') || text.includes('RP2')) {
+        return 'rp2040';
+    }
+    return 'unknown';
+}
+
+/** Which silicon a firmware image is built for. The Debug Probe itself is RP2040-based. */
+export function siliconForImage(image: DebugProbeImage): Exclude<SiliconFamily, 'unknown'> {
+    return image.id === 'debugprobe_on_pico2' ? 'rp2350' : 'rp2040';
+}
+
+/**
+ * Warns when the firmware and the board in BOOTSEL mode disagree. RP2040 firmware written
+ * to an RP2350 (or the reverse) simply does not run, and recovering the board needs the
+ * BOOTSEL dance again — so we say so before the copy, not after.
+ */
+export function checkSiliconMatch(image: DebugProbeImage, info: Uf2VolumeInfo): string | undefined {
+    const board = volumeSilicon(info);
+    const wanted = siliconForImage(image);
+    if (board === 'unknown') {
+        return (
+            `Could not tell which chip this volume belongs to (no RP2040/RP2350 identity in ` +
+            `${BOOTSEL_INFO_FILE}), and ${image.fileName} is ${wanted.toUpperCase()} firmware.`
+        );
+    }
+    if (board !== wanted) {
+        return (
+            `${image.fileName} is ${wanted.toUpperCase()} firmware, but this volume looks like ` +
+            `an ${board.toUpperCase()} board.`
+        );
+    }
+    return undefined;
+}
 
 // ------------------------------------------------------------------ versions
 
@@ -198,8 +399,8 @@ export function planProbeFirmwareUpdate(
 
     steps.push({
         id: 'copy',
-        title: `Copy ${image.fileName} onto the ${BOOTSEL_VOLUME_LABEL} volume`,
-        detail: 'The probe reboots by itself once the copy completes.',
+        title: `Copy ${image.fileName} onto the ${BOOTSEL_VOLUME_DESCRIPTION}`,
+        detail: 'The board reboots by itself once the copy completes.',
         physical: false,
     });
 

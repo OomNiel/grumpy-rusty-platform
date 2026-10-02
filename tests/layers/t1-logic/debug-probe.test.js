@@ -1,24 +1,50 @@
 'use strict';
 
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const { test, ok, equal, notOk, contains } = require('../../lib/harness');
 const { compiled } = require('../../lib/harness');
 const {
     DEBUGPROBE_VERSION,
     DEBUGPROBE_MIN_SUPPORTED,
     DEBUGPROBE_IMAGES,
-    BOOTSEL_VOLUME_LABEL,
     BOOTSEL_INFO_FILE,
+    BOOTSEL_VOLUME_DESCRIPTION,
+    BOOTSEL_VOLUME_LABELS,
     bootselMountCandidates,
+    bootselMountParents,
+    checkSiliconMatch,
     compareVersions,
     debugProbeImageById,
+    describeUf2Info,
     downloadUrlFor,
+    findBootselVolume,
+    isBootselVolume,
     isFirmwareOutdated,
     minimumFirmwareFromProbeRs,
+    parseUf2Info,
     planProbeFirmwareUpdate,
+    readUf2Info,
     releaseTagFor,
+    siliconForImage,
     updateReason,
+    volumeSilicon,
 } = compiled('toolchain/debugProbe');
 const { formatBytes } = compiled('util/hash');
+
+/**
+ * The exact file the RP2350 boot ROM serves.
+ * Source: raspberrypi/pico-bootrom-rp2350, src/nsboot/info_uf2_txt.h (the template inserts
+ * `Board-ID` = "RP2350" and `Model` = "Raspberry Pi RP2350").
+ */
+const RP2350_INFO = 'UF2 Bootloader v1.1\nModel: Raspberry Pi RP2350\nBoard-ID: RP2350\n';
+
+/**
+ * The exact file the RP2040 boot ROM serves.
+ * Source: raspberrypi/pico-bootrom-rp2040, bootrom/info_uf2.txt.
+ */
+const RP2040_INFO = 'UF2 Bootloader v3.0\nModel: Raspberry Pi RP2\nBoard-ID: RPI-RP2\n';
 
 /** The exact error probe-rs 0.32 produced against the firmware on the desk. */
 const REAL_OUTDATED_OUTPUT =
@@ -97,13 +123,42 @@ test('unrelated probe-rs output yields no required version', () => {
     equal(minimumFirmwareFromProbeRs(''), undefined);
 });
 
-test('BOOTSEL volumes are found per platform', () => {
-    const linux = bootselMountCandidates('linux', '/home/niel', 'niel');
-    contains(linux.join('\n'), `/media/niel/${BOOTSEL_VOLUME_LABEL}`);
-    contains(linux.join('\n'), `/run/media/niel/${BOOTSEL_VOLUME_LABEL}`);
-    equal(bootselMountCandidates('darwin', '/Users/niel', 'niel'), [`/Volumes/${BOOTSEL_VOLUME_LABEL}`]);
+test('BOOTSEL volumes are found per platform, for both silicon revisions', () => {
+    const linux = bootselMountCandidates('linux', '/home/niel', 'niel').join('\n');
+    for (const label of BOOTSEL_VOLUME_LABELS) {
+        contains(linux, `/media/niel/${label}`);
+        contains(linux, `/run/media/niel/${label}`);
+    }
+    equal(
+        bootselMountCandidates('darwin', '/Users/niel', 'niel'),
+        BOOTSEL_VOLUME_LABELS.map((label) => `/Volumes/${label}`),
+    );
     ok(bootselMountCandidates('win32', 'C:\\Users\\niel', 'niel').includes('D:\\'));
     equal(BOOTSEL_INFO_FILE, 'INFO_UF2.TXT', 'the volume is confirmed by this file');
+});
+
+test('both the authentic probe and a Pico 2 can be programmed', () => {
+    equal(BOOTSEL_VOLUME_LABELS, ['RPI-RP2', 'RP2350'], 'RP2040 bootrom label first, then RP2350');
+    contains(BOOTSEL_VOLUME_DESCRIPTION, 'RPI-RP2');
+    contains(BOOTSEL_VOLUME_DESCRIPTION, 'RP2350');
+});
+
+test('the update plan does not assume a single volume label', () => {
+    const steps = planProbeFirmwareUpdate(debugProbeImageById('debugprobe'), {
+        hasCachedImage: true,
+        diagnosis: 'firmware-outdated',
+    });
+    const copy = steps.find((step) => step.id === 'copy');
+    contains(copy.title, 'RPI-RP2');
+    contains(copy.title, 'RP2350');
+});
+
+test('mount roots are scanned so an unlabelled volume is still found', () => {
+    const linux = bootselMountParents('linux', 'niel');
+    contains(linux.join('\n'), '/media/niel');
+    contains(linux.join('\n'), '/run/media/niel');
+    equal(bootselMountParents('darwin', 'niel'), ['/Volumes']);
+    equal(bootselMountParents('win32', 'niel'), [], 'drive letters are already exhaustive');
 });
 
 test('a cached image skips the download step', () => {
@@ -154,6 +209,86 @@ test('the update reason reflects the diagnosis', () => {
     contains(updateReason('firmware-outdated', '2.2.0'), '2.2.0');
     contains(updateReason('permission-denied'), 'USB permissions');
     contains(updateReason('ok'), 'optional');
+});
+
+test('INFO_UF2.TXT from both boot ROMs parses into the same shape', () => {
+    const rp2350 = parseUf2Info('/media/niel/RP2350', RP2350_INFO);
+    equal(rp2350.header, 'UF2 Bootloader v1.1');
+    equal(rp2350.model, 'Raspberry Pi RP2350');
+    equal(rp2350.boardId, 'RP2350');
+    equal(rp2350.fields.length, 2, 'Model and Board-ID are the only inserted fields');
+
+    const rp2040 = parseUf2Info('/media/niel/RPI-RP2', RP2040_INFO);
+    equal(rp2040.header, 'UF2 Bootloader v3.0');
+    equal(rp2040.model, 'Raspberry Pi RP2');
+    equal(rp2040.boardId, 'RPI-RP2');
+});
+
+test('the identity classifier tolerates white-labelled boards', () => {
+    equal(volumeSilicon(parseUf2Info('v', RP2350_INFO)), 'rp2350');
+    equal(volumeSilicon(parseUf2Info('v', RP2040_INFO)), 'rp2040');
+    equal(volumeSilicon(parseUf2Info('v', 'UF2 Bootloader v1.0\n')), 'unknown');
+    equal(
+        volumeSilicon(parseUf2Info('v', 'UF2 Bootloader v1.1\nModel: Acme Widget\nBoard-ID: ACME-1\n')),
+        'unknown',
+        'a custom Board-ID is never guessed at',
+    );
+});
+
+test('writing the wrong silicon to a board is flagged before the copy', () => {
+    const rp2350 = parseUf2Info('/media/niel/RP2350', RP2350_INFO);
+    const rp2040 = parseUf2Info('/media/niel/RPI-RP2', RP2040_INFO);
+
+    equal(siliconForImage(debugProbeImageById('debugprobe')), 'rp2040', 'the authentic probe is RP2040');
+    equal(siliconForImage(debugProbeImageById('debugprobe_on_pico')), 'rp2040');
+    equal(siliconForImage(debugProbeImageById('debugprobe_on_pico2')), 'rp2350');
+
+    equal(checkSiliconMatch(debugProbeImageById('debugprobe'), rp2040), undefined);
+    equal(checkSiliconMatch(debugProbeImageById('debugprobe_on_pico2'), rp2350), undefined);
+    contains(checkSiliconMatch(debugProbeImageById('debugprobe'), rp2350), 'RP2040');
+    contains(checkSiliconMatch(debugProbeImageById('debugprobe_on_pico2'), rp2040), 'RP2350');
+    contains(
+        checkSiliconMatch(debugProbeImageById('debugprobe'), parseUf2Info('v', 'UF2 Bootloader v1.0\n')),
+        'Could not tell',
+        'an unidentifiable volume is called out, not assumed',
+    );
+});
+
+test('the confirmation names the board it is about to overwrite', () => {
+    const described = describeUf2Info(parseUf2Info('/media/niel/RP2350', RP2350_INFO));
+    contains(described, '/media/niel/RP2350');
+    contains(described, 'UF2 Bootloader v1.1');
+    contains(described, 'Model: Raspberry Pi RP2350');
+    contains(described, 'Board-ID: RP2350');
+
+    contains(describeUf2Info(parseUf2Info('/mnt/x', 'UF2 Bootloader v1.0\n')), 'no Model/Board-ID');
+});
+
+test('a volume counts only when a boot ROM put INFO_UF2.TXT in it', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rusty-bootsel-'));
+    const volume = path.join(root, 'RP2350');
+    const decoy = path.join(root, 'usb-stick');
+    fs.mkdirSync(volume);
+    fs.mkdirSync(decoy);
+    fs.writeFileSync(path.join(decoy, 'holiday-photos.txt'), 'not a bootloader');
+
+    try {
+        equal(isBootselVolume(volume), false);
+        equal(findBootselVolume([path.join(root, 'RPI-RP2')]), undefined, 'a missing path is not a volume');
+        equal(findBootselVolume([decoy, volume]), undefined, 'no INFO_UF2.TXT means no volume');
+
+        fs.writeFileSync(path.join(volume, BOOTSEL_INFO_FILE), RP2350_INFO);
+
+        equal(isBootselVolume(volume), true);
+        equal(findBootselVolume([decoy, volume]), volume, 'the labelled path wins');
+        equal(findBootselVolume([], [root]), volume, 'the fallback scan finds it by content, not by name');
+        equal(findBootselVolume([], [path.join(root, 'nope')]), undefined, 'an unlistable root is skipped');
+
+        equal(readUf2Info(volume).boardId, 'RP2350');
+        equal(readUf2Info(decoy), undefined, 'a volume without the file reads as unknown');
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
 });
 
 test('byte sizes are human readable', () => {

@@ -5,12 +5,17 @@ import * as path from 'path';
 import { downloadFile } from '../util/download';
 import { formatBytes, sha256OfFile } from '../util/hash';
 import {
-    BOOTSEL_INFO_FILE,
-    BOOTSEL_VOLUME_LABEL,
+    BOOTSEL_VOLUME_DESCRIPTION,
     DEBUGPROBE_VERSION,
     DebugProbeImage,
+    Uf2VolumeInfo,
     bootselMountCandidates,
+    bootselMountParents,
+    checkSiliconMatch,
     downloadUrlFor,
+    findBootselVolume,
+    isBootselVolume,
+    readUf2Info,
 } from './debugProbe';
 
 /**
@@ -21,6 +26,24 @@ import {
 
 export interface ProbeFirmwareHost {
     output: vscode.OutputChannel;
+    /**
+     * Asked once a BOOTSEL volume has been found, before anything is written. Asking a
+     * human is the only real gate available: `INFO_UF2.TXT` tells us the *type* of board
+     * in BOOTSEL mode but carries no serial number, so nothing here can distinguish the
+     * board you meant from another Pico that happens to be in BOOTSEL mode. Returning
+     * false must leave the device untouched.
+     */
+    confirmWrite(request: ConfirmWriteRequest): Promise<boolean>;
+}
+
+/** Everything the user needs to decide whether this is the board they meant. */
+export interface ConfirmWriteRequest {
+    image: DebugProbeImage;
+    volume: string;
+    /** Parsed `INFO_UF2.TXT`, when it could be read. */
+    info: Uf2VolumeInfo | undefined;
+    /** Set when the image's silicon and the volume's identity disagree. */
+    warning: string | undefined;
 }
 
 export function probeFirmwareCacheDir(version: string = DEBUGPROBE_VERSION): string {
@@ -66,25 +89,6 @@ export async function ensureProbeImage(image: DebugProbeImage, host: ProbeFirmwa
     return target;
 }
 
-/**
- * Finds a BOOTSEL volume. We confirm it by the `INFO_UF2.TXT` the boot ROM writes,
- * which avoids mistaking an unrelated folder for the probe.
- */
-export function findBootselVolume(
-    candidates: string[] = bootselMountCandidates(process.platform, os.homedir(), safeUserName()),
-): string | undefined {
-    for (const candidate of candidates) {
-        try {
-            if (fs.existsSync(path.join(candidate, BOOTSEL_INFO_FILE))) {
-                return candidate;
-            }
-        } catch {
-            // Unreadable mount points are simply not candidates.
-        }
-    }
-    return undefined;
-}
-
 function safeUserName(): string {
     try {
         return os.userInfo().username;
@@ -107,18 +111,22 @@ export async function waitForBootselVolume(
         if (token.isCancellationRequested) {
             throw new Error('Cancelled.');
         }
-        const volume = findBootselVolume();
+        const user = safeUserName();
+        const volume = findBootselVolume(
+            bootselMountCandidates(process.platform, os.homedir(), user),
+            bootselMountParents(process.platform, user),
+        );
         if (volume) {
             return volume;
         }
         onProgress(
-            `Waiting for the ${BOOTSEL_VOLUME_LABEL} volume — hold BOOTSEL while plugging the probe in…`,
+            `Waiting for the ${BOOTSEL_VOLUME_DESCRIPTION} — hold BOOTSEL while plugging the board in…`,
         );
         await delay(1000);
     }
     throw new Error(
-        `Timed out waiting for a ${BOOTSEL_VOLUME_LABEL} volume.\n` +
-        'Hold BOOTSEL (the small button on the probe) while plugging in the USB cable. ' +
+        `Timed out waiting for a ${BOOTSEL_VOLUME_DESCRIPTION}.\n` +
+        'Hold BOOTSEL (the small button on the board) while plugging in the USB cable. ' +
         'On Linux the volume may need to be mounted by your desktop before this can see it.',
     );
 }
@@ -133,18 +141,18 @@ export async function waitForVolumeToDisappear(
         if (token.isCancellationRequested) {
             return;
         }
-        if (!fs.existsSync(path.join(volume, BOOTSEL_INFO_FILE))) {
+        if (!isBootselVolume(volume)) {
             return;
         }
         await delay(500);
     }
 }
 
-/** Full flow: cache → wait for BOOTSEL → copy → wait for reboot. */
+/** Full flow: cache → wait for BOOTSEL → confirm → copy → wait for reboot. */
 export async function updateProbeFirmware(
     image: DebugProbeImage,
     host: ProbeFirmwareHost,
-): Promise<{ volume: string }> {
+): Promise<{ volume: string; written: boolean }> {
     const imagePath = await ensureProbeImage(image, host);
 
     return vscode.window.withProgress(
@@ -154,8 +162,17 @@ export async function updateProbeFirmware(
             cancellable: true,
         },
         async (progress, token) => {
-            progress.report({ message: `Waiting for ${BOOTSEL_VOLUME_LABEL}…` });
+            progress.report({ message: `Waiting for ${BOOTSEL_VOLUME_DESCRIPTION}…` });
             const volume = await waitForBootselVolume(token, (message) => progress.report({ message }));
+
+            // Identify the board and let a human confirm before a single byte is written.
+            const info = readUf2Info(volume);
+            const warning = info ? checkSiliconMatch(image, info) : undefined;
+            const agreed = await host.confirmWrite({ image, volume, info, warning });
+            if (!agreed) {
+                host.output.appendLine(`Nothing was written: ${volume} was not confirmed.`);
+                return { volume, written: false };
+            }
 
             const destination = path.join(volume, image.fileName);
             progress.report({ message: `Copying to ${volume}…` });
@@ -166,14 +183,14 @@ export async function updateProbeFirmware(
                 const message = error instanceof Error ? error.message : String(error);
                 throw new Error(
                     `Could not write to ${destination}: ${message}\n` +
-                    `The image is ready at ${imagePath} — copy it onto the ${BOOTSEL_VOLUME_LABEL} volume by hand.`,
+                    `The image is ready at ${imagePath} — copy it onto the ${BOOTSEL_VOLUME_DESCRIPTION} by hand.`,
                 );
             }
 
-            progress.report({ message: 'Waiting for the probe to restart…' });
+            progress.report({ message: 'Waiting for the board to restart…' });
             await waitForVolumeToDisappear(volume, token);
-            host.output.appendLine('Probe volume disappeared; new firmware should be running.');
-            return { volume };
+            host.output.appendLine('BOOTSEL volume disappeared; new firmware should be running.');
+            return { volume, written: true };
         },
     );
 }

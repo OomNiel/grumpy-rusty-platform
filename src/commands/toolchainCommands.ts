@@ -5,12 +5,43 @@ import { RustyState } from '../state';
 import { planInstallation, UDEV_RULES_CONTENT } from '../toolchain/installPlan';
 import { runInstallPlan } from '../toolchain/installRunner';
 import {
+    BOOTSEL_INFO_FILE,
     DEBUGPROBE_IMAGES,
+    describeUf2Info,
     minimumFirmwareFromProbeRs,
     planProbeFirmwareUpdate,
     updateReason,
 } from '../toolchain/debugProbe';
-import { isImageCached, updateProbeFirmware } from '../toolchain/probeFirmwareRunner';
+import {
+    ConfirmWriteRequest,
+    isImageCached,
+    updateProbeFirmware,
+} from '../toolchain/probeFirmwareRunner';
+
+/**
+ * The gate before anything is copied onto a BOOTSEL volume. `INFO_UF2.TXT` names only the
+ * *type* of board and carries no serial number, so the person at the bench is the only
+ * thing standing between this flow and the wrong Pico — which would lose whatever
+ * firmware that board was holding.
+ */
+async function confirmBootselWrite(request: ConfirmWriteRequest): Promise<boolean> {
+    const lines = [
+        `About to write ${request.image.fileName} (${request.image.size} bytes) to:`,
+        request.info
+            ? describeUf2Info(request.info)
+            : `  ${request.volume}\n  (could not read ${BOOTSEL_INFO_FILE})`,
+    ];
+    if (request.warning) {
+        lines.push('', `⚠ ${request.warning}`);
+    }
+    lines.push('', 'Make sure this is the board you mean.');
+    const answer = await vscode.window.showWarningMessage(
+        lines.join('\n'),
+        { modal: true },
+        'Write firmware',
+    );
+    return answer === 'Write firmware';
+}
 
 async function currentStatus(state: RustyState) {
     return state.status ?? state.refresh();
@@ -54,7 +85,12 @@ export function registerToolchainCommands(state: RustyState, output: vscode.Outp
             if (status && status.missingTargets.length > 0) {
                 problems.push(`missing targets: ${status.missingTargets.join(', ')}`);
             }
-            if (status && status.probeDiagnosis.kind !== 'ok') {
+            // `chip-not-autodetected` is normal for RP235x and not a problem to fix.
+            if (
+                status &&
+                status.probeDiagnosis.kind !== 'ok' &&
+                status.probeDiagnosis.kind !== 'chip-not-autodetected'
+            ) {
                 problems.push(status.probeDiagnosis.message);
             }
 
@@ -194,7 +230,14 @@ export function registerToolchainCommands(state: RustyState, output: vscode.Outp
             }
 
             try {
-                const { volume } = await updateProbeFirmware(image, { output });
+                const { volume, written } = await updateProbeFirmware(image, {
+                    output,
+                    confirmWrite: confirmBootselWrite,
+                });
+                if (!written) {
+                    output.appendLine(`Nothing was written to ${volume}.`);
+                    return;
+                }
                 output.appendLine(`Wrote ${image.fileName} to ${volume}`);
                 void vscode.window.showInformationMessage('Probe firmware written. Give it a few seconds to boot.');
             } catch (error) {
