@@ -26,6 +26,7 @@ export interface ProbeInfo {
 
 export type ProbeDiagnosisKind =
     | 'ok'
+    | 'chip-not-autodetected'
     | 'none-connected'
     | 'firmware-outdated'
     | 'permission-denied'
@@ -136,10 +137,28 @@ export function classifyProbeError(stderr: string): ProbeDiagnosis {
             raw: text,
         };
     }
-    if (/could not attach to target|no target|target.*not.*found/i.test(text)) {
+    // A dead SWD link. This is the only message that actually means "the probe is
+    // fine, the target is not answering" — keep it *before* the more generic
+    // chip-detection failure below, which shares the same first line.
+    if (/No target responded to the debug port/i.test(text)) {
         return {
             kind: 'no-target',
-            message: 'The probe was opened but no target answered over SWD. Check the wiring and that the target is powered.',
+            message:
+                'The probe was opened but no target answered over SWD. Check the wiring, the pins '
+                + '(SWCLK/GND/SWDIO) and that the target is powered.',
+            raw: text,
+        };
+    }
+    // The probe opened successfully but probe-rs could not work out which chip is
+    // attached. Verified on real hardware: `probe-rs info` fails this way for
+    // RP235x (which has no auto-detect) while `probe-rs read --chip RP235x` works.
+    // So this is NOT a probe fault and must not be reported as one.
+    if (/Unable to load specification for chip|could not automatically be determined|Connecting to the chip was unsuccessful/i.test(text)) {
+        return {
+            kind: 'chip-not-autodetected',
+            message:
+                'The Debug Probe is working. probe-rs cannot identify this chip automatically, so a chip id '
+                + '(e.g. RP235x) is required when flashing.',
             raw: text,
         };
     }

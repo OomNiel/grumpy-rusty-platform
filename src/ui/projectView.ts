@@ -49,7 +49,11 @@ export class ProjectViewProvider implements vscode.TreeDataProvider<vscode.TreeI
         items.push(targets);
 
         const probeIcon =
-            status.probeDiagnosis.kind === 'ok' ? 'pass' : status.probes.length > 0 ? 'warning' : 'circle-slash';
+            status.probeDiagnosis.kind === 'ok' || status.probeDiagnosis.kind === 'chip-not-autodetected'
+                ? 'pass'
+                : status.probes.length > 0
+                    ? 'warning'
+                    : 'circle-slash';
         const probe = new vscode.TreeItem(status.probes[0]?.name ?? 'no debug probe', vscode.TreeItemCollapsibleState.None);
         probe.iconPath = new vscode.ThemeIcon(probeIcon);
         probe.description = status.probeDiagnosis.message;

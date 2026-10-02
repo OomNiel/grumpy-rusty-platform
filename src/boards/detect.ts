@@ -15,12 +15,21 @@ export interface ProjectFiles {
 export function detectBoardFromProject(files: ProjectFiles): BoardProfile | undefined {
     const { cargoToml, cargoConfigToml } = files;
 
-    // The chip feature is the most reliable signal: rp2040 vs rp235xa/rp235xb.
-    for (const board of BOARDS) {
+    // The chip feature (rp2040 vs rp235xa/rp235xb) narrows it to two boards; the
+    // presence of the cyw43 dependency is what separates a W board from its wired
+    // twin. Without this, pico2w projects were reported as pico2.
+    const wireless = /^\s*cyw43\s*=/m.test(cargoToml);
+    const chipMatches = BOARDS.filter((board) => {
         const chipFeature = board.embassyFeatures.find((f) => f === 'rp2040' || f.startsWith('rp235x'));
-        if (chipFeature && new RegExp(`["']${chipFeature}["']`).test(cargoToml)) {
-            return board;
-        }
+        return chipFeature ? new RegExp(`["']${chipFeature}["']`).test(cargoToml) : false;
+    });
+
+    const chipAndRadio = chipMatches.find((board) => (board.wireless !== 'none') === wireless);
+    if (chipAndRadio) {
+        return chipAndRadio;
+    }
+    if (chipMatches.length > 0) {
+        return chipMatches[0];
     }
 
     // Fall back to the target triple in .cargo/config.toml.

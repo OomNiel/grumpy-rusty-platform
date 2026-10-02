@@ -20,6 +20,7 @@ const { spawnSync, spawn } = require('child_process');
 const { test, skip, ok, contains, fail, runtimeSkip } = require('../../lib/harness');
 const { compiled, repoRoot } = require('../../lib/harness');
 const { installFirmware } = require('../../lib/firmware');
+const { captureUntil } = require('../../lib/rtt');
 
 const { boardById } = compiled('boards/catalog');
 const { defaultTemplateFor, generateProjectFiles, requiredFirmware, templatesFor } = compiled('generate/files');
@@ -28,9 +29,15 @@ const { detectToolchain } = compiled('toolchain/detect');
 const { detectBoardFromProject } = compiled('boards/detect');
 
 const WORK_ROOT = path.join(repoRoot(), 'tests', 'out', 'hil');
+// Explicit, and shared with t4-e2e: an ambient CARGO_TARGET_DIR must never be able
+// to redirect the build, and the compiled dependencies are reused.
+const TARGET_DIR = path.join(repoRoot(), 'tests', 'out', 'cargo-target');
 const BOARD_ID = process.env.HIL_BOARD || 'pico';
 const BUILD_TIMEOUT_MS = 25 * 60 * 1000;
-const RTT_CAPTURE_MS = 5000;
+// `probe-rs run` programs the image before it prints anything, and that alone takes
+// ~10 s here, so a capture window measured from process start kills it mid-flash.
+// We therefore wait for the expected line and use this only as the ceiling.
+const RTT_WAIT_MS = 120000;
 
 const board = boardById(BOARD_ID);
 const template = process.env.HIL_TEMPLATE || (board ? defaultTemplateFor(board) : 'blinky');
@@ -64,25 +71,27 @@ async function prepareProject() {
     return dir;
 }
 
-/** Runs `probe-rs run` and kills it after a moment, returning the captured output. */
-function captureDefmt(dir, elf) {
-    return new Promise((resolve) => {
-        const child = spawn(probeRs, ['run', '--chip', board.probeChip, elf], {
-            cwd: dir,
-            env: augmentedEnv({ DEFMT_LOG: 'info' }),
-        });
-        let output = '';
-        const collect = (chunk) => {
-            output += chunk.toString();
-        };
-        child.stdout.on('data', collect);
-        child.stderr.on('data', collect);
-        const timer = setTimeout(() => child.kill('SIGKILL'), RTT_CAPTURE_MS);
-        child.on('close', () => {
-            clearTimeout(timer);
-            resolve(output);
-        });
+/**
+ * Runs `probe-rs run` and returns everything it printed, stopping as soon as `fragment`
+ * appears. The waiting rule (and why it is not a fixed window) lives in `lib/rtt`.
+ */
+async function captureDefmt(dir, elf, fragment) {
+    const child = spawn(probeRs, ['run', '--chip', board.probeChip, elf], {
+        cwd: dir,
+        env: augmentedEnv({ DEFMT_LOG: 'info' }),
     });
+    const { output } = await captureUntil(child, { fragment, timeoutMs: RTT_WAIT_MS });
+    return output;
+}
+
+/**
+ * The captured tail without cyw43's very chatty debug logging, for failure messages:
+ * what we care about is the template's own lines.
+ */
+function interestingTail(log) {
+    const lines = log.split(/\r?\n/).filter((line) => line.trim() !== '');
+    const ours = lines.filter((line) => !line.includes('cyw43-'));
+    return (ours.length > 0 ? ours : lines).slice(-8).join('\n      ');
 }
 
 if (!board) {
@@ -111,7 +120,9 @@ if (!board) {
         if (status.probeDiagnosis.kind === 'none-connected') {
             runtimeSkip('no debug probe attached');
         }
-        if (status.probeDiagnosis.kind !== 'ok') {
+        // `chip-not-autodetected` is the normal result on RP235x: the probe is fine and
+        // flashing works because we always pass an explicit chip id.
+        if (status.probeDiagnosis.kind !== 'ok' && status.probeDiagnosis.kind !== 'chip-not-autodetected') {
             runtimeSkip(status.probeDiagnosis.message);
         }
         if (status.missingTargets.length > 0) {
@@ -128,6 +139,7 @@ if (!board) {
         const build = spawnSync(cargo, ['build', '--release'], {
             cwd: dir,
             env: augmentedEnv({
+                CARGO_TARGET_DIR: TARGET_DIR,
                 WIFI_SSID: process.env.WIFI_SSID,
                 WIFI_PASSWORD: process.env.WIFI_PASSWORD,
             }),
@@ -139,15 +151,15 @@ if (!board) {
         }
 
         // Cargo keeps hyphens in the artefact name.
-        const elf = path.join(dir, 'target', board.target, 'release', projectName);
+        const elf = path.join(TARGET_DIR, board.target, 'release', projectName);
         ok(fs.existsSync(elf), `missing ELF ${elf}`);
 
-        const log = await captureDefmt(dir, elf);
         const fragment = expectedLogFragment();
+        const log = await captureDefmt(dir, elf, fragment);
         contains(
             log,
             fragment,
-            `expected "${fragment}" in the captured RTT output:\n      ${log.slice(-900)}`,
+            `expected "${fragment}" in the captured RTT output; got:\n      ${interestingTail(log)}`,
         );
     });
 }

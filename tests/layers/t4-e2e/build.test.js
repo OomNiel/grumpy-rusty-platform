@@ -27,7 +27,9 @@ const { generateProjectFiles, requiredFirmware } = compiled('generate/files');
 const { findExecutable, augmentedEnv } = compiled('util/exec');
 
 const WORK_ROOT = path.join(repoRoot(), 'tests', 'out', 'e2e');
-const TARGET_DIR = path.join(WORK_ROOT, 'target');
+// Explicit, and shared with t5-hil: an ambient CARGO_TARGET_DIR must never be able
+// to redirect the output, and heavy dependencies are then compiled only once.
+const TARGET_DIR = path.join(repoRoot(), 'tests', 'out', 'cargo-target');
 const BUILD_TIMEOUT_MS = 25 * 60 * 1000;
 
 /**
@@ -93,9 +95,9 @@ if (!cargo) {
             if (result.status !== 0) {
                 fail(
                     `cargo build exited with ${result.status}\n` +
-                        `      project: ${dir}\n` +
-                        `      --- stderr (tail) ---\n      ${tail(result.stderr || '').split('\n').join('\n      ')}\n` +
-                        `      --- stdout (tail) ---\n      ${tail(result.stdout || '').split('\n').join('\n      ')}`,
+                    `      project: ${dir}\n` +
+                    `      --- stderr (tail) ---\n      ${tail(result.stderr || '').split('\n').join('\n      ')}\n` +
+                    `      --- stdout (tail) ---\n      ${tail(result.stdout || '').split('\n').join('\n      ')}`,
                 );
             }
 
@@ -122,7 +124,7 @@ if (!cargo) {
         ok(
             wirelessSize > wiredSize,
             `the CYW43 firmware alone is 231 KB, so the wireless image should be bigger ` +
-                `(wired ${wiredSize}, wireless ${wirelessSize})`,
+            `(wired ${wiredSize}, wireless ${wirelessSize})`,
         );
         ok(
             wirelessSize > 231_077,

@@ -29,6 +29,7 @@ const {
     rawUrlFor,
     totalSize,
 } = compiled('toolchain/cyw43Firmware');
+const { detectBoardFromProject } = compiled('boards/detect');
 
 const WIRED = ['pico', 'pico2'];
 const WIRELESS = ['picow', 'pico2w'];
@@ -309,6 +310,25 @@ test('the wireless project documents where the firmware came from', () => {
 test('the Bluetooth project documents the extra patch blob', () => {
     const readme = filesFor('picow', 'wifi-bluetooth').get('firmware/README.md');
     contains(readme, '43439A0_btfw.bin');
+});
+
+test('generated wireless projects are detected as the right board', () => {
+    for (const id of [...WIRED, ...WIRELESS]) {
+        for (const template of templateIds(id)) {
+            const board = boardById(id);
+            const map = filesFor(id, template, `detect-${id}`);
+            const detected = detectBoardFromProject({
+                cargoToml: map.get('Cargo.toml'),
+                cargoConfigToml: map.get('.cargo/config.toml'),
+            });
+            ok(detected, `${id}/${template} was not detected at all`);
+            equal(
+                detected.id,
+                id,
+                `${id}/${template} was detected as ${detected.id} — the W boards must not be confused with their wired twins`,
+            );
+        }
+    }
 });
 
 test('the project README explains how to supply Wi-Fi credentials', () => {
