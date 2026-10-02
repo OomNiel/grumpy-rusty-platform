@@ -90,8 +90,8 @@ test('generated projects match the recorded snapshots', () => {
     if (problems.length > 0) {
         fail(
             `${problems.length} snapshot mismatch(es):\n      ${problems.join('\n      ')}\n\n` +
-                '      If the change was intended, regenerate with:\n' +
-                '        UPDATE_SNAPSHOTS=1 node tests/runner.js --layer t3-golden',
+            '      If the change was intended, regenerate with:\n' +
+            '        UPDATE_SNAPSHOTS=1 node tests/runner.js --layer t3-golden',
         );
     }
     ok(true);

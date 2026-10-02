@@ -327,12 +327,112 @@ Wired boards still get one `blinky` option and are not asked.
 
 ### Verification status
 
-* 144 hermetic tests green. Golden snapshots now cover **every board × template**
+* 147 hermetic tests green. Golden snapshots now cover **every board × template**
   (86 files), so template drift is caught immediately.
 * `--e2e` builds six projects (both wired boards, both W boards, all three wireless
   templates) and asserts the wireless image is larger than the wired one, proving the
   231 KB firmware really is linked in.
-* **Still unverified: runtime.** Flashing a real W board needs the Debug Probe firmware
-  press (§7) and, for the Wi-Fi templates, real credentials.
+* **Runtime verified on a real Pico 2 W — see §10.** Still to do: the Wi-Fi templates,
+  which need real credentials.
+
+---
+
+## 10. Hardware bring-up + the RTT capture trap (2026-10-02)
+
+First true end-to-end run: wizard output → `cargo build --release` → `probe-rs` → real
+RP2350 silicon → CYW43 init → LED blink → `defmt` over RTT. Board: Pico 2 W on a
+Raspberry Pi Debug Probe.
+
+### Bench notes
+
+* The probe shipped with firmware **1.0.1** (`bcdDevice 0x0101`); probe-rs 0.32.0 refuses
+  it (needs ≥ 2.2.0). Updated to **2.3.1** through our own update flow (BOOTSEL →
+  `RPI-RP2` volume → `debugprobe.uf2`), confirmed by `bcdDevice 0x0231`.
+* A dead SWD link turned out to be the **3-wire cable**, not software; the probe also
+  needed a power cycle. The symptom (`No target responded to the debug port`) also
+  appears with reversed wiring, so check the cable before suspecting the toolchain.
+* probe-rs **cannot auto-detect RP235x** (`probe-rs info` fails with "The connected chip
+  could not automatically be determined") while flashing works fine, because we always
+  pass an explicit `--chip RP235x`. Hence the `chip-not-autodetected` diagnosis kind,
+  which the Project view and the toolchain checker must treat as a pass, not a problem.
+
+### The trap: a fixed RTT capture window races the flash
+
+`t5-hil` flashed correctly but captured `""`. Two red herrings first: grepping the RAM
+dump for `SEGGER RTT` failed only because the dump is **text hex, 16 bytes per line**, so
+the signature was split across a line break; and searching RAM for our log *text* can
+never work, because defmt puts a format-string **index** in the ring buffer, not the
+string.
+
+What settled it — read the RTT control block out of RAM and decode it (at `0x20000000`,
+`defmt` magic + `SEGGER RTT` acID):
+
+| field | value | meaning |
+| --- | --- | --- |
+| `up[0].pBuffer` | `0x20004a78` | ring buffer, 1024 B |
+| `up[0].WrOff` | 691 | ≈ 8.9 KB written (wrapped ×8) |
+| `up[0].RdOff` | 685 | the host had read all of it; 6 B pending |
+
+The target side was perfect all along. The bug was in the harness: **`probe-rs run` needs
+~10 s just to program the image** ("Finished in 9.57 s") and the test killed it after a
+fixed 5 s — mid-flash. Fix: wait for the expected line, with a 120 s ceiling as a safety
+net, extracted into `tests/lib/rtt.js` (`captureUntil`) so the timing rule is tested
+instead of re-derived.
+
+Lesson to keep: in HIL tests never time the capture from process start — wait for the
+evidence, and read "no output" as "the process had not finished", not "the firmware is
+silent".
+
+### Verified end-to-end (Pico 2 W / blinky)
+
+```
+[INFO ] CYW43 is up on RP2350 (hil_pico2w_blinky src/main.rs:67)
+[DEBUG] iovar set gpioout = [01, 00, 00, 00, 00, 00, 00, 00]   <- LED off
+[DEBUG] iovar set gpioout = [01, 00, 00, 00, 01, 00, 00, 00]   <- LED on
+```
+
+* `probe-rs verify` reports the flashed image is byte-identical to our ELF.
+* The generated default (`DEFMT_LOG = "debug"`) makes cyw43 very chatty (~9 KB in 2.4 s):
+  fine over RTT, but HIL failure messages filter it out.
+
+---
+
+## 11. BOOTSEL volumes: both silicon revisions, and a confirmation gate (2026-10-02)
+
+The probe firmware update flow accepted exactly one mount name (`RPI-RP2`) and wrote to
+whatever volume it found, without ever reading `INFO_UF2.TXT`. Two problems:
+
+1. **It only worked for RP2040.** The label belongs to the boot ROM's FAT image, so it
+   identifies the silicon family: RP2040 → `RPI-RP2`, RP2350 → `RP2350`. A Pico 2 acting as
+   a probe was invisible to us.
+2. **It could overwrite the wrong board.** Any volume containing `INFO_UF2.TXT` was
+   accepted, and the picker offers `debugprobe_on_pico*.uf2` — images whose whole purpose is
+   to take over a *plain* Pico. A board sitting in BOOTSEL for its own flashing could be
+   written to with no confirmation at all.
+
+What we do now:
+
+* `BOOTSEL_VOLUME_LABELS = ['RPI-RP2', 'RP2350']`, plus a fallback scan of the mount roots
+  (`bootselMountParents`) so an unlabelled or renamed mount is still found. Nothing counts
+  without `INFO_UF2.TXT` inside, so an ordinary USB stick is never mistaken for a board.
+* The volume is identified from `INFO_UF2.TXT` (parsed generically) and cross-checked
+  against the chosen image: RP2040 firmware aimed at an RP2350 volume is warned about
+  *before* the copy, not after.
+* **A human confirms before anything is written**: `host.confirmWrite` is a required part of
+  the host interface and shows a modal with the volume path, `Model` and `Board-ID`.
+
+### Facts worth keeping (from the boot ROM sources)
+
+| | RP2040 | RP2350 |
+| --- | --- | --- |
+| repo | `pico-bootrom-rp2040` | `pico-bootrom-rp2350` |
+| volume label | `RPI-RP2` | `RP2350` |
+| `INFO_UF2.TXT` | `UF2 Bootloader v3.0` / `Model: Raspberry Pi RP2` / `Board-ID: RPI-RP2` | `UF2 Bootloader v1.1` / `Model: Raspberry Pi RP2350` / `Board-ID: RP2350` |
+
+`INFO_UF2.TXT` contains **no serial number** — the RP2350 template inserts exactly two
+strings (`Model`, `Board-ID`) and both can be white-labelled in OTP. A deny-list keyed on a
+board's unique id is therefore *not* possible from the volume alone; only a person can say
+which board is in BOOTSEL mode. `Board-ID` must never be matched against expected values,
+only displayed — hence the tolerant classifier (`volumeSilicon` → `rp2040`/`rp2350`/`unknown`).
 
 

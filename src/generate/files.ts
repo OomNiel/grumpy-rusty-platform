@@ -173,9 +173,9 @@ export function generateProjectFiles(options: GenerateOptions): GeneratedFile[] 
     if (!isTemplateValidFor(board, template)) {
         throw new Error(
             `Template "${template}" is not available for ${board.name} (${board.id}). ` +
-                `Valid templates: ${templatesFor(board)
-                    .map((info) => info.id)
-                    .join(', ')}.`,
+            `Valid templates: ${templatesFor(board)
+                .map((info) => info.id)
+                .join(', ')}.`,
         );
     }
 

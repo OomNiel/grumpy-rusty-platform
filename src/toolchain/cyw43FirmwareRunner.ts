@@ -49,7 +49,7 @@ export async function ensureBlob(blob: Cyw43BlobFile, host: Cyw43Host): Promise<
         fs.rmSync(target, { force: true });
         throw new Error(
             `Checksum mismatch for ${blob.fileName}\n  expected ${blob.sha256}\n  actual   ${actual}\n` +
-                'The file was deleted; the project was left without it.',
+            'The file was deleted; the project was left without it.',
         );
     }
     host.output.appendLine(`Verified ${blob.fileName} (${formatBytes(blob.size)})`);
@@ -73,7 +73,7 @@ export async function installFirmwareIntoProject(
 
     host.output.appendLine(
         `CYW43 firmware: ${blobs.length} file(s), ${missing.length} to download ` +
-            `(${formatBytes(totalSize(missing))}); cache ${cyw43CacheDir()}`,
+        `(${formatBytes(totalSize(missing))}); cache ${cyw43CacheDir()}`,
     );
 
     return vscode.window.withProgress(
