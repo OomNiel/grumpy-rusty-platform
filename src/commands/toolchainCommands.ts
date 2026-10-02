@@ -5,13 +5,12 @@ import { RustyState } from '../state';
 import { planInstallation, UDEV_RULES_CONTENT } from '../toolchain/installPlan';
 import { runInstallPlan } from '../toolchain/installRunner';
 import {
-    BOOTSEL_INFO_FILE,
     DEBUGPROBE_IMAGES,
-    describeUf2Info,
     minimumFirmwareFromProbeRs,
     planProbeFirmwareUpdate,
     updateReason,
 } from '../toolchain/debugProbe';
+import { BOOTSEL_INFO_FILE, describeUf2Info } from '../flash/bootsel';
 import {
     ConfirmWriteRequest,
     isImageCached,

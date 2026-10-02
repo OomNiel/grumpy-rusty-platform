@@ -5,18 +5,18 @@ import * as path from 'path';
 import { downloadFile } from '../util/download';
 import { formatBytes, sha256OfFile } from '../util/hash';
 import {
-    BOOTSEL_VOLUME_DESCRIPTION,
     DEBUGPROBE_VERSION,
     DebugProbeImage,
-    Uf2VolumeInfo,
-    bootselMountCandidates,
-    bootselMountParents,
     checkSiliconMatch,
     downloadUrlFor,
-    findBootselVolume,
-    isBootselVolume,
-    readUf2Info,
 } from './debugProbe';
+import {
+    BOOTSEL_VOLUME_DESCRIPTION,
+    Uf2VolumeInfo,
+    readUf2Info,
+    waitForBootselVolume,
+    waitForVolumeToDisappear,
+} from '../flash/bootsel';
 
 /**
  * Writes Debug Probe firmware. The interesting part is that only the *user* can
@@ -89,65 +89,6 @@ export async function ensureProbeImage(image: DebugProbeImage, host: ProbeFirmwa
     return target;
 }
 
-function safeUserName(): string {
-    try {
-        return os.userInfo().username;
-    } catch {
-        return process.env.USER ?? process.env.USERNAME ?? 'user';
-    }
-}
-
-function delay(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-export async function waitForBootselVolume(
-    token: vscode.CancellationToken,
-    onProgress: (message: string) => void,
-    timeoutMs = 180_000,
-): Promise<string> {
-    const started = Date.now();
-    while (Date.now() - started < timeoutMs) {
-        if (token.isCancellationRequested) {
-            throw new Error('Cancelled.');
-        }
-        const user = safeUserName();
-        const volume = findBootselVolume(
-            bootselMountCandidates(process.platform, os.homedir(), user),
-            bootselMountParents(process.platform, user),
-        );
-        if (volume) {
-            return volume;
-        }
-        onProgress(
-            `Waiting for the ${BOOTSEL_VOLUME_DESCRIPTION} — hold BOOTSEL while plugging the board in…`,
-        );
-        await delay(1000);
-    }
-    throw new Error(
-        `Timed out waiting for a ${BOOTSEL_VOLUME_DESCRIPTION}.\n` +
-        'Hold BOOTSEL (the small button on the board) while plugging in the USB cable. ' +
-        'On Linux the volume may need to be mounted by your desktop before this can see it.',
-    );
-}
-
-export async function waitForVolumeToDisappear(
-    volume: string,
-    token: vscode.CancellationToken,
-    timeoutMs = 60_000,
-): Promise<void> {
-    const started = Date.now();
-    while (Date.now() - started < timeoutMs) {
-        if (token.isCancellationRequested) {
-            return;
-        }
-        if (!isBootselVolume(volume)) {
-            return;
-        }
-        await delay(500);
-    }
-}
-
 /** Full flow: cache → wait for BOOTSEL → confirm → copy → wait for reboot. */
 export async function updateProbeFirmware(
     image: DebugProbeImage,
@@ -163,7 +104,10 @@ export async function updateProbeFirmware(
         },
         async (progress, token) => {
             progress.report({ message: `Waiting for ${BOOTSEL_VOLUME_DESCRIPTION}…` });
-            const volume = await waitForBootselVolume(token, (message) => progress.report({ message }));
+            const volume = await waitForBootselVolume(
+                (message) => progress.report({ message }),
+                { cancelled: () => token.isCancellationRequested },
+            );
 
             // Identify the board and let a human confirm before a single byte is written.
             const info = readUf2Info(volume);
@@ -188,7 +132,7 @@ export async function updateProbeFirmware(
             }
 
             progress.report({ message: 'Waiting for the board to restart…' });
-            await waitForVolumeToDisappear(volume, token);
+            await waitForVolumeToDisappear(volume, { cancelled: () => token.isCancellationRequested });
             host.output.appendLine('BOOTSEL volume disappeared; new firmware should be running.');
             return { volume, written: true };
         },

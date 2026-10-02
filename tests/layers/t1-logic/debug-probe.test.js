@@ -9,28 +9,30 @@ const {
     DEBUGPROBE_VERSION,
     DEBUGPROBE_MIN_SUPPORTED,
     DEBUGPROBE_IMAGES,
+    checkSiliconMatch,
+    compareVersions,
+    debugProbeImageById,
+    downloadUrlFor,
+    isFirmwareOutdated,
+    minimumFirmwareFromProbeRs,
+    planProbeFirmwareUpdate,
+    releaseTagFor,
+    siliconForImage,
+    updateReason,
+} = compiled('toolchain/debugProbe');
+const {
     BOOTSEL_INFO_FILE,
     BOOTSEL_VOLUME_DESCRIPTION,
     BOOTSEL_VOLUME_LABELS,
     bootselMountCandidates,
     bootselMountParents,
-    checkSiliconMatch,
-    compareVersions,
-    debugProbeImageById,
     describeUf2Info,
-    downloadUrlFor,
     findBootselVolume,
     isBootselVolume,
-    isFirmwareOutdated,
-    minimumFirmwareFromProbeRs,
     parseUf2Info,
-    planProbeFirmwareUpdate,
     readUf2Info,
-    releaseTagFor,
-    siliconForImage,
-    updateReason,
     volumeSilicon,
-} = compiled('toolchain/debugProbe');
+} = compiled('flash/bootsel');
 const { formatBytes } = compiled('util/hash');
 
 /**
