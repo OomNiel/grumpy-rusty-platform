@@ -535,4 +535,37 @@ covered by the t1 layer.
 * Trade-off stated to the user in the success message: **no probe means no RTT**, so a
   probe-less flash leaves you with the LED and no `defmt` or panic output.
 
+---
+
+## 13. Wi-Fi verified on hardware (2026-10-02)
+
+The last outstanding runtime check: a generated **wifi** project on the Pico 2 W associates
+with the access point and gets a DHCP lease, observed over RTT.
+
+```
+▸ t5-hil
+  ✓ a generated Raspberry Pi Pico 2 W / wifi project flashes and logs
+1 passed, 0 skipped (27837 ms)
+```
+
+`t5-hil` only passes when the captured defmt stream contains `Wi-Fi is up`, so this is the real
+thing: `control.join(...)` succeeded and `stack.wait_config_up()` returned.
+
+The blinking LED is independent confirmation, and it is worth knowing *why*: in that template the
+blink loop sits **after** the DHCP wait, so a blinking CYW43 LED means the entire Wi-Fi path
+completed — and that `control.gpio_set(0, …)` really does drive the on-board LED.
+
+### How the credentials were supplied (and a terminal trap)
+
+Credentials are compiled in with `option_env!`, so the HIL run needs them as environment
+variables. Typing into an agent-launched terminal does not work here, so the run was started in
+a real terminal window — where `x-terminal-emulator` is a trap on Zorin/GNOME 3.52:
+
+* `x-terminal-emulator -e script` resolves to `/usr/bin/gnome-terminal.wrapper`, `-e` is the
+  deprecated syntax, and it exits **130 without running the script at all** (so the window, if
+  it appears, has nothing behind it). Use `gnome-terminal -- script`.
+* Swallowing the launcher's stderr (`>/dev/null`) hid that for one round trip. Keep it.
+* The prompt echoes the SSID and prints a character count for both fields, so a silent
+  `read -s` cannot be mistaken for input that was rejected.
+
 
