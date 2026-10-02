@@ -33,8 +33,12 @@ export const BOARDS: BoardProfile[] = [
         memory: {
             boot2: true,
             bootInfoSections: false,
-            flash: { origin: '0x10000100', length: '2048K - 0x100' },
+            // 2 MB of flash: 1.5 MB for the application and 512 KB at the end as
+            // "drive space". Wireless builds are fat — the CYW43 Wi-Fi firmware alone
+            // is 231 KB — so 1.5 MB is deliberately the larger half.
+            flash: { origin: '0x10000100', length: '1536K - 0x100' },
             ram: { origin: '0x20000000', length: '264K' },
+            flashReserve: { name: 'FS', region: { origin: '0x10180000', length: '512K' } },
             extraRam: [],
         },
         ledPin: 'PIN_25',
@@ -54,15 +58,18 @@ export const BOARDS: BoardProfile[] = [
         memory: {
             boot2: false,
             bootInfoSections: true,
-            flash: { origin: '0x10000000', length: '4096K' },
+            // 4 MB of flash on a Pico 2: 3 MB for the application and 1 MB left at the
+            // end as "drive space" for a future filesystem. See NOTES.md.
+            flash: { origin: '0x10000000', length: '3072K' },
             ram: { origin: '0x20000000', length: '512K' },
+            flashReserve: { name: 'FS', region: { origin: '0x10300000', length: '1024K' } },
             extraRam: [
                 { name: 'SRAM8', region: { origin: '0x20080000', length: '4K' } },
                 { name: 'SRAM9', region: { origin: '0x20081000', length: '4K' } },
             ],
         },
         ledPin: 'PIN_25',
-        notes: 'Dual Cortex-M33 @ 150 MHz (RISC-V deferred), 520 KB SRAM, 4 MB flash.',
+        notes: 'Dual Cortex-M33 @ 150 MHz (RISC-V deferred), 520 KB SRAM, 4 MB flash — 3 MB app + 1 MB drive.',
     },
 ];
 

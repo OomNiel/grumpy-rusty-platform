@@ -4,7 +4,7 @@
     "description": "PlatformIO-style embedded Rust development for RP2040 and RP2350 (Raspberry Pi Pico) using Embassy and probe-rs.",
     "version": "0.0.1",
     "publisher": "grumpy",
-    "license": "MIT",
+    "license": "MIT OR Apache-2.0",
     "engines": {
         "vscode": "^1.90.0"
     },
@@ -88,6 +88,12 @@
                 "title": "Install USB Permissions (udev)…",
                 "category": "Rusty Platform",
                 "icon": "$(shield)"
+            },
+            {
+                "command": "rustyPlatform.updateProbeFirmware",
+                "title": "Update Debug Probe Firmware…",
+                "category": "Rusty Platform",
+                "icon": "$(cloud-download)"
             },
             {
                 "command": "rustyPlatform.showProbes",

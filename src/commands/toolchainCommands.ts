@@ -4,6 +4,13 @@ import { allTargets } from '../boards/catalog';
 import { RustyState } from '../state';
 import { planInstallation, UDEV_RULES_CONTENT } from '../toolchain/installPlan';
 import { runInstallPlan } from '../toolchain/installRunner';
+import {
+    DEBUGPROBE_IMAGES,
+    minimumFirmwareFromProbeRs,
+    planProbeFirmwareUpdate,
+    updateReason,
+} from '../toolchain/debugProbe';
+import { isImageCached, updateProbeFirmware } from '../toolchain/probeFirmwareRunner';
 
 async function currentStatus(state: RustyState) {
     return state.status ?? state.refresh();
@@ -55,13 +62,19 @@ export function registerToolchainCommands(state: RustyState, output: vscode.Outp
                 void vscode.window.showInformationMessage("Grumpy's Rusty Platform: toolchain looks good. 🎉");
                 return;
             }
+            const buttons = ['Install Missing Pieces'];
+            if (status?.probeDiagnosis.kind === 'firmware-outdated') {
+                buttons.push('Update Probe Firmware');
+            }
             const choice = await vscode.window.showWarningMessage(
                 `Toolchain needs attention:\n• ${problems.join('\n• ')}`,
                 { modal: true },
-                'Install Missing Pieces',
+                ...buttons,
             );
             if (choice === 'Install Missing Pieces') {
                 await vscode.commands.executeCommand('rustyPlatform.installToolchain');
+            } else if (choice === 'Update Probe Firmware') {
+                await vscode.commands.executeCommand('rustyPlatform.updateProbeFirmware');
             }
         }),
 
@@ -142,6 +155,62 @@ export function registerToolchainCommands(state: RustyState, output: vscode.Outp
                 { title: 'Connected debug probes' },
             );
             void picked;
+        }),
+
+        vscode.commands.registerCommand('rustyPlatform.updateProbeFirmware', async () => {
+            const status = await currentStatus(state);
+            const required = minimumFirmwareFromProbeRs(status.probeDiagnosis.raw ?? '');
+            const reason = updateReason(status.probeDiagnosis.kind, required);
+            output.appendLine(`probe firmware: ${reason}`);
+
+            const picked = await vscode.window.showQuickPick(
+                DEBUGPROBE_IMAGES.map((image) => ({
+                    label: image.label,
+                    description: `${image.fileName} · ${image.size} bytes`,
+                    detail: image.description,
+                    image,
+                })),
+                { title: 'Which firmware should be written?' },
+            );
+            if (!picked) {
+                return;
+            }
+            const image = picked.image;
+
+            const steps = planProbeFirmwareUpdate(image, {
+                hasCachedImage: isImageCached(image),
+                diagnosis: status.probeDiagnosis.kind,
+            });
+            const listing = steps
+                .map((step, index) => `${index + 1}. ${step.title}${step.physical ? '   ← needs your hands' : ''}`)
+                .join('\n');
+            const confirmed = await vscode.window.showWarningMessage(
+                `${reason}\n\n${listing}\n\nReady?`,
+                { modal: true },
+                'Start',
+            );
+            if (confirmed !== 'Start') {
+                return;
+            }
+
+            try {
+                const { volume } = await updateProbeFirmware(image, { output });
+                output.appendLine(`Wrote ${image.fileName} to ${volume}`);
+                void vscode.window.showInformationMessage('Probe firmware written. Give it a few seconds to boot.');
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                output.appendLine(`probe firmware update failed: ${message}`);
+                output.show(true);
+                const choice = await vscode.window.showErrorMessage(
+                    `Firmware update did not finish: ${message.split('\n')[0]}`,
+                    'Show Log',
+                );
+                if (choice === 'Show Log') {
+                    output.show(true);
+                }
+            } finally {
+                await state.refresh();
+            }
         }),
     ];
 }

@@ -22,6 +22,13 @@ export interface BoardMemory {
     ram: MemoryRegion;
     /** RP2350 direct-mapped SRAM banks (no striping) — optional convenience regions. */
     extraRam: Array<{ name: string; region: MemoryRegion }>;
+    /**
+     * Flash kept out of the application region and exposed as its own MEMORY
+     * region — the "drive space" for a future filesystem (littlefs/
+     * embedded-storage). Nothing links into it yet; it records the reservation so
+     * the application region cannot silently grow into it.
+     */
+    flashReserve?: { name: string; region: MemoryRegion };
 }
 
 export interface BoardProfile {

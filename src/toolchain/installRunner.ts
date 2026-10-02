@@ -1,7 +1,5 @@
 import * as vscode from 'vscode';
-import * as crypto from 'crypto';
 import * as fs from 'fs';
-import * as https from 'https';
 import * as os from 'os';
 import * as path from 'path';
 import { spawn } from 'child_process';
@@ -13,6 +11,8 @@ import {
     UDEV_RULES_PATH,
 } from './installPlan';
 import { augmentedEnv, cargoBinDir, findExecutable } from '../util/exec';
+import { downloadFile } from '../util/download';
+import { parseSha256File, sha256OfFile } from '../util/hash';
 
 /**
  * Executes an installation plan. All side effects live here; the decisions live
@@ -27,45 +27,8 @@ function toolsRoot(): string {
     return path.join(os.homedir(), '.grumpy-rusty-platform', 'tools');
 }
 
-export function downloadFile(url: string, destination: string, redirects = 0): Promise<void> {
-    return new Promise((resolve, reject) => {
-        if (redirects > 5) {
-            reject(new Error(`Too many redirects while downloading ${url}`));
-            return;
-        }
-        https
-            .get(url, { headers: { 'User-Agent': 'grumpy-rusty-platform' } }, (response) => {
-                const status = response.statusCode ?? 0;
-                if (status >= 300 && status < 400 && response.headers.location) {
-                    response.resume();
-                    downloadFile(new URL(response.headers.location, url).toString(), destination, redirects + 1)
-                        .then(resolve)
-                        .catch(reject);
-                    return;
-                }
-                if (status !== 200) {
-                    response.resume();
-                    reject(new Error(`HTTP ${status} downloading ${url}`));
-                    return;
-                }
-                const file = fs.createWriteStream(destination);
-                response.pipe(file);
-                file.on('finish', () => file.close(() => resolve()));
-                file.on('error', reject);
-            })
-            .on('error', reject);
-    });
-}
-
-export function sha256OfFile(file: string): string {
-    return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
-}
-
-/** The published `.sha256` files are `<hex>  <filename>` (cargo-dist format). */
-export function parseSha256File(contents: string): string | undefined {
-    const match = /^([0-9a-f]{64})\s/i.exec(contents.trim());
-    return match?.[1]?.toLowerCase();
-}
+// `downloadFile`, `sha256OfFile` and `parseSha256File` live in ../util so the
+// Debug Probe firmware updater can share them without pulling in `vscode`.
 
 function run(command: string, args: readonly string[], cwd?: string): Promise<void> {
     return new Promise((resolve, reject) => {

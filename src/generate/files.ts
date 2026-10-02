@@ -164,6 +164,11 @@ function memoryX(board: BoardProfile): string {
             `    ${extra.name} : ORIGIN = ${extra.region.origin}, LENGTH = ${extra.region.length}`,
         );
     }
+    if (memory.flashReserve) {
+        const { name, region } = memory.flashReserve;
+        lines.push('    /* Reserved "drive space" — not linked into by the application. */');
+        lines.push(`    ${name} : ORIGIN = ${region.origin}, LENGTH = ${region.length}`);
+    }
     lines.push('}');
 
     if (memory.bootInfoSections) {

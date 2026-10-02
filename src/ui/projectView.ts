@@ -54,7 +54,10 @@ export class ProjectViewProvider implements vscode.TreeDataProvider<vscode.TreeI
         probe.iconPath = new vscode.ThemeIcon(probeIcon);
         probe.description = status.probeDiagnosis.message;
         probe.tooltip = status.probeDiagnosis.raw ?? status.probeDiagnosis.message;
-        probe.command = { command: 'rustyPlatform.showProbes', title: 'Show Probes' };
+        probe.command =
+            status.probeDiagnosis.kind === 'firmware-outdated'
+                ? { command: 'rustyPlatform.updateProbeFirmware', title: 'Update Probe Firmware' }
+                : { command: 'rustyPlatform.showProbes', title: 'Show Probes' };
         items.push(probe);
 
         if (status.platform === 'linux') {

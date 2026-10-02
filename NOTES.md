@@ -147,17 +147,130 @@ Tests that have already earned their keep:
 
 ## 4. Open items
 
-1. **Debug Probe firmware < 2.2.0.** probe-rs refuses to open the probe.
-   Fix: hold BOOTSEL on the Debug Probe while plugging it in, then copy
-   `debugprobe.uf2` from `raspberrypi/debugprobe` release **v2.3.1** onto the
-   `RPI-RP2` volume. Until then `t5-hil` and Flashing cannot be verified on hardware.
+1. **Debug Probe firmware.** Support landed (see §7). The probe on the desk still needs
+   the physical button press, so `t5-hil` stays unverified until that happens.
 2. **udev rules.** `/etc/udev/rules.d/99-picoprobe.rules` exists but only covers
    `2e8a:000c` with mode 0666. The extension offers to install a broader
    `69-probe-rs.rules` (uaccess + common probe vendors).
-3. **Phase 3** — crates.io Library Manager (bundled curated catalog + live search).
-4. **Phase 4** — verify the emitted `probe-rs-debug` launch config against the installed
+3. **Wireless (Pico W / Pico 2 W)** — decisions locked, implementation is the next task.
+   See §8.
+4. **Phase 3** — crates.io Library Manager (bundled curated catalog + live search).
+   Explicitly *after* Debug Probe support, per the user's ordering.
+5. **Phase 4** — verify the emitted `probe-rs-debug` launch config against the installed
    `probe-rs.probe-rs-debugger` extension (schema already matches its `package.json`).
-5. **Windows** — installer paths are platform-aware but untested; `probe-rs` needs
+6. **Windows** — installer paths are platform-aware but untested; `probe-rs` needs
    WinUSB/libusb handling that differs from Linux.
-6. Consider `debugprobe_on_pico.uf2` / `debugprobe_on_pico2.uf2` as a "turn a spare Pico
-   into a probe" feature in a future Device Manager.
+
+---
+
+## 5. Licensing (decided 2026-10-02)
+
+Dual **`MIT OR Apache-2.0`**, the Rust ecosystem norm:
+
+* `LICENSE-MIT` and `LICENSE-APACHE` (canonical text from apache.org: 202 lines /
+  11 358 bytes, sha256 `cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30`).
+* `package.json` → `"license": "MIT OR Apache-2.0"`.
+* Generated projects already declared the same in `Cargo.toml`, so the two now agree.
+* `embassy-rp` and `probe-rs` are both `MIT OR Apache-2.0`. We ship no Rust code (child
+  processes only), so dependency licensing does not attach to us — revisit if we ever
+  bundle Rust or WASM.
+
+---
+
+## 6. Flash layout (decided 2026-10-02)
+
+Every board reserves a "drive" region at the end of flash for a future filesystem. It is
+declared in `memory.x` as `FS` and nothing links into it yet — it exists so the
+application region cannot silently grow into the space we want later.
+
+| Board | Chip | Application | Drive (`FS`) |
+|---|---|---|---|
+| Pico / Pico W | 2 MB | `1536K - 0x100` at `0x10000100` | 512 KB at `0x10180000` |
+| Pico 2 / Pico 2 W | 4 MB | `3072K` at `0x10000000` | 1024 KB at `0x10300000` |
+
+The RP2040 application half is 1.5 MB because wireless builds are fat — the CYW43 Wi-Fi
+firmware alone is 231 077 bytes and `embassy-net` adds more. Verified: both generated
+projects still link with the smaller application region (`--e2e`).
+
+---
+
+## 7. Debug Probe firmware support
+
+probe-rs 0.32 refuses probes older than **2.2.0** with:
+
+```
+Error: Failed to open probe: Failed to open the debug probe.
+Caused by: ... 2: The firmware on the probe is outdated, and not supported by probe-rs.
+The minimum supported firmware version is 2.2.0.
+```
+
+`classifyProbeError()` turns that into a `firmware-outdated` diagnosis and
+`minimumFirmwareFromProbeRs()` extracts the required version. The update flow:
+
+1. `rustyPlatform.updateProbeFirmware` offers the three release images (Debug Probe,
+   Pico-as-probe, Pico 2-as-probe); hashes and sizes are pinned in `debugProbe.ts`.
+2. The `.uf2` is downloaded once into
+   `~/.grumpy-rusty-platform/firmware/debugprobe-2.3.1/` and **SHA-256 verified against
+   the pinned hash** before anything touches a device.
+3. The command waits for a BOOTSEL volume, confirming it by the `INFO_UF2.TXT` the boot
+   ROM writes, so an unrelated folder named `RPI-RP2` is not mistaken for a probe.
+4. Copy, then wait for the volume to disappear (the probe reboots itself).
+
+Pinned assets (hashes computed 2026-10-02; UF2 magic `0x0A324655` verified):
+
+| Image | Bytes | SHA-256 |
+|---|---|---|
+| `debugprobe.uf2` | 106 496 | `aae9585f…2521a1b8` |
+| `debugprobe_on_pico.uf2` | 105 984 | `6649ebba…4e3792d4` |
+| `debugprobe_on_pico2.uf2` | 99 840 | `98cbb993…d7b704621` |
+
+Only the user can press BOOTSEL, so that step is always marked `physical` in the plan and
+the UI says so. If the copy fails, the message includes the cached image path so the file
+can be dragged across by hand.
+
+Possible improvement: read the probe's `bcdDevice` from sysfs to display the *current*
+firmware version instead of only knowing "too old". Not implemented — the encoding of that
+value is unverified.
+
+---
+
+## 8. Wireless (Pico W / Pico 2 W) — decided, implementation next
+
+Requirement: **Wi-Fi and Bluetooth are non-negotiable and must exist before we go public.**
+The user has W hardware available, so Wi-Fi can be HIL-verified for real.
+
+Verified facts (re-check these if versions move):
+
+| Thing | Value |
+|---|---|
+| Chip | CYW43439, driven over PIO SPI |
+| Crates | `cyw43` 0.7.0, `cyw43-pio` 0.10.0, `embassy-net` 0.9.1, `bt-hci` 0.10.1, `trouble-host` 0.8.0 |
+| Wi-Fi blobs | `43439A0.bin` 231 077 B, `43439A0_clm.bin` 984 B, nvram 742 B |
+| BT blob | `43439A0_btfw.bin` 6 164 B |
+| W LED | **not GPIO25** — `control.gpio_set(0, …)` through the CYW43 |
+| Alignment | `cyw43::new` needs `&Aligned<A4, [u8]>`; `aligned_bytes!` only takes a *file path* |
+| Upstream examples | feed the driver from a `firmware/` directory, not from a crate |
+| `trouble` on crates.io | a **placeholder (0.0.0)** — the real host stack crate is `trouble-host` |
+
+Decisions taken:
+
+* **Blob strategy: mirror upstream.** Fetch the pinned blobs once (SHA-256 verified),
+  cache them, and give each wireless project a `firmware/` directory consumed with
+  `aligned_bytes!`, exactly as Embassy's examples do. This keeps us on the upstream,
+  tested path and avoids redistributing the blobs inside the VSIX (they carry their own
+  binary licence).
+* **PIO wiring** from the official Pico 2 W example: `PIN_23` pwr, `PIN_24`/`PIN_29` SPI,
+  `PIN_25` cs, `PIO0`, `DMA_CH0`/`DMA_CH1`, `RM2_CLOCK_DIVIDER`.
+* **nvram**: upstream's Pico 2 W example uses `nvram_rp2040.bin`; follow upstream and
+  revisit if Wi-Fi proves flaky on real hardware.
+* **Bluetooth in this pass = dependencies plus a buildable skeleton**, clearly marked as
+  not yet hardware-verified. There is **no upstream CYW43 Bluetooth example to copy**, so
+  a working BLE demo would be original code with nothing to check it against.
+* **The wizard offers a choice of application template** for wireless boards:
+  1. Wi-Fi connect, log the IP, blink the CYW43 LED
+  2. CYW43 LED blink only
+  3. Wi-Fi plus a commented Bluetooth section
+
+  Wired boards keep the plain GPIO blinky, and the generator must reject a wireless
+  template on a non-wireless board.
+
