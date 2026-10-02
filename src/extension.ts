@@ -22,7 +22,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         vscode.window.registerTreeDataProvider('rustyPlatform.boards', boardsView),
         vscode.window.registerTreeDataProvider('rustyPlatform.project', projectView),
         registerNewProjectCommand(output),
-        ...registerProjectCommands(state),
+        ...registerProjectCommands(state, output),
         ...registerToolchainCommands(state, output),
         state.onDidChange(() => {
             statusBar.update();

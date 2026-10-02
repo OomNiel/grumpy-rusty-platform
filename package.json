@@ -60,6 +60,12 @@
                 "icon": "$(zap)"
             },
             {
+                "command": "rustyPlatform.flashUsb",
+                "title": "Flash over USB (BOOTSEL)…",
+                "category": "Rusty Platform",
+                "icon": "$(plug)"
+            },
+            {
                 "command": "rustyPlatform.monitor",
                 "title": "Monitor (defmt)",
                 "category": "Rusty Platform",

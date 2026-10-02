@@ -1,13 +1,18 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
 import { RustyState } from '../state';
-import { readActiveProject } from '../project/activeProject';
+import { ActiveProject, readActiveProject } from '../project/activeProject';
+import { describeUf2Info } from '../flash/bootsel';
+import { flashRouteFor, routeReason, uf2FamilyForProject } from '../flash/route';
+import { UsbFlashConfirmation, flashProjectOverUsb } from '../flash/usbFlashRunner';
 import { defmtPrefix, runInTerminal } from './terminal';
 
 /** Build / Flash / Monitor / Clean, wired to the integrated terminal. */
-export function registerProjectCommands(state: RustyState): vscode.Disposable[] {
-    const withProject = async (
-        run: (folder: vscode.Uri, chip: string | undefined) => void | Promise<void>,
-    ): Promise<void> => {
+export function registerProjectCommands(
+    state: RustyState,
+    output: vscode.OutputChannel,
+): vscode.Disposable[] {
+    const withProject = async (run: (project: ActiveProject) => void | Promise<void>): Promise<void> => {
         const status = state.status ?? (await state.refresh());
         if (!status.cargo.found) {
             const choice = await vscode.window.showErrorMessage(
@@ -32,26 +37,109 @@ export function registerProjectCommands(state: RustyState): vscode.Disposable[] 
             return;
         }
 
-        await run(project.folder, project.chip);
+        await run(project);
     };
+
+    /**
+     * The gate before a probe-less flash — the same rule as the probe firmware flow:
+     * `INFO_UF2.TXT` names a board *type* and carries no serial number, so a person has to
+     * confirm which board is about to be written.
+     */
+    async function confirmUsbFlash(request: UsbFlashConfirmation): Promise<boolean> {
+        const lines = [
+            `About to flash ${path.basename(request.uf2Path)} (${request.bytes} bytes) onto:`,
+            request.info ? describeUf2Info(request.info) : `  ${request.volume}`,
+        ];
+        if (request.warning) {
+            lines.push('', `⚠ ${request.warning}`);
+        }
+        lines.push('', 'The board restarts as soon as the file lands.');
+        const answer = await vscode.window.showWarningMessage(
+            lines.join('\n'),
+            { modal: true },
+            'Flash it',
+        );
+        return answer === 'Flash it';
+    }
+
+    /** Build, convert and wait for BOOTSEL — shared by the fallback and the explicit command. */
+    async function flashOverUsb(project: ActiveProject): Promise<void> {
+        const familyId = uf2FamilyForProject(project.board, project.chip);
+        if (familyId === undefined) {
+            void vscode.window.showErrorMessage(
+                'Cannot tell which chip this project targets, so the UF2 family is unknown. ' +
+                'Make sure .cargo/config.toml has `runner = "probe-rs run --chip <CHIP>"`.',
+            );
+            return;
+        }
+
+        try {
+            const result = await flashProjectOverUsb(
+                { folder: project.folder, familyId },
+                { output, confirmWrite: confirmUsbFlash },
+            );
+            if (!result.written) {
+                output.appendLine(`Nothing was written to ${result.volume}.`);
+                return;
+            }
+            const choice = await vscode.window.showInformationMessage(
+                'Flashed over USB. Without a probe there is no RTT, so defmt output is not available.',
+                'Show File',
+            );
+            if (choice === 'Show File') {
+                await vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(result.uf2));
+            }
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            output.appendLine(`USB flash failed: ${message}`);
+            output.show(true);
+            void vscode.window.showErrorMessage(`USB flash did not finish: ${message.split('\n')[0]}`, 'Show Log');
+        }
+    }
 
     return [
         vscode.commands.registerCommand('rustyPlatform.build', () =>
-            withProject((folder) => {
+            withProject(({ folder }) => {
                 runInTerminal('Rusty: build', `${defmtPrefix()}cargo build`, folder);
             }),
         ),
 
         vscode.commands.registerCommand('rustyPlatform.flash', () =>
-            withProject((folder) => {
-                // `cargo run` uses the runner from .cargo/config.toml (probe-rs run --chip ...),
-                // which flashes, resets and streams defmt over RTT.
-                runInTerminal('Rusty: flash', `${defmtPrefix()}cargo run --release`, folder);
+            withProject(async (project) => {
+                const status = state.status ?? (await state.refresh());
+                const route = flashRouteFor(status.probeDiagnosis.kind);
+
+                if (route === 'probe') {
+                    // `cargo run` uses the runner from .cargo/config.toml
+                    // (probe-rs run --chip ...), which flashes, resets and streams defmt over RTT.
+                    runInTerminal('Rusty: flash', `${defmtPrefix()}cargo run --release`, project.folder);
+                    return;
+                }
+
+                if (route === 'offer-usb') {
+                    const choice = await vscode.window.showWarningMessage(
+                        `${routeReason(status.probeDiagnosis.kind)}\n\n` +
+                        'Flash over USB instead? You hold BOOTSEL while plugging the board in.',
+                        { modal: true },
+                        'Flash over USB',
+                    );
+                    if (choice !== 'Flash over USB') {
+                        return;
+                    }
+                }
+
+                await flashOverUsb(project);
             }),
         ),
 
+        // Available even when a probe is attached: the USB route is also the recovery path
+        // for a probe that is present but unusable.
+        vscode.commands.registerCommand('rustyPlatform.flashUsb', () =>
+            withProject((project) => flashOverUsb(project)),
+        ),
+
         vscode.commands.registerCommand('rustyPlatform.monitor', () =>
-            withProject((folder, chip) => {
+            withProject(({ folder, chip }) => {
                 if (!chip) {
                     void vscode.window.showWarningMessage(
                         'Cannot determine the chip id for this project. Add `runner = "probe-rs run --chip <CHIP>"` to .cargo/config.toml.',
@@ -65,7 +153,7 @@ export function registerProjectCommands(state: RustyState): vscode.Disposable[] 
         ),
 
         vscode.commands.registerCommand('rustyPlatform.clean', () =>
-            withProject((folder) => {
+            withProject(({ folder }) => {
                 runInTerminal('Rusty: build', 'cargo clean', folder);
             }),
         ),

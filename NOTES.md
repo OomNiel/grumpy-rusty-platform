@@ -435,4 +435,95 @@ board's unique id is therefore *not* possible from the volume alone; only a pers
 which board is in BOOTSEL mode. `Board-ID` must never be matched against expected values,
 only displayed — hence the tolerant classifier (`volumeSilicon` → `rp2040`/`rp2350`/`unknown`).
 
+### Confirmed on hardware (2026-10-02, Pico 2 W in BOOTSEL)
+
+The label was inferred from the boot ROM before; a real board settled it:
+
+```
+>>> BOOTSEL volume found: /media/niel/RP2350
+        UF2 Bootloader v1.0
+        Model: Raspberry Pi RP2350
+        Board-ID: RP2350
+```
+
+So the mount really is `/media/<user>/RP2350`, and the `INFO_UF2.TXT` fields are exactly the
+`Model`/`Board-ID` pair the parser expects. (Note the bootloader version differs between
+the two silicon families — v3.0 on RP2040, v1.0 here on RP2350 — which is another reason
+nothing may be matched on those strings.)
+
+---
+
+## 12. Flashing a project with no debug probe (2026-10-02)
+
+A user without a probe needs the other road into flash: hold BOOTSEL, plug in USB, and drop
+a `.uf2` onto the mass-storage volume. The extension had no way to produce one, so
+`src/flash/uf2.ts` converts the built ELF itself.
+
+### Why not use a tool
+
+* `picotool` (Raspberry Pi's official tool) publishes **no prebuilt Linux binary** —
+  release 2.3.1 ships `picotool-2.3.1.tar.gz` (source) only, so a user would need cmake and
+  the SDK submodule.
+* `elf2uf2-rs` works and accepts `--family`, but it is an extra install step for exactly the
+  users who have the least tooling — and it is RP2040-only in its default configuration.
+* `probe-rs` cannot emit UF2 at all: `download`/`run` consume images, they never produce one.
+
+### The rule that matters when writing UF2
+
+Blocks go at **`p_paddr`** (the load address), not `p_vaddr`. In our own images these differ:
+
+```
+PT_LOAD paddr=0x10045364 vaddr=0x20000000 filesz=0x38   <- .data: stored in flash, copied to RAM
+PT_LOAD paddr=0x20000038 vaddr=0x20000038 filesz=0      <- .bss: nothing to write
+```
+
+Using the virtual address produces a file the boot ROM accepts and the CPU can never run —
+which is why there is a dedicated test for it.
+
+### Family IDs (from the boot ROMs, not from memory)
+
+| id | name | used for |
+| --- | --- | --- |
+| `0xe48bff56` | `RP2040` | pico, pico W |
+| `0xe48bff57` | `RP2XXX_ABSOLUTE` | unpartitioned absolute download; the fallback if `…59` were ever refused |
+| `0xe48bff59` | `RP2350_ARM_S` | pico 2, pico 2 W |
+
+`raspberrypi/pico-bootrom-rp2350` (`src/nsboot/usb_virtual_disk.c`) accepts
+`ABSOLUTE_FAMILY_ID`..`RP2350_RISCV_FAMILY_ID` (`0x…57`–`0x…5a`) and prints
+"RAM downloads only accept ARM_S and RISC-V, DATA, ABSOLUTE" — so the RP2040 family
+(`0xe48bff56`), which is what `elf2uf2-rs` emits by default, is **not** valid on an RP2350.
+
+### Verification
+
+* Our output is **byte-for-byte identical** to `elf2uf2-rs` for the same ELF (1108 blocks,
+  283 KB image, compared as memory rather than as files; `elf2uf2-rs` was installed only as a
+  dev-time oracle).
+* **Real silicon accepted the file**: a Pico 2 W in BOOTSEL took `rusty-pico2w-blinky.uf2`
+  (family `0xe48bff59`) and rebooted — so the family ID is confirmed, not just plausible.
+
+### Pieces shared with the probe-firmware flow
+
+Finding the volume, reading `INFO_UF2.TXT`, describing the board and the silicon cross-check
+now live in `src/flash/bootsel.ts` and are used by *both* flows. It takes a plain cancel
+callback instead of a `CancellationToken` so none of it needs `vscode` and all of it is
+covered by the t1 layer.
+
+### How it is wired
+
+* `Flash` picks a route from the probe diagnosis (`src/flash/route.ts`, pure and tested):
+  * `ok` and `chip-not-autodetected` → through the probe, as before. The second one matters:
+    RP235x genuinely cannot be auto-detected and flashing works anyway.
+  * `none-connected` → straight to USB, since there is no alternative to choose between.
+  * `firmware-outdated`, `permission-denied`, `no-target`, `unknown` → *offer* USB instead of
+    switching route behind the user's back.
+* `Flash over USB (BOOTSEL)…` is also a command of its own, so the USB road stays reachable
+  with a probe attached — which is how it can be tested without unplugging anything.
+* The ELF path is read from `cargo build --release --message-format=json`
+  (`src/flash/cargoArtifacts.ts`) rather than assuming `target/<triple>/release/<name>`, so a
+  custom `target-dir` or a workspace layout cannot break it.
+* Writing is gated on the same confirmation as the probe flow: volume, `Model`, `Board-ID`,
+  plus a silicon cross-check against the UF2 family.
+* Trade-off stated to the user in the success message: **no probe means no RTT**, so a
+  probe-less flash leaves you with the LED and no `defmt` or panic output.
+
 
