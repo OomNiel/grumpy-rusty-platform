@@ -1,0 +1,28 @@
+#!/bin/sh
+# Fake `probe-rs` for the t2-cli layer.
+#   SHIM_PROBE_LIST  lines printed by `probe-rs list`
+#   SHIM_LIST_EXIT   exit code for `probe-rs list` (default 0)
+#   SHIM_INFO_ERR    text written to stderr by `probe-rs info`
+#   SHIM_INFO_EXIT   exit code for `probe-rs info` (default 1 when SHIM_INFO_ERR is set)
+case "$1" in
+  --version)
+    echo "probe-rs 0.32.0 (git commit: 48f5e4d)"
+    exit 0
+    ;;
+  list)
+    if [ -n "$SHIM_PROBE_LIST" ]; then
+      printf '%s\n' "$SHIM_PROBE_LIST"
+    fi
+    exit "${SHIM_LIST_EXIT:-0}"
+    ;;
+  info)
+    if [ -n "$SHIM_INFO_ERR" ]; then
+      printf '%s\n' "$SHIM_INFO_ERR" >&2
+      exit "${SHIM_INFO_EXIT:-1}"
+    fi
+    echo "probe info: ok"
+    exit 0
+    ;;
+esac
+echo "fake-probe-rs: unexpected arguments: $*" >&2
+exit 2

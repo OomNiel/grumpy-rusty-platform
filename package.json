@@ -1,0 +1,189 @@
+{
+    "name": "grumpy-rusty-platform",
+    "displayName": "Grumpy's Rusty Platform for VS Code",
+    "description": "PlatformIO-style embedded Rust development for RP2040 and RP2350 (Raspberry Pi Pico) using Embassy and probe-rs.",
+    "version": "0.0.1",
+    "publisher": "grumpy",
+    "license": "MIT",
+    "engines": {
+        "vscode": "^1.90.0"
+    },
+    "categories": [
+        "Programming Languages",
+        "Debuggers",
+        "Other"
+    ],
+    "keywords": [
+        "rust",
+        "embedded",
+        "embassy",
+        "rp2040",
+        "rp2350",
+        "pico",
+        "probe-rs",
+        "defmt"
+    ],
+    "activationEvents": [
+        "onStartupFinished"
+    ],
+    "main": "./out/extension.js",
+    "scripts": {
+        "vscode:prepublish": "npm run compile",
+        "compile": "tsc -p ./",
+        "watch": "tsc -watch -p ./",
+        "lint": "tsc -p ./ --noEmit",
+        "test": "node tests/runner.js"
+    },
+    "devDependencies": {
+        "@types/node": "^22.10.0",
+        "@types/vscode": "^1.90.0",
+        "typescript": "^5.6.3"
+    },
+    "contributes": {
+        "commands": [
+            {
+                "command": "rustyPlatform.newProject",
+                "title": "New Project…",
+                "category": "Rusty Platform",
+                "icon": "$(new-folder)"
+            },
+            {
+                "command": "rustyPlatform.build",
+                "title": "Build",
+                "category": "Rusty Platform",
+                "icon": "$(tools)"
+            },
+            {
+                "command": "rustyPlatform.flash",
+                "title": "Flash",
+                "category": "Rusty Platform",
+                "icon": "$(zap)"
+            },
+            {
+                "command": "rustyPlatform.monitor",
+                "title": "Monitor (defmt)",
+                "category": "Rusty Platform",
+                "icon": "$(output)"
+            },
+            {
+                "command": "rustyPlatform.clean",
+                "title": "Clean",
+                "category": "Rusty Platform",
+                "icon": "$(trash)"
+            },
+            {
+                "command": "rustyPlatform.checkToolchain",
+                "title": "Check Toolchain",
+                "category": "Rusty Platform",
+                "icon": "$(pulse)"
+            },
+            {
+                "command": "rustyPlatform.installToolchain",
+                "title": "Install Missing Toolchain…",
+                "category": "Rusty Platform",
+                "icon": "$(cloud-download)"
+            },
+            {
+                "command": "rustyPlatform.installUdevRules",
+                "title": "Install USB Permissions (udev)…",
+                "category": "Rusty Platform",
+                "icon": "$(shield)"
+            },
+            {
+                "command": "rustyPlatform.showProbes",
+                "title": "Show Connected Probes",
+                "category": "Rusty Platform",
+                "icon": "$(plug)"
+            },
+            {
+                "command": "rustyPlatform.refresh",
+                "title": "Refresh",
+                "category": "Rusty Platform",
+                "icon": "$(refresh)"
+            }
+        ],
+        "viewsContainers": {
+            "activitybar": [
+                {
+                    "id": "rustyPlatform",
+                    "title": "Rusty Platform",
+                    "icon": "resources/icon.svg"
+                }
+            ]
+        },
+        "views": {
+            "rustyPlatform": [
+                {
+                    "id": "rustyPlatform.boards",
+                    "name": "Boards"
+                },
+                {
+                    "id": "rustyPlatform.project",
+                    "name": "Project"
+                }
+            ]
+        },
+        "menus": {
+            "view/title": [
+                {
+                    "command": "rustyPlatform.newProject",
+                    "when": "view == rustyPlatform.boards",
+                    "group": "navigation@1"
+                },
+                {
+                    "command": "rustyPlatform.refresh",
+                    "when": "view == rustyPlatform.boards || view == rustyPlatform.project",
+                    "group": "navigation@2"
+                }
+            ],
+            "commandPalette": [
+                {
+                    "command": "rustyPlatform.refresh",
+                    "when": "false"
+                }
+            ]
+        },
+        "configuration": {
+            "title": "Rusty Platform",
+            "properties": {
+                "rustyPlatform.cargoPath": {
+                    "type": "string",
+                    "default": "",
+                    "markdownDescription": "Explicit path to `cargo`. Leave empty to auto-detect (`~/.cargo/bin`, then `PATH`)."
+                },
+                "rustyPlatform.probeRsPath": {
+                    "type": "string",
+                    "default": "",
+                    "markdownDescription": "Explicit path to `probe-rs`. Leave empty to auto-detect."
+                },
+                "rustyPlatform.defaultBoard": {
+                    "type": "string",
+                    "default": "pico",
+                    "enum": [
+                        "pico",
+                        "pico2"
+                    ],
+                    "markdownDescription": "Board pre-selected in the New Project wizard."
+                },
+                "rustyPlatform.defmtLogLevel": {
+                    "type": "string",
+                    "default": "debug",
+                    "enum": [
+                        "off",
+                        "error",
+                        "warn",
+                        "info",
+                        "debug",
+                        "trace"
+                    ],
+                    "markdownDescription": "Value written to `DEFMT_LOG` when running build/flash/monitor."
+                },
+                "rustyPlatform.revealTerminalOnRun": {
+                    "type": "boolean",
+                    "default": true,
+                    "markdownDescription": "Show the terminal when a build/flash/monitor command starts."
+                }
+            }
+        }
+    }
+}

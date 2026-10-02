@@ -1,0 +1,11 @@
+node_modules/
+out/
+dist/
+*.vsix
+
+# test runner scratch output
+tests/out/
+
+# Rust scratch used by end-to-end checks
+tests/tmp/
+target/
