@@ -684,6 +684,7 @@ function launchJson(board: BoardProfile, binaryName: string): string {
 
 function gitignore(): string {
     return `/target
+/dist
 `;
 }
 

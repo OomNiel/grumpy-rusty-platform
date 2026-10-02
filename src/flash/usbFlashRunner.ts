@@ -14,7 +14,7 @@ import {
 } from './bootsel';
 import { findElfArtifactPath } from './cargoArtifacts';
 import { siliconForUf2Family } from './route';
-import { elfToUf2 } from './uf2';
+import { distUf2Path, elfToUf2 } from './uf2';
 
 /**
  * Flashing a project with **no debug probe**: build, convert to UF2, then let the user put
@@ -122,11 +122,12 @@ export async function flashProjectOverUsb(
 ): Promise<UsbFlashResult> {
     const elf = await buildReleaseElf(options.folder, host.output);
 
-    const uf2Path = `${elf}.uf2`;
+    const uf2Path = distUf2Path(options.folder.fsPath, elf);
     const { uf2, image } = elfToUf2(fs.readFileSync(elf), options.familyId);
+    fs.mkdirSync(path.dirname(uf2Path), { recursive: true });
     fs.writeFileSync(uf2Path, uf2);
     host.output.appendLine(
-        `Converted ${path.basename(elf)} -> ${path.basename(uf2Path)}: ` +
+        `Converted ${path.basename(elf)} -> ${uf2Path}: ` +
         `${formatBytes(uf2.length)}, entry ${image.entry.toString(16)}, ` +
         `${image.segments.length} segment(s), family 0x${options.familyId.toString(16)}`,
     );

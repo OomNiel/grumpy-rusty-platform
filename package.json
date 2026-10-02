@@ -173,7 +173,9 @@
                     "default": "pico",
                     "enum": [
                         "pico",
-                        "pico2"
+                        "pico2",
+                        "picow",
+                        "pico2w"
                     ],
                     "markdownDescription": "Board pre-selected in the New Project wizard."
                 },

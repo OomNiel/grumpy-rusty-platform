@@ -26,6 +26,7 @@ const {
     uf2FamilyForBoard,
     uf2FamilyForFamily,
     familyNameForId,
+    distUf2Path,
 } = compiled('flash/uf2');
 const { boardById } = compiled('boards/catalog');
 
@@ -269,4 +270,14 @@ test('a UF2 is the whole image, not a fragment', () => {
     for (let i = 0; i < 1000; i += 1) {
         equal(map.get(0x10000000 + i), (i + 1) & 0xff, `byte ${i}`);
     }
+});
+
+test('converted images land in dist/, not next to the ELF', () => {
+    // The file has to outlive a `cargo clean`, and the user has to be able to find it after
+    // holding a button while plugging a board in.
+    equal(
+        distUf2Path('/home/niel/pico', '/home/niel/pico/target/thumbv8m.main-none-eabihf/release/blinky'),
+        '/home/niel/pico/dist/blinky.uf2',
+    );
+    equal(distUf2Path('/p', '/p/x/foo.uf2'), '/p/dist/foo.uf2', 'no doubled suffix');
 });

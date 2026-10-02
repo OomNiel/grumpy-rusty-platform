@@ -511,11 +511,16 @@ covered by the t1 layer.
 ### How it is wired
 
 * `Flash` picks a route from the probe diagnosis (`src/flash/route.ts`, pure and tested):
-  * `ok` and `chip-not-autodetected` → through the probe, as before. The second one matters:
-    RP235x genuinely cannot be auto-detected and flashing works anyway.
-  * `none-connected` → straight to USB, since there is no alternative to choose between.
-  * `firmware-outdated`, `permission-denied`, `no-target`, `unknown` → *offer* USB instead of
-    switching route behind the user's back.
+  `ok` and `chip-not-autodetected` go through the probe — the second one matters, because
+  RP235x genuinely cannot be auto-detected and flashing works anyway — and everything else
+  goes over USB. The status is **refreshed first**, since the whole decision rests on whether
+  a probe is usable right now.
+* **One dialog, not two.** There is no separate "the probe is unusable, go over USB?" step:
+  the confirmation before the copy already names the board, and it now opens with the reason
+  the probe was not used. Nothing happens silently, and nothing has to be clicked twice.
+* Converted images land in `dist/` at the project root (`distUf2Path`), not next to the ELF:
+  the file has to outlive a `cargo clean`. The generated `.gitignore` gained `/dist` so it is
+  not committed either.
 * `Flash over USB (BOOTSEL)…` is also a command of its own, so the USB road stays reachable
   with a probe attached — which is how it can be tested without unplugging anything.
 * The ELF path is read from `cargo build --release --message-format=json`
@@ -523,6 +528,9 @@ covered by the t1 layer.
   custom `target-dir` or a workspace layout cannot break it.
 * Writing is gated on the same confirmation as the probe flow: volume, `Model`, `Board-ID`,
   plus a silicon cross-check against the UF2 family.
+* `rustyPlatform.defaultBoard` now lists all four boards. That enum had drifted (only
+  `pico`/`pico2`), and `tests/layers/t1-logic/manifest.test.js` now guards both it and the
+  command list against the code — an undeclared command is a command nobody can run.
 * Trade-off stated to the user in the success message: **no probe means no RTT**, so a
   probe-less flash leaves you with the LED and no `defmt` or panic output.
 

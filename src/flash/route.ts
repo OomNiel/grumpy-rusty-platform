@@ -14,15 +14,17 @@ import { UF2_FAMILIES, uf2FamilyForBoard } from './uf2';
 export type FlashRoute =
     /** Flash through the probe over SWD — the normal path. */
     | 'probe'
-    /** No probe at all: go straight to BOOTSEL + USB without asking, there is no alternative. */
-    | 'usb'
-    /** A probe is attached but cannot be used: offer USB rather than switching silently. */
-    | 'offer-usb';
+    /** BOOTSEL + USB mass storage. */
+    | 'usb';
 
 /**
  * `chip-not-autodetected` deserves a note: on RP235x, `probe-rs info` fails to identify the
  * chip while flashing works perfectly (we always pass an explicit `--chip`), so it must stay
  * on the probe route.
+ *
+ * Everything else goes over USB. There is deliberately no separate "ask first" case: when the
+ * probe cannot be used, the confirmation dialog before the copy already names the board and
+ * states the reason, which is the moment that matters.
  */
 export function flashRouteFor(diagnosis: ProbeDiagnosisKind): FlashRoute {
     switch (diagnosis) {
@@ -30,18 +32,23 @@ export function flashRouteFor(diagnosis: ProbeDiagnosisKind): FlashRoute {
         case 'chip-not-autodetected':
             return 'probe';
         case 'none-connected':
-            return 'usb';
         case 'firmware-outdated':
         case 'permission-denied':
         case 'no-target':
         case 'unknown':
-            return 'offer-usb';
+            return 'usb';
     }
 }
 
-/** One line explaining why the USB route is being offered, for the question we ask. */
+/**
+ * Why the USB route is being taken, for the user to read before anything is written. Empty
+ * when the probe works, so callers can treat it as "no explanation needed".
+ */
 export function routeReason(diagnosis: ProbeDiagnosisKind): string {
     switch (diagnosis) {
+        case 'ok':
+        case 'chip-not-autodetected':
+            return '';
         case 'none-connected':
             return 'No debug probe is connected.';
         case 'firmware-outdated':

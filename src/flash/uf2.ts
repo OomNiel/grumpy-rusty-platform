@@ -1,3 +1,4 @@
+import * as path from 'path';
 import { BoardProfile, McuFamily } from '../boards/types';
 
 /**
@@ -264,4 +265,14 @@ export function decodeUf2(uf2: Buffer): { familyId: number; segments: Uf2Segment
 export function elfToUf2(elf: Buffer, familyId: number): { uf2: Buffer; image: ElfFlashImage } {
     const image = readElfFlashImage(elf);
     return { uf2: buildUf2(image.segments, familyId), image };
+}
+
+/**
+ * Where a converted image is written: a `dist/` folder at the project root, rather than next
+ * to the ELF inside `target/`. A user who has to hold a button while plugging a board in
+ * should not lose the file to a `cargo clean`, and `dist/` is the conventional place to look.
+ */
+export function distUf2Path(projectDir: string, elfPath: string): string {
+    const name = path.basename(elfPath);
+    return path.join(projectDir, 'dist', name.endsWith('.uf2') ? name : `${name}.uf2`);
 }

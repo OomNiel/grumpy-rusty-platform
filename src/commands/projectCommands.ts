@@ -45,11 +45,18 @@ export function registerProjectCommands(
      * `INFO_UF2.TXT` names a board *type* and carries no serial number, so a person has to
      * confirm which board is about to be written.
      */
-    async function confirmUsbFlash(request: UsbFlashConfirmation): Promise<boolean> {
-        const lines = [
+    async function confirmUsbFlash(
+        request: UsbFlashConfirmation,
+        reason?: string,
+    ): Promise<boolean> {
+        const lines: string[] = [];
+        if (reason) {
+            lines.push(`${reason} Flashing over USB — hold BOOTSEL while plugging the board in.`, '');
+        }
+        lines.push(
             `About to flash ${path.basename(request.uf2Path)} (${request.bytes} bytes) onto:`,
             request.info ? describeUf2Info(request.info) : `  ${request.volume}`,
-        ];
+        );
         if (request.warning) {
             lines.push('', `⚠ ${request.warning}`);
         }
@@ -63,7 +70,7 @@ export function registerProjectCommands(
     }
 
     /** Build, convert and wait for BOOTSEL — shared by the fallback and the explicit command. */
-    async function flashOverUsb(project: ActiveProject): Promise<void> {
+    async function flashOverUsb(project: ActiveProject, reason?: string): Promise<void> {
         const familyId = uf2FamilyForProject(project.board, project.chip);
         if (familyId === undefined) {
             void vscode.window.showErrorMessage(
@@ -76,7 +83,7 @@ export function registerProjectCommands(
         try {
             const result = await flashProjectOverUsb(
                 { folder: project.folder, familyId },
-                { output, confirmWrite: confirmUsbFlash },
+                { output, confirmWrite: (request) => confirmUsbFlash(request, reason) },
             );
             if (!result.written) {
                 output.appendLine(`Nothing was written to ${result.volume}.`);
@@ -106,29 +113,19 @@ export function registerProjectCommands(
 
         vscode.commands.registerCommand('rustyPlatform.flash', () =>
             withProject(async (project) => {
-                const status = state.status ?? (await state.refresh());
-                const route = flashRouteFor(status.probeDiagnosis.kind);
+                // Always look again: the route depends on whether a probe is usable *now*, and the
+                // cached status may predate plugging the board in.
+                const status = await state.refresh();
+                const kind = status.probeDiagnosis.kind;
 
-                if (route === 'probe') {
+                if (flashRouteFor(kind) === 'probe') {
                     // `cargo run` uses the runner from .cargo/config.toml
                     // (probe-rs run --chip ...), which flashes, resets and streams defmt over RTT.
                     runInTerminal('Rusty: flash', `${defmtPrefix()}cargo run --release`, project.folder);
                     return;
                 }
 
-                if (route === 'offer-usb') {
-                    const choice = await vscode.window.showWarningMessage(
-                        `${routeReason(status.probeDiagnosis.kind)}\n\n` +
-                        'Flash over USB instead? You hold BOOTSEL while plugging the board in.',
-                        { modal: true },
-                        'Flash over USB',
-                    );
-                    if (choice !== 'Flash over USB') {
-                        return;
-                    }
-                }
-
-                await flashOverUsb(project);
+                await flashOverUsb(project, routeReason(kind));
             }),
         ),
 

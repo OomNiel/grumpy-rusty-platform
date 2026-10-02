@@ -22,17 +22,17 @@ test('a working probe is always the preferred route', () => {
     );
 });
 
-test('with no probe at all, USB is the only road and needs no extra question', () => {
+test('with no probe at all, USB is the only road', () => {
     equal(flashRouteFor('none-connected'), 'usb');
 });
 
-test('a probe that exists but cannot be used offers USB rather than switching silently', () => {
+test('a probe that exists but cannot be used also takes the USB road', () => {
     for (const kind of ['firmware-outdated', 'permission-denied', 'no-target', 'unknown']) {
-        equal(flashRouteFor(kind), 'offer-usb', kind);
+        equal(flashRouteFor(kind), 'usb', kind);
     }
 });
 
-test('every diagnosis has a route and a reason a human can act on', () => {
+test('the USB road always explains itself; the probe road has nothing to explain', () => {
     const kinds = [
         'ok',
         'chip-not-autodetected',
@@ -44,6 +44,12 @@ test('every diagnosis has a route and a reason a human can act on', () => {
     ];
     for (const kind of kinds) {
         ok(flashRouteFor(kind), `${kind} has no route`);
+    }
+
+    equal(routeReason('ok'), '', 'nothing to explain when the probe works');
+    equal(routeReason('chip-not-autodetected'), '', 'flashing through the probe works on RP235x');
+
+    for (const kind of ['none-connected', 'firmware-outdated', 'permission-denied', 'no-target', 'unknown']) {
         ok(routeReason(kind).length > 10, `${kind} has no explanation`);
     }
     contains(routeReason('no-target'), 'SWD');
