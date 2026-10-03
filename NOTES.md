@@ -1290,3 +1290,122 @@ An ESP has no SWD, so this is not the RP "no probe" fallback: the route is decid
 
 
 
+
+## 34. The AI coding assist, ported from the Avalonia Designer (2026-10-03)
+
+Asked, in one line: *"In this extension I have bundled an AI Assistant. I want to add that component to this
+project as well. This will allow ai coding assistance to the projects that the Rusty Platform extension
+creates."* The source is `~/Projekte/Avalonia/DesignerCS_Ext/avalonia-designer-extension`, whose AI subsystem
+is ~11,450 lines across 20 TypeScript modules plus a 521-line .NET sidecar.
+
+### What was decided up front (asked, not assumed)
+
+Four answers shaped everything below:
+
+1. **Full parity was wanted** — the client, the editor flows, model management, the bundled runtime, house
+   rules and a chat panel — not just "a chat box".
+2. **The sidecar is Rust**, not the designer's .NET `ModelHost` (`llama.cpp` named first, `candle` as the
+   acceptable alternative).
+3. **Every behaviour**: implement/fix one function with a diff and a `cargo build` check, explain build/flash
+   errors, free-form chat, board/crate-grounded generation, and house-rule learning.
+4. **A webview view in the Rusty Platform activity bar** for the chat and the model settings.
+
+### What ports unchanged, and what had to be rewritten
+
+The designer's AI subsystem is two halves, and only one of them is about C#:
+
+* **Genuinely language-free, copied and adapted** (setting keys and imports renamed): the model client and
+  token arithmetic (`assistant.ts`), the LM Studio / own-`llama-server` / systemd layers
+  (`localModelCore.ts`, `llamaServer.ts`, `llamaService.ts`, `bigModel.ts`), the model table and HF download
+  (`modelSpecs.ts`, `runtime.ts`), the hardware gate (`hostCheck.ts`), the ✎ prompt block (`prompt.ts`,
+  which imports nothing at all) and the repair loop (`repair.ts`). The AI core uses `fetch()` and node
+  builtins only, so **`dependencies` stays empty**.
+* **Rewritten for Rust** — because the language *is* the point: the prompts, the member parser, the
+  visibility rules and the XAML editing in `assistant.ts` became `rustCode.ts`; the C#/VB convention
+  counters became Rust ones; `dotnet build` output parsing became `cargo --message-format=json` parsing.
+  `assistantUi.ts` (C#-shaped) became `editor.ts`; the designer's settings section inside its giant webview
+  became a standalone `ui/aiChatView.ts`.
+
+The `controlEvents` table (a C# event catalogue) had no Rust equivalent to import, which is the one place the
+port deleted a feature rather than translating it: there is no `<Control>_<Event>` handler to recognise.
+
+### Three rules that survived the translation, and one that changed
+
+The designer's rules were kept because they are about *small models*, not about C#:
+
+1. **One function at a time.** A 3B model asked to "fix my file" rewrites half of it.
+2. **Parse the answer defensively.** Last fenced block wins (models echo the input first), `{"code":…}` as a
+   fallback, an unclosed fence salvaged rather than discarded.
+3. **Nothing is written without a diff.** `showDiff: false` is an explicit opt-out; even then the write is a
+   normal edit that `Ctrl+Z` undoes.
+
+The rule that changed: the designer forced a new member `private` and decided `static` from the body. Rust's
+equivalent risk is a **dropped attribute** — a model that rewrites `#[embassy_executor::main] async fn main`
+as `fn main` produces a firmware that links nowhere, and the error points nowhere near the edit. So instead of
+normalising visibility, `preserveSignature` restores the original attributes and `fn` signature and keeps the
+model's body: the signature is not the model's to change.
+
+### The sidecar: why `llama-cpp-2`, and what it costs
+
+`llama-cpp-2` 0.1.158 (vendored llama.cpp, built by `cargo build --release` on the user's machine) plus
+`axum` 0.8.9 for the three endpoints. The chat template comes from the GGUF itself, so Qwen/Llama/Gemma each
+get their own control tokens without this code knowing any of them. `candle` was the fallback (pure Rust, no
+`cmake`) and was **not** chosen: it is slower and means hand-writing the sampling and chat-template loops.
+
+The honest cost, and it is in the runtime's error message: the first build needs `cargo`, `cmake`, a C++
+compiler **and `libclang`** (bindgen). That is more than "just rustup". Verified on this machine by building
+it: `LIBCLANG_PATH` had to point at LLVM 18's `libclang.so.1`, and bindgen needed
+`BINDGEN_EXTRA_CLANG_ARGS="-I/usr/lib/gcc/x86_64-linux-gnu/13/include -I/usr/include -I/usr/include/x86_64-linux-gnu"`
+because there is `libclang` here but no `clang` package. On a stock dev box with `clang`/`libclang-dev`
+neither is needed; an external server remains the answer for anyone who does not want the toolchain.
+
+`--backend` stays a *cargo feature* (`cpu` default, `vulkan`/`cuda`/`metal` opt-in), because a feature is
+compile-time and a flag is not. `/health` therefore reports `cli::compiled_backend()` — what the binary was
+built with — and the `--backend` the caller asked for is echoed beside it. The rule is the designer's: the
+status line must never claim a GPU that llama.cpp quietly kept on the CPU.
+
+The old `host/ModelHost/` build path became `sidecar/` + `cargo build --release`, with a `.backend` marker
+beside the binary so switching backends rebuilds instead of reusing the other build's objects;
+`RUSTFLAGS=-C target-cpu=native` because llama.cpp is markedly slower on the generic baseline.
+
+### What is pinned by tests
+
+New t1 files under `tests/layers/t1-logic/` cover the parts that are pure by construction: the Rust parser
+and edits, the convention counters, the cargo JSON parser, the OpenAI/SSE client, the ✎ block, the repair
+loop and the board facts. `cargoMessages.ts` was split out of `cargoBuild.ts` for exactly this reason —
+`cargoBuild.ts` imports `vscode`, and the suite must not.
+
+### What the tests found before the user could
+
+Writing the t1 files first, against the behaviour the doc comments promise, caught six real defects that a
+manual pass would have shipped:
+
+1. `braceBlockEnd` rejected a bodyless declaration only on a line more than three below it, so a one-line
+   trait method (`fn read(&self) -> u8;`) was reported as a block swallowing the `impl` under it. The rule
+   is now "whichever comes first, `;` or `{`".
+2. `itemOffsets` advanced one character per line, so `spliceItem` corrupted a CRLF file (stray `\r`, then a
+   stray `}`). Offsets are now found by walking the real text.
+3. `itemIndent` scanned from the container's own declaration line, so a new function inside an `impl` was
+   indented at the container's level instead of one level in.
+4. `addItemToFile` computed a zero-line header search when there was no enclosing span, so a new `use` was
+   prepended **above** `#![no_std]` — not a legal place for it.
+5. `normalizeAssistantConfig` defaulted `bundledBackend` to `vulkan`, so a missing setting quietly asked for
+   the GPU build that this project does not install by default. It is `cpu` now.
+6. `stripPromptBlock` rewrote every line ending of a CRLF file just because a prompt block was removed.
+
+Two more came out of running the sidecar rather than reading it: `LlamaModel::load_from_file`'s missing-file
+guard is a `debug_assert!` (a panic in a debug build), and a panic on the model thread left `/health` saying
+`loading: true` for ever — the extension would have waited out its ten-minute timeout instead of reading a
+sentence. The load now checks the file itself, and every panic is caught and turned into `/health`'s
+`error`.
+
+### Still open
+
+* **The sidecar has not been run against a real GGUF on this machine.** It compiles (llama.cpp and all),
+  its four CLI tests pass, and `/health`, `/v1/models`, the `503`-while-loading and the `400`/`429` paths
+  were exercised against the real binary — but the first real generation, and the first `cargo check`
+  repair loop against a generated project, are the next thing to do.
+* No GPU build has been attempted here (no Vulkan SDK / CUDA toolkit installed).
+* The chat panel's settings block writes backend/endpoint/model/showDiff; the per-model load options
+  (context length, GPU offload, TTL) are reachable from the model picker but not yet surfaced in the panel.
+* Windows: `libclang`/`cmake` discovery in `buildSidecar` is Unix-first, like the rest of the extension.

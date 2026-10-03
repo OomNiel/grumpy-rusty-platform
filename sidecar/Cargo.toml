@@ -1,0 +1,33 @@
+[package]
+name = "rusty-model-host"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+description = "A tiny local model server for Grumpy's Rusty Platform: the OpenAI subset the extension talks to."
+license = "MIT OR Apache-2.0"
+publish = false
+
+# WHY THE VERSIONS ARE PINNED. This is built on the *user's* machine, not at release time, so a version
+# that drifted between two installs is two different programs wearing one name. `llama-cpp-2` is pre-1.0
+# and its own README says its semver is not meaningful, so an exact pin is the only honest choice.
+[dependencies]
+llama-cpp-2 = { version = "=0.1.158", default-features = false, features = ["openmp"] }
+axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio"] }
+tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "sync", "net", "signal", "time"] }
+tokio-stream = { version = "0.1.19", features = ["sync"] }
+futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+anyhow = "1.0.104"
+
+# GPU builds are opt-in on purpose: each one needs a platform SDK at *build* time (Vulkan SDK / CUDA
+# toolkit / Xcode), and the CPU build is the one that needs nothing beyond a C++ compiler and cmake.
+[features]
+default = []
+vulkan = ["llama-cpp-2/vulkan"]
+cuda = ["llama-cpp-2/cuda"]
+metal = ["llama-cpp-2/metal"]
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

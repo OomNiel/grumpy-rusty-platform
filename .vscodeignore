@@ -6,3 +6,6 @@ tests/**
 tsconfig.json
 NOTES.md
 .gitignore
+sidecar/target/**
+sidecar/.cargo-home/**
+sidecar/**/.backend

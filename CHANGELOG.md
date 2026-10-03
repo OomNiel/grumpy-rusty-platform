@@ -9,7 +9,36 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+
+**AI coding assist (optional, off by default)**
+
+- **A model-agnostic core** (`src/ai/assistant.ts`): an OpenAI-compatible chat client over `fetch` with SSE
+  streaming, an inactivity watchdog (a slow CPU model is not cut off while it is still writing), token
+  budgeting, and defensive answer parsing. No npm dependency was added.
+- **Editor flows that never write behind your back**: a `✎ AI` prompt block at the caret, "implement in the
+  function I am in" (or a brand-new function when the caret is outside one), a whole-file proposal **diff**
+  that is applied as a normal undoable edit, and `Rusty AI: Fix the Build…` — the designer's build-driven
+  repair loop with `cargo check` as the oracle.
+- **Rust-specific safety** (`src/ai/rustCode.ts`): brace matching that understands Rust trivia (strings,
+  raw strings, char literals and lifetimes), function/impl spans, insertion that snaps to the caret and never
+  escapes the enclosing item, and **signature/attribute preservation** — `#[embassy_executor::main]`, the
+  parameter list and the return type survive whatever the model does to them.
+- **Grounded prompts**: the board profile (LED kind, CYW43 wiring, panel SPI pins, flash/PSRAM), the
+  `Cargo.toml` crate list, the file header and one sibling function are handed to the model, so it is told
+  what the hardware is instead of guessing.
+- **House rules that are measured, not guessed** (`src/ai/conventions.ts`): indentation, `pub` on helpers,
+  `?` versus `.unwrap()`, `defmt` logging, doc comments, constant/type naming and `#[cfg(test)]` modules —
+  each with its sample count, accepted by the user, and put in every prompt.
+- **Three ways to a model**, as in the designer: an external OpenAI-compatible server, LM Studio via `lms`,
+  or the extension's own runtime. Downloads from Hugging Face are verified against the published SHA-256.
+- **A Rust sidecar** (`sidecar/`) replacing the designer's .NET `ModelHost`: `llama-cpp-2` + `axum`, built
+  with `cargo build --release` on the user's machine, speaking the same `/health`, `/v1/models` and
+  `/v1/chat/completions` subset, with the native backend chosen by a cargo feature (`cpu` by default).
+- **An AI Assist view** in the sidebar: a streaming chat with the active file as context, plus the model
+  and backend settings.
+- New commands under the **Rusty AI** category, two keybindings (`Ctrl+Alt+Enter` / `Ctrl+Alt+Escape`), and
+  the `rustyPlatform.assistant.*` settings.
 
 ## [0.0.2] - 2026-10-03
 

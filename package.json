@@ -162,6 +162,75 @@
                 "title": "Refresh",
                 "category": "Rusty Platform",
                 "icon": "$(refresh)"
+            },
+            {
+                "command": "rustyPlatform.assistant.openPanel",
+                "title": "Open the Assistant Panel",
+                "category": "Rusty AI",
+                "icon": "$(comment-discussion)"
+            },
+            {
+                "command": "rustyPlatform.assistant.implement",
+                "title": "Implement in Function…",
+                "category": "Rusty AI",
+                "icon": "$(sparkle)"
+            },
+            {
+                "command": "rustyPlatform.assistant.sendPrompt",
+                "title": "Send the Prompt in the ✎ AI Block",
+                "category": "Rusty AI"
+            },
+            {
+                "command": "rustyPlatform.assistant.cancelPrompt",
+                "title": "Discard the ✎ AI Block",
+                "category": "Rusty AI"
+            },
+            {
+                "command": "rustyPlatform.assistant.applyProposal",
+                "title": "Apply the Proposed Change",
+                "category": "Rusty AI"
+            },
+            {
+                "command": "rustyPlatform.assistant.discardProposal",
+                "title": "Discard the Proposed Change",
+                "category": "Rusty AI"
+            },
+            {
+                "command": "rustyPlatform.assistant.fixFinding",
+                "title": "Fix a Finding with AI",
+                "category": "Rusty AI"
+            },
+            {
+                "command": "rustyPlatform.assistant.repair",
+                "title": "Fix the Build…",
+                "category": "Rusty AI",
+                "icon": "$(wand)"
+            },
+            {
+                "command": "rustyPlatform.assistant.check",
+                "title": "Check the Project (cargo check)",
+                "category": "Rusty AI"
+            },
+            {
+                "command": "rustyPlatform.assistant.learnConventions",
+                "title": "Learn the House Rules from My Code…",
+                "category": "Rusty AI"
+            },
+            {
+                "command": "rustyPlatform.assistant.status",
+                "title": "Status and Hardware Check",
+                "category": "Rusty AI"
+            },
+            {
+                "command": "rustyPlatform.assistant.setupModel",
+                "title": "Choose a Local Model…",
+                "category": "Rusty AI",
+                "icon": "$(server-process)"
+            },
+            {
+                "command": "rustyPlatform.assistant.unloadModel",
+                "title": "Unload the Loaded Model",
+                "category": "Rusty AI"
             }
         ],
         "viewsContainers": {
@@ -186,9 +255,28 @@
                 {
                     "id": "rustyPlatform.project",
                     "name": "Project"
+                },
+                {
+                    "id": "rustyPlatform.assistant",
+                    "name": "AI Assist",
+                    "type": "webview"
                 }
             ]
         },
+        "keybindings": [
+            {
+                "command": "rustyPlatform.assistant.sendPrompt",
+                "key": "ctrl+alt+enter",
+                "mac": "cmd+alt+enter",
+                "when": "editorTextFocus && editorLangId == rust"
+            },
+            {
+                "command": "rustyPlatform.assistant.cancelPrompt",
+                "key": "ctrl+alt+escape",
+                "mac": "cmd+alt+escape",
+                "when": "editorTextFocus && editorLangId == rust"
+            }
+        ],
         "menus": {
             "view/title": [
                 {
@@ -204,6 +292,16 @@
                 {
                     "command": "rustyPlatform.refresh",
                     "when": "view == rustyPlatform.boards || view == rustyPlatform.project || view == rustyPlatform.controls",
+                    "group": "navigation@2"
+                },
+                {
+                    "command": "rustyPlatform.assistant.implement",
+                    "when": "view == rustyPlatform.assistant",
+                    "group": "navigation@1"
+                },
+                {
+                    "command": "rustyPlatform.assistant.status",
+                    "when": "view == rustyPlatform.assistant",
                     "group": "navigation@2"
                 }
             ],
@@ -221,6 +319,26 @@
                 },
                 {
                     "command": "rustyPlatform.revealDependency",
+                    "when": "false"
+                },
+                {
+                    "command": "rustyPlatform.assistant.sendPrompt",
+                    "when": "false"
+                },
+                {
+                    "command": "rustyPlatform.assistant.cancelPrompt",
+                    "when": "false"
+                },
+                {
+                    "command": "rustyPlatform.assistant.applyProposal",
+                    "when": "false"
+                },
+                {
+                    "command": "rustyPlatform.assistant.discardProposal",
+                    "when": "false"
+                },
+                {
+                    "command": "rustyPlatform.assistant.fixFinding",
                     "when": "false"
                 }
             ]
@@ -279,6 +397,107 @@
                     "type": "boolean",
                     "default": true,
                     "markdownDescription": "Show the terminal when a build/flash/monitor command starts."
+                },
+                "rustyPlatform.assistant.backend": {
+                    "type": "string",
+                    "enum": [
+                        "off",
+                        "external",
+                        "bundled"
+                    ],
+                    "default": "off",
+                    "markdownDescription": "How the AI coding assist gets its model. `off` disables it entirely. `external` talks to any OpenAI-compatible server you already run (LM Studio, Ollama, your own `llama-server`). `bundled` builds and runs the extension's own local runtime — no other AI needed."
+                },
+                "rustyPlatform.assistant.endpoint": {
+                    "type": "string",
+                    "default": "http://127.0.0.1:1234/v1",
+                    "markdownDescription": "Base URL of the OpenAI-compatible API used with `external`, e.g. `http://127.0.0.1:1234/v1`."
+                },
+                "rustyPlatform.assistant.model": {
+                    "type": "string",
+                    "default": "",
+                    "markdownDescription": "Model id to ask for. Leave empty to let the server pick (some servers, like Ollama, refuse an unnamed request — then set this)."
+                },
+                "rustyPlatform.assistant.modelPath": {
+                    "type": "string",
+                    "default": "",
+                    "markdownDescription": "The `.gguf` file the bundled runtime serves. Set by **Rusty AI: Choose a Local Model…**."
+                },
+                "rustyPlatform.assistant.threads": {
+                    "type": "number",
+                    "default": 0,
+                    "minimum": 0,
+                    "maximum": 32,
+                    "markdownDescription": "CPU threads for the bundled runtime. `0` chooses automatically (one less than the core count, capped at 8)."
+                },
+                "rustyPlatform.assistant.contextSize": {
+                    "type": "number",
+                    "default": 4096,
+                    "minimum": 512,
+                    "maximum": 262144,
+                    "markdownDescription": "Context window handed to the bundled runtime. `0` grows it to hold the answer budget (`maxTokens`) plus 2048 tokens."
+                },
+                "rustyPlatform.assistant.gpuLayers": {
+                    "type": "number",
+                    "default": 0,
+                    "minimum": 0,
+                    "maximum": 999,
+                    "markdownDescription": "Layers offloaded to the GPU by the bundled runtime. `0` is CPU only."
+                },
+                "rustyPlatform.assistant.bundledBackend": {
+                    "type": "string",
+                    "enum": [
+                        "cpu",
+                        "vulkan",
+                        "cuda",
+                        "metal"
+                    ],
+                    "default": "cpu",
+                    "markdownDescription": "Which native backend the bundled runtime is built and run with. `cpu` needs nothing beyond Rust; the GPU backends need that platform's SDK at build time. The runtime reports back what it actually loaded, so this is a request, not a guarantee."
+                },
+                "rustyPlatform.assistant.timeoutSeconds": {
+                    "type": "number",
+                    "default": 60,
+                    "minimum": 5,
+                    "maximum": 600,
+                    "markdownDescription": "How long the model may go **without producing anything** before the request is treated as dead. It is an inactivity budget, not a total one: a slow CPU model that keeps writing is never cut off."
+                },
+                "rustyPlatform.assistant.maxTokens": {
+                    "type": "number",
+                    "default": 4096,
+                    "minimum": 64,
+                    "maximum": 8192,
+                    "markdownDescription": "The longest answer the model may write. Thinking models spend this budget before writing any code, which is the usual reason a raise is needed."
+                },
+                "rustyPlatform.assistant.temperature": {
+                    "type": "number",
+                    "default": 0.2,
+                    "minimum": 0,
+                    "maximum": 1,
+                    "markdownDescription": "Sampling temperature. Low is right for code: the same request should produce the same function."
+                },
+                "rustyPlatform.assistant.showDiff": {
+                    "type": "boolean",
+                    "default": true,
+                    "markdownDescription": "Show the model's code as a diff before it is written. Switched off, the edit is applied directly — still a normal edit, so Ctrl+Z undoes it."
+                },
+                "rustyPlatform.assistant.verifyAfterApply": {
+                    "type": "boolean",
+                    "default": true,
+                    "markdownDescription": "After a proposal is applied, offer to check the project with `cargo check`."
+                },
+                "rustyPlatform.assistant.conventions": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "default": [],
+                    "markdownDescription": "House rules measured from your own code and accepted with **Rusty AI: Learn the House Rules from My Code…**. They are put in every prompt."
+                },
+                "rustyPlatform.assistant.ignoreHostCheck": {
+                    "type": "boolean",
+                    "default": false,
+                    "markdownDescription": "Run the local AI assist even when this machine looks too small for it. Set by the *Use it anyway* button in the hardware warning."
                 }
             }
         }
