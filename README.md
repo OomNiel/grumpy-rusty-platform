@@ -30,6 +30,37 @@ Espressif boards, `espflash`.
 | Phase 4 guard rails: validate a launch config against the installed debugger | ⬜ |
 | Windows support | ⬜ later (installer URLs are already platform-aware) |
 
+## AI coding assist (optional)
+
+Rusty Platform can carry its own coding assistant, so a generated project can be written with help even
+with no Copilot and no cloud key. It is **off by default**: nothing is downloaded or started until you turn
+it on.
+
+- **Three ways to get a model.** Point it at a server you already run (LM Studio, Ollama, or your own
+  `llama-server`) with `rustyPlatform.assistant.backend: "external"`, or let the extension build and run its
+  own runtime (`"bundled"`) from `sidecar/` — a small Rust program that links llama.cpp and downloads one
+  GGUF into the extension's storage. The bundled runtime needs `cargo`, `cmake`, a C++ compiler and
+  `libclang` for its first build, which also compiles llama.cpp.
+- **It edits one function at a time, and never behind your back.** `Rusty AI: Implement in Function…` puts a
+  `✎ AI` block at the caret; write what you want as comments, then send it (`Ctrl+Alt+Enter`) or discard it
+  (`Ctrl+Alt+Escape`). The model's answer arrives as a **diff** of the whole file — apply it or throw it
+  away, and applying it is a normal, undoable edit. `rustyPlatform.assistant.showDiff: false` writes it
+  straight in when you would rather not review first.
+- **The attributes and the signature are not the model's to change.** `#[embassy_executor::main]`, the
+  parameter list and the return type are taken from the original function; only the body is the model's.
+- **The compiler is the oracle.** `Rusty AI: Fix the Build…` runs `cargo check`, takes the first error,
+  rewrites the function it points at, rebuilds, keeps what helped — reverts what did not, skips what nothing
+  can fix, and lists the rest. *Fix with the AI assist* also appears as a Quick Fix on compiler diagnostics.
+- **It is told what your board actually is.** The prompt carries the board profile (the LED hangs off the
+  CYW43 on a Pico W; a Sunton board's panel SPI pins; the crate list from `Cargo.toml`), because a small
+  local model otherwise invents pin numbers that the compiler cannot catch.
+- **House rules are measured, not guessed.** `Rusty AI: Learn the House Rules from My Code…` counts this
+  project's own idioms (indentation, `pub` on helpers, `?` versus `.unwrap()`, `defmt`) and shows the
+  evidence; what you keep goes into every prompt.
+- The chat and the model settings live in the **AI Assist** view in the sidebar.
+
+A machine that cannot run a local model is told so, with the reason, by `Rusty AI: Status and Hardware
+Check` — and can override the verdict with `rustyPlatform.assistant.ignoreHostCheck`.
 ## Wi-Fi credentials
 
 The `wifi` and `wifi-bluetooth` templates read the network name and password at **compile time**

@@ -12,9 +12,16 @@ import { registerLibraryCommands } from './commands/libraryCommands';
 import { registerWifiCommands } from './commands/wifiCommands';
 import { registerToolchainCommands } from './commands/toolchainCommands';
 import { disposeTerminals } from './commands/terminal';
+import { initAiLog } from './ai/log';
+import { initPickerFolders } from './ai/pickers';
+import { registerAssistantEditorCommands } from './ai/editor';
+import { registerAiChatView } from './ui/aiChatView';
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
     const output = vscode.window.createOutputChannel("Grumpy's Rusty Platform");
+    // The AI subsystem logs through the same channel, so "which log do I read?" has one answer.
+    initAiLog(output);
+    initPickerFolders(context.globalState);
     const state = new RustyState(output);
     const boardsView = new BoardsViewProvider();
     const projectView = new ProjectViewProvider(state);
@@ -37,6 +44,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         trackDebugSessions(),
         ...registerLibraryCommands(state, output),
         ...registerToolchainCommands(state, output),
+        ...registerAssistantEditorCommands(),
+        ...registerAiChatView(context),
         state.onDidChange(() => {
             statusBar.update();
             projectView.refresh();
