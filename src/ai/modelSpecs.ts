@@ -274,11 +274,19 @@ export interface SidecarOptions {
  * libraries when this machine has no usable Vulkan device, so the answer is read back from the runtime (see
  * `Native backend:` in the status) rather than assumed from the setting.
  */
-export type SidecarBackend = 'cpu' | 'vulkan';
+/**
+ * Which native build of the bundled runtime to run.
+ *
+ * `cpu` is the default and needs nothing beyond `cmake` and a C++ compiler. The others are **cargo
+ * features**, each needing a platform SDK at build time — `vulkan` (Vulkan SDK), `cuda` (CUDA toolkit),
+ * `metal` (Xcode). The name is exactly the feature and exactly what the sidecar echoes back in `/health`.
+ */
+export type SidecarBackend = 'cpu' | 'vulkan' | 'cuda' | 'metal';
 
 /** A setting (or anything else) as a backend: only the exact word `vulkan` asks for the GPU build. */
 export function sidecarBackend(value: unknown): SidecarBackend {
-    return String(value ?? '').trim().toLowerCase() === 'vulkan' ? 'vulkan' : 'cpu';
+    const word = String(value ?? '').trim().toLowerCase();
+    return word === 'vulkan' || word === 'cuda' || word === 'metal' ? word : 'cpu';
 }
 
 /** Exact argv for the sidecar. Pure so the process it starts is testable without starting one. */
@@ -302,7 +310,7 @@ export function sidecarArgs(options: SidecarOptions): string[] {
  * attempt is never made: if the CPU build cannot load it either, the reason is the model, not the GPU.
  */
 export function sidecarAttempts(backend: SidecarBackend): SidecarBackend[] {
-    return backend === 'vulkan' ? ['vulkan', 'cpu'] : ['cpu'];
+    return backend === 'cpu' ? ['cpu'] : [backend, 'cpu'];
 }
 
 /** The base URL the extension's existing client is pointed at — `/chat/completions` hangs off it. */
@@ -350,17 +358,19 @@ export function parseHealth(body: unknown): SidecarHealth {
  * claim this project does not make.
  */
 export function nativeBackendLine(selected: SidecarBackend, loaded?: { backend?: SidecarBackend; device?: string }): string {
+    const label = (backend: SidecarBackend): string =>
+        backend === 'cpu' ? 'CPU' : `${backend.charAt(0).toUpperCase()}${backend.slice(1)}`;
     if (!loaded) {
-        return selected === 'vulkan'
-            ? 'Native backend: Vulkan build (chosen — it starts with the next request)'
-            : 'Native backend: CPU build';
+        return selected === 'cpu'
+            ? 'Native backend: CPU build'
+            : `Native backend: ${label(selected)} build (chosen — it starts with the next request)`;
     }
-    if (loaded.backend === 'vulkan') {
-        return `Native backend: Vulkan build${loaded.device ? ` — ${loaded.device}` : ''}`;
+    if (loaded.backend && loaded.backend !== 'cpu') {
+        return `Native backend: ${label(loaded.backend)} build${loaded.device ? ` — ${loaded.device}` : ''}`;
     }
-    return selected === 'vulkan'
-        ? 'Native backend: CPU build — Vulkan was asked for, but llama.cpp could not use it on this machine'
-        : 'Native backend: CPU build';
+    return selected === 'cpu'
+        ? 'Native backend: CPU build'
+        : `Native backend: CPU build — the ${label(selected)} build was asked for, but llama.cpp could not use it on this machine`;
 }
 
 /**

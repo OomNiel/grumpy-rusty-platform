@@ -1401,8 +1401,8 @@ sentence. The load now checks the file itself, and every panic is caught and tur
 
 ### Still open
 
-* **The sidecar has not been run against a real GGUF on this machine.** It compiles (llama.cpp and all),
-  its four CLI tests pass, and `/health`, `/v1/models`, the `503`-while-loading and the `400`/`429` paths
+* **The sidecar has not been run against a real GGUF on this machine.** It compiles in both debug and release (llama.cpp and all), its four CLI tests
+  pass, and `/health`, `/v1/models`, the `503`-while-loading and the `400`/`429` paths
   were exercised against the real binary — but the first real generation, and the first `cargo check`
   repair loop against a generated project, are the next thing to do.
 * No GPU build has been attempted here (no Vulkan SDK / CUDA toolkit installed).

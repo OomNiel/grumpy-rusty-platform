@@ -31,6 +31,7 @@ import { readActiveProject } from '../project/activeProject';
 import { panelState } from '../ai/panel';
 import { assistantConfig } from '../ai/editor';
 import { chooseLocalModel, unloadLoadedModel } from '../ai/localModelSetup';
+import { configView } from '../ai/settings';
 
 /** One turn of the conversation, as the webview renders it. */
 interface Turn {
@@ -433,12 +434,16 @@ export class AiChatViewProvider implements vscode.WebviewViewProvider {
     }
 
     private async save(settings: Record<string, unknown>): Promise<void> {
-        const cfg = vscode.workspace.getConfiguration('rustyPlatform.assistant');
+        // `configView` writes each key to the scope that already supplies it. Writing to `Global` here would
+        // be shadowed by a value the project pinned in `.vscode/settings.json` — the designer's bug, kept
+        // fixed: the panel would then save, refresh from the effective value, and appear to have done
+        // nothing.
+        const cfg = configView('rustyPlatform.assistant');
         try {
-            if (typeof settings.backend === 'string') await cfg.update('backend', settings.backend, vscode.ConfigurationTarget.Global);
-            if (typeof settings.endpoint === 'string') await cfg.update('endpoint', settings.endpoint, vscode.ConfigurationTarget.Global);
-            if (typeof settings.model === 'string') await cfg.update('model', settings.model, vscode.ConfigurationTarget.Global);
-            if (typeof settings.showDiff === 'boolean') await cfg.update('showDiff', settings.showDiff, vscode.ConfigurationTarget.Global);
+            if (typeof settings.backend === 'string') await cfg.update('backend', settings.backend);
+            if (typeof settings.endpoint === 'string') await cfg.update('endpoint', settings.endpoint);
+            if (typeof settings.model === 'string') await cfg.update('model', settings.model);
+            if (typeof settings.showDiff === 'boolean') await cfg.update('showDiff', settings.showDiff);
             log('assistant: panel settings saved');
             await refreshAiChat(true);
         } catch (error) {

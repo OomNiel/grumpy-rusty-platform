@@ -247,12 +247,12 @@ class ModelServer {
             } catch (e) {
                 lastError = e;
                 this.stop();
-                if (backend !== 'vulkan') continue;
+                if (backend === 'cpu') continue;
                 const why = e instanceof Error ? e.message : String(e);
-                this.fallback = `the Vulkan build stopped while loading (${why}), so the CPU build was used instead`;
+                this.fallback = `the ${backend} build stopped while loading (${why}), so the CPU build was used instead`;
                 log(`ModelHost: ${this.fallback}`);
                 // Deliberately not awaited: the retry must not wait for someone to dismiss a message.
-                void this.reportVulkanFallback(why);
+                void this.reportGpuFallback(why, backend);
             }
         }
         throw lastError;
@@ -263,12 +263,12 @@ class ModelServer {
      *
      * A GPU attempt that silently becomes a CPU one is the thing this project keeps refusing to do: the user
      * asked for the GPU, and finding out only from a status line they never open is not finding out. The
-     * offer writes the setting where it already lives (the §116 rule), so the next start is CPU on purpose.
+     * offer writes the setting where it already lives, so the next start is CPU on purpose.
      */
-    private async reportVulkanFallback(why: string): Promise<void> {
-        const message = `The built-in runtime's Vulkan build stopped while loading the model (${why}). It was started `
-            + 'again on the CPU build, so the model still works — this machine\'s Vulkan driver and llama.cpp do '
-            + 'not get on.';
+    private async reportGpuFallback(why: string, backend: SidecarBackend): Promise<void> {
+        const message = `The built-in runtime's ${backend} build stopped while loading the model (${why}). It was `
+            + 'started again on the CPU build, so the model still works — this machine\'s GPU stack and '
+            + 'llama.cpp do not get on.';
         try {
             const pick = await vscode.window.showWarningMessage(message, 'Use the CPU build from now on', 'Dismiss');
             if (pick !== 'Use the CPU build from now on') return;
