@@ -202,5 +202,6 @@ First build: everything the extension does today, packaged as `grumpy-rusty-plat
 - Windows is untested — the installer URLs are platform-aware, but probe-rs needs WinUSB/libusb
   handling that differs from Linux.
 
-[Unreleased]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.1...HEAD
+[Unreleased]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.2...HEAD
+[0.0.2]: https://github.com/OomNiel/grumpy-rusty-platform/releases/tag/v0.0.2
 [0.0.1]: https://github.com/OomNiel/grumpy-rusty-platform/releases/tag/v0.0.1
