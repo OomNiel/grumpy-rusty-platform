@@ -226,7 +226,8 @@ function espRustToolchainToml(): string {
 #   espup install --targets esp32,esp32s3
 #   source $HOME/export-esp.sh
 #
-# Grumpy's Rusty Platform offers both steps from the "Check Toolchain" command.
+# Grumpy's Rusty Platform can do the first two steps for you: run the
+# "Install ESP Toolchain" command from the palette.
 [toolchain]
 channel = "${ESP_TOOLCHAIN_CHANNEL}"
 `;

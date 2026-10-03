@@ -14,7 +14,7 @@ Espressif boards, `espflash`.
 
 | Area | State |
 |---|---|
-| Project Wizard (board → working workspace) | ✅ 7 boards: RP2040, RP2350, ESP32, ESP32-S3 |
+| Project Wizard (board → working workspace) | ✅ 7 boards: Pico · Pico 2 · Pico W · Pico 2 W (RP2040/RP2350) and ESP32-DevKitC V4 · LilyGo T-QT · Sunton ESP32-3248S035R (ESP32/ESP32-S3) |
 | Generated workspace: `Cargo.toml`, `.cargo/config.toml`, `memory.x`, `build.rs`, `rust-toolchain.toml`, `src/main.rs`, `.vscode/{settings,launch}.json` | ✅ RP; ESP gets `esp-config.toml` instead of `memory.x`/`launch.json` |
 | Templates | ✅ RP: `blinky`, `wifi`, `wifi-bluetooth` (with a credentials prompt) · ESP: periodic task, panel test image |
 | Toolchain detection (cargo, rustup, targets, probe-rs, probe health) | ✅ plus espup / Xtensa toolchain / espflash for ESP |
@@ -163,6 +163,8 @@ UPDATE_SNAPSHOTS=1 node tests/runner.js --layer t3-golden   # re-record golden f
 | `t5-hil` | The firmware really flashes and logs over RTT (opt-in, needs a probe) |
 
 ## Supported boards
+
+### Raspberry Pi
 
 | Board | MCU | Target triple | probe-rs chip | embassy-rp features |
 |---|---|---|---|---|

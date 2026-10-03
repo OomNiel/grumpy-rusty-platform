@@ -14,8 +14,10 @@ _Nothing yet._
 ## [0.0.2] - 2026-10-03
 
 A second silicon family, without pretending it is the same as the first. Packaged as
-`grumpy-rusty-platform-0.0.2.vsix` (63 files, SHA-256
-`27f92121ddba51003d80e847a755537133f2741bacf762b3b536922f7385c7f8`).
+`grumpy-rusty-platform-0.0.2.vsix` (63 files). Its SHA-256 belongs with the release notes on
+GitHub, not here: `vsce` writes fresh ZIP metadata on every run, so two builds of the same
+sources differ in bytes and a hash recorded in this file could never match the artifact that
+ships it.
 
 ### Added
 
