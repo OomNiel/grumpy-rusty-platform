@@ -61,6 +61,9 @@ it on.
 
 A machine that cannot run a local model is told so, with the reason, by `Rusty AI: Status and Hardware
 Check` — and can override the verdict with `rustyPlatform.assistant.ignoreHostCheck`.
+
+For the step-by-step — turning it on, choosing a model, the `✎ AI` block, reviewing the diff and teaching
+it your house rules — see [`AI_ASSIST.md`](AI_ASSIST.md).
 ## Wi-Fi credentials
 
 The `wifi` and `wifi-bluetooth` templates read the network name and password at **compile time**
