@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { McuFamily } from '../boards/types';
+import { RpFamily } from '../boards/types';
 
 /**
  * BOOTSEL mass-storage volumes: finding one, and identifying which board it belongs to.
@@ -216,7 +216,7 @@ export function volumeSilicon(info: Uf2VolumeInfo): SiliconFamily {
 }
 
 /** The silicon a board family expects to find in BOOTSEL mode. */
-export function siliconForFamily(family: McuFamily): SiliconFamily {
+export function siliconForFamily(family: RpFamily): SiliconFamily {
     return family === 'RP2040' ? 'rp2040' : 'rp2350';
 }
 

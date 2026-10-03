@@ -1,0 +1,10 @@
+# The Xtensa targets are only in Espressif's fork, installed by espup under this
+# channel name. Install it with:
+#
+#   cargo install espup --locked
+#   espup install --targets esp32,esp32s3
+#   source $HOME/export-esp.sh
+#
+# Grumpy's Rusty Platform offers both steps from the "Check Toolchain" command.
+[toolchain]
+channel = "esp"

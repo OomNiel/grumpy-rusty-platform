@@ -1,0 +1,15 @@
+#!/bin/sh
+# Fake `espflash` for the t2-cli layer.
+#   SHIM_ESPFLASH_VERSION  version reported by `--version`; unset means "not installed".
+case "$1" in
+  --version)
+    if [ -z "${SHIM_ESPFLASH_VERSION-}" ]; then
+      echo "fake-espflash: espflash is not installed" >&2
+      exit 127
+    fi
+    echo "espflash ${SHIM_ESPFLASH_VERSION}"
+    exit 0
+    ;;
+esac
+echo "fake-espflash: unexpected arguments: $*" >&2
+exit 2

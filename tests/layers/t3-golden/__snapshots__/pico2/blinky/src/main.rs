@@ -16,6 +16,11 @@ use panic_probe as _;
 // explicitly here (there is no `platform-cortex-m` feature on embassy-executor).
 #[embassy_executor::main(executor = "embassy_rp::executor::Executor", entry = "cortex_m_rt::entry")]
 async fn main(_spawner: Spawner) {
+    // RTT keeps the previous image's bytes after a reset, and a stale frame can decode into
+    // nonsense (defmt's own strings show up as log values). The current run begins at the last
+    // line like this one.
+    info!("=== {} {} starting ===", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+
     let p = embassy_rp::init(Default::default());
     info!("Hello from Grumpy's Rusty Platform on RP2350!");
 

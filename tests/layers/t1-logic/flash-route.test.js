@@ -27,7 +27,7 @@ test('with no probe at all, USB is the only road', () => {
 });
 
 test('a probe that exists but cannot be used also takes the USB road', () => {
-    for (const kind of ['firmware-outdated', 'permission-denied', 'no-target', 'unknown']) {
+    for (const kind of ['firmware-outdated', 'permission-denied', 'probe-busy', 'no-target', 'unknown']) {
         equal(flashRouteFor(kind), 'usb', kind);
     }
 });
@@ -39,6 +39,7 @@ test('the USB road always explains itself; the probe road has nothing to explain
         'none-connected',
         'firmware-outdated',
         'permission-denied',
+        'probe-busy',
         'no-target',
         'unknown',
     ];
@@ -55,6 +56,9 @@ test('the USB road always explains itself; the probe road has nothing to explain
     contains(routeReason('no-target'), 'SWD');
     contains(routeReason('permission-denied'), 'permissions');
     contains(routeReason('none-connected'), 'No debug probe');
+    // The one that used to read as a hardware fault: name what is actually holding it.
+    contains(routeReason('probe-busy'), 'holding the debug probe');
+    contains(routeReason('probe-busy'), 'Close it first');
 });
 
 test('the UF2 family comes from the board when we recognise it', () => {

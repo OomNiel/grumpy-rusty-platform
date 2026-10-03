@@ -138,7 +138,7 @@ test('every board and template has a snapshot directory', () => {
     }
 });
 
-test('the snapshot set covers all four boards', () => {
+test('the snapshot set covers every board', () => {
     const boards = new Set(combinations().map((pair) => pair.board.id));
-    equal([...boards].sort(), ['pico', 'pico2', 'pico2w', 'picow']);
+    equal([...boards].sort(), BOARDS.map((board) => board.id).sort());
 });

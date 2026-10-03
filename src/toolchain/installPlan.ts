@@ -195,3 +195,70 @@ export function planInstallation(
 export function describeStep(step: InstallStep): string {
     return `${step.title}${step.requiresElevation ? ' (needs sudo)' : ''}`;
 }
+
+export interface ProjectSetupOptions {
+    /** Target triples *this project* needs (not every board we support). */
+    targets: string[];
+    platform: NodeJS.Platform;
+    arch: string;
+    /** probe-rs is needed to flash and monitor, never to build. */
+    needsProbeRs: boolean;
+    probeRsVersion?: string;
+}
+
+/**
+ * What one project is missing, as opposed to `planInstallation`, which covers everything the
+ * four supported boards could ever need.
+ *
+ * The difference matters in the prompt this feeds: telling somebody with a Pico 2 W that
+ * they must install the RP2040 target — or probe-rs, when all they want is a build — is
+ * noise that trains them to dismiss the dialog.
+ */
+export function planProjectSetup(status: ToolchainStatus, options: ProjectSetupOptions): InstallStep[] {
+    const steps: InstallStep[] = [];
+    const needsRustup = !status.cargo.found || !status.rustup.found;
+
+    if (needsRustup) {
+        const url = rustupInitUrl(options.platform, options.arch);
+        steps.push({
+            id: 'rustup',
+            kind: 'rustup',
+            title: 'Install the Rust toolchain (rustup, cargo, rustc)',
+            detail: url
+                ? `Download and run the official rustup-init for this platform:\n${url}`
+                : 'Unsupported platform/architecture for automatic rustup installation. Install Rust manually from https://rustup.rs.',
+            requiresElevation: false,
+        });
+    }
+
+    // Without rustup no targets exist yet, and the rustup step installs the toolchain
+    // without them — so every target this project needs is added afterwards.
+    const wanted = [...new Set(options.targets)].sort();
+    const missing = needsRustup ? wanted : wanted.filter((target) => !status.installedTargets.includes(target));
+    for (const target of missing) {
+        steps.push({
+            id: `target:${target}`,
+            kind: 'target',
+            title: `Add target ${target}`,
+            detail: `rustup target add ${target}`,
+            target,
+            requiresElevation: false,
+        });
+    }
+
+    if (options.needsProbeRs && !status.probeRs.found) {
+        const asset = probeRsAssetFor(options.platform, options.arch, options.probeRsVersion);
+        steps.push({
+            id: 'probe-rs',
+            kind: 'probe-rs',
+            title: `Install probe-rs ${options.probeRsVersion ?? PROBE_RS_VERSION}`,
+            detail: asset
+                ? `Download the prebuilt release archive and verify its SHA-256 before installing:\n${asset.url}`
+                : 'No prebuilt archive for this platform. Run: cargo install probe-rs-tools --locked',
+            asset,
+            requiresElevation: false,
+        });
+    }
+
+    return steps;
+}

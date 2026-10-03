@@ -19,7 +19,11 @@ use embassy_time::{Duration, Timer};
 use panic_probe as _;
 use static_cell::StaticCell;
 
-// Credentials are read at *compile* time so they never end up in your source tree:
+// Credentials are read at *compile* time so they never end up in your source tree.
+//
+// In VS Code, press Flash or Debug: the extension asks for the network name and password the
+// first time and remembers them, so nothing has to be typed again. Building from a terminal
+// instead, pass them on the command line:
 //
 //   WIFI_SSID="my-ssid" WIFI_PASSWORD="secret" cargo run --release
 //
@@ -32,6 +36,38 @@ const WIFI_PASSWORD: &str = match option_env!("WIFI_PASSWORD") {
     Some(value) => value,
     None => "YOUR_WIFI_PASSWORD",
 };
+
+// Optional static addressing, for networks whose DHCP server never answers. Set both and DHCP is
+// skipped entirely - the credential prompt has a field for it, or pass them when building from a
+// terminal:
+//
+//   WIFI_STATIC_IP="192.168.1.50/24" WIFI_GATEWAY="192.168.1.1" cargo run --release
+//
+// Leave them unset to use DHCP, which is the default.
+const STATIC_IP: Option<&str> = option_env!("WIFI_STATIC_IP");
+const STATIC_GATEWAY: Option<&str> = option_env!("WIFI_GATEWAY");
+
+/// Parse the static configuration, or nothing when DHCP should be used. Everything here is a
+/// compile-time string, so a typo is caught by the log rather than by a panic.
+fn static_config() -> Option<embassy_net::StaticConfigV4> {
+    use core::str::FromStr;
+
+    let (host, prefix) = STATIC_IP?.split_once('/')?;
+    let prefix: u8 = prefix.parse().ok()?;
+    if prefix > 32 {
+        return None;
+    }
+    let address = embassy_net::Ipv4Cidr::new(embassy_net::Ipv4Address::from_str(host).ok()?, prefix);
+    let gateway = match STATIC_GATEWAY {
+        Some(text) => Some(embassy_net::Ipv4Address::from_str(text).ok()?),
+        None => None,
+    };
+    Some(embassy_net::StaticConfigV4 {
+        address,
+        gateway,
+        dns_servers: Default::default(),
+    })
+}
 
 bind_interrupts!(struct Irqs {
     PIO0_IRQ_0 => InterruptHandler<PIO0>;
@@ -52,6 +88,9 @@ async fn net_task(mut runner: embassy_net::Runner<'static, cyw43::NetDriver<'sta
 
 #[embassy_executor::main(executor = "embassy_rp::executor::Executor", entry = "cortex_m_rt::entry")]
 async fn main(spawner: Spawner) {
+    // See the note in the API template: this marks where the current run starts.
+    info!("=== {} {} starting ===", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+
     let p = embassy_rp::init(Default::default());
 
     // The firmware blobs are in ./firmware and are verified by the project wizard.
@@ -92,7 +131,13 @@ async fn main(spawner: Spawner) {
     static RESOURCES: StaticCell<embassy_net::StackResources<3>> = StaticCell::new();
     let (stack, runner) = embassy_net::new(
         net_device,
-        embassy_net::Config::dhcpv4(Default::default()),
+        match static_config() {
+            Some(fixed) => {
+                info!("using a static IP: WIFI_STATIC_IP is set, so DHCP is skipped");
+                embassy_net::Config::ipv4_static(fixed)
+            }
+            None => embassy_net::Config::dhcpv4(Default::default()),
+        },
         RESOURCES.init(embassy_net::StackResources::new()),
         seed,
     );
@@ -106,9 +151,34 @@ async fn main(spawner: Spawner) {
         info!("join failed: {:?}", err);
         Timer::after_secs(2).await;
     }
+    info!("associated to {}", WIFI_SSID);
 
-    info!("waiting for DHCP...");
-    stack.wait_config_up().await;
+    // A bare wait_config_up() hides the only interesting failure here: smoltcp retries the DHCP
+    // REQUEST/ACK exchange for roughly 50 s and then starts over, forever, logging only
+    // "DHCP request retries exceeded, restarting discovery". Waiting with a timeout lets us say
+    // what that means, once per attempt, and keep trying — a router that answers late still works.
+    // Only one of the two paths was taken, and the log has to say which: "using a static IP"
+    // followed by "waiting for DHCP" is how a reader stops trusting the output.
+    let waiting_for_dhcp = STATIC_IP.is_none();
+    if waiting_for_dhcp {
+        info!("waiting for DHCP...");
+    } else {
+        info!("waiting for the network stack...");
+    }
+    loop {
+        if let Ok(()) = embassy_time::with_timeout(Duration::from_secs(30), stack.wait_config_up()).await {
+            break;
+        }
+        if waiting_for_dhcp {
+            warn!(
+                "no DHCP lease after 30 s - the exchange did not complete. Still retrying; set WIFI_STATIC_IP to skip DHCP." /* superseded wording follows: \\
+             server on the LAN (a repeater or an old router), and make sure the access point has a \\
+             2.4 GHz radio. Still retrying; set WIFI_STATIC_IP to skip DHCP entirely."
+            */);
+        } else {
+            warn!("Wi-Fi is associated but the network stack never came up; check WIFI_STATIC_IP and WIFI_GATEWAY.");
+        }
+    }
     if let Some(config) = stack.config_v4() {
         let octets = config.address.address().octets();
         info!("Wi-Fi is up - IP {}.{}.{}.{}", octets[0], octets[1], octets[2], octets[3]);

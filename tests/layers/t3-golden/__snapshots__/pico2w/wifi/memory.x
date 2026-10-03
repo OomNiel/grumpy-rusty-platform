@@ -18,7 +18,14 @@ SECTIONS {
     } > FLASH
 } INSERT AFTER .vector_table;
 
-_stext = ADDR(.start_block) + SIZEOF(.start_block);
+/* Move .text to just after the boot info — and keep it aligned. cortex-m-rt
+   declares this symbol as PROVIDE(_stext = ALIGN(ADDR(.vector_table) +
+   SIZEOF(.vector_table), ALIGNOF(.text))), and PROVIDE only applies when the
+   symbol is still undeclared: a plain assignment here silently throws that
+   ALIGN() away, and rust-lld warns that .text is not a multiple of its
+   alignment (measured: 0x1000013c with align 8). Embassy's example has the
+   same unconditional line; this keeps the intent and the alignment. */
+_stext = ALIGN(ADDR(.start_block) + SIZEOF(.start_block), ALIGNOF(.text));
 
 SECTIONS {
     /* Picotool `binary info` entries. */

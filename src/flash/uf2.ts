@@ -1,5 +1,5 @@
 import * as path from 'path';
-import { BoardProfile, McuFamily } from '../boards/types';
+import { RpBoardProfile, RpFamily } from '../boards/types';
 
 /**
  * Turning a built ELF into the UF2 file the RP2040/RP2350 boot ROM accepts.
@@ -62,11 +62,11 @@ export interface ElfFlashImage {
 }
 
 /** The UF2 family a board's images belong to. */
-export function uf2FamilyForFamily(family: McuFamily): number {
+export function uf2FamilyForFamily(family: RpFamily): number {
     return family === 'RP2040' ? UF2_FAMILIES.rp2040 : UF2_FAMILIES.rp2350ArmSecure;
 }
 
-export function uf2FamilyForBoard(board: BoardProfile): number {
+export function uf2FamilyForBoard(board: RpBoardProfile): number {
     return uf2FamilyForFamily(board.family);
 }
 

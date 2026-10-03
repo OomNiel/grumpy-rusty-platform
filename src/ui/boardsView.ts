@@ -25,15 +25,31 @@ class BoardItem extends vscode.TreeItem {
         super(board.name, vscode.TreeItemCollapsibleState.None);
         this.description = `${board.family} · ${board.target}`;
         this.iconPath = new vscode.ThemeIcon('circuit-board');
+
+        // RP boards are flashed through a probe, ESP boards over USB serial with espflash.
+        // Showing probe-rs' chip id for an ESP board would be actively misleading.
+        const tooling =
+            board.kind === 'rp'
+                ? [
+                    `- probe-rs chip: \`${board.probeChip}\``,
+                    `- embassy features: \`${board.embassyFeatures.join(', ')}\``,
+                ]
+                : [
+                    `- espflash chip: \`${board.espChip}\``,
+                    `- flash: \`${board.flashSize}\``,
+                    board.displays.length > 0
+                        ? `- panel: \`${board.displays.map((d) => d.label).join(' / ')}\``
+                        : '- panel: none',
+                ];
+
         this.tooltip = new vscode.MarkdownString(
             [
                 `**${board.name}**`,
                 '',
                 board.notes,
                 '',
-                `- chip id: \`${board.probeChip}\``,
+                ...tooling,
                 `- target: \`${board.target}\``,
-                `- embassy features: \`${board.embassyFeatures.join(', ')}\``,
             ].join('\n'),
         );
         this.contextValue = 'board';

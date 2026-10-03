@@ -8,6 +8,7 @@ const {
     allTargets,
     BOARD_CATALOG_VERSION,
 } = compiled('boards/catalog');
+const { rpBoards } = require('../../lib/boards');
 
 test('the catalog contains the wired boards and their wireless siblings', () => {
     for (const id of ['pico', 'pico2', 'picow', 'pico2w']) {
@@ -89,8 +90,8 @@ function parseFlashSize(text) {
     return Number(match[1]) * 1024;
 }
 
-test('every board declares the shared embassy features', () => {
-    for (const board of BOARDS) {
+test('every RP board declares the shared embassy features', () => {
+    for (const board of rpBoards()) {
         const features = board.embassyFeatures;
         for (const required of ['defmt', 'unstable-pac', 'time-driver', 'critical-section-impl', 'executor-thread', 'executor-interrupt']) {
             ok(features.includes(required), `${board.id} is missing feature "${required}"`);
@@ -98,8 +99,8 @@ test('every board declares the shared embassy features', () => {
     }
 });
 
-test('every board declares exactly one chip feature', () => {
-    for (const board of BOARDS) {
+test('every RP board declares exactly one chip feature', () => {
+    for (const board of rpBoards()) {
         const chipFeatures = board.embassyFeatures.filter((f) => f === 'rp2040' || f.startsWith('rp235x'));
         equal(chipFeatures.length, 1, `${board.id} should declare exactly one chip feature`);
     }
@@ -109,18 +110,27 @@ test('every board describes its LED and where the LED lives', () => {
     for (const board of BOARDS) {
         ok(board.led, `${board.id} has no LED description`);
         if (board.led.kind === 'gpio') {
-            matches(board.led.pin, /^PIN_\d+$/, `${board.id} has an invalid LED pin`);
-        } else {
-            equal(board.led.kind, 'cyw43', `${board.id} LED kind`);
+            // RP boards name a PAC field (PIN_25); ESP boards use a plain GPIO number.
+            matches(
+                board.led.pin,
+                board.kind === 'rp' ? /^PIN_\d+$/ : /^\d+$/,
+                `${board.id} has an invalid LED pin`,
+            );
+        } else if (board.led.kind === 'cyw43') {
             ok(Number.isInteger(board.led.index) && board.led.index >= 0, `${board.id} needs a CYW43 LED index`);
+        } else {
+            // Some boards genuinely have no user LED (the ESP32-DevKitC V4 has only a power
+            // LED), and saying so is better than pointing at a pin that is not wired.
+            equal(board.led.kind, 'none', `${board.id} LED kind`);
         }
         ok(board.notes && board.notes.length > 10, `${board.id} needs notes for the wizard`);
         ok(board.vendor, `${board.id} needs a vendor`);
+        ok(board.target, `${board.id} needs a target triple`);
     }
 });
 
-test('wireless boards declare CYW43 wiring, wired boards do not', () => {
-    for (const board of BOARDS) {
+test('wireless RP boards declare CYW43 wiring, wired ones do not', () => {
+    for (const board of rpBoards()) {
         if (board.wireless === 'none') {
             notOk(board.cyw43, `${board.id} is wired but carries CYW43 wiring`);
             equal(board.led.kind, 'gpio', `${board.id} should drive its LED from a GPIO`);

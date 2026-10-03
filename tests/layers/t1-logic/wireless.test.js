@@ -155,7 +155,8 @@ test('the Wi-Fi template joins the network and logs the IP', () => {
         const main = filesFor(id, 'wifi').get('src/main.rs');
         contains(main, 'use cyw43::{aligned_bytes, JoinOptions};');
         contains(main, '.join(WIFI_SSID, JoinOptions::new(WIFI_PASSWORD.as_bytes()))');
-        contains(main, 'stack.wait_config_up().await');
+        // The wait is bounded so a silent DHCP server can be reported; see wifi-template.test.js.
+        contains(main, 'embassy_time::with_timeout(Duration::from_secs(30), stack.wait_config_up())');
         contains(main, 'config.address.address().octets()');
         contains(main, 'let mut rng = RoscRng;');
         contains(main, 'net_task');

@@ -31,7 +31,8 @@ export async function readActiveProject(): Promise<ActiveProject | undefined> {
         const cargoConfigToml = (await readFileIfPresent(vscode.Uri.joinPath(folder.uri, CONFIG_RELATIVE))) ?? '';
         const board = detectBoardFromProject({ cargoToml, cargoConfigToml });
         const chip =
-            board?.probeChip ?? /probe-rs\s+run\s+--chip\s+["']?([^\s"']+)["']?/.exec(cargoConfigToml)?.[1];
+            (board === undefined ? undefined : board.kind === 'rp' ? board.probeChip : board.espChip) ??
+            /probe-rs\s+run\s+--chip\s+["']?([^\s"']+)["']?/.exec(cargoConfigToml)?.[1];
         return { folder: folder.uri, cargoToml, cargoConfigToml, board, chip };
     }
     return undefined;

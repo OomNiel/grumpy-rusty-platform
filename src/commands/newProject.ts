@@ -11,6 +11,7 @@ import {
     templatesFor,
 } from '../generate/files';
 import { installFirmwareIntoProject } from '../toolchain/cyw43FirmwareRunner';
+import { ensureEspToolchain } from './espToolchainCommands';
 import { runInTerminal } from './terminal';
 
 async function pickBoard(preferredId: string | undefined): Promise<BoardProfile | undefined> {
@@ -153,8 +154,18 @@ export function registerNewProjectCommand(output: vscode.OutputChannel): vscode.
             );
         }
 
+        // An ESP project cannot be built or flashed without the Xtensa toolchain, and the
+        // natural moment to set it up is here, when the project that needs it appears.
+        if (board.kind === 'esp') {
+            await ensureEspToolchain(output);
+        }
+
         // Wireless boards need the CYW43 blobs next to the generated firmware/README.md.
-        const blobNames = requiredFirmware(board, template).map((blob) => blob.fileName);
+        // Only RP boards have a CYW43, so an ESP project has nothing to copy here.
+        const blobNames =
+            board.kind === 'rp'
+                ? requiredFirmware(board, template).map((blob) => blob.fileName)
+                : [];
         if (blobNames.length > 0) {
             try {
                 await installFirmwareIntoProject(target, blobNames, { output });

@@ -1,4 +1,9 @@
-import { BoardProfile } from '../boards/types';
+import { BoardProfile, RpBoardProfile, isEspBoard } from '../boards/types';
+import { binaryNameFrom, crateNameFrom } from './naming';
+import { defaultTemplateForEsp, generateEspProjectFiles, templatesForEsp } from './esp';
+
+// Re-exported so every existing caller and test can keep importing these from here.
+export { binaryNameFrom, crateNameFrom, isAcceptableProjectName } from './naming';
 
 /**
  * Pure project generator.
@@ -34,7 +39,7 @@ export const CRATE_VERSIONS = {
 
 // ------------------------------------------------------------------ templates
 
-export type AppTemplate = 'blinky' | 'wifi' | 'wifi-bluetooth';
+export type AppTemplate = 'blinky' | 'wifi' | 'wifi-bluetooth' | 'display';
 
 export interface AppTemplateInfo {
     id: AppTemplate;
@@ -47,6 +52,9 @@ export interface AppTemplateInfo {
  * (the wizard asks); wired boards only have a plain LED blinky.
  */
 export function templatesFor(board: BoardProfile): AppTemplateInfo[] {
+    if (isEspBoard(board)) {
+        return templatesForEsp(board);
+    }
     if (board.wireless === 'none') {
         return [
             {
@@ -81,6 +89,9 @@ export function isTemplateValidFor(board: BoardProfile, template: AppTemplate): 
 }
 
 export function defaultTemplateFor(board: BoardProfile): AppTemplate {
+    if (isEspBoard(board)) {
+        return defaultTemplateForEsp(board);
+    }
     return board.wireless === 'none' ? 'blinky' : 'wifi';
 }
 
@@ -96,7 +107,7 @@ export interface FirmwareBlob {
  * CYW43 blobs a project needs, in the order they are presented. Copied into
  * `firmware/` by the wizard; see cyw43Firmware.ts for the pinned hashes.
  */
-export function requiredFirmware(board: BoardProfile, template: AppTemplate): FirmwareBlob[] {
+export function requiredFirmware(board: RpBoardProfile, template: AppTemplate): FirmwareBlob[] {
     if (board.wireless !== 'cyw43') {
         return [];
     }
@@ -125,50 +136,28 @@ export interface GenerateOptions {
     projectName: string;
     /** Defaults to the board's natural template. */
     template?: AppTemplate;
+    /** Wizard answers for the board's options (panel revisions). */
+    choices?: Record<string, string>;
 }
 
-/** Cargo package name: lowercase, `-`-separated, `[a-z0-9_-]`, must start with a letter. */
-export function crateNameFrom(projectName: string): string {
-    const normalised = projectName
-        .trim()
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, '-')
-        .replace(/-{2,}/g, '-')
-        .replace(/^-+|-+$/g, '');
-    if (normalised === '') {
-        return 'firmware';
-    }
-    return /^[a-z]/.test(normalised) ? normalised : `fw-${normalised}`;
-}
-
-/**
- * The on-disk binary name Cargo produces for the default bin target.
- *
- * Cargo uses the package name **verbatim**: hyphens are NOT converted to
- * underscores. Verified against cargo 1.99 by the t4-e2e layer, which asserts
- * this exact artefact name — do not "fix" it to the underscore form.
- */
-export function binaryNameFrom(projectName: string): string {
-    return crateNameFrom(projectName);
-}
-
-export function isAcceptableProjectName(projectName: string): true | string {
-    const trimmed = projectName.trim();
-    if (trimmed === '') {
-        return 'Enter a project name.';
-    }
-    if (/[\\/:*?"<>|]/.test(trimmed)) {
-        return 'Project name cannot contain \\ / : * ? " < > |';
-    }
-    if (trimmed === '.' || trimmed === '..') {
-        return 'Invalid project name.';
-    }
-    return true;
-}
+// The naming helpers (crateNameFrom, binaryNameFrom, isAcceptableProjectName) now live in
+// ./naming.ts so the ESP generator can use them without an import cycle. They are
+// re-exported at the top of this file, so nothing that imports them from here changes.
 
 export function generateProjectFiles(options: GenerateOptions): GeneratedFile[] {
     const { board, projectName } = options;
     const template = options.template ?? defaultTemplateFor(board);
+
+    // Espressif projects share nothing with the RP layout below, so they are generated
+    // by their own module -- see generate/esp.ts for why that split is worth having.
+    if (isEspBoard(board)) {
+        return generateEspProjectFiles({
+            board,
+            projectName,
+            template,
+            choices: options.choices,
+        });
+    }
 
     if (!isTemplateValidFor(board, template)) {
         throw new Error(
@@ -204,12 +193,12 @@ export function generateProjectFiles(options: GenerateOptions): GeneratedFile[] 
 
 // ---------------------------------------------------------------------- Cargo
 
-function embassyDependencyLine(board: BoardProfile): string {
+function embassyDependencyLine(board: RpBoardProfile): string {
     const features = board.embassyFeatures.map((f) => `"${f}"`).join(', ');
     return `embassy-rp = { version = "${CRATE_VERSIONS.embassyRp}", features = [${features}] }`;
 }
 
-function cargoToml(board: BoardProfile, crateName: string, template: AppTemplate): string {
+function cargoToml(board: RpBoardProfile, crateName: string, template: AppTemplate): string {
     const wireless = board.wireless === 'cyw43';
     const bluetooth = template === 'wifi-bluetooth';
 
@@ -272,7 +261,7 @@ opt-level = "s"
 `;
 }
 
-function cargoConfigToml(board: BoardProfile): string {
+function cargoConfigToml(board: RpBoardProfile): string {
     return `# Generated by Grumpy's Rusty Platform for VS Code.
 [target.'cfg(all(target_arch = "arm", target_os = "none"))']
 runner = "probe-rs run --chip ${board.probeChip}"
@@ -285,7 +274,7 @@ DEFMT_LOG = "debug"
 `;
 }
 
-function rustToolchainToml(board: BoardProfile): string {
+function rustToolchainToml(board: RpBoardProfile): string {
     return `# Pins the toolchain channel and makes rustup fetch the embedded target on first build.
 [toolchain]
 channel = "stable"
@@ -296,7 +285,7 @@ profile = "minimal"
 
 // --------------------------------------------------------------------- linker
 
-function memoryX(board: BoardProfile): string {
+function memoryX(board: RpBoardProfile): string {
     const { memory } = board;
     const lines: string[] = [];
     lines.push(`/* Generated by Grumpy's Rusty Platform for VS Code. */`);
@@ -331,7 +320,14 @@ function memoryX(board: BoardProfile): string {
         lines.push('    } > FLASH');
         lines.push('} INSERT AFTER .vector_table;');
         lines.push('');
-        lines.push('_stext = ADDR(.start_block) + SIZEOF(.start_block);');
+        lines.push('/* Move .text to just after the boot info — and keep it aligned. cortex-m-rt');
+        lines.push('   declares this symbol as PROVIDE(_stext = ALIGN(ADDR(.vector_table) +');
+        lines.push('   SIZEOF(.vector_table), ALIGNOF(.text))), and PROVIDE only applies when the');
+        lines.push('   symbol is still undeclared: a plain assignment here silently throws that');
+        lines.push('   ALIGN() away, and rust-lld warns that .text is not a multiple of its');
+        lines.push('   alignment (measured: 0x1000013c with align 8). Embassy\'s example has the');
+        lines.push('   same unconditional line; this keeps the intent and the alignment. */');
+        lines.push('_stext = ALIGN(ADDR(.start_block) + SIZEOF(.start_block), ALIGNOF(.text));');
         lines.push('');
         lines.push('SECTIONS {');
         lines.push('    /* Picotool `binary info` entries. */');
@@ -347,7 +343,7 @@ function memoryX(board: BoardProfile): string {
     return `${lines.join('\n')}\n`;
 }
 
-function buildRs(board: BoardProfile): string {
+function buildRs(board: RpBoardProfile): string {
     const linkArgs = board.linkArgs
         .map((arg) => `    println!("cargo:rustc-link-arg-bins=${arg}");`)
         .join('\n');
@@ -377,14 +373,14 @@ ${linkArgs}
 
 // ----------------------------------------------------------------------- main
 
-function mainHeader(board: BoardProfile, template: AppTemplate): string {
+function mainHeader(board: RpBoardProfile, template: AppTemplate): string {
     return `// Generated by Grumpy's Rusty Platform for VS Code.
 // Target: ${board.name} (${board.family}, ${board.target})
 // Template: ${template}
 `;
 }
 
-function mainRs(board: BoardProfile, template: AppTemplate): string {
+function mainRs(board: RpBoardProfile, template: AppTemplate): string {
     if (board.wireless === 'cyw43') {
         return template === 'blinky'
             ? mainRsCyw43Led(board)
@@ -393,7 +389,7 @@ function mainRs(board: BoardProfile, template: AppTemplate): string {
     return mainRsWired(board);
 }
 
-function mainRsWired(board: BoardProfile): string {
+function mainRsWired(board: RpBoardProfile): string {
     const pin = board.led.kind === 'gpio' ? board.led.pin : 'PIN_25';
     return `${mainHeader(board, 'blinky')}
 #![no_std]
@@ -410,6 +406,11 @@ use panic_probe as _;
 // explicitly here (there is no \`platform-cortex-m\` feature on embassy-executor).
 #[embassy_executor::main(executor = "embassy_rp::executor::Executor", entry = "cortex_m_rt::entry")]
 async fn main(_spawner: Spawner) {
+    // RTT keeps the previous image's bytes after a reset, and a stale frame can decode into
+    // nonsense (defmt's own strings show up as log values). The current run begins at the last
+    // line like this one.
+    info!("=== {} {} starting ===", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+
     let p = embassy_rp::init(Default::default());
     info!("Hello from Grumpy's Rusty Platform on ${board.family}!");
 
@@ -426,12 +427,15 @@ async fn main(_spawner: Spawner) {
 }
 
 /** Shared CYW43 bring-up block, identical apart from the pin and divider names. */
-function cyw43BringUp(board: BoardProfile): string {
+function cyw43BringUp(board: RpBoardProfile): string {
     const wiring = board.cyw43;
     if (!wiring) {
         throw new Error(`${board.id} is marked wireless but has no CYW43 wiring`);
     }
-    return `    let p = embassy_rp::init(Default::default());
+    return `    // See the note in the API template: this marks where the current run starts.
+    info!("=== {} {} starting ===", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+
+    let p = embassy_rp::init(Default::default());
 
     // The firmware blobs are in ./firmware and are verified by the project wizard.
     let fw = aligned_bytes!("../firmware/43439A0.bin");
@@ -457,7 +461,7 @@ function cyw43BringUp(board: BoardProfile): string {
 `;
 }
 
-function mainRsCyw43Led(board: BoardProfile): string {
+function mainRsCyw43Led(board: RpBoardProfile): string {
     const dividerImport = board.cyw43?.clockDivider ?? 'DEFAULT_CLOCK_DIVIDER';
     const ledIndex = board.led.kind === 'cyw43' ? board.led.index : 0;
     return `${mainHeader(board, 'blinky')}
@@ -513,7 +517,7 @@ ${cyw43BringUp(board)}
 `;
 }
 
-function mainRsWifi(board: BoardProfile, withBluetooth: boolean): string {
+function mainRsWifi(board: RpBoardProfile, withBluetooth: boolean): string {
     const template: AppTemplate = withBluetooth ? 'wifi-bluetooth' : 'wifi';
     const dividerImport = board.cyw43?.clockDivider ?? 'DEFAULT_CLOCK_DIVIDER';
     const ledIndex = board.led.kind === 'cyw43' ? board.led.index : 0;
@@ -556,7 +560,11 @@ use embassy_time::{Duration, Timer};
 use panic_probe as _;
 use static_cell::StaticCell;
 
-// Credentials are read at *compile* time so they never end up in your source tree:
+// Credentials are read at *compile* time so they never end up in your source tree.
+//
+// In VS Code, press Flash or Debug: the extension asks for the network name and password the
+// first time and remembers them, so nothing has to be typed again. Building from a terminal
+// instead, pass them on the command line:
 //
 //   WIFI_SSID="my-ssid" WIFI_PASSWORD="secret" cargo run --release
 //
@@ -569,6 +577,38 @@ const WIFI_PASSWORD: &str = match option_env!("WIFI_PASSWORD") {
     Some(value) => value,
     None => "YOUR_WIFI_PASSWORD",
 };
+
+// Optional static addressing, for networks whose DHCP server never answers. Set both and DHCP is
+// skipped entirely - the credential prompt has a field for it, or pass them when building from a
+// terminal:
+//
+//   WIFI_STATIC_IP="192.168.1.50/24" WIFI_GATEWAY="192.168.1.1" cargo run --release
+//
+// Leave them unset to use DHCP, which is the default.
+const STATIC_IP: Option<&str> = option_env!("WIFI_STATIC_IP");
+const STATIC_GATEWAY: Option<&str> = option_env!("WIFI_GATEWAY");
+
+/// Parse the static configuration, or nothing when DHCP should be used. Everything here is a
+/// compile-time string, so a typo is caught by the log rather than by a panic.
+fn static_config() -> Option<embassy_net::StaticConfigV4> {
+    use core::str::FromStr;
+
+    let (host, prefix) = STATIC_IP?.split_once('/')?;
+    let prefix: u8 = prefix.parse().ok()?;
+    if prefix > 32 {
+        return None;
+    }
+    let address = embassy_net::Ipv4Cidr::new(embassy_net::Ipv4Address::from_str(host).ok()?, prefix);
+    let gateway = match STATIC_GATEWAY {
+        Some(text) => Some(embassy_net::Ipv4Address::from_str(text).ok()?),
+        None => None,
+    };
+    Some(embassy_net::StaticConfigV4 {
+        address,
+        gateway,
+        dns_servers: Default::default(),
+    })
+}
 
 bind_interrupts!(struct Irqs {
     ${board.cyw43?.pio}_IRQ_0 => InterruptHandler<${board.cyw43?.pio}>;
@@ -606,7 +646,13 @@ ${cyw43BringUp(board)}
     static RESOURCES: StaticCell<embassy_net::StackResources<3>> = StaticCell::new();
     let (stack, runner) = embassy_net::new(
         net_device,
-        embassy_net::Config::dhcpv4(Default::default()),
+        match static_config() {
+            Some(fixed) => {
+                info!("using a static IP: WIFI_STATIC_IP is set, so DHCP is skipped");
+                embassy_net::Config::ipv4_static(fixed)
+            }
+            None => embassy_net::Config::dhcpv4(Default::default()),
+        },
         RESOURCES.init(embassy_net::StackResources::new()),
         seed,
     );
@@ -620,9 +666,32 @@ ${cyw43BringUp(board)}
         info!("join failed: {:?}", err);
         Timer::after_secs(2).await;
     }
+    info!("associated to {}", WIFI_SSID);
 
-    info!("waiting for DHCP...");
-    stack.wait_config_up().await;
+    // A bare wait_config_up() hides the only interesting failure here: smoltcp retries the DHCP
+    // REQUEST/ACK exchange for roughly 50 s and then starts over, forever, logging only
+    // "DHCP request retries exceeded, restarting discovery". Waiting with a timeout lets us say
+    // what that means, once per attempt, and keep trying — a router that answers late still works.
+    // Only one of the two paths was taken, and the log has to say which: "using a static IP"
+    // followed by "waiting for DHCP" is how a reader stops trusting the output.
+    let waiting_for_dhcp = STATIC_IP.is_none();
+    if waiting_for_dhcp {
+        info!("waiting for DHCP...");
+    } else {
+        info!("waiting for the network stack...");
+    }
+    loop {
+        if let Ok(()) = embassy_time::with_timeout(Duration::from_secs(30), stack.wait_config_up()).await {
+            break;
+        }
+        if waiting_for_dhcp {
+            warn!(
+                "no DHCP lease after 30 s - the exchange did not complete. Still retrying; set WIFI_STATIC_IP to skip DHCP." /* superseded wording follows: \\\\\n             server on the LAN (a repeater or an old router), and make sure the access point has a \\\\\n             2.4 GHz radio. Still retrying; set WIFI_STATIC_IP to skip DHCP entirely."
+            */);
+        } else {
+            warn!("Wi-Fi is associated but the network stack never came up; check WIFI_STATIC_IP and WIFI_GATEWAY.");
+        }
+    }
     if let Some(config) = stack.config_v4() {
         let octets = config.address.address().octets();
         info!("Wi-Fi is up - IP {}.{}.{}.{}", octets[0], octets[1], octets[2], octets[3]);
@@ -641,7 +710,7 @@ ${bluetoothSection}
 
 // --------------------------------------------------------------- small files
 
-function vscodeSettings(board: BoardProfile): string {
+function vscodeSettings(board: RpBoardProfile): string {
     return `${JSON.stringify(
         {
             'rust-analyzer.cargo.target': board.target,
@@ -654,9 +723,26 @@ function vscodeSettings(board: BoardProfile): string {
     )}\n`;
 }
 
-function launchJson(board: BoardProfile, binaryName: string): string {
+function launchJson(board: RpBoardProfile, binaryName: string): string {
     // Schema verified against probe-rs/vscode package.json:
-    // `probe-rs-debug` requires `chip` and `coreConfigs`.
+    // `probe-rs-debug` requires `chip` and `coreConfigs`, and `coreConfigs.items` requires
+    // `programBinary`.
+    //
+    // `flashingConfig.flashingEnabled` defaults to *false*, which makes a debug session attach to
+    // whatever is already on the chip and decode its RTT with **this** ELF — the two then disagree,
+    // and defmt resolves frames against the wrong string table, printing lines that were never
+    // logged. So a `launch` configuration flashes the build it debugs.
+    //
+    // Debugging always uses the debug build. A release build is optimised: the compiler merges or
+    // removes lines, so the debugger has no address to bind some breakpoints to and VS Code leaves
+    // them hollow. Every configuration below points at that one build.
+    const debugConfigs = [
+        {
+            coreIndex: 0,
+            programBinary: `target/${board.target}/debug/${binaryName}`,
+            rttEnabled: true,
+        },
+    ];
     return `${JSON.stringify(
         {
             version: '0.2.0',
@@ -667,13 +753,45 @@ function launchJson(board: BoardProfile, binaryName: string): string {
                     name: `Flash & Debug (${board.family})`,
                     cwd: '${workspaceFolder}',
                     chip: board.probeChip,
-                    coreConfigs: [
-                        {
-                            coreIndex: 0,
-                            programBinary: `target/${board.target}/debug/${binaryName}`,
-                            rttEnabled: true,
-                        },
-                    ],
+                    flashingConfig: { flashingEnabled: true },
+                    coreConfigs: debugConfigs,
+                },
+                {
+                    // The same thing, but stopped on the reset vector so the first instructions can
+                    // be stepped through or a breakpoint placed before the code runs.
+                    type: 'probe-rs-debug',
+                    request: 'launch',
+                    name: `Flash & Halt at Reset (${board.family})`,
+                    cwd: '${workspaceFolder}',
+                    chip: board.probeChip,
+                    flashingConfig: { flashingEnabled: true, haltAfterReset: true },
+                    coreConfigs: debugConfigs,
+                },
+                {
+                    // Debugging a build that is already on the chip, without writing it. A `launch`
+                    // only flashes when `flashingEnabled` is true, so the flash contents are left
+                    // alone - but the target IS reset, which is what makes breakpoints in `main` and
+                    // in startup code bind. Without this entry, the only no-flash choice was `attach`,
+                    // and an attach session can never stop in code that has already run.
+                    type: 'probe-rs-debug',
+                    request: 'launch',
+                    name: `Restart & Debug, no flashing (${board.family})`,
+                    cwd: '${workspaceFolder}',
+                    chip: board.probeChip,
+                    flashingConfig: { flashingEnabled: false },
+                    coreConfigs: debugConfigs,
+                },
+                {
+                    // Attaching never flashes and never resets: probe-rs rejects `flashing_enabled`,
+                    // `halt_after_reset` and the rest for an `attach` request outright. It is for
+                    // looking at a program that is already running, so it can only stop in code that
+                    // runs again (a loop, an interrupt) - never in `main` or startup code.
+                    type: 'probe-rs-debug',
+                    request: 'attach',
+                    name: `Attach - keeps it running (${board.family})`,
+                    cwd: '${workspaceFolder}',
+                    chip: board.probeChip,
+                    coreConfigs: debugConfigs,
                 },
             ],
         },
@@ -688,7 +806,7 @@ function gitignore(): string {
 `;
 }
 
-function firmwareReadme(board: BoardProfile, template: AppTemplate): string {
+function firmwareReadme(board: RpBoardProfile, template: AppTemplate): string {
     const rows = requiredFirmware(board, template)
         .map((blob) => `| \`${blob.fileName}\` | ${blob.purpose} | ${blob.size} B |`)
         .join('\n');
@@ -712,7 +830,7 @@ These blobs are **not** covered by this project's licence. See
 `;
 }
 
-function readme(board: BoardProfile, crateName: string, template: AppTemplate): string {
+function readme(board: RpBoardProfile, crateName: string, template: AppTemplate): string {
     const wireless = board.wireless === 'cyw43';
     const ledLine = wireless
         ? 'The on-board LED is connected to the CYW43 wireless chip, not to GPIO25.'
@@ -722,10 +840,21 @@ function readme(board: BoardProfile, crateName: string, template: AppTemplate): 
             ? `
 ## Wi-Fi credentials
 
-Credentials are read at compile time so they never end up in your source tree:
+Credentials are read at *compile* time, so they never end up in your source tree.
+
+The easy way: press **Flash** or **Debug** - Grumpy's Rusty Platform asks for the network name
+and password the first time and remembers them (in VS Code's keyring, not in this project).
+
+From a plain terminal, pass them yourself:
 
 \`\`\`sh
 WIFI_SSID="my-ssid" WIFI_PASSWORD="secret" cargo run --release
+\`\`\`
+
+If your router's DHCP never answers, add a fixed address - the prompt has a field for it too:
+
+\`\`\`sh
+WIFI_STATIC_IP="192.168.1.50/24" WIFI_GATEWAY="192.168.1.1" cargo run --release
 \`\`\`
 
 The first flash always runs the full image; use \`--release\` for anything real.
@@ -749,5 +878,50 @@ ${wifiNote}
 cargo build          # compile
 cargo run --release  # flash and attach defmt logs (uses the cargo runner in .cargo/config.toml)
 \`\`\`
+
+## Debugging
+
+The **Debug** button (or F5) builds the debug profile, flashes it and starts a session with defmt
+over RTT. Nothing stops on its own - the firmware runs, and the debugger halts it when something you
+asked for happens. Four configurations ship with the project, all of them in the Run and Debug
+dropdown:
+
+| Configuration | Flashes? | Resets? | Stops when |
+|---|---|---|---|
+| \`Flash & Debug\` | yes | yes | at your breakpoints |
+| \`Flash & Halt at Reset\` | yes | yes | on the reset vector, before any of your code runs |
+| \`Restart & Debug, no flashing\` | **no** | yes | at your breakpoints - anywhere, including \`main\` |
+| \`Attach - keeps it running\` | **no** | **no** | at your breakpoints, but only in code that runs again |
+
+Every configuration uses the **debug** build: a release build is optimised, so the compiler merges or
+removes lines and breakpoints there show up hollow. \`Flash & Debug\` therefore always flashes the
+debug build before starting.
+
+* **A breakpoint in \`main\` needs a reset.** \`Attach - keeps it running\` joins a program that is
+already executing, and probe-rs does not allow an attach session to reset the chip, so code that has
+already run - \`main\`, the boot banner, the Wi-Fi setup - can never be reached again. Its
+breakpoints look solid in the gutter and simply never fire. Use it for behaviour that repeats (a
+loop, an interrupt, a timer), and \`Restart & Debug, no flashing\` when you want to stop in startup
+code without writing the chip.
+* **Breakpoints need the debug build.** A release build is optimised: the compiler merges or removes
+lines, so the debugger has no address to bind them to and VS Code leaves those breakpoints hollow
+(unverified). \`Flash & Debug\` always gives you the debug build.
+* **Set a breakpoint** in the editor gutter (or F9) on a line you care about - for example the line
+after \`embassy_rp::init(Default::default())\` - then start the session. Locals, the call stack and
+stepping work from there. Adding a breakpoint to a *running* session is handled by the debugger; on
+an embedded target the reliable order is pause (halt), set the breakpoint, continue.
+* **To debug without reflashing**, pick either entry that does not flash. Both expect the debug
+build - the one **Flash** writes - because the code that runs must match the symbols: the picker
+marks the entry that matches the last flash, and the Debug command checks the chip against the build
+with \`probe-rs verify\` before starting (a 10 s read of the flash) and offers to flash instead when
+they disagree.
+* **Breakpoints are limited by the chip, not the probe:** ${board.family === 'RP2350' ? '8' : '4'} hardware
+breakpoints on this board. Conditional breakpoints and logpoints each take one, stepping needs one
+free (it is implemented with a temporary breakpoint), and past the limit the extra ones stay hollow
+with "No available hardware breakpoints".
+* **Halting stops the Wi-Fi and the timers**, and defmt output stops with them - that is expected,
+not a fault. \`Continue\` resumes both.
+* Stepping through \`async\` code can jump around: the compiler rewrites an \`async fn\` into a state
+machine, so one source line may be resumed from a different place than it was suspended.
 `;
 }

@@ -1,6 +1,8 @@
 import type { ExecFn, ExecResult } from '../util/exec';
 import { execFileFn, findExecutable } from '../util/exec';
 import { boardById } from '../boards/catalog';
+import * as fs from 'fs';
+import * as path from 'path';
 
 /**
  * Toolchain detection. No `vscode` import: everything here runs in plain Node and
@@ -30,6 +32,8 @@ export type ProbeDiagnosisKind =
     | 'none-connected'
     | 'firmware-outdated'
     | 'permission-denied'
+    /** Another program has the probe open - a `cargo run`, a Monitor terminal, a debug session. */
+    | 'probe-busy'
     | 'no-target'
     | 'unknown';
 
@@ -50,7 +54,7 @@ export interface ToolchainStatus {
     missingTargets: string[];
     probes: ProbeInfo[];
     probeDiagnosis: ProbeDiagnosis;
-    /** Linux only: whether a probe-rs udev rule is present. */
+    /** Linux only: whether this user can open a probe — see `probePermissionsWork`. */
     udevRulesPresent: boolean;
     /** True when a project can be built and flashed. */
     ready: boolean;
@@ -62,11 +66,102 @@ export interface DetectOptions {
     probeRsPath?: string;
     /** Target triples that must be installed (defaults to the board catalog). */
     requiredTargets: string[];
-    /** Injectable for tests; defaults to a real `fs.existsSync` check. */
+    /** Injectable for tests: whether a rule file grants probe access. Defaults to reading the disk. */
     udevRulesPresent?: () => boolean;
 }
 
-const UDEV_RULE_PATHS = ['/etc/udev/rules.d/69-probe-rs.rules', '/etc/udev/rules.d/99-probe-rs.rules'];
+/** Where Linux keeps its udev rules. */
+export const UDEV_RULES_DIR = '/etc/udev/rules.d';
+
+/**
+ * Probe vendors the installer's rule file covers (`UDEV_RULES_CONTENT` in `installPlan.ts`), in the
+ * same order. Listed here rather than imported from there because that module imports this one; a t1
+ * test holds the two together.
+ */
+export const PROBE_USB_VENDORS = ['2e8a', '0d28', '1366', '0483', '1a86', '1209', '03eb'];
+
+// `ATTR{idVendor}=="2e8a"` and `ATTRS{idVendor}=="2e8a"` are both seen in the wild, so the closing
+// brace is optional and the spacing is not assumed.
+const VENDOR_PATTERNS = PROBE_USB_VENDORS.map(
+    (vendor) => new RegExp(`idVendor\\s*\\}?\\s*==\\s*"${vendor}"`, 'i'),
+);
+/** A rule that names a device but grants nothing (a symlink, say) changes no permissions. */
+const ACCESS_GRANT = /(MODE|GROUP|OWNER)\s*=|TAG\s*\+?=/i;
+/**
+ * A rule scoped to another subsystem cannot be the probe's USB permission: the DataSafe alias grants
+ * access to the Pico's serial port, which no debugger opens.
+ */
+const OTHER_SUBSYSTEM = /SUBSYSTEMS?\s*==\s*"(?!usb)/i;
+
+export interface UdevRuleFile {
+    name: string;
+    text: string;
+}
+
+/**
+ * True when one of these rule files grants access to a probe vendor's USB devices.
+ *
+ * The extension writes `69-probe-rs.rules`, but it is not the only thing that can grant that access:
+ * Raspberry Pi's own installer drops `99-picoprobe.rules`, and a distro may ship its own. Accepting
+ * only our own file name is what printed "MISSING" on a bench that had been flashing all day.
+ */
+export function udevRuleGrantsProbeAccess(files: readonly UdevRuleFile[]): boolean {
+    return files.some((file) =>
+        file.text.split('\n').some((rawLine) => {
+            // Every one of these files carries commented-out examples; a `#` grants nothing.
+            const line = rawLine.trimStart();
+            if (line.startsWith('#')) {
+                return false;
+            }
+            return (
+                VENDOR_PATTERNS.some((pattern) => pattern.test(line))
+                && ACCESS_GRANT.test(line)
+                && !OTHER_SUBSYSTEM.test(line)
+            );
+        }),
+    );
+}
+
+/**
+ * True when probe-rs demonstrably got a probe open, which is the permission question that matters.
+ *
+ * Every kind listed here is only reached *after* the USB device was opened: the complaint is further
+ * along the chain (chip id, firmware version, SWD link) and no udev rule can fix those.
+ */
+export function probePermissionsWork(diagnosis: ProbeDiagnosis): boolean {
+    switch (diagnosis.kind) {
+        case 'ok':
+        case 'chip-not-autodetected':
+        case 'firmware-outdated':
+        case 'no-target':
+            return true;
+        default:
+            // `permission-denied` says the opposite, and `none-connected`/`unknown` say nothing at all.
+            return false;
+    }
+}
+
+/** Reads `/etc/udev/rules.d/*.rules`. A missing directory or unreadable file yields no entries. */
+export function readUdevRules(dir = UDEV_RULES_DIR): UdevRuleFile[] {
+    const files: UdevRuleFile[] = [];
+    let entries: string[];
+    try {
+        entries = fs.readdirSync(dir);
+    } catch {
+        return files;
+    }
+    for (const name of entries) {
+        if (!name.endsWith('.rules')) {
+            continue;
+        }
+        try {
+            files.push({ name, text: fs.readFileSync(path.join(dir, name), 'utf8') });
+        } catch {
+            // Unreadable: skip it rather than lose the rest of the list.
+        }
+    }
+    return files;
+}
 
 function firstLine(text: string): string {
     return text.split(/\r?\n/).find((l) => l.trim() !== '')?.trim() ?? '';
@@ -134,6 +229,25 @@ export function classifyProbeError(stderr: string): ProbeDiagnosis {
         return {
             kind: 'permission-denied',
             message: 'No permission to open the USB device. Install the probe-rs udev rules and reconnect the probe.',
+            raw: text,
+        };
+    }
+    // The probe is in the list, so the device exists - it just cannot be opened, which is what a
+    // second program trying to use it sees. Measured on the bench 2026-10-03, while `probe-rs run`
+    // was streaming RTT:
+    //
+    //     Error: Connecting to the chip was unsuccessful.
+    //     Caused by:
+    //         0: The debug probe could not be created.
+    //         1: The selected USB device could not be opened.
+    //
+    // It looks like a hardware fault and is only ever a program that did not let go.
+    if (/USB device could not be opened|debug probe could not be created|resource busy|already in use/i.test(text)) {
+        return {
+            kind: 'probe-busy',
+            message:
+                'Another program is holding the debug probe - a Rusty: flash or Rusty: monitor terminal, '
+                + 'or a debug session that is still running. Close or stop it, then try again.',
             raw: text,
         };
     }
@@ -224,10 +338,14 @@ export async function detectToolchain(
         }
     }
 
-    const udevRulesPresent =
+    const rulesFilePresent =
         process.platform !== 'linux'
             ? true
-            : (options.udevRulesPresent?.() ?? UDEV_RULE_PATHS.some(pathExists));
+            : (options.udevRulesPresent?.() ?? udevRuleGrantsProbeAccess(readUdevRules()));
+    // Opening a probe settles the question this check exists to answer, so it wins over the file
+    // scan: a machine can be perfectly usable with no rule file of ours (Raspberry Pi's installer
+    // writes its own), and telling that user to install what they already have is worse than useless.
+    const udevRulesPresent = rulesFilePresent || probePermissionsWork(probeDiagnosis);
 
     const ready = cargo.found && probeRs.found && missingTargets.length === 0;
 
@@ -245,18 +363,8 @@ export async function detectToolchain(
     };
 }
 
-function pathExists(candidate: string): boolean {
-    try {
-        // Deferred require keeps this module import-safe in tests.
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
-        const fs = require('fs') as typeof import('fs');
-        return fs.existsSync(candidate);
-    } catch {
-        return false;
-    }
-}
-
 /** Chip id a connected probe should be paired with, for a given board id. */
 export function chipForBoard(boardId: string): string | undefined {
-    return boardById(boardId)?.probeChip;
+    const board = boardById(boardId);
+    return board === undefined ? undefined : board.kind === 'rp' ? board.probeChip : board.espChip;
 }

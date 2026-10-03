@@ -12,10 +12,43 @@ import { UF2_FAMILIES, uf2FamilyForBoard } from './uf2';
  */
 
 export type FlashRoute =
-    /** Flash through the probe over SWD — the normal path. */
+    /** Flash through the probe over SWD — the normal path for RP boards. */
     | 'probe'
-    /** BOOTSEL + USB mass storage. */
-    | 'usb';
+    /** BOOTSEL + USB mass storage (RP boards with no usable probe). */
+    | 'usb'
+    /**
+     * USB serial through `espflash`. Not a fallback: an ESP32 has no SWD at all, so
+     * this is the only route that exists for it.
+     */
+    | 'usb-serial';
+
+/**
+ * True when this project is written over USB serial with espflash rather than through a probe.
+ *
+ * Worth its own predicate: the answer depends only on the board, so callers can take the ESP road
+ * without running a probe diagnosis first — `probe-rs` takes a second or two to answer a question
+ * that cannot change the outcome.
+ */
+export function usesSerialFlash(board: BoardProfile | undefined): boolean {
+    return board?.kind === 'esp';
+}
+
+/**
+ * The route a *project* should take.
+ *
+ * The board decides first, because an ESP board has no probe route to be diagnosed:
+ * asking whether a debug probe is usable is meaningless when the answer would not
+ * change the outcome. RP boards keep the diagnosis-driven choice below.
+ */
+export function flashRouteForProject(
+    board: BoardProfile | undefined,
+    diagnosis: ProbeDiagnosisKind,
+): FlashRoute {
+    if (usesSerialFlash(board)) {
+        return 'usb-serial';
+    }
+    return flashRouteFor(diagnosis);
+}
 
 /**
  * `chip-not-autodetected` deserves a note: on RP235x, `probe-rs info` fails to identify the
@@ -34,6 +67,7 @@ export function flashRouteFor(diagnosis: ProbeDiagnosisKind): FlashRoute {
         case 'none-connected':
         case 'firmware-outdated':
         case 'permission-denied':
+        case 'probe-busy':
         case 'no-target':
         case 'unknown':
             return 'usb';
@@ -55,6 +89,8 @@ export function routeReason(diagnosis: ProbeDiagnosisKind): string {
             return 'The debug probe firmware is too old for probe-rs to open it.';
         case 'permission-denied':
             return 'USB permissions are missing, so the probe cannot be opened.';
+        case 'probe-busy':
+            return 'Another program is holding the debug probe (a flash or monitor terminal, or a debug session that is still running). Close it first, or flash over USB below.';
         case 'no-target':
             return 'The probe is connected but no target answered on SWD.';
         default:
@@ -70,6 +106,11 @@ export function uf2FamilyForProject(
     board: BoardProfile | undefined,
     chip: string | undefined,
 ): number | undefined {
+    if (board?.kind === 'esp') {
+        // An ESP image is not a UF2 file at all: espflash writes the flash directly, so
+        // there is no family id to check and nothing to warn about.
+        return undefined;
+    }
     if (board) {
         return uf2FamilyForBoard(board);
     }

@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { detectToolchain, ToolchainStatus } from './toolchain/detect';
 import { execFileFn } from './util/exec';
-import { allTargets } from './boards/catalog';
+import { rpTargets } from './boards/catalog';
 
 /**
  * Shared, cached toolchain state. Views and the status bar subscribe to
@@ -29,7 +29,7 @@ export class RustyState implements vscode.Disposable {
             this.current = await detectToolchain(execFileFn, {
                 cargoPath: config.get<string>('cargoPath'),
                 probeRsPath: config.get<string>('probeRsPath'),
-                requiredTargets: allTargets(),
+                requiredTargets: rpTargets(),
             });
             this.log(
                 `toolchain: cargo=${this.current.cargo.version ?? 'missing'} ` +

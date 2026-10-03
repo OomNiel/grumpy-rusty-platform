@@ -108,7 +108,11 @@ if (process.platform === 'win32') {
             { SHIM_TARGETS: [PICO_TARGET, 'x86_64-unknown-linux-gnu'].join('\n') },
             () => detectToolchain(execFileFn, options()),
         );
-        equal(status.missingTargets, [PICO2_TARGET]);
+        // Every required triple that is not installed is missing -- expressed against the
+        // required list itself, so adding a board to the catalog cannot make this lie. The
+        // host triple in SHIM_TARGETS must never be reported as required.
+        equal(status.missingTargets, ALL_TARGETS.filter((triple) => triple !== PICO_TARGET));
+        notOk(status.missingTargets.includes('x86_64-unknown-linux-gnu'));
         equal(status.ready, false);
     });
 
@@ -175,6 +179,29 @@ if (process.platform === 'win32') {
             detectToolchain(execFileFn, options({ udevRulesPresent: () => true })),
         );
         equal(withRules.udevRulesPresent, true);
+    });
+
+    test('a probe that opens outranks the rule-file scan', async () => {
+        // The bench case: Raspberry Pi's own installer wrote the rule, so nothing of ours is on disk
+        // - and the probe still opens, which is the only permission question that matters.
+        const opened = await withEnv(
+            { SHIM_TARGETS: ALL_TARGETS.join('\n'), SHIM_PROBE_LIST: REAL_PROBE },
+            () => detectToolchain(execFileFn, options({ udevRulesPresent: () => false })),
+        );
+        equal(opened.probeDiagnosis.kind, 'ok');
+        equal(opened.udevRulesPresent, true, 'a working probe proves the USB side is fine');
+
+        // Permission denied is what the rule file exists to fix, so keep warning about it.
+        const denied = await withEnv(
+            {
+                SHIM_TARGETS: ALL_TARGETS.join('\n'),
+                SHIM_PROBE_LIST: REAL_PROBE,
+                SHIM_INFO_ERR: 'Error: Failed to open probe: Permission denied (os error 13)',
+            },
+            () => detectToolchain(execFileFn, options({ udevRulesPresent: () => false })),
+        );
+        equal(denied.probeDiagnosis.kind, 'permission-denied');
+        equal(denied.udevRulesPresent, false, 'this is the case the installer is for');
     });
 
     test('a failing rustup target listing does not throw', async () => {

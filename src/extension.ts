@@ -2,9 +2,14 @@ import * as vscode from 'vscode';
 import { RustyState } from './state';
 import { BoardsViewProvider } from './ui/boardsView';
 import { ProjectViewProvider } from './ui/projectView';
+import { ControlsViewProvider } from './ui/controlsView';
 import { StatusBarView } from './ui/statusBar';
 import { registerNewProjectCommand } from './commands/newProject';
 import { registerProjectCommands } from './commands/projectCommands';
+import { registerDebugCommand } from './commands/debugProject';
+import { trackDebugSessions } from './project/debugSessions';
+import { registerLibraryCommands } from './commands/libraryCommands';
+import { registerWifiCommands } from './commands/wifiCommands';
 import { registerToolchainCommands } from './commands/toolchainCommands';
 import { disposeTerminals } from './commands/terminal';
 
@@ -13,20 +18,29 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const state = new RustyState(output);
     const boardsView = new BoardsViewProvider();
     const projectView = new ProjectViewProvider(state);
+    const controlsView = new ControlsViewProvider(state);
     const statusBar = new StatusBarView(state);
 
     context.subscriptions.push(
         output,
         state,
         statusBar,
+        projectView,
+        controlsView,
         vscode.window.registerTreeDataProvider('rustyPlatform.boards', boardsView),
         vscode.window.registerTreeDataProvider('rustyPlatform.project', projectView),
+        vscode.window.registerTreeDataProvider('rustyPlatform.controls', controlsView),
         registerNewProjectCommand(output),
-        ...registerProjectCommands(state, output),
+        ...registerProjectCommands(state, output, context),
+        ...registerDebugCommand(state, output, context),
+        ...registerWifiCommands(context, output),
+        trackDebugSessions(),
+        ...registerLibraryCommands(state, output),
         ...registerToolchainCommands(state, output),
         state.onDidChange(() => {
             statusBar.update();
             projectView.refresh();
+            controlsView.refresh();
         }),
         vscode.commands.registerCommand('rustyPlatform.refresh', async () => {
             boardsView.refresh();

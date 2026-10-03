@@ -13,6 +13,7 @@ import {
     waitForVolumeToDisappear,
 } from './bootsel';
 import { findElfArtifactPath } from './cargoArtifacts';
+import type { BuildProfile } from '../project/launchConfig';
 import { siliconForUf2Family } from './route';
 import { distUf2Path, elfToUf2 } from './uf2';
 
@@ -47,6 +48,10 @@ export interface UsbFlashOptions {
     folder: vscode.Uri;
     /** UF2 family for this project's silicon (see `uf2FamilyForProject`). */
     familyId: number;
+    /** Which build to write; both routes use `FLASH_PROFILE`. */
+    profile: BuildProfile;
+    /** Credentials and log level, so the image is the one the debug configurations expect. */
+    env?: NodeJS.ProcessEnv;
 }
 
 export interface UsbFlashResult {
@@ -61,9 +66,10 @@ function run(
     command: string,
     args: string[],
     cwd: string,
+    env?: NodeJS.ProcessEnv,
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
     return new Promise((resolve, reject) => {
-        const child = spawn(command, args, { cwd, env: augmentedEnv() });
+        const child = spawn(command, args, { cwd, env: env ?? augmentedEnv() });
         let stdout = '';
         let stderr = '';
         child.stdout.on('data', (chunk) => {
@@ -77,22 +83,31 @@ function run(
     });
 }
 
-/** Builds in release mode and returns the path of the binary cargo linked. */
-export async function buildReleaseElf(
+/**
+ * Builds the project and returns the path of the binary cargo linked.
+ *
+ * `profile` comes from the caller and is the build that will be written *and* debugged - see
+ * `flash/profile.ts` for why both are the same. `env` carries what the build has to see beyond the
+ * plain environment: the Wi-Fi credentials the wireless templates bake in at compile time, and an
+ * optional `DEFMT_LOG`. Without it a flash writes an image with the placeholder credentials.
+ */
+export async function buildElf(
     folder: vscode.Uri,
     output: vscode.OutputChannel,
+    profile: BuildProfile,
+    env?: NodeJS.ProcessEnv,
 ): Promise<string> {
     const cargo = findExecutable('cargo');
     if (!cargo) {
         throw new Error('cargo was not found. Install the Rust toolchain first.');
     }
 
-    output.appendLine(`Building: "${cargo}" build --release`);
-    const { code, stdout, stderr } = await run(
-        cargo,
-        ['build', '--release', '--message-format=json-render-diagnostics'],
-        folder.fsPath,
-    );
+    const args = ['build', '--message-format=json-render-diagnostics'];
+    if (profile === 'release') {
+        args.splice(1, 0, '--release');
+    }
+    output.appendLine(`Building: "${cargo}" ${args.join(' ')}`);
+    const { code, stdout, stderr } = await run(cargo, args, folder.fsPath, env);
 
     // Rendered diagnostics arrive on stderr; keep them visible.
     for (const line of stderr.split(/\r?\n/)) {
@@ -102,7 +117,7 @@ export async function buildReleaseElf(
     }
     if (code !== 0) {
         output.show(true);
-        throw new Error(`cargo build --release failed (exit ${code ?? 'signal'}) — see the output panel.`);
+        throw new Error(`cargo build ${profile} failed (exit ${code ?? 'signal'}) — see the output panel.`);
     }
 
     const elf = findElfArtifactPath(stdout);
@@ -120,7 +135,7 @@ export async function flashProjectOverUsb(
     options: UsbFlashOptions,
     host: UsbFlashHost,
 ): Promise<UsbFlashResult> {
-    const elf = await buildReleaseElf(options.folder, host.output);
+    const elf = await buildElf(options.folder, host.output, options.profile, options.env);
 
     const uf2Path = distUf2Path(options.folder.fsPath, elf);
     const { uf2, image } = elfToUf2(fs.readFileSync(elf), options.familyId);

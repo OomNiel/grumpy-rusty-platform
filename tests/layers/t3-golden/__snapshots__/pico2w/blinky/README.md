@@ -15,3 +15,48 @@ The on-board LED is connected to the CYW43 wireless chip, not to GPIO25.
 cargo build          # compile
 cargo run --release  # flash and attach defmt logs (uses the cargo runner in .cargo/config.toml)
 ```
+
+## Debugging
+
+The **Debug** button (or F5) builds the debug profile, flashes it and starts a session with defmt
+over RTT. Nothing stops on its own - the firmware runs, and the debugger halts it when something you
+asked for happens. Four configurations ship with the project, all of them in the Run and Debug
+dropdown:
+
+| Configuration | Flashes? | Resets? | Stops when |
+|---|---|---|---|
+| `Flash & Debug` | yes | yes | at your breakpoints |
+| `Flash & Halt at Reset` | yes | yes | on the reset vector, before any of your code runs |
+| `Restart & Debug, no flashing` | **no** | yes | at your breakpoints - anywhere, including `main` |
+| `Attach - keeps it running` | **no** | **no** | at your breakpoints, but only in code that runs again |
+
+Every configuration uses the **debug** build: a release build is optimised, so the compiler merges or
+removes lines and breakpoints there show up hollow. `Flash & Debug` therefore always flashes the
+debug build before starting.
+
+* **A breakpoint in `main` needs a reset.** `Attach - keeps it running` joins a program that is
+already executing, and probe-rs does not allow an attach session to reset the chip, so code that has
+already run - `main`, the boot banner, the Wi-Fi setup - can never be reached again. Its
+breakpoints look solid in the gutter and simply never fire. Use it for behaviour that repeats (a
+loop, an interrupt, a timer), and `Restart & Debug, no flashing` when you want to stop in startup
+code without writing the chip.
+* **Breakpoints need the debug build.** A release build is optimised: the compiler merges or removes
+lines, so the debugger has no address to bind them to and VS Code leaves those breakpoints hollow
+(unverified). `Flash & Debug` always gives you the debug build.
+* **Set a breakpoint** in the editor gutter (or F9) on a line you care about - for example the line
+after `embassy_rp::init(Default::default())` - then start the session. Locals, the call stack and
+stepping work from there. Adding a breakpoint to a *running* session is handled by the debugger; on
+an embedded target the reliable order is pause (halt), set the breakpoint, continue.
+* **To debug without reflashing**, pick either entry that does not flash. Both expect the debug
+build - the one **Flash** writes - because the code that runs must match the symbols: the picker
+marks the entry that matches the last flash, and the Debug command checks the chip against the build
+with `probe-rs verify` before starting (a 10 s read of the flash) and offers to flash instead when
+they disagree.
+* **Breakpoints are limited by the chip, not the probe:** 8 hardware
+breakpoints on this board. Conditional breakpoints and logpoints each take one, stepping needs one
+free (it is implemented with a temporary breakpoint), and past the limit the extra ones stay hollow
+with "No available hardware breakpoints".
+* **Halting stops the Wi-Fi and the timers**, and defmt output stops with them - that is expected,
+not a fault. `Continue` resumes both.
+* Stepping through `async` code can jump around: the compiler rewrites an `async fn` into a state
+machine, so one source line may be resumed from a different place than it was suspended.

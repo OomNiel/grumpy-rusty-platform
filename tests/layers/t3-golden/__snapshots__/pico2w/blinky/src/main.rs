@@ -32,6 +32,9 @@ async fn cyw43_task(
 
 #[embassy_executor::main(executor = "embassy_rp::executor::Executor", entry = "cortex_m_rt::entry")]
 async fn main(spawner: Spawner) {
+    // See the note in the API template: this marks where the current run starts.
+    info!("=== {} {} starting ===", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+
     let p = embassy_rp::init(Default::default());
 
     // The firmware blobs are in ./firmware and are verified by the project wizard.

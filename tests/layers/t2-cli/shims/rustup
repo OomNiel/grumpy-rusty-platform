@@ -13,6 +13,14 @@ case "$1" in
       exit 0
     fi
     ;;
+  toolchain)
+    # `rustup toolchain list` is how the ESP check finds out whether espup has installed its
+    # toolchain. SHIM_TOOLCHAINS holds the lines it prints; empty means "none installed".
+    if [ "$2" = "list" ]; then
+      printf '%s\n' "${SHIM_TOOLCHAINS-stable-x86_64-unknown-linux-gnu (default)}"
+      exit 0
+    fi
+    ;;
 esac
 echo "fake-rustup: unexpected arguments: $*" >&2
 exit 2

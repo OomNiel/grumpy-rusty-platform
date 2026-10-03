@@ -3,9 +3,10 @@
 const { test, ok, equal, contains, notContains, matches, fail } = require('../../lib/harness');
 const { compiled } = require('../../lib/harness');
 const { BOARDS, boardById } = compiled('boards/catalog');
+const { rpBoards } = require('../../lib/boards');
 const { generateProjectFiles } = compiled('generate/files');
 
-const EXPECTED_PATHS = [
+const RP_EXPECTED_PATHS = [
     'Cargo.toml',
     '.cargo/config.toml',
     'rust-toolchain.toml',
@@ -14,6 +15,23 @@ const EXPECTED_PATHS = [
     'src/main.rs',
     '.vscode/settings.json',
     '.vscode/launch.json',
+    '.gitignore',
+    'README.md',
+];
+
+/**
+ * An ESP project has no `memory.x` (the ESP-IDF bootloader owns the layout), no
+ * `launch.json` (there is no SWD to debug over) and an extra `esp-config.toml`, which is
+ * where the vendor's own generator keeps runtime settings.
+ */
+const ESP_EXPECTED_PATHS = [
+    'Cargo.toml',
+    '.cargo/config.toml',
+    '.cargo/esp-config.toml',
+    'rust-toolchain.toml',
+    'build.rs',
+    'src/main.rs',
+    '.vscode/settings.json',
     '.gitignore',
     'README.md',
 ];
@@ -32,7 +50,11 @@ test('every board generates the expected file list', () => {
     for (const board of BOARDS) {
         const { files } = filesFor(board.id);
         const expected =
-            board.wireless === 'none' ? EXPECTED_PATHS : [...EXPECTED_PATHS, 'firmware/README.md'];
+            board.kind === 'esp'
+                ? ESP_EXPECTED_PATHS
+                : board.wireless === 'none'
+                    ? RP_EXPECTED_PATHS
+                    : [...RP_EXPECTED_PATHS, 'firmware/README.md'];
         equal(
             files.map((f) => f.path),
             expected,
@@ -71,7 +93,7 @@ test('Cargo.toml pins the verified embassy versions', () => {
 });
 
 test('embassy-executor is not given the cortex-m platform (duplicate __pender)', () => {
-    for (const board of BOARDS) {
+    for (const board of rpBoards()) {
         const cargo = filesFor(board.id).get('Cargo.toml');
         const executorLine = /embassy-executor = \{[^}]*\}/.exec(cargo)?.[0] ?? '';
         ok(executorLine, `${board.id}: no embassy-executor dependency line`);
@@ -135,9 +157,29 @@ test('RP2350 memory.x declares the image-definition sections and no boot2', () =
     contains(memory, '} INSERT AFTER .text;');
 });
 
-test('every board exposes a drive region and app + drive fill the whole chip', () => {
+test('RP2350 memory.x keeps .text aligned, so the linker stays quiet', () => {
+    // cortex-m-rt's link.x does:
+    //   PROVIDE(_stext = ALIGN(ADDR(.vector_table) + SIZEOF(.vector_table), ALIGNOF(.text)))
+    // PROVIDE only defines a symbol that is still undefined, so ANY plain `_stext = ...` in
+    // memory.x wins and discards that ALIGN(). The real project then produced:
+    //   address (0x1000013c) of section .text is not a multiple of alignment (8)
+    const memory = filesFor('pico2').get('memory.x');
+    matches(
+        memory,
+        /_stext = ALIGN\(ADDR\(\.start_block\) \+ SIZEOF\(\.start_block\), ALIGNOF\(\.text\)\)/,
+        'the RP2350 _stext must round up to the alignment of .text',
+    );
+    notContains(memory, '\n_stext = ADDR(', 'an unaligned _stext is what caused the warning');
+    equal(
+        filesFor('pico2w').get('memory.x').includes('_stext = ALIGN('),
+        true,
+        'both RP2350 boards share the fix',
+    );
+});
+
+test('every RP board exposes a drive region and app + drive fill the whole chip', () => {
     const chipKilobytes = { pico: 2048, picow: 2048, pico2: 4096, pico2w: 4096 };
-    for (const board of BOARDS) {
+    for (const board of rpBoards()) {
         const reserve = board.memory.flashReserve;
         ok(reserve, `${board.id} should expose a drive region`);
         equal(reserve.name, 'FS', `${board.id} drive region name`);
@@ -146,8 +188,8 @@ test('every board exposes a drive region and app + drive fill the whole chip', (
     }
 });
 
-test('every memory.x MEMORY line has both ORIGIN and LENGTH', () => {
-    for (const board of BOARDS) {
+test('every RP memory.x MEMORY line has both ORIGIN and LENGTH', () => {
+    for (const board of rpBoards()) {
         const memory = filesFor(board.id).get('memory.x');
         const body = /MEMORY \{([\s\S]*?)\}/.exec(memory)?.[1] ?? '';
         const regions = body
@@ -161,8 +203,8 @@ test('every memory.x MEMORY line has both ORIGIN and LENGTH', () => {
     }
 });
 
-test('build.rs emits exactly the link arguments the board needs', () => {
-    for (const board of BOARDS) {
+test('every RP build.rs emits exactly the link arguments the board needs', () => {
+    for (const board of rpBoards()) {
         const buildRs = filesFor(board.id).get('build.rs');
         for (const arg of board.linkArgs) {
             contains(buildRs, `println!("cargo:rustc-link-arg-bins=${arg}");`);
@@ -173,8 +215,8 @@ test('build.rs emits exactly the link arguments the board needs', () => {
     }
 });
 
-test("main.rs names embassy-rp's executor and the cortex-m-rt entry point", () => {
-    for (const board of BOARDS) {
+test("every RP main.rs names embassy-rp's executor and the cortex-m-rt entry point", () => {
+    for (const board of rpBoards()) {
         const main = filesFor(board.id).get('src/main.rs');
         contains(
             main,
@@ -199,15 +241,84 @@ test('.vscode/settings.json points rust-analyzer at the embedded target', () => 
     equal(settings['rust-analyzer.cargo.target'], 'thumbv8m.main-none-eabihf');
 });
 
-test('launch.json satisfies the probe-rs-debug schema', () => {
-    for (const board of BOARDS) {
+test('every RP launch.json satisfies the probe-rs-debug schema', () => {
+    for (const board of rpBoards()) {
         const launch = JSON.parse(filesFor(board.id).get('.vscode/launch.json'));
-        const config = launch.configurations[0];
-        equal(config.type, 'probe-rs-debug');
-        equal(config.request, 'launch');
-        equal(config.chip, board.probeChip, 'launch.json chip must match probe-rs');
-        ok(Array.isArray(config.coreConfigs) && config.coreConfigs.length === 1, 'coreConfigs is required');
-        contains(config.coreConfigs[0].programBinary, `target/${board.target}/debug/`);
+        ok(launch.configurations.length >= 1, `${board.id}: no launch configuration`);
+
+        for (const config of launch.configurations) {
+            equal(config.type, 'probe-rs-debug');
+            ok(['launch', 'attach'].includes(config.request), `${config.name}: unknown request type`);
+            equal(config.chip, board.probeChip, 'launch.json chip must match probe-rs');
+            ok(Array.isArray(config.coreConfigs) && config.coreConfigs.length === 1, 'coreConfigs is required');
+            const binary = config.coreConfigs[0].programBinary;
+            contains(binary, `target/${board.target}/`, 'the binary lives in the target directory');
+            // Debugging always uses the debug build: a release build is optimised, so the compiler
+            // merges or removes lines and breakpoints there end up hollow.
+            contains(binary, '/debug/', `${config.name}: debugging must use the debug build`);
+        }
+
+        // Every launch configuration has to say *explicitly* whether it writes the chip. With
+        // `flashingEnabled` left at its default (false) the session attaches to whatever is on the
+        // chip and decodes its RTT with this ELF, which fabricates log lines the firmware never
+        // printed - and that is how this was first found.
+        const launches = launch.configurations.filter((config) => config.request === 'launch');
+        for (const config of launches) {
+            equal(
+                typeof config.flashingConfig?.flashingEnabled,
+                'boolean',
+                `${config.name} must set flashingEnabled explicitly`,
+            );
+            contains(config.coreConfigs[0].programBinary, '/debug/', 'a launch session debugs the debug build');
+        }
+        ok(
+            launches.some((config) => config.flashingConfig.flashingEnabled === true),
+            `${board.id}: one launch entry has to write the chip`,
+        );
+
+        const [first] = launch.configurations;
+        equal(first.request, 'launch', 'the Debug button runs the first configuration');
+        equal(first.flashingConfig.haltAfterReset, undefined, 'and it should not halt on its own');
+        ok(
+            launches.some((config) => config.flashingConfig.haltAfterReset === true),
+            `${board.id}: no halt-at-reset configuration to step from the first instruction`,
+        );
+
+        // Debugging without flashing: one entry that resets the chip (so breakpoints in `main` and in
+        // startup code bind) and one that attaches to the running program (so they cannot). Both use
+        // the debug build, because that is the only one whose breakpoints can be trusted.
+        const noFlash = launch.configurations.filter((config) => config.flashingConfig?.flashingEnabled !== true);
+        equal(noFlash.length, 2, `${board.id}: expected two no-flash entries`);
+
+        const restarts = noFlash.filter((config) => config.request === 'launch');
+        equal(restarts.length, 1, 'one of them resets the target: launch without flashing');
+        contains(restarts[0].name, 'no flashing');
+        contains(restarts[0].coreConfigs[0].programBinary, '/debug/');
+
+        const attaches = noFlash.filter((config) => config.request === 'attach');
+        equal(attaches.length, 1, `${board.id}: expected one attach entry`);
+        ok(attaches[0].flashingConfig === undefined, 'an attach session never flashes');
+        contains(attaches[0].name, 'keeps it running', 'its name has to say it will not reset the chip');
+        contains(attaches[0].coreConfigs[0].programBinary, '/debug/');
+    }
+});
+
+test('the build a flash writes is the build every debug session loads', () => {
+    // The root cause of a reported bug: Flash wrote `release` while every debug configuration loaded
+    // `debug`, so a flash followed by a no-flash debug session mismatched *by construction* and the
+    // chip check reported it every single time. Both sides now use this one profile.
+    const { FLASH_PROFILE } = compiled('flash/profile');
+    equal(FLASH_PROFILE, 'debug', 'a release image is optimised: breakpoints in it are hollow');
+
+    for (const board of rpBoards()) {
+        const launch = JSON.parse(filesFor(board.id).get('.vscode/launch.json'));
+        for (const config of launch.configurations) {
+            contains(
+                config.coreConfigs[0].programBinary,
+                `/${FLASH_PROFILE}/`,
+                `${config.name}: a flash writes the ${FLASH_PROFILE} build, so this has to load it too`,
+            );
+        }
     }
 });
 

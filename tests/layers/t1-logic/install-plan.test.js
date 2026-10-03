@@ -11,7 +11,9 @@ const {
     UDEV_RULES_CONTENT,
     UDEV_RULES_PATH,
 } = compiled('toolchain/installPlan');
-const { allTargets } = compiled('boards/catalog');
+// Only the RP triples are rustup's business. The Xtensa targets live in Espressif's fork of
+// rustc and arrive with espup, so a rustup plan that mentions them is asking for the impossible.
+const { rpTargets } = compiled('boards/catalog');
 
 /** Builds a ToolchainStatus with sensible "nothing installed" defaults. */
 function status(overrides = {}) {
@@ -21,7 +23,7 @@ function status(overrides = {}) {
         cargo: { name: 'cargo', found: false },
         probeRs: { name: 'probe-rs', found: false },
         installedTargets: [],
-        missingTargets: [...allTargets()],
+        missingTargets: [...rpTargets()],
         probes: [],
         probeDiagnosis: { kind: 'none-connected', message: 'No debug probe detected.' },
         udevRulesPresent: false,
@@ -30,9 +32,9 @@ function status(overrides = {}) {
     };
 }
 
-const LINUX = { targets: allTargets(), platform: 'linux', arch: 'x64' };
-const WIN = { targets: allTargets(), platform: 'win32', arch: 'x64' };
-const MAC = { targets: allTargets(), platform: 'darwin', arch: 'arm64' };
+const LINUX = { targets: rpTargets(), platform: 'linux', arch: 'x64' };
+const WIN = { targets: rpTargets(), platform: 'win32', arch: 'x64' };
+const MAC = { targets: rpTargets(), platform: 'darwin', arch: 'arm64' };
 
 test('a bare Linux machine gets rustup, targets, probe-rs and udev, in that order', () => {
     const steps = planInstallation(status(), LINUX);
@@ -54,7 +56,7 @@ test('the udev step is the only one needing elevation', () => {
 test('one target step per missing triple', () => {
     const steps = planInstallation(status(), LINUX);
     const targets = steps.filter((s) => s.kind === 'target').map((s) => s.target);
-    equal(targets, allTargets());
+    equal(targets, rpTargets());
 });
 
 test('a complete Linux toolchain plans nothing', () => {
@@ -62,7 +64,7 @@ test('a complete Linux toolchain plans nothing', () => {
         rustup: { name: 'rustup', found: true, version: '1.29.1' },
         cargo: { name: 'cargo', found: true, version: '1.99.0' },
         probeRs: { name: 'probe-rs', found: true, version: '0.32.0' },
-        installedTargets: allTargets(),
+        installedTargets: rpTargets(),
         missingTargets: [],
         udevRulesPresent: true,
         ready: true,
@@ -90,7 +92,7 @@ test('a missing cargo triggers a rustup install that also carries the targets', 
     equal(steps[0].kind, 'rustup');
     equal(
         steps.filter((s) => s.kind === 'target').length,
-        allTargets().length,
+        rpTargets().length,
         'targets cannot be added without rustup, so they ride along with it',
     );
 });
@@ -107,7 +109,7 @@ test('a missing probe-rs becomes a probe-rs step only', () => {
         status({
             rustup: { name: 'rustup', found: true },
             cargo: { name: 'cargo', found: true },
-            installedTargets: allTargets(),
+            installedTargets: rpTargets(),
             missingTargets: [],
             udevRulesPresent: true,
             ready: true,

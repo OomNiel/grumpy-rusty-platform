@@ -116,6 +116,26 @@ Twice during this session a multi-line replacement landed with one line missing
 recorded in `memory-tool-traps.md`. **Re-read the edited region after any multi-line
 replacement**, and trust the compiler to surface it.
 
+### 2.7 `PROVIDE` does not override a plain assignment
+
+cortex-m-rt's `link.x` offers `_stext` through `PROVIDE(…)`, which only applies while the symbol is
+undeclared — memory.x assigned it, so the alignment was thrown away and `rust-lld` warned on every
+RP2350 link. Assignment wins; carry the `ALIGN(…, ALIGNOF(.text))` yourself. Full measurements in
+§15.
+
+### 2.8 One RTT terminal can show two firmwares
+
+A log that mixes `bluetooth setup interrupt mask` (impossible without BT firmware) with
+`using a static IP …` and `DHCP …` is not one run: the buttons and a terminal build produced
+different images, and the RTT buffer replays the previous image's bytes after a reset. Details in
+§19.
+
+### 2.9 `/dev/ttyACM*` is enumeration order, not identity
+
+The Debug Probe took `ttyACM0` during a probe-rs session and moved the Pico to `ttyACM1`, which
+broke an app that had hard-coded the number — and its own error message blamed the `dialout` group
+while the kernel error was `EBUSY`. Address serial devices by USB serial (or a udev alias); see §20.
+
 ---
 
 ## 3. Test suite
@@ -142,24 +162,57 @@ Tests that have already earned their keep:
 * t1 caught the trailing-quote bug in the `--chip` regex (`STM32G431CBTx"`).
 * t2 caught the rustup shim's `:-` default swallowing an intentionally-empty target list.
 * t4 caught both the `__pender` duplicate and the Cargo hyphen/binary-name mistake.
+* t1's lexer test in `wifi-template.test.js` caught a leftover explanation that had been left
+  inside a template literal: the generated Rust stopped compiling, and only a state-tracking scan
+  (strings and comments) saw it — counting quotes would not have.
+* t1's manifest guard caught both new commands (`debugStop`, the credential pair) before they could
+  ship undeclared in `package.json`.
+* t1's generated-content guard keeps the word "undefined" out of every generated file, so a
+  missing interpolation cannot reach a user's project.
 
 ---
 
 ## 4. Open items
 
-1. **Debug Probe firmware.** Support landed (see §7). The probe on the desk still needs
-   the physical button press, so `t5-hil` stays unverified until that happens.
-2. **udev rules.** `/etc/udev/rules.d/99-picoprobe.rules` exists but only covers
-   `2e8a:000c` with mode 0666. The extension offers to install a broader
-   `69-probe-rs.rules` (uaccess + common probe vendors).
-3. **Wireless (Pico W / Pico 2 W)** — decisions locked, implementation is the next task.
-   See §8.
-4. **Phase 3** — crates.io Library Manager (bundled curated catalog + live search).
-   Explicitly *after* Debug Probe support, per the user's ordering.
-5. **Phase 4** — verify the emitted `probe-rs-debug` launch config against the installed
-   `probe-rs.probe-rs-debugger` extension (schema already matches its `package.json`).
-6. **Windows** — installer paths are platform-aware but untested; `probe-rs` needs
-   WinUSB/libusb handling that differs from Linux.
+1. **Debug Probe firmware.** Resolved on this bench: the probe reports fw 2.3.1, `probe-rs` 0.32
+   opens it, and a real DAP session with RTT ran on 2026-10-03 (§17). The BOOTSEL/UF2 update flow
+   (§7) still covers an older probe.
+2. **udev rules — resolved 2026-10-03 (§21).** `/etc/udev/rules.d/99-picoprobe.rules` covers
+   `2e8a:000c` (mode 0666) and the extension still offers the broader `69-probe-rs.rules`. The check
+   used to look for *our* two file names only, so this bench was told "MISSING" while it had been
+   flashing all day. The bench also gained a DataSafe alias on 2026-10-03 (§20) — unrelated to the
+   probe, but it is why the port numbers moved.
+3. **Phase 4 guard rails.** The emitted `probe-rs-debug` config was checked by hand against the
+   installed `probe-rs.probe-rs-debugger` 0.32.0 (`launch` requires `chip` + `coreConfigs`,
+   `coreConfigs.items` requires `programBinary`, `rttEnabled` exists) and a real session ran, so the
+   config is correct *today*. The chip check (§23) now pre-flights what the chip holds before a
+   no-flash session, which is half of this. Still missing: validate the emitted config against the
+   installed debugger's declared schema, so a debugger upgrade that adds a required attribute is
+   reported before the session starts.
+4. **The generated wifi `warn!` carries an inert `/* superseded wording … */` tail.** Its bytes
+   contain backslash runs no editor edit has matched, so removing it needs a one-off scripted edit
+   (and the user's approval — no terminal file edits without it). It sits inside a block comment, so
+   it compiles, and a t1 test pins that.
+5. **Existing projects keep the old template text.** Only newly generated projects get the
+   credential-prompt documentation (§18); `my-blinky-pico2w` still has the pre-2026-10-03 README and
+   comments.
+6. **`DEFMT_LOG` default.** The generated `.cargo/config.toml` sets `debug`, which prints every
+   cyw43/smoltcp `debug!` line — helpful while diagnosing Wi-Fi, noisy afterwards. `info` was
+   offered, not decided.
+7. **Catalogue caveat:** `pio`/`pio-proc` 0.4 in the Library Manager would give a second copy of
+   `pio` alongside embassy-rp's 0.3.
+8. **Windows** — installer paths are platform-aware but untested; `probe-rs` needs WinUSB/libusb
+   handling that differs from Linux.
+9. **DHCP on the bench** — **resolved 2026-10-03**: a clean `probe-rs run` completes the exchange and
+   the board holds `192.168.11.46` (§19). The failing lines were replayed/misdecoded console history,
+   not a DHCP fault, and the router never needed attention.
+10. **The optimised (release) image is no longer reachable from the UI.** Both flash routes and every
+   debug configuration now use `debug` (§26), because a release image cannot carry bindable
+   breakpoints. `cargo build --release` plus `probe-rs download` still writes one by hand; a separate
+   "Flash release (optimised)…" command is the obvious thing to add if Grumpy wants it.
+11. **The docs are current as of 2026-10-03** (this pass). The generated project `README.md`
+   documents the four configurations and the breakpoint budget; a project generated before today
+   keeps the older text (see item 5).
 
 ---
 
@@ -567,5 +620,669 @@ a real terminal window — where `x-terminal-emulator` is a trap on Zorin/GNOME 
 * Swallowing the launcher's stderr (`>/dev/null`) hid that for one round trip. Keep it.
 * The prompt echoes the SSID and prints a character count for both fields, so a silent
   `read -s` cannot be mistaken for input that was rejected.
+
+---
+
+## 14. crates.io Library Manager (Phase 3) — done 2026-10-03
+
+Two commands and one view:
+
+* `rustyPlatform.addDependency` — a QuickPick over the bundled catalogue, live sparse-index search
+  for anything else, a version pick, then an edit of `Cargo.toml`.
+* `rustyPlatform.revealDependency` — jump to that line in `Cargo.toml`.
+* A **Dependencies** group in the Project view, refreshed by a `Cargo.toml` watcher.
+
+Layout: `src/library/{catalog,registry,cargoToml}.ts` (all `vscode`-free, so t1 tests them) plus a
+thin `src/commands/libraryCommands.ts`. Dependencies are added by editing the manifest with our own
+pure editor — never `cargo add` — and a version the project already pins is never changed.
+
+Two facts the catalogue depends on, both of which cost time to learn:
+
+* The sparse index publishes **features in two places**: `features` and `features2`. Reading only
+  `.features` misses `time-driver`, `defmt`, `executor-*` and `binary-info`.
+* Merging those is still not enough: every *optional dependency's* key is also a feature name, minus
+  the ones suppressed by `dep:<name>` in some feature. `cargo metadata` is the cheap oracle for the
+  result — it exits 101 on a feature name that does not exist.
+
+Verified with a real `cargo check --release` (16.2 s, clean) and a negative control (a made-up
+feature name is rejected by `cargo metadata`).
+
+Catalogue caveat: `pio` / `pio-proc` 0.4 would give a second copy of `pio` next to embassy-rp's 0.3.
+
+---
+
+## 15. The RP2350 `_stext` alignment trap (2026-10-03)
+
+`rust-lld` warned on every RP2350 link:
+
+```
+rust-lld: address (0x1000013c) of section .text is not a multiple of alignment (8)
+```
+
+Cause: cortex-m-rt's `link.x` writes
+
+```
+PROVIDE(_stext = ALIGN(ADDR(.vector_table) + SIZEOF(.vector_table), ALIGNOF(.text)));
+```
+
+but `PROVIDE` only supplies a value for a symbol that is *undeclared*. memory.x assigned `_stext`
+itself, so the plain assignment won and threw the ALIGN away.
+
+Measured on a real Pico 2 W project: `.vector_table` at 0x10000000 / 0x114 bytes, `.start_block` at
+0x10000114 / 0x28 → `.text` landed on 0x1000013c with alignment 8.
+
+Fix in the generator:
+`_stext = ALIGN(ADDR(.start_block) + SIZEOF(.start_block), ALIGNOF(.text));`
+→ `.text` is 0x10000140, `.start_block` is byte-identical (the boot header did not move) and the
+warning is gone in dev and release. Embassy's own RP2350 example has the same unaligned line, so the
+warning shows up there too.
+
+---
+
+## 16. `cargo: command not found`, and the probe-rs nag (2026-10-03)
+
+Two environment problems that both look like extension bugs:
+
+* **rustup installed with `--no-modify-path`** writes nothing into the login profile, so
+  `~/.cargo/bin` is on *no* PATH — not the desktop session's and, because our terminals were created
+  without an env, not theirs either. Fixed on both sides: every terminal and spawn goes through
+  `augmentedEnv()` (`src/util/exec.ts`), and `rustyPlatform.fixShellPath` ("Add Cargo to PATH…")
+  appends an idempotent guarded block to the login profile after taking a `.bak`. "Check Toolchain"
+  now reports "cargo is not on this shell's PATH" with a button that fixes it.
+* **`probe-rs.probe-rs-debugger` decides whether probe-rs is installed by scanning PATH** (a
+  `Promise.any` over PATH × PATHEXT, no settings). Its "probe-rs doesn't seem to be installed, do you
+  want to install it automatically now?" toast therefore appears even when our detection has already
+  found the binary in `~/.cargo/bin`. Fix on this machine: symlinks in `~/.local/bin`, which *is* on
+  the GUI PATH. Do not accept that toast's install offer.
+
+---
+
+## 17. Debug, Debug Stop, and the first real DAP session (2026-10-03)
+
+`rustyPlatform.debug` finds the `probe-rs*` entry in `.vscode/launch.json`, offers to install
+`probe-rs.probe-rs-debugger` when it is missing, runs `cargo build` as a real task (so the compiler
+output is visible and the exit code can be awaited), then starts the session.
+`src/project/launchConfig.ts` holds the jsonc-tolerant reader and the search;
+`src/project/debugSessions.ts` holds the session bookkeeping.
+
+The status bar gained **Debug Stop** next to Debug. It is hidden unless a probe-rs session is
+running, and it never touches another debugger's session (a Python or C++ session is not ours).
+
+Trap: **`vscode.debug.sessions` does not exist** — `@types/vscode` 1.140 has only
+`activeDebugSession`. The running list is maintained from `onDidStartDebugSession` /
+`onDidTerminateDebugSession`, while the *choice* (`pickProbeRsSession`) stays in the `vscode`-free
+`launchConfig` module so t1 can test it.
+
+First real session, Pico 2 W through the Debug Probe:
+
+```
+probe-rs-debug: Starting probe-rs as a DAP Protocol server
+probe-rs-debug: Listening for requests on port 33799
+Core is running
+probe-rs-debug: Opened a new RTT Terminal window named: defmt
+probe-rs-debug: RTT Window opened, and ready to receive RTT data on channel 0
+```
+
+RTT is switched on by `coreConfigs[0].rttEnabled`, which the installed 0.32.0 schema does declare
+(alongside `rttChannelFormats`).
+
+### Two things the first `launch.json` got wrong (2026-10-03)
+
+* **`flashingConfig.flashingEnabled` defaults to `false`.** The generated config never set it, so a
+  Debug session *attached* to whatever was on the chip — usually the release image left behind by
+  the Flash button — while decoding RTT with the **debug** ELF. defmt then resolved the frames
+  against the wrong string table, which is what produced `associated to Unwrap of a None option
+  value` and DHCP lines that could not have come from the running build (§19). Every generated
+  launch configuration now sets `flashingEnabled: true`.
+* **Nothing asked the core to stop**, so "Core is running" was the entire story: probe-rs-debugger
+  halts only for a breakpoint, `flashingConfig.haltAfterReset`, or a caught fault. Each project now
+  ships **four** configurations, documented in its README - §24 has the measurements behind the last
+  two:
+
+  | Configuration | Flashes? | Resets? | Stops when |
+  |---|---|---|---|
+  | `Flash & Debug` | yes | yes | at your breakpoints |
+  | `Flash & Halt at Reset` | yes | yes | on the reset vector, before any user code |
+  | `Restart & Debug, no flashing` | **no** | yes | at your breakpoints, anywhere - a `launch` with `flashingEnabled: false` |
+  | `Attach - keeps it running` | **no** | **no** | only in code that runs again (a loop, an interrupt) |
+
+  **Every configuration uses the debug build — Grumpy's rule, 2026-10-03:** *"When clicking on the
+  'Debug' button, the user expects the system to run a debug build so that break points can be set
+  at will. There must be no options."* The flash-or-not choice stays (that was asked for separately),
+  but a build choice does not: a release image is optimised, so lines are merged or removed and
+  breakpoints there show up hollow. The release attach entry that existed for one afternoon is gone,
+  and t1 now fails if any generated configuration names a release binary.
+
+  Attaching is the risky route, so the Debug command remembers which build was last written
+  (`context.workspaceState`, key `rustyPlatform.lastFlashedProfile` - both flash routes record
+  `FLASH_PROFILE`, a flashing Debug session records `debug`), marks a no-flash entry "matches the
+  last flash" when it does, says "the chip holds the release build" when it does not, and - since
+  §23 - asks `probe-rs verify` what the chip actually holds rather than trusting that bookkeeping.
+* **Breakpoint budget - measured 2026-10-03 (§27).** The RPi Debug Probe has no limit of its own; the
+  ceiling is the target's FPB. On this bench that is **8** for the Pico 2 W (RP2350, confirmed both by
+  the chip's `FP_CTRL` and by the debugger refusing a 9th with "No available hardware breakpoints"),
+  and **4** for an RP2040 (documented, not measurable here). Grumpy's expectation of three is
+  comfortably inside both. Beyond the limit the extra breakpoints stay hollow in VS Code.
+
+  The attach configuration uses `request: "attach"`, which has no `flashingConfig` property at all
+  — it never writes to the chip, so the ELF must be the one the firmware was built from.
+* The **Debug button asks** when there is a choice: one configuration starts silently, several
+  produce a QuickPick with the flashing one first, so Enter keeps the one-click behaviour and
+  "no flashing" is a keystroke away. `debugConfigurationChoices()` (in `launchConfig.ts`) builds the
+  entries and their one-line descriptions, and t1 asserts the four generated ones stay distinct and
+  truthful - including that the attach entry never promises to bind a line that has already run.
+* Refreshing a generated file into an existing project has to use that project's real name:
+  `launch.json` embeds the binary name in `programBinary`, and a scratch name (`my-app`) slipped into
+  Grumpy's project for a few minutes on 2026-10-03. `src/main.rs` is name-independent.
+
+---
+
+## 18. Wi-Fi credentials: ask the user instead of documenting an env var (2026-10-03)
+
+Until today the only way to build a wireless template was to export `WIFI_SSID` / `WIFI_PASSWORD`
+yourself. That is fine in a terminal and useless for the buttons: the VS Code build has no such
+environment, so pressing Flash/Debug compiled the **placeholder** image — one that cannot join and
+says nothing about why. (It is also what made one RTT log look like two firmwares; see §19.)
+
+Now **Flash** and **Debug** ask, the first time only:
+
+| Box | Notes |
+|---|---|
+| Network name (SSID) | `validateInput` refuses an empty name |
+| Password | masked input; empty means an open network |
+| Fixed IP address | optional, `192.168.1.50/24`; empty selects DHCP |
+| Router address | asked only when a fixed address was given |
+
+Design points worth keeping:
+
+* Stored in **`context.secrets`** (the editor keyring) — not in settings, not in the project. The
+  generated `.cargo/config.toml` deliberately carries no credentials.
+* The values only ever become environment variables of the cargo process; nothing is written to disk
+  by the prompt.
+* Validation mirrors the firmware's own parser (`static_config()` in the generator): a missing
+  prefix, `/33`, an octet above 255 or a leading zero such as `010.0.0.1` are all refused, because
+  the firmware would otherwise fall back to DHCP silently.
+* Terminals are keyed on the environment *version*, so a terminal created before the prompt is never
+  reused for a build after it — and a no-op `setActiveWifiEnv({})` does not spawn a new one.
+* A wired project is never asked and gets its environment cleared; the test is
+  `option_env!("WIFI_SSID")` in `src/main.rs`.
+* Cancelling is allowed: a warning offers "Enter credentials" or "Flash anyway".
+
+Files: `src/wifi/credentials.ts` (pure) and `src/wifi/wifiPrompt.ts` (keyring + prompts), plus
+`src/commands/wifiCommands.ts` for "Set Wi-Fi Credentials…" and "Clear Wi-Fi Credentials".
+
+The templates were updated to match: the generated README and the `src/main.rs` comment now name the
+prompt first and keep the terminal route as the alternative. t1 fails if the README stops mentioning
+the prompt, the keyring or the fixed-address option, and it also asserts that **every** variable the
+extension exports really is read by the template.
+
+---
+
+## 19. The DHCP verdict on the bench, and the two-firmware log trap (2026-10-03)
+
+A wifi template on the Pico 2 W joined the access point and then never got a lease. The RTT lines,
+attributed by reading the vendored sources:
+
+| line | source | meaning |
+|---|---|---|
+| `JOIN failed: network not found` / `JOINED` | cyw43 `control.rs:435` / `:433` | one join attempt failed, the retry worked |
+| `using default T1 and T2 values …` | smoltcp `dhcpv4.rs:542` | an ACK *was* parsed; its T1/T2 options were invalid |
+| `DHCP ignoring OFFER because your_ip is not unicast` | smoltcp `dhcpv4.rs:370` | in `Discovering`, the OFFER's `yiaddr` was not a unicast address |
+| `DHCP ignoring ACK because your_ip is not unicast` | smoltcp `dhcpv4.rs:466` | the same for the ACK in `Requesting` |
+| `DHCP request retries exceeded, restarting discovery` | `dhcpv4.rs:646` | five REQUEST retries with backoff, exhausted |
+| `DHCP lease expired` | `dhcpv4.rs:673` | an earlier lease ran out |
+| `failed to transmit IP: device exhausted` | smoltcp `iface/interface/mod.rs:725` | the CYW43 had no free TX buffer; one packet dropped |
+| `arp: unknown operation code` | smoltcp `iface/interface/ipv4.rs:278` | benign dropped traffic |
+| `bluetooth setup interrupt mask` | cyw43 `runner.rs:308` | only reachable when BT firmware was handed in (`bt_fw.is_some()`) |
+
+**Verdict, corrected 2026-10-03 after a packet capture: the router is not at fault.** With
+`tcpdump -i eno1 -n -vvv 'udp port 67 or udp port 68'` running while the board retried, the client's
+own frames told the story:
+
+```
+0.0.0.0.68 > 255.255.255.255.67  BOOTP/DHCP, Request … Flags [none] (0x0000)
+  DHCP-Message (53): Discover
+0.0.0.0.68 > 255.255.255.255.67  BOOTP/DHCP, Request … Flags [none] (0x0000)
+  DHCP-Message (53): Request
+  Server-ID (54): 192.168.11.1
+  Requested-IP (50): 192.168.11.46
+```
+
+smoltcp can only name `Server-ID` and `Requested-IP` in a REQUEST if it read them from a **valid
+OFFER with a unicast `yiaddr`** — so the router offered a proper address, and the
+"ignoring OFFER because your_ip is not unicast" line was replay from the older image (§2.8), not this
+network. Grumpy's own evidence pointed the same way: the same boards get leases on this router under
+PlatformIO/lwIP.
+
+The exchange dies *after* our REQUEST. The capture also shows that our DISCOVER/REQUEST carry
+`Flags [none]` — smoltcp hardcodes `broadcast: false` (`smoltcp-0.13.1/src/socket/dhcpv4.rs:588`), so
+it never asks for broadcast replies, and a unicast reply to a not-yet-configured address is invisible
+on the wired segment.
+
+**Resolved the same day.** Running the image ourselves instead of reading the editor's console
+(`probe-rs run --chip RP235x <release elf>`) shows the whole exchange completing:
+
+```
+[INFO ] === my-blinky-pico2w 0.1.0 starting ===
+[INFO ] joining Wi-Fi...
+[DEBUG] JOIN failed: status=1        (the first attempt after a fresh scan)
+[DEBUG] JOINED
+[INFO ] associated to GK_4440
+[INFO ] waiting for DHCP...
+[DEBUG] DHCP send DISCOVER to 255.255.255.255 …
+[DEBUG] DHCP recv Offer from 192.168.11.1: … your_ip: 192.168.11.46 …
+[DEBUG] DHCP send request to 255.255.255.255: … requested_ip: Some(192.168.11.46) …
+[DEBUG] DHCP recv Ack from 192.168.11.1: … your_ip: 192.168.11.46, lease_duration: Some(172800)
+[INFO ] Wi-Fi is up - IP 192.168.11.46
+```
+
+So DHCP works on this network, the router offered a unicast address and the client accepted it. The
+"failure" was never real: those lines came from the editor's console, which replays old frames and
+decodes them against a newer ELF — the same mechanism that printed
+`associated to Unwrap of a None option value`. **A stale frame decoded with the wrong string table
+produces plausible-looking log text**, which is what made this look like a DHCP fault for an
+afternoon.
+
+Lesson, and the reason every generated firmware now logs a boot marker as its first line: read a
+device log from a run you started, not from a console that persists between runs. `probe-rs run <elf>`
+gives that; the editor's RTT terminal does not.
+
+The template still gained a way past DHCP: the wait is bounded
+(`with_timeout(30 s, wait_config_up())` in a retry loop), the association is logged, and
+`WIFI_STATIC_IP` is the escape hatch — now a field in the credential prompt. The warning message
+itself was made factual: it no longer blames the DHCP pool, a second server or the 2.4 GHz band.
+
+**The trap that made the log unreadable: one terminal, two firmwares.** The panel showed
+`bluetooth setup interrupt mask` although the Wi-Fi-only build cannot emit it; `DHCP …` lines next to
+`using a static IP …` although a static build never constructs a DHCP socket; and our own `[INFO]`
+lines in the reverse of the order they appear in `main.rs`. Two reasons:
+
+1. The VS Code build had no `WIFI_*` (fixed in §18), so the buttons compiled a different image than
+   the terminal command did — two binaries alternating on one board.
+2. The RTT ring buffer and the RTT terminal are not cleared by a reset, so the previous image's bytes
+   are replayed at the start of the next session.
+
+Lesson: judge a run only from lines after a fresh boot marker, and never compare logs produced by two
+different build environments.
+
+---
+
+## 20. Bench hygiene: serial numbers, not port numbers (2026-10-03)
+
+Not extension code, but it explains the day's port confusion.
+
+`/dev/ttyACM*` is assigned in enumeration order, so the Debug Probe took `ttyACM0` during a probe-rs
+session and the Pico moved to `ttyACM1`. The DataSafe companion app then reported "Access to the port
+'/dev/ttyACM1' is denied … add your user to the 'dialout' group" — a red herring twice over: the user
+*is* in `dialout`, and the real error is `EBUSY` (a second instance of the app held the port), which
+.NET surfaces as `UnauthorizedAccessException`. Verified with a throwaway .NET program: free port →
+OPEN OK, held port → "Access … is denied".
+
+Fixes made:
+
+* `/etc/udev/rules.d/99-datasafe-pico.rules` creates `/dev/datasafe` for any `2e8a:000a`, with
+  `ID_MM_DEVICE_IGNORE` because ModemManager is active on this machine. It deliberately has no
+  `ACTION` test, so `udevadm trigger` applies it to a board that is already plugged in. The alias
+  followed the board across a reboot while the ACM numbers changed around it.
+* Our own test sessions use **RTT only** and never open a serial port, so neither the board nor the
+  probe's UART can be disturbed by them.
+
+---
+
+## 21. "USB permissions: MISSING" was not true (2026-10-03)
+
+Grumpy pasted a Check Toolchain run that ended in `udev rules: MISSING` — on a bench that had been
+flashing all day. The probe was never permission-blocked; the **check** only looked for its own two
+file names:
+
+```ts
+const UDEV_RULE_PATHS = ['/etc/udev/rules.d/69-probe-rs.rules', '/etc/udev/rules.d/99-probe-rs.rules'];
+```
+
+This bench is permissioned by Raspberry Pi's own installer instead:
+
+```
+/etc/udev/rules.d/99-picoprobe.rules
+SUBSYSTEM=="usb", ATTRS{idVendor}=="2e8a", ATTRS{idProduct}=="000c", MODE="0666"
+```
+
+Two signals replace it, because a file name is the wrong question:
+
+* **Scan the rules.** `readUdevRules()` reads every `*.rules` in `/etc/udev/rules.d`, and a line
+  counts only when it names a probe vendor (`PROBE_USB_VENDORS` — kept in step with
+  `UDEV_RULES_CONTENT` by a t1 test in both directions) *and* grants access (`MODE`/`GROUP`/`OWNER`/
+  `TAG+=`). Skipped on the way: commented-out lines, and lines scoped to another subsystem — the
+  DataSafe alias names `2e8a` with `MODE="0660"` but is `SUBSYSTEM=="tty"`, and no debugger opens the
+  serial port.
+* **Ask the probe.** `probePermissionsWork()`: `ok`, `chip-not-autodetected`, `firmware-outdated` and
+  `no-target` are all reached only after the USB device was opened, so they *prove* permissions —
+  whatever the files say. Only `permission-denied`, `none-connected` and `unknown` keep the warning.
+
+Measured after the change: the real scan flags exactly `99-picoprobe.rules`, and the check prints
+`usb permissions: ok` (the wording moved with the meaning — it was never about a file). The Project
+view row says `probe access granted` / `no rule for a probe`, with a tooltip naming the source.
+
+---
+
+## 22. The same buttons in the side bar (2026-10-03)
+
+The status bar controls were duplicated into a new **Controls** view (`rustyPlatform.controls`,
+first in the activity-bar container) — but not as a copy: `src/ui/controls.ts` holds the list once
+(`CONTROLS`, `statusBarText`, `visibleControls`, `healthSummary`) and both renderers use it, so they
+cannot drift. `StatusBarView` keeps its priorities (100 → 94); the tree adds the icon, the one-line
+detail and the tooltip. **Stop** is still the only entry that hides itself, and now it hides in both
+places, from the same `activeProbeRsSession()` call.
+
+The health row kept its live behaviour: `healthSummary(status)` returns the caption, the version
+line and the tooltip markdown for all three states (detecting / ready / setup needed), and the tree
+redraws on a toolchain change and on debug-session start/terminate.
+
+---
+
+## 23. "Is the chip running this build?" (2026-10-03)
+
+`probe-rs verify` compares the chip's flash with the loadable parts of an ELF, so it is the honest
+pre-flight for a session that will not write the chip. Three things worth keeping:
+
+* **Its exit code is useless.** 0.32.0 exits `0` for both `Verification successful` and
+  `Verification failed: contents do not match` (measured: `$?` = 0 either way), so the verdict is
+  parsed from the **text** (`classifyVerifyOutput`). Trusting the code would have passed every stale
+  chip.
+* **The cost is lopsided.** A *failed* check stops at the first differing byte (~0.4 s here); a
+  *successful* one reads the whole image (~10.5 s at the probe's default clock — `--speed 16000`
+  takes 3.6 s, deliberately not used by default).
+* **`unknown` is not a verdict.** Probe busy, probe absent, binary not built: none of that is
+  evidence the chip is wrong, so those are reported (output channel + a non-modal warning) and the
+  session proceeds.
+
+A mismatch opens one modal naming the file compared, probe-rs's own words, and the two ways out
+(`Flash & Debug instead`, `Debug anyway`). `src/project/chipCheck.ts` is `vscode`-free and t1-tested
+against the two output strings copied verbatim from the bench.
+
+---
+
+## 24. Attach vs Restart: what a no-flash session can bind (2026-10-03)
+
+> *"The attach debug option does not bind to breakpoints that was set in the IDE prior to starting
+> the debug session."*
+
+Half of that is wrong, and the measurement tells you which half. Driving `probe-rs dap-server`
+directly (`initialize → attach → setBreakpoints → configurationDone`, in
+`tests/tools/dap-session.js`) against Grumpy's own `launch.json`:
+
+| Pre-set breakpoint | `verified` | Stops? |
+|---|---|---|
+| `main.rs:190` (blink loop, every 250 ms) | true | **yes, immediately** |
+| `main.rs:92` (boot banner, runs once) | true | never |
+| `main.rs:146` (Wi-Fi join, runs once) | true | never |
+
+An attach session *does* program the breakpoint — it just cannot reach code that has already run,
+and upstream `configuration.rs` **rejects** `flashing_enabled`, `halt_after_reset` and friends for an
+`attach` request outright ("do not use … with attach"), so nothing can bring that code back. Worse,
+the gutter draws those breakpoints solid, because `verified: true` only means the source line
+resolved to an address — never that it will fire.
+
+A `launch` with `flashingConfig.flashingEnabled: false` writes nothing and still **resets** the
+target, which is exactly what lets a breakpoint in `main` or in startup code bind. Hence the fourth
+generated entry, and the detail lines that now say which is which:
+
+| Configuration | Flashes? | Resets? | Stops when |
+|---|---|---|---|
+| `Flash & Debug` | yes | yes | at your breakpoints |
+| `Flash & Halt at Reset` | yes | yes | on the reset vector |
+| `Restart & Debug, no flashing` | no | yes | at your breakpoints, anywhere |
+| `Attach - keeps it running` | no | no | only in code that runs again |
+
+The tool that produced those numbers is in the repo, so the next question of this kind is answered by
+running something rather than by reasoning:
+
+```sh
+npm run dap-session -- --project <dir> [--config "<name>"] [--line 92 --line 190 …] [--as launch] [--flash]
+```
+
+Exit codes: `0` a breakpoint fired, `1` programmed but nothing fired, `2` the session could not run.
+It never writes the chip unless `--flash` is given, and `--as attach --flash` is refused up front
+with the same reason probe-rs gives. `--line` repeats, which is how §27 was measured.
+
+---
+
+## 25. A flash must let go of the probe (2026-10-03)
+
+> *"The debug probe is not released after flashing. A subsequent debug session does not find the
+> probe."*
+
+Flash ran `cargo run --release`, whose runner is `probe-rs run`: it flashes and then **stays
+attached** to stream defmt over RTT, so the USB device stayed claimed. Measured while one was
+running:
+
+```
+$ fuser -v /dev/bus/usb/001/015
+/dev/bus/usb/001/015:  niel  62486 F.... probe-rs        ← 2m24s into a "flash"
+$ probe-rs list
+[0]: Debug Probe (CMSIS-DAP) -- 2e8a:000c-0:E6614103E74B072F   ← found …
+$ probe-rs info
+    0: The debug probe could not be created.
+    1: The selected USB device could not be opened.             ← … but not openable
+```
+
+That last message is what the next session hit, and it reads like a dead probe. The fix is a
+one-shot write — `cargo build` → `probe-rs download --chip X <elf>` → `probe-rs reset --chip X` — so
+`src/flash/probeFlash.ts` builds the command and t1 pins it to never contain `run` or `attach`.
+Verified: nothing holds the device after a flash, and a debug session opens it immediately. Monitor
+(`probe-rs attach`) still holds the probe **by design**, and now says so.
+
+Two things came out of the same hole:
+
+* `classifyProbeError` gained `probe-busy`, so "the device could not be opened" names the holders
+  instead of being filed as `unknown`, and Flash offers **Stop it and flash** when a probe-rs session
+  is running.
+* `buildReleaseElf` had never received `activeWifiEnv()`, so the **USB/UF2 route built images with
+  placeholder credentials**. Both routes now build with
+  `augmentedEnv({ ...activeWifiEnv(), ...defmtEnv() })`.
+
+---
+
+## 26. One profile for both buttons — the mismatch circle (2026-10-03)
+
+> *"I built my test project, then flashed it successfully. Then I click Debug with option
+> Restart & Debug. Instead of starting the debug session I get the message that the chip is not
+> running the build. This is not correct as I have just flashed the latest build. Dig deeper please,
+> we are going around in circles."*
+
+The check was telling the truth:
+
+```
+$ probe-rs verify …/release/my-blinky-pico2w      → Verification successful   ← what Flash wrote
+$ probe-rs verify …/debug/my-blinky-pico2w        → Verification failed       ← what Debug loads
+```
+
+The design was the bug. Flash wrote `release`; every debug configuration loads `debug` (Grumpy's
+rule, §17), so **every** Flash followed by a no-flash Debug session mismatched *by construction* —
+permanent, not a fault. The tell-tale sign was in the bookkeeping: `LAST_FLASHED_KEY` was always
+`release`, which made the picker's "matches the last flash" description **unreachable**. The code's
+intent was always "Flash writes what Debug loads"; removing the release debug entries a few hours
+earlier had broken that agreement.
+
+Fix: `src/flash/profile.ts` → `FLASH_PROFILE = 'debug'`, used by the probe route, the USB route
+(`UsbFlashOptions.profile`) and `LAST_FLASHED_KEY`. The Debug build task now builds with the same
+environment, so the two cannot differ over a `DEFMT_LOG` either. Verified end to end: build → flash
+→ `verify` = successful → `Restart & Debug` fired a startup breakpoint at `0x1001B7B4`.
+
+t1 pins the invariant: every generated `programBinary` must contain `/${FLASH_PROFILE}/`, so this
+cannot come back. The cost, stated plainly in §4 item 10: the optimised release image is no longer
+reachable from the UI.
+
+---
+
+## 27. The breakpoint budget, measured (2026-10-03)
+
+The Debug Probe has no breakpoint limit of its own — it is CMSIS-DAP transport, and every breakpoint
+probe-rs sets is programmed into the **target's** FPB. So the same probe gives 8 on a Pico 2 W and 4
+on a Pico. Two independent measurements for the Pico 2 W:
+
+```
+$ probe-rs read b32 0xE0002000 1 --chip RP235x
+e0002000: 10000081          bit 28 = FPB version 1, NUM_CODE[7:4] = 8 comparators
+
+$ npm run dap-session -- --config "Restart" --line 92 --line 128 … --line 190      # 12 of them
+… 8 programmed …
+NOT SET line 166 - No available hardware breakpoints
+8 of 12 breakpoints programmed
+```
+
+`No available hardware breakpoints` is the string VS Code shows on a hollow breakpoint's hover, so
+that is the user-visible face of the limit. Practical consequences: conditional breakpoints and
+logpoints each cost one comparator; code in flash cannot use software breakpoints (probe-rs calls
+`set_hw_breakpoint`); **stepping uses a temporary breakpoint** — the adapter's own source says *"our
+implementation of stepping uses breakpoints and results in a 'BreakPoint' halt reason"* — so leave
+one spare if you intend to step; watchpoints are a different unit (DWT) and do not count.
+
+---
+
+## 28. The ESP32 family: three boards, and where every pin came from (2026-10-03)
+
+Grumpy's boards: **ESP32-DevKitC V4** (Espressif), **T-QT** (LilyGo, ESP32-S3) and a **320x480 CYD**
+with an ESP32-WROOM-32U — the 3.5" `ESP32-3248S035` class, not the well-known 2.8" ILI9341 one.
+Five questions were asked before any code was written (panel revision, CYD variant, Debug behaviour,
+PSRAM, monitor format), because three of those change the bytes we generate.
+
+Pins were taken from primary sources, never from memory — a wrong pin map compiles and shows a black
+screen:
+
+| Board | Source | What it settled |
+|---|---|---|
+| DevKitC V4 | Espressif user guide (`esp32-devkitc/user_guide.html`) | **no user LED exists** (only a 5 V power LED) → the template drives an *offered* GPIO4 and says so |
+| T-QT | `Xinyuan-LilyGO/T-QT`: `board/esp32-s3-t-qt-pro.json`, `extras/Setup211_LilyGo_T_QT_Pro_S3.h` | MOSI 2 · SCLK 3 · CS 5 · DC 6 · RST 1 · BL 10 (**active low**) · 128x128 · 4 MB QD flash, no PSRAM |
+| CYD | `rzeldent/platformio-espressif32-sunton` board JSON + the schematic PDF | ST7796: MOSI 13 · MISO 12 · SCLK 14 · CS 15 · DC 2 · **no reset pin** · BL 27; XPT2046 CS 33 / IRQ 36; **microSD CS 5 · CLK 18 · MOSI 19** |
+
+Two things that only reading the sources revealed:
+
+* The T-QT ships **two panel revisions under one name** (LilyGo's own README: copy
+  `extras/old_panel/*` or `extras/new_panel/*` over the TFT driver). Both are GC9A01-family silicon
+  with different init tables, and the only marking is a sticker. So "which panel" became a
+  first-class `BoardOption`, the answer became a **cargo feature** (`panel-gc9107` / `panel-gc9a01`)
+  — which is exactly what LilyGo's instructions do by hand — and the wizard asks, because Grumpy's
+  tag was unreadable.
+* The CYD schematic has only **three** TF nets (CS/CLK/MOSI): the card is meant to share the panel's
+  MISO on GPIO12. `pdftotext` on the schematic PDF gave the net names; the community board
+  definition agrees.
+* mipidsi 0.10 turns out to ship `GC9107`, `GC9A01` **and** `ST7796`, so every panel here maps onto
+  a stock model — no hand-written init sequences.
+
+## 29. The toolchain decision: what actually builds Xtensa (2026-10-03)
+
+The whole stack hinged on one question: which Rust version Espressif's fork provides, because
+esp-hal 1.2 needs 1.95 while 1.0/1.1 need 1.88.
+
+* The fork is **`esp-rs/rust-build`** (not `esp-rs/rust`, whose latest tag is an unrelated 2020
+  artefact) and it is at **v1.99.0.0** — so the current esp-hal line is usable and there is no MSRV
+  trap. Installed by espup under the rustup channel name **`esp`**.
+* The canonical project shape is **`esp-rs/esp-generate` → `template/`**. Mirroring it is why the
+  generated projects should compile: esp-hal `~1.2.2` (feature = chip name), **esp-rtos 0.4** for
+  both Embassy *and* esp-radio, `esp-bootloader-esp-idf` (the `esp_app_desc!()` the bootloader
+  demands), `esp-println` + `esp-backtrace`, `runner = "espflash flash --monitor --chip <chip>"`,
+  `rustflags = ["-C", "link-arg=-nostartfiles"]`, `[unstable] build-std = ["core"]`, and
+  `#[esp_rtos::main]` rather than `#[esp_hal::main]`.
+* Version-specific API facts, read from the source rather than assumed: **`Output::new(pin, level,
+  config)` takes three arguments**; `Spi::new(spi, config)?` returns a `Result` and then chains
+  `.with_sck/.with_mosi/.with_miso/.with_cs`; `spi::master::Config::default()
+  .with_frequency(Rate::from_mhz(n))`; `esp_hal::delay::Delay` is a **unit struct**.
+* `espflash` was verified the same way: subcommands `flash` / `monitor`, shared args carrying
+  `--chip`, `--port` (`-p`, env `ESPFLASH_PORT`) and `--non-interactive`.
+
+## 30. One board model, two silicon families — and what the compiler caught (2026-10-03)
+
+`McuFamily` went from `'RP2040' | 'RP2350'` to a four-value union and `BoardProfile` became a
+**discriminated union** (`RpBoardProfile` | `EspBoardProfile`) with `isRpBoard` / `isEspBoard` /
+`chipNameOf`. That produced **42 compile errors in 6 files**, which is the point: the compiler, not
+a comment, enumerates every place a Pico assumption lived.
+
+Three lessons from doing it:
+
+* **The compiler found the loud ones, not the dangerous ones.** `uf2.ts` and `bootsel.ts` kept
+  compiling while silently mapping *any* family to an RP2350 UF2 family — the ESP boards would have
+  been handed a UF2 family id they can never use. Narrowing their parameters to `RpFamily` closed
+  it. A union is only as good as the signatures hanging off it.
+* **A shared "all targets" list is a trap.** `allTargets()` now contains the two Xtensa triples, and
+  the rustup-based install plan promptly tried to `rustup target add` them — which is impossible;
+  they only exist in Espressif's fork. Hence `rpTargets()` / `espTargets()`, and only the RP list
+  reaches rustup.
+* **The tests were the real specification.** 22 of them failed on the new boards because they
+  iterated every board and asserted RP facts. They are now explicitly family-scoped
+  (`tests/lib/boards.js`: `rpBoards()` / `espBoards()` / `panelBoards()`), and scoping them is what
+  exposed that `package.json` never listed the new boards in `rustyPlatform.defaultBoard`.
+
+## 31. Generated-code traps that only *reading* the output finds (2026-10-03)
+
+Three defects shipped into the generator and were caught by printing the generated project, not by
+trusting the template:
+
+1. **`Output::new(peripherals.GPIO4, Level::Low)`** — two arguments. esp-hal 1.2 takes three
+   (`pin, initial_level, config`), so the DevKitC blinky could not have compiled.
+2. The panel template called `SPIInterface::new(...)` **without importing it** — every symbol a
+   template uses must also be in its `use` list.
+3. `Sunton ESP32-3248S035R (3.5" CYD)` is the board's *name*, and pasting it into `log::info!`
+   produced Rust that cannot compile. Fixed with a `rustString()` escape, and pinned by a test that
+   walks every generated `.rs` line and refuses an unescaped name outside a comment.
+
+Also worth remembering: a *test* caught a design smell in `espToolchainSummary`, which trusted a
+`ready` flag instead of deriving from the facts — it printed `missing: ` with nothing after it. The
+summary now asks the same function that decides readiness.
+
+## 32. Installing the Xtensa toolchain from the extension (2026-10-03)
+
+Grumpy's requirement: *"I need the extension to install the toolchain etc when an esp32 project is
+first created."* So the offer happens right after the project files are written, and it names what is
+missing — four distinct states (`espup`, `toolchain`, `export-esp.sh`, `espflash`), because "espup is
+missing" and "espup ran but the toolchain download never happened" need different advice.
+
+* The plan is ordered and minimal: `cargo install espup --locked` → `espup install --targets
+  esp32,esp32s3` (**only the chips the catalog's boards need**) → `cargo install espflash --locked`,
+  run as one visible terminal line.
+* **`export-esp.sh` is read, never sourced**: a terminal's `source` cannot reach the extension host,
+  so `espEnv()` parses the file and merges its variables into every build, flash, monitor and
+  terminal we start. Without that, installing the toolchain would still leave `cargo build` unable
+  to find the Xtensa linker. A terminal's identity now includes whether that file exists, so a shell
+  created before the install is not reused afterwards.
+* `Check Toolchain` reports the ESP line but never as a *problem* — an RP-only setup does not need
+  Xtensa and must not be nagged about it.
+* The install path is covered by tests with fake `espup`/`espflash` shims, but **the real download
+  has not been run on this machine**; `cargo install espup --locked` compiles espup rather than
+  fetching Espressif's prebuilt binary, because we have no pinned SHA-256 for that asset.
+
+## 33. Flash and Monitor over USB serial, and the port nobody may touch (2026-10-03)
+
+An ESP has no SWD, so this is not the RP "no probe" fallback: the route is decided by the **board**
+(`usesSerialFlash`) before any probe is diagnosed, and no probe scan is run at all.
+
+* **Flash is one-shot** (`espflash flash --chip <chip> ["--port" <p>] <elf>`) — it exits, so the port
+  comes back. **Monitor holds it on purpose** (`espflash monitor`), which is the ESP twin of the
+  probe-busy trap: a flash now offers to close the `Rusty: monitor` terminal first, rather than
+  letting the user meet "could not open port" and read it as a hardware fault.
+* **Debug** on an ESP board explains there are no breakpoints (JTAG only) and runs flash + monitor
+  chained in one terminal, so the log starts only after a successful write.
+* **The port picker refuses Raspberry Pi boards.** `/dev/serial/by-id` names are matched on text
+  *and* vendor id (303a Espressif, 10c4 Silicon Labs, **1a86** WCH/CH340, 0403 FTDI), and
+  `2e8a`/`Raspberry_Pi_Pico` is excluded outright — the bench Pico on `/dev/ttyACM0` must never be
+  written to. The CH340 case is why the vendor id matters: it appears as `usb-1a86_USB_Serial-…`,
+  with "CH340" nowhere in the name. One candidate → passed explicitly (so espflash stays
+  non-interactive); several → espflash asks.
+* `buildElf` needed no change for Xtensa: it parses cargo's JSON messages, so the artefact path is
+  found the same way for both families.
+* New settings: `rustyPlatform.espflashPath`, `rustyPlatform.serialPort`.
+
+### Still open after this session
+
+* **The ESP firmware has never been compiled**, let alone flashed: everything is verified against
+  the vendor scaffolding, the crates' published APIs and `espflash`'s source. The first real build
+  is the next thing to do, and it is also what would close the last API uncertainties
+  (`Delay` as a unit struct, `OutputConfig::default()`, `DrawTarget::clear` against mipidsi's
+  `Rgb565`).
+* No `wifi` template for ESP — the wizard offers only implemented templates.
+* The touch controller and the microSD socket are described but unused by any template.
+* Tagged **v0.0.2** (2026-10-03); `CHANGELOG.md` and `LICENSE` were still untracked before it, so
+  this tag also publishes them for the first time.
+
+
 
 

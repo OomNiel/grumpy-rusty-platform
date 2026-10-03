@@ -1,19 +1,42 @@
 import * as vscode from 'vscode';
 import { RustyState } from '../state';
 import { readActiveProject } from '../project/activeProject';
+import { ParsedDependency, parseCargoToml } from '../library/cargoToml';
+import { UDEV_RULES_DIR } from '../toolchain/detect';
 
-/** Project view: what this workspace targets, and whether the toolchain can build it. */
-export class ProjectViewProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
+/** Project view: what this workspace targets, whether it can build, and what it depends on. */
+export class ProjectViewProvider implements vscode.TreeDataProvider<vscode.TreeItem>, vscode.Disposable {
     private readonly emitter = new vscode.EventEmitter<void>();
     readonly onDidChangeTreeData = this.emitter.event;
+    private readonly disposables: vscode.Disposable[] = [];
 
-    constructor(private readonly state: RustyState) { }
+    constructor(private readonly state: RustyState) {
+        // A Cargo.toml change — ours or the user's — redraws the dependency list.
+        const watcher = vscode.workspace.createFileSystemWatcher('**/Cargo.toml');
+        this.disposables.push(
+            watcher,
+            watcher.onDidChange(() => this.refresh()),
+            watcher.onDidCreate(() => this.refresh()),
+            watcher.onDidDelete(() => this.refresh()),
+        );
+    }
+
+    dispose(): void {
+        for (const disposable of this.disposables) {
+            disposable.dispose();
+        }
+        this.disposables.length = 0;
+    }
 
     getTreeItem(element: vscode.TreeItem): vscode.TreeItem {
         return element;
     }
 
-    async getChildren(): Promise<vscode.TreeItem[]> {
+    async getChildren(element?: vscode.TreeItem): Promise<vscode.TreeItem[]> {
+        if (element instanceof DependenciesGroup) {
+            return element.dependencies.map((dependency) => new DependencyItem(element.cargoTomlUri, dependency));
+        }
+
         const items: vscode.TreeItem[] = [];
         const project = await readActiveProject();
 
@@ -29,6 +52,12 @@ export class ProjectViewProvider implements vscode.TreeDataProvider<vscode.TreeI
         boardItem.iconPath = new vscode.ThemeIcon('circuit-board');
         boardItem.tooltip = project.board?.target;
         items.push(boardItem);
+
+        // The dependency table, read from the same parser the Library Manager writes with.
+        const model = parseCargoToml(project.cargoToml);
+        items.push(
+            new DependenciesGroup(model.dependencies, vscode.Uri.joinPath(project.folder, 'Cargo.toml')),
+        );
 
         const status = this.state.status ?? (await this.state.refresh());
 
@@ -67,7 +96,10 @@ export class ProjectViewProvider implements vscode.TreeDataProvider<vscode.TreeI
         if (status.platform === 'linux') {
             const udev = new vscode.TreeItem('USB permissions', vscode.TreeItemCollapsibleState.None);
             udev.iconPath = new vscode.ThemeIcon(status.udevRulesPresent ? 'pass' : 'warning');
-            udev.description = status.udevRulesPresent ? 'udev rules installed' : 'udev rules missing';
+            udev.description = status.udevRulesPresent ? 'probe access granted' : 'no rule for a probe';
+            udev.tooltip = status.udevRulesPresent
+                ? `Granted by a rule in ${UDEV_RULES_DIR}, or by probe-rs already opening the probe.`
+                : 'Install a udev rule so probe-rs can open a probe without root.';
             udev.command = { command: 'rustyPlatform.installUdevRules', title: 'Install USB Permissions' };
             items.push(udev);
         }
@@ -78,4 +110,51 @@ export class ProjectViewProvider implements vscode.TreeDataProvider<vscode.TreeI
     refresh(): void {
         this.emitter.fire();
     }
+}
+
+/** The collapsible "Dependencies (n)" node; its children are the entries of `[dependencies]`. */
+class DependenciesGroup extends vscode.TreeItem {
+    constructor(
+        readonly dependencies: ParsedDependency[],
+        readonly cargoTomlUri: vscode.Uri,
+    ) {
+        super(
+            `Dependencies${dependencies.length > 0 ? ` (${dependencies.length})` : ''}`,
+            dependencies.length > 0 ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None,
+        );
+        this.iconPath = new vscode.ThemeIcon('library');
+        this.contextValue = 'rustyPlatform.dependencies';
+        this.description = dependencies.length === 0 ? 'none yet' : undefined;
+        this.tooltip = 'The [dependencies] table of Cargo.toml';
+    }
+}
+
+/** One dependency; clicking it opens Cargo.toml at that line. */
+class DependencyItem extends vscode.TreeItem {
+    constructor(cargoTomlUri: vscode.Uri, dependency: ParsedDependency) {
+        super(dependency.name, vscode.TreeItemCollapsibleState.None);
+        this.description = describe(dependency);
+        this.iconPath = new vscode.ThemeIcon('package');
+        this.tooltip = dependency.lines.join('\n');
+        this.contextValue = 'rustyPlatform.dependency';
+        this.command = {
+            command: 'rustyPlatform.revealDependency',
+            title: 'Show in Cargo.toml',
+            arguments: [cargoTomlUri, dependency.startLine],
+        };
+    }
+}
+
+function describe(dependency: ParsedDependency): string {
+    const parts: string[] = [];
+    if (dependency.version !== undefined && dependency.version !== '') {
+        parts.push(dependency.version);
+    }
+    if (dependency.features.length > 0) {
+        parts.push(`${dependency.features.length} feature${dependency.features.length === 1 ? '' : 's'}`);
+    }
+    if (dependency.form === 'opaque') {
+        parts.push('unrecognised form');
+    }
+    return parts.join(' · ');
 }

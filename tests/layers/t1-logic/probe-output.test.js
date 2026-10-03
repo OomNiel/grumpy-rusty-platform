@@ -7,7 +7,30 @@ const {
     parseTargetList,
     parseVersion,
     classifyProbeError,
+    udevRuleGrantsProbeAccess,
+    probePermissionsWork,
+    PROBE_USB_VENDORS,
+    UDEV_RULES_DIR,
 } = compiled('toolchain/detect');
+const { UDEV_RULES_CONTENT } = compiled('toolchain/installPlan');
+
+// Real files from this bench, verbatim. The first is Raspberry Pi's own installer's rule: it is what
+// makes flashing work here, and the extension must not report "MISSING" while it is in place.
+const PI_PICOPROBE_RULE = `SUBSYSTEM=="usb", ATTRS{idVendor}=="2e8a", ATTRS{idProduct}=="000c", MODE="0666"
+`;
+const OUR_RULE = `# probe-rs / Grumpy's Rusty Platform USB access rules
+SUBSYSTEM=="usb", ATTR{idVendor}=="2e8a", MODE="0666", TAG+="uaccess"
+`;
+// The real line from /etc/udev/rules.d/99-datasafe-pico.rules: it names the probe's vendor and grants
+// group access, but to the Pico's *serial port*. A debugger opens the USB device, not that tty.
+const DATASAFE_TTY_RULE = `# 2e8a:000a = Raspberry Pi Pico (RP2040) running the DataSafe firmware.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="2e8a", ATTRS{idProduct}=="000a", ENV{ID_MM_DEVICE_IGNORE}="1", SYMLINK+="datasafe", GROUP="dialout", MODE="0660"
+`;
+// A rule that only makes an alias, and the same line commented out: neither grants anything.
+const ALIAS_ONLY = `SUBSYSTEM=="usb", ATTRS{idVendor}=="2e8a", SYMLINK+="probe"
+`;
+const COMMENTED_OUT = `# SUBSYSTEM=="usb", ATTR{idVendor}=="2e8a", MODE="0666", TAG+="uaccess"
+`;
 
 // Real outputs captured from this machine — keep them verbatim, they are the
 // contract with probe-rs/rustup.
@@ -130,6 +153,81 @@ test('the dead-link message wins over the generic chip-detection failure', () =>
 test('empty stderr means the probe is healthy', () => {
     equal(classifyProbeError('').kind, 'ok');
     equal(classifyProbeError('   \n  ').kind, 'ok');
+});
+
+test('a rule the extension did not write still counts as permissions', () => {
+    const files = [{ name: '99-picoprobe.rules', text: PI_PICOPROBE_RULE }];
+    ok(udevRuleGrantsProbeAccess(files), 'Raspberry Pi’s rule grants probe access, whoever wrote it');
+    ok(
+        udevRuleGrantsProbeAccess([{ name: '69-probe-rs.rules', text: OUR_RULE }]),
+        'and so does the broader rule we install',
+    );
+    equal(UDEV_RULES_DIR, '/etc/udev/rules.d');
+});
+
+test('naming a probe vendor is not the same as granting access', () => {
+    ok(
+        !udevRuleGrantsProbeAccess([{ name: '99-datasafe-pico.rules', text: DATASAFE_TTY_RULE }]),
+        'the serial alias grants nothing to a debugger',
+    );
+    ok(
+        !udevRuleGrantsProbeAccess([{ name: '99-other.rules', text: ALIAS_ONLY }]),
+        'a symlink without MODE/GROUP/TAG grants nothing',
+    );
+    ok(
+        !udevRuleGrantsProbeAccess([{ name: '99-rules.rules', text: COMMENTED_OUT }]),
+        'a commented-out rule grants nothing',
+    );
+    // A grant for something else entirely.
+    ok(
+        !udevRuleGrantsProbeAccess([
+            { name: '99-other.rules', text: 'SUBSYSTEM=="usb", ATTR{idVendor}=="1234", MODE="0666"\n' },
+        ]),
+        'a rule for an unrelated vendor is not probe access',
+    );
+    ok(!udevRuleGrantsProbeAccess([]), 'no files, no access');
+});
+
+test('every vendor the installer writes is one the detector looks for', () => {
+    const written = new Set([...UDEV_RULES_CONTENT.matchAll(/idVendor\}=="([0-9a-f]{4})"/gi)].map((m) => m[1]));
+    // Without this the loop below would pass by finding nothing to check.
+    equal(written.size, PROBE_USB_VENDORS.length, 'the rule file names exactly the vendors the detector knows');
+    for (const vendor of written) {
+        ok(PROBE_USB_VENDORS.includes(vendor), `installPlan writes ${vendor} but the detector would not see it`);
+    }
+    // The other direction matters too: our own rule file has to pass its own test.
+    ok(
+        udevRuleGrantsProbeAccess([{ name: '69-probe-rs.rules', text: UDEV_RULES_CONTENT }]),
+        'the rule we install must satisfy the check we run',
+    );
+});
+
+test('a probe that answered is proof the USB side works', () => {
+    for (const kind of ['ok', 'chip-not-autodetected', 'firmware-outdated', 'no-target']) {
+        ok(probePermissionsWork({ kind, message: kind }), `${kind} means probe-rs opened the probe`);
+    }
+    // These must not be read as permission to skip the udev hint.
+    for (const kind of ['permission-denied', 'none-connected', 'unknown']) {
+        ok(!probePermissionsWork({ kind, message: kind }), `${kind} is no evidence of access`);
+    }
+});
+
+/** Captured while `probe-rs run` was streaming RTT and a second session tried to open the probe. */
+const REAL_PROBE_BUSY = `Could not attach to target. Try running with --verbose for more information about the target.
+Error: Connecting to the chip was unsuccessful.
+
+Caused by:
+    0: The debug probe could not be created.
+    1: The selected USB device could not be opened.
+`;
+
+test('a probe another program holds is diagnosed as busy, not as a fault', () => {
+    const diagnosis = classifyProbeError(REAL_PROBE_BUSY);
+    equal(diagnosis.kind, 'probe-busy', 'this is what a second session sees, captured on the bench');
+    contains(diagnosis.message, 'Another program is holding');
+    contains(diagnosis.message, 'monitor', 'the message has to name what to close');
+    // The happy path must not be affected by the new branch.
+    equal(classifyProbeError(REAL_NO_TARGET).kind, 'no-target');
 });
 
 test('unrecognised errors are kept verbatim', () => {

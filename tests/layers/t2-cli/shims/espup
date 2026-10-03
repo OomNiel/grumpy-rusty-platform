@@ -1,0 +1,17 @@
+#!/bin/sh
+# Fake `espup` for the t2-cli layer.
+#   SHIM_ESPUP_VERSION  version reported by `--version`.
+#                       Unset (or empty) means "not installed": the file exists, but every
+#                       invocation fails the way a missing tool would.
+case "$1" in
+  --version)
+    if [ -z "${SHIM_ESPUP_VERSION-}" ]; then
+      echo "fake-espup: espup is not installed" >&2
+      exit 127
+    fi
+    echo "espup ${SHIM_ESPUP_VERSION}"
+    exit 0
+    ;;
+esac
+echo "fake-espup: unexpected arguments: $*" >&2
+exit 2

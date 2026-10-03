@@ -1,59 +1,90 @@
 import * as vscode from 'vscode';
 import { RustyState } from '../state';
+import { activeProbeRsSession } from '../project/debugSessions';
+import {
+    CONTROLS,
+    ControlDescriptor,
+    HEALTH_CONTROL,
+    healthSummary,
+    iconText,
+    statusBarText,
+} from './controls';
 
-/** Status bar buttons: board/toolchain health plus one-click Build / Flash / Monitor. */
+/**
+ * Status bar buttons: board/toolchain health plus one-click Build / Flash / Debug / Debug Stop /
+ * Monitor / Clean.
+ *
+ * The list itself lives in `ui/controls.ts`, because the sidebar's "Controls" section shows the same
+ * buttons; this class is only the status-bar rendering of it.
+ */
 export class StatusBarView implements vscode.Disposable {
     private readonly items: vscode.StatusBarItem[] = [];
+    private readonly disposables: vscode.Disposable[] = [];
     private readonly healthItem: vscode.StatusBarItem;
+    /** Only shown while a probe-rs session is running — see updateSessionControls(). */
+    private readonly sessionItems: vscode.StatusBarItem[] = [];
 
     constructor(private readonly state: RustyState) {
-        const create = (priority: number, command: string) => {
-            const item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, priority);
-            item.command = command;
-            this.items.push(item);
-            return item;
-        };
+        // Priorities count down from the health item, which is how the status bar keeps its order.
+        this.healthItem = this.create(HEALTH_CONTROL, 100);
+        CONTROLS.filter((control) => control !== HEALTH_CONTROL).forEach((control, index) => {
+            this.create(control, 99 - index);
+        });
 
-        this.healthItem = create(100, 'rustyPlatform.checkToolchain');
-        create(99, 'rustyPlatform.build').text = '$(tools) Build';
-        create(98, 'rustyPlatform.flash').text = '$(zap) Flash';
-        create(97, 'rustyPlatform.monitor').text = '$(output) Monitor';
+        this.disposables.push(
+            vscode.debug.onDidStartDebugSession(() => this.updateSessionControls()),
+            vscode.debug.onDidTerminateDebugSession(() => this.updateSessionControls()),
+        );
 
         this.update();
     }
 
-    update(): void {
-        const status = this.state.status;
-        if (!status) {
-            this.healthItem.text = '$(chip) Rusty: detecting…';
-            this.healthItem.tooltip = 'Detecting the Rust toolchain…';
-        } else if (status.ready) {
-            this.healthItem.text = '$(chip) Rusty: ready';
-            this.healthItem.tooltip = new vscode.MarkdownString(
-                [
-                    `**cargo** ${status.cargo.version ?? '?'}`,
-                    `**probe-rs** ${status.probeRs.version ?? '?'}`,
-                    `**targets** ${status.installedTargets.filter((t) => t !== 'x86_64-unknown-linux-gnu').join(', ')}`,
-                    `**probe** ${status.probes[0]?.name ?? 'none'} — ${status.probeDiagnosis.message}`,
-                ].join('  \n'),
-            );
-        } else {
-            this.healthItem.text = '$(warning) Rusty: setup needed';
-            this.healthItem.tooltip = [
-                status.cargo.found ? undefined : 'cargo is not installed',
-                status.probeRs.found ? undefined : 'probe-rs is not installed',
-                status.missingTargets.length > 0 ? `missing targets: ${status.missingTargets.join(', ')}` : undefined,
-                status.probeDiagnosis.kind === 'ok' ? undefined : status.probeDiagnosis.message,
-            ]
-                .filter((line): line is string => Boolean(line))
-                .join('\n');
+    /** One status bar item, spelled exactly as the sidebar section spells the same control. */
+    private create(control: ControlDescriptor, priority: number): vscode.StatusBarItem {
+        const item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, priority);
+        item.command = control.command;
+        item.text = statusBarText(control);
+        item.tooltip = control.tooltip;
+        this.items.push(item);
+        if (control.sessionOnly === true) {
+            this.sessionItems.push(item);
         }
-        for (const item of this.items) {
-            item.show();
+        return item;
+    }
+
+    /**
+     * The Stop button is only meaningful during a session, and only for sessions this extension
+     * starts: another debugger's session is not ours to kill.
+     */
+    private updateSessionControls(): void {
+        const running = activeProbeRsSession() !== undefined;
+        for (const item of this.sessionItems) {
+            if (running) {
+                item.show();
+            } else {
+                item.hide();
+            }
         }
     }
 
+    update(): void {
+        const health = healthSummary(this.state.status);
+        this.healthItem.text = iconText(health.icon, health.label);
+        this.healthItem.tooltip = new vscode.MarkdownString(health.markdown);
+
+        for (const item of this.items) {
+            if (!this.sessionItems.includes(item)) {
+                item.show();
+            }
+        }
+        this.updateSessionControls();
+    }
+
     dispose(): void {
+        for (const disposable of this.disposables) {
+            disposable.dispose();
+        }
+        this.disposables.length = 0;
         for (const item of this.items) {
             item.dispose();
         }

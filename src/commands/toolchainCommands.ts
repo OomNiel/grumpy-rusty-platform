@@ -1,9 +1,14 @@
 import * as vscode from 'vscode';
 import * as os from 'os';
-import { allTargets } from '../boards/catalog';
+import * as path from 'path';
+import { rpTargets } from '../boards/catalog';
+import { espToolchainSummary } from '../toolchain/espToolchain';
+import { INSTALL_ESP_TOOLCHAIN, currentEspStatus, installEspToolchain } from './espToolchainCommands';
 import { RustyState } from '../state';
+import { augmentedEnv, cargoBinDir } from '../util/exec';
 import { planInstallation, UDEV_RULES_CONTENT } from '../toolchain/installPlan';
 import { runInstallPlan } from '../toolchain/installRunner';
+import { addCargoToPath, cargoBinPath, profileCandidates } from '../toolchain/shellPath';
 import {
     DEBUGPROBE_IMAGES,
     minimumFirmwareFromProbeRs,
@@ -61,18 +66,109 @@ function summaryLine(state: RustyState): string {
         `probe status: ${status.probeDiagnosis.message}`,
     ];
     if (status.platform === 'linux') {
-        lines.push(`udev rules: ${status.udevRulesPresent ? 'installed' : 'MISSING'}`);
+        lines.push(`usb permissions: ${status.udevRulesPresent ? 'ok' : 'MISSING'}`);
     }
     return lines.join('\n');
 }
 
 export function registerToolchainCommands(state: RustyState, output: vscode.OutputChannel): vscode.Disposable[] {
+    /**
+     * Appends the cargo PATH block to the user's shell profile(s), after confirming which
+     * files change. Kept here so `Check Toolchain` and the palette command share one path.
+     */
+    async function addCargoToPathInteractive(): Promise<void> {
+        const files = profileCandidates(process.platform).map((name) => path.join(os.homedir(), name));
+        if (files.length === 0) {
+            void vscode.window.showInformationMessage(
+                `On Windows, add ${cargoBinPath()} to PATH through the environment-variables dialog — ` +
+                'or re-run the rustup installer and let it do it.',
+            );
+            return;
+        }
+
+        const present: string[] = [];
+        const pending: Array<{ file: string; content: string }> = [];
+        for (const file of files) {
+            let text: string;
+            try {
+                text = Buffer.from(await vscode.workspace.fs.readFile(vscode.Uri.file(file))).toString('utf8');
+            } catch {
+                continue; // ~/.bashrc often does not exist yet
+            }
+            present.push(file);
+            const edit = addCargoToPath(text);
+            if (edit.changed) {
+                pending.push({ file, content: edit.content });
+            }
+        }
+
+        if (present.length === 0) {
+            void vscode.window.showWarningMessage(`Found no shell profile to edit (looked for ${files.join(', ')}).`);
+            return;
+        }
+        if (pending.length === 0) {
+            void vscode.window.showInformationMessage(
+                `${cargoBinPath()} is already on PATH in ${present.join(', ')}. Open a new terminal to use it.`,
+            );
+            return;
+        }
+
+        const confirmed = await vscode.window.showWarningMessage(
+            [
+                `Add ${cargoBinPath()} to PATH by appending a block to:`,
+                '',
+                ...pending.map((entry) => `  ${entry.file}`),
+                '',
+                'A .bak copy is kept next to each file. New terminals pick it up immediately.',
+                '',
+                'Continue?',
+            ].join('\n'),
+            { modal: true },
+            'Add to PATH',
+        );
+        if (confirmed !== 'Add to PATH') {
+            return;
+        }
+
+        for (const entry of pending) {
+            const uri = vscode.Uri.file(entry.file);
+            try {
+                await vscode.workspace.fs.copy(uri, vscode.Uri.file(`${entry.file}.bak`), { overwrite: true });
+            } catch {
+                // A missing backup must not block an additive edit.
+            }
+            await vscode.workspace.fs.writeFile(uri, Buffer.from(entry.content, 'utf8'));
+            output.appendLine(`added ${cargoBinPath()} to PATH in ${entry.file} (backup: ${entry.file}.bak)`);
+        }
+
+        const choice = await vscode.window.showInformationMessage(
+            'PATH updated. Open a new terminal to use cargo directly — VS Code itself needs a reload.',
+            'Open New Terminal',
+        );
+        if (choice === 'Open New Terminal') {
+            vscode.window.createTerminal({ name: 'Rusty: new shell', cwd: os.homedir(), env: augmentedEnv() }).show();
+        }
+    }
+
     return [
+        vscode.commands.registerCommand(INSTALL_ESP_TOOLCHAIN, async () => {
+            await installEspToolchain(output);
+        }),
         vscode.commands.registerCommand('rustyPlatform.checkToolchain', async () => {
             await state.refresh();
             const status = state.status;
             output.appendLine(summaryLine(state));
             output.show(true);
+
+            // Reported, but never as a *problem*: an RP-only user does not need the Xtensa
+            // toolchain, and telling them it is missing would be noise.
+            const esp = await currentEspStatus();
+            output.appendLine(`ESP toolchain: ${espToolchainSummary(esp)}`);
+            if (!esp.ready) {
+                output.appendLine(
+                    `  install it with "Install ESP Toolchain" (chips: ${esp.chips.join(', ')})`,
+                );
+            }
 
             const problems: string[] = [];
             if (!status?.cargo.found) {
@@ -93,21 +189,47 @@ export function registerToolchainCommands(state: RustyState, output: vscode.Outp
                 problems.push(status.probeDiagnosis.message);
             }
 
-            if (problems.length === 0) {
+            // Cargo can be found by us and still be invisible to the user's own shells: rustup
+            // is installed with --no-modify-path, and VS Code inherits a PATH without
+            // ~/.cargo/bin. Our terminals add it, a hand-opened one cannot.
+            const notOnShellPath = Boolean(status?.cargo.found) && !(process.env.PATH ?? '').split(path.delimiter).includes(cargoBinDir());
+
+            if (problems.length === 0 && !notOnShellPath) {
                 void vscode.window.showInformationMessage("Grumpy's Rusty Platform: toolchain looks good. 🎉");
                 return;
             }
+
+            if (problems.length === 0) {
+                const choice = await vscode.window.showInformationMessage(
+                    `cargo is installed at ${cargoBinPath()} but is not on this shell's PATH, so \`cargo build\` typed by hand will fail.`,
+                    'Add Cargo to PATH…',
+                );
+                if (choice === 'Add Cargo to PATH…') {
+                    await addCargoToPathInteractive();
+                }
+                return;
+            }
+
             const buttons = ['Install Missing Pieces'];
+            if (notOnShellPath) {
+                buttons.push('Add Cargo to PATH…');
+            }
             if (status?.probeDiagnosis.kind === 'firmware-outdated') {
                 buttons.push('Update Probe Firmware');
             }
+            const notes = [...problems];
+            if (notOnShellPath) {
+                notes.push(`cargo is not on this shell's PATH (${cargoBinPath()})`);
+            }
             const choice = await vscode.window.showWarningMessage(
-                `Toolchain needs attention:\n• ${problems.join('\n• ')}`,
+                `Toolchain needs attention:\n• ${notes.join('\n• ')}`,
                 { modal: true },
                 ...buttons,
             );
             if (choice === 'Install Missing Pieces') {
                 await vscode.commands.executeCommand('rustyPlatform.installToolchain');
+            } else if (choice === 'Add Cargo to PATH…') {
+                await addCargoToPathInteractive();
             } else if (choice === 'Update Probe Firmware') {
                 await vscode.commands.executeCommand('rustyPlatform.updateProbeFirmware');
             }
@@ -116,7 +238,7 @@ export function registerToolchainCommands(state: RustyState, output: vscode.Outp
         vscode.commands.registerCommand('rustyPlatform.installToolchain', async () => {
             const status = await currentStatus(state);
             const steps = planInstallation(status, {
-                targets: allTargets(),
+                targets: rpTargets(),
                 platform: process.platform,
                 arch: process.arch,
             });
@@ -141,6 +263,8 @@ export function registerToolchainCommands(state: RustyState, output: vscode.Outp
             await runInstallPlan({ output }, steps, process.arch);
             await state.refresh();
         }),
+
+        vscode.commands.registerCommand('rustyPlatform.fixShellPath', () => addCargoToPathInteractive()),
 
         vscode.commands.registerCommand('rustyPlatform.installUdevRules', async () => {
             if (process.platform !== 'linux') {

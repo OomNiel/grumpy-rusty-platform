@@ -2,9 +2,13 @@
     "name": "grumpy-rusty-platform",
     "displayName": "Grumpy's Rusty Platform for VS Code",
     "description": "PlatformIO-style embedded Rust development for RP2040 and RP2350 (Raspberry Pi Pico) using Embassy and probe-rs.",
-    "version": "0.0.1",
+    "version": "0.0.2",
     "publisher": "grumpy",
     "license": "MIT OR Apache-2.0",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/OomNiel/grumpy-rusty-platform.git"
+    },
     "engines": {
         "vscode": "^1.90.0"
     },
@@ -32,7 +36,8 @@
         "compile": "tsc -p ./",
         "watch": "tsc -watch -p ./",
         "lint": "tsc -p ./ --noEmit",
-        "test": "node tests/runner.js"
+        "test": "node tests/runner.js",
+        "dap-session": "node tests/tools/dap-session.js"
     },
     "devDependencies": {
         "@types/node": "^22.10.0",
@@ -66,6 +71,28 @@
                 "icon": "$(plug)"
             },
             {
+                "command": "rustyPlatform.debug",
+                "title": "Debug",
+                "category": "Rusty Platform",
+                "icon": "$(debug-alt)"
+            },
+            {
+                "command": "rustyPlatform.debugStop",
+                "title": "Stop Debugging",
+                "category": "Rusty Platform",
+                "icon": "$(debug-stop)"
+            },
+            {
+                "command": "rustyPlatform.setWifiCredentials",
+                "title": "Set Wi-Fi Credentials…",
+                "category": "Rusty Platform"
+            },
+            {
+                "command": "rustyPlatform.clearWifiCredentials",
+                "title": "Clear Wi-Fi Credentials",
+                "category": "Rusty Platform"
+            },
+            {
                 "command": "rustyPlatform.monitor",
                 "title": "Monitor (defmt)",
                 "category": "Rusty Platform",
@@ -90,16 +117,39 @@
                 "icon": "$(cloud-download)"
             },
             {
+                "command": "rustyPlatform.installEspToolchain",
+                "title": "Install ESP Toolchain (espup + espflash)…",
+                "category": "Rusty Platform",
+                "icon": "$(cloud-download)"
+            },
+            {
                 "command": "rustyPlatform.installUdevRules",
                 "title": "Install USB Permissions (udev)…",
                 "category": "Rusty Platform",
                 "icon": "$(shield)"
             },
             {
+                "command": "rustyPlatform.fixShellPath",
+                "title": "Add Cargo to PATH…",
+                "category": "Rusty Platform",
+                "icon": "$(terminal)"
+            },
+            {
                 "command": "rustyPlatform.updateProbeFirmware",
                 "title": "Update Debug Probe Firmware…",
                 "category": "Rusty Platform",
                 "icon": "$(cloud-download)"
+            },
+            {
+                "command": "rustyPlatform.addDependency",
+                "title": "Add Dependency…",
+                "category": "Rusty Platform",
+                "icon": "$(add)"
+            },
+            {
+                "command": "rustyPlatform.revealDependency",
+                "title": "Show Dependency in Cargo.toml",
+                "category": "Rusty Platform"
             },
             {
                 "command": "rustyPlatform.showProbes",
@@ -126,6 +176,10 @@
         "views": {
             "rustyPlatform": [
                 {
+                    "id": "rustyPlatform.controls",
+                    "name": "Controls"
+                },
+                {
                     "id": "rustyPlatform.boards",
                     "name": "Boards"
                 },
@@ -143,14 +197,30 @@
                     "group": "navigation@1"
                 },
                 {
+                    "command": "rustyPlatform.addDependency",
+                    "when": "view == rustyPlatform.project",
+                    "group": "navigation@1"
+                },
+                {
                     "command": "rustyPlatform.refresh",
-                    "when": "view == rustyPlatform.boards || view == rustyPlatform.project",
+                    "when": "view == rustyPlatform.boards || view == rustyPlatform.project || view == rustyPlatform.controls",
                     "group": "navigation@2"
+                }
+            ],
+            "view/item/context": [
+                {
+                    "command": "rustyPlatform.addDependency",
+                    "when": "view == rustyPlatform.project && viewItem == rustyPlatform.dependencies",
+                    "group": "inline@1"
                 }
             ],
             "commandPalette": [
                 {
                     "command": "rustyPlatform.refresh",
+                    "when": "false"
+                },
+                {
+                    "command": "rustyPlatform.revealDependency",
                     "when": "false"
                 }
             ]
@@ -168,6 +238,16 @@
                     "default": "",
                     "markdownDescription": "Explicit path to `probe-rs`. Leave empty to auto-detect."
                 },
+                "rustyPlatform.espflashPath": {
+                    "type": "string",
+                    "default": "",
+                    "markdownDescription": "Explicit path to `espflash`. Leave empty to auto-detect (`~/.cargo/bin`, then `PATH`)."
+                },
+                "rustyPlatform.serialPort": {
+                    "type": "string",
+                    "default": "",
+                    "markdownDescription": "Serial port used when flashing an ESP32, e.g. `/dev/ttyUSB0`. Leave empty to detect it — with more than one board attached, espflash asks."
+                },
                 "rustyPlatform.defaultBoard": {
                     "type": "string",
                     "default": "pico",
@@ -175,7 +255,10 @@
                         "pico",
                         "pico2",
                         "picow",
-                        "pico2w"
+                        "pico2w",
+                        "esp32-devkitc",
+                        "lilygo-tqt",
+                        "sunton-3248s035r"
                     ],
                     "markdownDescription": "Board pre-selected in the New Project wizard."
                 },

@@ -1,0 +1,19 @@
+Grumpy's Rusty Platform for VS Code
+Copyright (c) 2026 Grumpy (OomNiel)
+
+This project is dual-licensed under either of
+
+  * the Apache License, Version 2.0 (the "Apache-2.0"), whose full text is in
+    LICENSE-APACHE; or
+  * the MIT license (the "MIT"), whose full text is in LICENSE-MIT
+
+at your option.
+
+SPDX-License-Identifier: MIT OR Apache-2.0
+
+The `LICENSE-MIT` and `LICENSE-APACHE` files carry the complete license texts and are
+the authoritative copies; this file only records the choice between them.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for
+inclusion in this project by you, as defined in the Apache-2.0 license, shall be
+dual-licensed as above, without any additional terms or conditions.
