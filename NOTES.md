@@ -210,9 +210,13 @@ Tests that have already earned their keep:
    debug configuration now use `debug` (§26), because a release image cannot carry bindable
    breakpoints. `cargo build --release` plus `probe-rs download` still writes one by hand; a separate
    "Flash release (optimised)…" command is the obvious thing to add if Grumpy wants it.
-11. **The docs are current as of 2026-10-03** (this pass). The generated project `README.md`
-   documents the four configurations and the breakpoint budget; a project generated before today
-   keeps the older text (see item 5).
+11. **The docs are current as of 2026-10-03, v0.0.2** (the release pass). `README.md`,
+   `CHANGELOG.md` and this file all describe the ESP32 family now; the generated project `README.md`
+   documents the four configurations and the breakpoint budget for RP, and the flash/monitor
+   behaviour for ESP. A project generated before 2026-10-03 keeps the older text (see item 5).
+12. **ESP32 open items** — see the list at the end of §33. In short: the generated ESP firmware has
+   not been compiled yet (that is the next thing to do), there is no ESP `wifi` template, and the
+   touch panel and microSD socket are described in the board data but unused by any template.
 
 ---
 

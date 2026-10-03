@@ -73,9 +73,10 @@ ships it.
 ### Tests
 
 370 hermetic checks (t1 345 · t2 21 · t3 4). The RP-only invariants are now explicitly scoped to RP
-boards — which is how the two silent holes in the UF2 path were found — and the ESP side adds 26
-board/generator assertions, 12 toolchain-plan assertions, 5 process-level detection tests against
-new `espup`/`espflash` shims, and 45 recorded golden files.
+boards — which is how the two silent holes in the UF2 path were found — and the ESP side adds 28
+board/generator assertions, 12 toolchain-plan assertions, 8 flash-command and serial-port
+assertions, 5 process-level detection tests against new `espup`/`espflash` shims, and 45 recorded
+golden files (45 of the suite's 131).
 
 ### Known gaps
 
