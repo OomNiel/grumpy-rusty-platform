@@ -9,6 +9,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.0.3] - 2026-10-03
+
 ### Added
 
 **AI coding assist (optional, off by default)**
@@ -234,6 +238,7 @@ First build: everything the extension does today, packaged as `grumpy-rusty-plat
 - Windows is untested — the installer URLs are platform-aware, but probe-rs needs WinUSB/libusb
   handling that differs from Linux.
 
-[Unreleased]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.2...HEAD
+[Unreleased]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.3...HEAD
+[0.0.3]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.2...v0.0.3
 [0.0.2]: https://github.com/OomNiel/grumpy-rusty-platform/releases/tag/v0.0.2
 [0.0.1]: https://github.com/OomNiel/grumpy-rusty-platform/releases/tag/v0.0.1

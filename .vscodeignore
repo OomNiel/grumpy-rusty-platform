@@ -9,3 +9,8 @@ NOTES.md
 sidecar/target/**
 sidecar/.cargo-home/**
 sidecar/**/.backend
+
+# A developer worktree inside the repo, and any Rust build tree, must never ship.
+.dsh-worktrees/**
+**/.cargo-home/**
+**/target/**
