@@ -19,17 +19,19 @@ import { chatDetailed, describeEmptyAnswer, normalizeAssistantConfig } from './a
 import { refreshPanels } from './editor';
 import { configView } from './settings';
 import { log } from './log';
-import { setupBundledModel } from './runtime';
+import { setupBundledModel, useModelFile } from './runtime';
 import {
     chatModels,
     discover,
     findLmsCli,
+    scanForModelFiles,
     load,
     setupFacts,
     unloadAll,
     type Discovery
 } from './localModelCore';
 import {
+    filesOfferedForSelection,
     modelLabel,
     recommendedLoadOptions,
     type LoadOptions,
@@ -64,11 +66,20 @@ export async function chooseLocalModel(context: vscode.ExtensionContext): Promis
             progress.report({ message: 'asking LM Studio and checking this machine — the first check can take a few seconds…' });
             const facts = setupFacts();
             const found = await discover();
-            return { facts, found };
+            // A machine can have models and no working LM Studio at all: the `lms` binary present but its
+            // daemon refusing to start leaves `found.list` empty while `~/.lmstudio/models` is full. The scan
+            // is the answer to "but they are right there on my disk" (reported 2026-10-04).
+            progress.report({ message: 'looking for .gguf files already on this machine…' });
+            const files = await scanForModelFiles({ onProgress: (message) => progress.report({ message }) });
+            return { facts, found, files };
         }
     );
-    const { facts, found } = prepared;
-    const items: (vscode.QuickPickItem & { model?: LocalModel; action?: 'bundled' | 'custom' | 'llama' })[] = [];
+    const { facts, found, files } = prepared;
+    const items: (vscode.QuickPickItem & {
+        model?: LocalModel;
+        action?: 'bundled' | 'custom' | 'llama' | 'file';
+        file?: string;
+    })[] = [];
 
     for (const model of modelsOf(found)) {
         const loaded = found.loaded.some((id) => id === model.key || id.endsWith(model.key));
@@ -77,6 +88,19 @@ export async function chooseLocalModel(context: vscode.ExtensionContext): Promis
             description: loaded ? 'loaded' : '',
             detail: `LM Studio · ${model.arch}${loaded ? ' · already in memory' : ''}`,
             model
+        });
+    }
+
+    // The model files already on this machine, so "use the one I have" does not require knowing where the
+    // file browser starts. Capped: a picker is not a directory listing, and the panel has the full list.
+    for (const file of filesOfferedForSelection(files, found.list.chat.length > 0).slice(0, 25)) {
+        items.push({
+            label: `$(file) ${file.name}`,
+            description: `${file.sizeGb.toFixed(1)} GB`,
+            detail: `${file.inLmStudio ? 'inside LM Studio\'s folder' : 'found on this machine'} · ${file.folder}`
+                + ' · runs on the extension\'s own runtime',
+            action: 'file',
+            file: file.file
         });
     }
 
@@ -117,6 +141,13 @@ export async function chooseLocalModel(context: vscode.ExtensionContext): Promis
         // The built-in path changes `backend`/`modelPath` just like the others, and it returns early — without
         // this, loading the extension's own model from the palette left an open panel naming the old one
         // (reported 2026-09-15).
+        void refreshPanels();
+        return;
+    }
+    if (pick.action === 'file') {
+        const file = (pick as { file?: string }).file;
+        if (!file) return;
+        await useModelFile(context, file);
         void refreshPanels();
         return;
     }

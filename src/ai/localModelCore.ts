@@ -422,6 +422,11 @@ export interface FoundModelFile {
  * Bounded on purpose: a fixed depth, a size floor, a time budget and a progress callback, because
  * `find /` on a machine with network mounts is exactly the thing that makes an editor look hung. The
  * filter decisions are pure and live in `localModels.ts` so they are tested without a filesystem.
+ *
+ * LM Studio's own folder is walked like any other. Those are real `.gguf` files the extension's runtime can
+ * serve, and whether the `lms ls` list already offers them is the caller's decision
+ * (`filesOfferedForSelection`) — hiding them here meant that when LM Studio's daemon would not start, a
+ * model the user had already downloaded was offered nowhere at all (reported 2026-10-04).
  */
 export async function scanForModelFiles(opts: {
     onProgress?: Progress;
@@ -490,10 +495,11 @@ export async function scanForModelFiles(opts: {
         saying(`scanning ${root.replace(os.homedir(), '~')}…`);
         await walk(root, 0);
     }
-    const usable = found.filter((f) => !f.inLmStudio).sort((a, b) => b.sizeGb - a.sizeGb);
-    log(`Model scan: ${usable.length} loadable file(s) outside LM Studio, ${found.length - usable.length} already inside it, `
+    const sorted = found.slice().sort((a, b) => b.sizeGb - a.sizeGb);
+    const inside = sorted.filter((f) => f.inLmStudio).length;
+    log(`Model scan: ${sorted.length} model file(s) (${inside} inside LM Studio's folder), `
         + `${visited} file(s) visited in ${Math.round((Date.now() - started) / 1000)} s`);
-    return usable;
+    return sorted;
 }
 
 /**

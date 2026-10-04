@@ -937,6 +937,16 @@ async function activateWith(_context: vscode.ExtensionContext, file: string): Pr
 
 // ---------------- status ----------------
 
+/**
+ * Points the assistant at one `.gguf` and runs it with the extension's own runtime.
+ *
+ * Exported for the model picker: "my model is already on this disk" and "a model was downloaded for me" must
+ * end in the same place, which is what `activateWith` already does for the file-browser path.
+ */
+export async function useModelFile(context: vscode.ExtensionContext, file: string): Promise<void> {
+    await activateWith(context, file);
+}
+
 /** The bundled-runtime lines of the status dialog. */
 export function bundledStatusLines(cfg: AssistantConfig): string[] {
     if (!activeContext) return ['Model runtime: not initialised yet'];
