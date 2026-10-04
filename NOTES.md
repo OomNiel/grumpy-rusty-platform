@@ -1805,3 +1805,30 @@ Both are code-audited, neither has been run on a Windows machine — the same st
 first real generation here.
 
 Suite: **579 passed, 0 skipped** (was 575).
+
+## 41. The chat in its own window, on the monitor it deserves (2026-10-05)
+
+**The ask.** *"I would like the option to run the Chat window outside of the IDE on a 2nd monitor. Is it
+possible to make it run in an editor pane which can be dragged outside of the IDE window?"*
+
+**Yes — and only as an editor pane.** VS Code lets a **view** be moved between the primary and secondary
+side bars and the panel, but it is always docked inside the window; there is no way to drag one onto another
+monitor. An **editor** is different: `View: Move Editor into New Window` (or dragging the tab out of the window)
+gives it a real OS window, which the window manager then puts wherever the user likes. So the chat gained a
+second surface — a webview **panel** created with `createWebviewPanel`, opened beside the editor by
+**Rusty AI: Open the Assistant in an Editor Tab**.
+
+**What that required, and the one rule it must not break.** The transcript, the store, the busy flag and the
+request path are module state, and they were written against a single `view`:
+`post()` sent to `view?.webview`, `refreshAiChat()` returned early if there was no view. Two surfaces would
+have meant copying that state, which is two conversations pretending to be one. Instead the single view became
+a **set of surfaces**: `post()` broadcasts to all of them, `attach(provider, webview)` wires one up (shared
+HTML, shared message handler, one `refreshAiChat(true)` so a surface that just opened — including one dragged
+onto another monitor — draws the conversation immediately), and a panel removes itself from the set when it is
+closed. The view still goes through the same `attach`, so the two cannot drift.
+
+The panel is a singleton: asking twice **reveals** the one that exists rather than stacking copies, it carries
+the extension's icon, and `retainContextWhenHidden` keeps the transcript alive while it is behind another tab
+or collapsed. `AiChatViewProvider.handle` became public for exactly one reason — two surfaces, one handler.
+
+Suite: **580 passed, 0 skipped** (was 579).
