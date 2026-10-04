@@ -738,6 +738,28 @@ export function endpointPort(endpoint: string): number | undefined {
 }
 
 /**
+ * What to add to "nothing answered there" when something *is* answering somewhere else.
+ *
+ * The failure this exists for (2026-10-04): the settings pointed at LM Studio's 1234, a llama-server was
+ * running on 8080, and the message said only "No server answered". The user had already seen "Ready. Using
+ * the llama-server already running on port 8080" a minute earlier — a stale settings form had overwritten the
+ * pin — so a sentence naming both addresses is the difference between a puzzle and a fix.
+ *
+ * Pure: takes the endpoint that was tried and what a probe found, returns the sentence to append (empty when
+ * there is nothing useful to add — a hint that guesses would be worse than silence).
+ */
+export function endpointMismatchHint(
+    triedEndpoint: string,
+    running: { port: number; modelId?: string; modelPath?: string } | undefined
+): string {
+    if (!running) return '';
+    if (endpointPort(triedEndpoint) === running.port) return '';
+    const name = running.modelPath ? running.modelPath.replace(/\\/g, '/').split('/').pop() : running.modelId;
+    return ` A llama-server IS answering on port ${running.port}${name ? ` (${name})` : ''} — the settings point at `
+        + `${triedEndpoint || 'no address'}, so the endpoint above is the thing to change.`;
+}
+
+/**
  * The ports worth asking about, in order: the one the settings point at (when it is this machine), then
  * llama.cpp's own defaults.
  *

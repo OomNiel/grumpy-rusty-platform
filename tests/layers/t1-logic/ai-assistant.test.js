@@ -444,3 +444,40 @@ test('an HTTP failure carries the server’s own words', async () => {
     contains(message, 'HTTP 503');
     contains(message, 'still loading');
 });
+
+// ---------------------------------------------------------------- a failure that names the address
+
+test('a request that cannot connect says which address it tried', async () => {
+    // The report of 2026-10-04: the settings had been overwritten with LM Studio's dead 1234 (a stale settings
+    // form), and every prompt answered "No server answered — is the local model server running (and the
+    // endpoint correct)?" with *no address in it*. The address is the whole diagnosis.
+    const assistant = compiled('ai/assistant');
+    const cfg = assistant.normalizeAssistantConfig({ backend: 'external', endpoint: 'http://127.0.0.1:1234/v1', timeoutSeconds: 5 });
+    const fetchImpl = async () => { throw new TypeError('fetch failed'); };
+    let message = '';
+    try {
+        await assistant.chatDetailed(cfg, [{ role: 'user', content: 'hi' }], { fetchImpl });
+    } catch (error) {
+        message = error.message;
+    }
+    contains(message, 'No server answered at http://127.0.0.1:1234/v1');
+    contains(message, 'endpoint correct');
+});
+
+test('the words are the same when there is no address to name', () => {
+    const assistant = compiled('ai/assistant');
+    equal(assistant.describeError(new TypeError('fetch failed')),
+        'No server answered — is the local model server running (and the endpoint correct)?');
+    equal(assistant.describeError(new TypeError('fetch failed'), 'http://127.0.0.1:8080/v1'),
+        'No server answered at http://127.0.0.1:8080/v1 — is the local model server running (and the endpoint correct)?');
+});
+
+test('a timeout names the address too, and anything else is passed through untouched', () => {
+    const assistant = compiled('ai/assistant');
+    equal(assistant.describeError(new Error('This operation was aborted'), 'http://127.0.0.1:8080/v1'),
+        'The request to http://127.0.0.1:8080/v1 was cancelled or timed out.');
+    equal(assistant.describeError(new Error('This operation was aborted')), 'The request was cancelled or timed out.');
+    // A message from the server itself is never rewritten: it is the server's own words about its own problem.
+    equal(assistant.describeError(new Error('The server answered HTTP 400: context overflow'), 'http://x/v1'),
+        'The server answered HTTP 400: context overflow');
+});

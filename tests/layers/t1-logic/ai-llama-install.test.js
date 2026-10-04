@@ -269,3 +269,22 @@ test('the 27B is not one of the bundled runtime\'s models', () => {
     equal(specs.MODEL_SPECS.some((s) => s.id === 'qwen3.8-27b-q4_k_m'), false);
     equal(specs.OWN_SERVER_SPECS.length, 1);
 });
+
+test('a failure says what IS answering, when something is', () => {
+    // The 2026-10-04 report, in one sentence: the settings pointed at LM Studio's dead 1234 while a
+    // llama-server was holding port 8080. "No server answered" was true and useless; this is the rest of it.
+    const hint = models.endpointMismatchHint('http://127.0.0.1:1234/v1', {
+        port: 8080, modelId: 'qwen3-coder-local', modelPath: '/home/niel/.cache/huggingface/hub/x/qwen3-coder-30b-a3b-instruct-q4_k_s.gguf'
+    });
+    contains(hint, 'llama-server IS answering on port 8080');
+    contains(hint, 'qwen3-coder-30b-a3b-instruct-q4_k_s.gguf');
+    contains(hint, 'http://127.0.0.1:1234/v1');
+
+    // Nothing is running: silence is the honest answer, not a guess about which port was meant.
+    equal(models.endpointMismatchHint('http://127.0.0.1:1234/v1', undefined), '');
+    // It is answering *there*: the address was not the problem, so there is nothing to add.
+    equal(models.endpointMismatchHint('http://127.0.0.1:8080/v1', { port: 8080, modelId: 'm' }), '');
+    // An unreadable endpoint is still named, as "no address" rather than as an empty gap.
+    contains(models.endpointMismatchHint('', { port: 8080, modelId: 'm' }), 'the settings point at no address');
+    contains(models.endpointMismatchHint('', { port: 8080, modelId: 'm' }), '(m)');
+});

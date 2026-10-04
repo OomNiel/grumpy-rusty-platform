@@ -1526,3 +1526,69 @@ Suite: **552 passed, 0 skipped** (was 530), and `tsc` is clean under the project
 * GPU builds of llama.cpp are deliberately not offered by the installer: they are 150-600 MB and depend on a
   driver this extension cannot inspect. A developer who wants Vulkan/CUDA builds their own and points
   `llamaServerPath` at it.
+
+## 36. The pin was right; the settings form wrote it back (2026-10-04)
+
+**The report.** *"I select the 'My own llama-server' in the model picker, then i select Use the one already
+running on port 8080 … Ready. Using the llama-server already running on port 8080 — it serves
+qwen3-coder-30b-a3b-instruct-q4_k_s.gguf … I click ok. The endpoint and Model ID is not updated in the Model
+and settings section and the response from a prompt is: … ⚠ No server answered."*
+
+**The evidence, in the extension's own words.** VS Code dumps every output channel to
+`~/.config/Code/logs/<session>/window<N>/exthost/output_logging_*/1-Grumpy's Rusty Platform.log`, which is
+where this was solved — not by guessing from the two symptoms:
+
+```
+[09:33:27] llama-server: using /home/niel/llama.cpp/build/bin/llama-server (version 10365 (9afff1b74))
+[09:33:35] llama-server: using the one already running on http://127.0.0.1:8080/v1 (qwen3-coder-local)
+[09:33:43] Test request: ready, finish reason "stop".      ← the reuse really did work
+[09:34:21] assistant: panel settings saved                 ← Save, from a form nothing had refreshed
+[09:34:24] assistant: panel settings saved
+[09:36:12] ERROR: No server answered — is the local model server running (and the endpoint correct)?
+[09:37:57] llama-server: using /home/niel/llama.cpp/build/bin/llama-server …
+[09:38:35] llama-server: using the one already running on http://127.0.0.1:8080/v1 (qwen3-coder-local)
+[09:38:36] Test request: ready, finish reason "stop".
+```
+
+`journalctl --user-unit llama-server.service` agrees and narrows it down: the 30 B service logged requests at
+09:33 (the reuse's `proveItWorks`) and **nothing at all at 09:36** — the failing prompt never reached port
+8080. And the settings file afterwards holds `8080` again, because the user re-ran the flow at 09:37.
+
+**The cause.** `useRunningLlamaServer` wrote the three settings correctly — the log and the file both prove
+it. What it did **not** do was tell the view. The Model and settings section renders its **own copy** of
+backend/endpoint/model from a `state` message, and nothing posted one after a palette-driven pin, so the form
+went on showing LM Studio's `http://127.0.0.1:1234/v1` and an empty model field. Then the Save button — which
+sent **all four fields**, changed or not — wrote that stale address back over the correct pin. Every prompt
+afterwards went to the dead 1234, which is exactly `ECONNREFUSED` → *"No server answered"*. Two symptoms, one
+missing `refreshPanels()` call and one form that spoke with more authority than it had.
+
+**The three fixes.**
+
+1. **Every write tells the view.** `useRunningLlamaServer` and `startOwnLlamaServer` now call
+   `refreshAssistantView()` (a dynamic import of `editor.ts`, the same trick `refreshPanels` itself uses to
+   avoid a load-time cycle), so the form shows what the settings say the moment they change.
+2. **Save writes a diff, not a form.** The view remembers what it was last *told* and posts only the fields
+   the user actually changed; an empty diff is not a write at all and says so. A form that has not caught up
+   can no longer revert a decision it never saw — which is the same shape as the *shadowed scope* bug in
+   `settings.ts` (a writer acting on a stale belief about what is true).
+3. **The failure names the address.** `describeError` now takes the endpoint and prints it — *"No server
+   answered at http://127.0.0.1:1234/v1"* instead of a sentence with no address in it — and the chat appends
+   `endpointMismatchHint`'s sentence when a probe finds a llama-server answering **somewhere else**: *" A
+   llama-server IS answering on port 8080 (qwen3-coder-30b-a3b-instruct-q4_k_s.gguf) — the settings point at
+   http://127.0.0.1:1234/v1, so the endpoint above is the thing to change."* The diagnosis that took a log
+   dig is now the error message.
+
+**Verified against the machine's real service**, through the compiled modules with a stubbed `vscode`:
+`useRunningLlamaServer(await findRunningLlamaServer('http://127.0.0.1:1234/v1'))` on this box finds the 30 B on
+port 8080, writes `{backend: "external", endpoint: "http://127.0.0.1:8080/v1", model: "qwen3-coder-local"}`,
+and posts `state` with those three values to the open view — the message that was missing. The save contract
+was checked the same way: an empty diff writes **nothing** (and answers "Nothing changed — the settings
+already say that."), and a one-key diff writes exactly that key.
+
+**Still open.** The `.part` file in the extension's storage (`qwen2.5-coder-7b-instruct-q4_k_m.gguf.part`,
+1.91 GB of 4.68 GB, untouched since 08:28) is an interrupted download of the built-in runtime's model; the
+resume path will continue it, and nothing was deleted here because it is the user's bandwidth. This machine's
+LM Studio is also dead (the `lms` daemon answers nothing, and every probe spends 20 s finding that out), which
+is why the settings' old `1234` endpoint had no chance of working.
+
+Suite: **557 passed, 0 skipped** (was 552).
