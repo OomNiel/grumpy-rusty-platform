@@ -11,6 +11,19 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.13] - 2026-10-05
+
+### Added
+
+- **The move to an editor pane is now reachable from the Rusty Platform side panel itself**: a button
+  **In Editor Tab…** in the AI Assist view's footer (beside *Status…/Unload*), and an action in the view's
+  title bar. Both run the existing **Rusty AI: Open the Assistant in an Editor Tab** command, so the palette
+  route and the in-panel routes cannot drift apart.
+
+### Notes
+
+- `NOTES.md` §43. Test suite: **582 passed, 0 skipped** (was 581).
+
 ## [0.0.12] - 2026-10-05
 
 ### Fixed
