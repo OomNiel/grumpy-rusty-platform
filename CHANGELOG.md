@@ -11,6 +11,41 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.9] - 2026-10-04
+
+### Changed
+
+**The model list is no longer sized for one machine** — you can choose what suits *your* hardware.
+
+- **Add your own models from Hugging Face.** New command **Rusty AI: Add a Model from Hugging Face…** (also an
+  entry in *Choose a Local Model…*): give it `owner/repo` or a Hub link and it lists that repo's `.gguf` files
+  with **size, quantisation and whether they fit here**; pick one and it joins the model list, downloads with
+  progress and a SHA-256 check, and appears in the panel's dropdown like any built-in entry. **Rusty AI: Remove
+  a Model I Added…** takes it off the list again (the weights stay on disk). This flow had been ported in an
+  earlier version and was **unreachable** — nothing called it — which is why the only choosable models were two
+  4.4 GB entries.
+- **No model is refused because of this machine any more.** The old rule vetoed anything whose RAM requirement
+  exceeded the machine's, and for a model added from the Hub that requirement was *twice its own file size* —
+  so a 16.8 GB 27B was "not offered here" on the 28 GB machine that loads it in 16.5 GiB. Every model is now
+  offered: one that may not fit is marked with the arithmetic (*"needs about 24.4 GB free (21.3 GB free now,
+  28 GB in total)"*) and asking for it confirms once.
+- **The graphics card is asked, not assumed.** The offload rule was `size > 8 GB → CPU only`, written for a
+  shared-memory iGPU — on a 24 GB card it pinned a 27B to the CPU. VRAM now comes from `nvidia-smi`, the
+  amdgpu driver, or the new **`gpuVramGb`** setting, and the decision is whether the weights **plus their
+  context** fit the card, with a sentence either way. An AMD APU's figure is a slice of system RAM (this
+  machine's integrated Radeon reports 3.2 GB, where offload is *faster*: 9.7 s against 13.0 s), so a figure
+  under 8 GB is deliberately ignored.
+- **Threads and context scale.** `min(cores − 1, 16)` instead of a cap of 8 (this 12-thread machine now gets
+  11), and the recommended context is 64 k at 96 GB of RAM, 32 k at 48 GB, 16 k at 20 GB — unchanged below
+  that. Both are still overridable in the settings.
+
+### Notes
+
+- Verified on the real machine and the real Hub: the 27B is now offered here (needs 18.8 GB, 21.3 GB free),
+  threads 11, GPU offload on a 24 GB card; and `lmstudio-community/Qwen3.8-27B-GGUF` listed its four files and
+  added the Q4_K_M to `user-models.json` and to the model list. `NOTES.md` §39.
+- Test suite: **575 passed, 0 skipped** (was 571).
+
 ## [0.0.8] - 2026-10-04
 
 ### Added
