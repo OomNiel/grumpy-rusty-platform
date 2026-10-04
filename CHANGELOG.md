@@ -103,6 +103,13 @@ ships it.
   (*“The model is reading the prompt… (3.2s)”*) no longer looks like a hang. The bundled runtime sends the
   real tokenized prompt size before it generates, which makes the context percentage a measurement rather
   than a guess; against an external server the window is not ours to know, and no percentage is shown.
+- **The compiled runtime survives extension updates.** The sidecar’s build output moved from the installed
+  extension folder to global storage, with a marker recording the backend and a fingerprint of the exact
+  sources it was built from — so an update reuses the existing llama.cpp build instead of compiling it
+  again for identical sources, and switching CPU/Vulkan still rebuilds.
+- **The AI chat remembers your conversations.** They are saved per workspace folder
+  (`globalStorage/ai-chats.json`), restored when the view opens, and switchable from a picker with **New**
+  and **Delete** — so a reload continues where you left off instead of showing an empty page.
 ### Changed
 
 - `BoardProfile` is now a discriminated RP/ESP union, so the compiler — not a comment — is what
