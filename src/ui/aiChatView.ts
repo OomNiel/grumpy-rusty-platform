@@ -23,15 +23,16 @@ import {
     assistantEnabled,
     describeEmptyAnswer,
     describeModel,
+    rustCodeBlocks,
     type ChatMessage
 } from '../ai/assistant';
 import { describeProgress } from '../ai/assistant';
 import { boardFacts } from '../ai/boardFacts';
-import { crateList } from '../ai/rustCode';
+import { codeBlockLabel, crateList } from '../ai/rustCode';
 import { log, logError } from '../ai/log';
 import { readActiveProject } from '../project/activeProject';
 import { panelState } from '../ai/panel';
-import { assistantConfig, chatWithRescue } from '../ai/editor';
+import { applyChatCode, assistantConfig, chatWithRescue } from '../ai/editor';
 import { findRunningLlamaServer } from '../ai/llamaServer';
 import { endpointMismatchHint } from '../ai/localModels';
 
@@ -109,6 +110,23 @@ function remember(): void {
     active.updatedAt = Date.now();
     store = upsertChat(store, active);
     saveChats();
+}
+
+/**
+ * The turns as the view wants them: each answer with the code blocks it carries, so the view can offer
+ * "implement this" under it (asked 2026-10-04).
+ *
+ * The *detection* stays here rather than in the webview's own script: `rustCodeBlocks` is the pure, tested
+ * rule for "is there code in this answer", and a second copy of it inside an HTML string would be a second
+ * thing to keep true. The view receives labels and an index, and posts the index back.
+ */
+function turnsForView(turns: readonly { role: string; text: string }[]): { role: string; text: string; index: number; code?: string[] }[] {
+    return turns.map((turn, index) => {
+        const blocks = turn.role === 'assistant' ? rustCodeBlocks(turn.text) : [];
+        // An answer is offered only when it has Rust in it: a question, and an answer that is all prose, get no
+        // button — and a `Cargo.toml` block is not Rust to implement.
+        return blocks.length ? { role: turn.role, text: turn.text, index, code: blocks.map((b) => codeBlockLabel(b.code)) } : { role: turn.role, text: turn.text, index };
+    });
 }
 
 /** The chat picker's contents, for the workspace being worked in. */
@@ -218,7 +236,10 @@ async function ask(text: string): Promise<void> {
         chat.turns.push({ role: 'assistant', text: answer });
         remember();
         postChats();
-        post({ type: 'turn', role: 'assistant', text: answer, final: true });
+        // The code blocks travel with the answer, so the buttons under it are the extension's decision and not
+        // a second guess by the view (see `turnsForView`).
+        const shown = turnsForView([{ role: 'assistant', text: answer }])[0];
+        post({ type: 'turn', role: 'assistant', text: answer, final: true, index: chat.turns.length - 1, code: shown?.code });
     } catch (error) {
         logError(error);
         let message = error instanceof Error ? error.message : String(error);
@@ -329,6 +350,8 @@ function html(webview: vscode.Webview): string {
     .row { display: flex; gap: 6px; align-items: center; }
     .row > * { flex: 1 1 auto; }
     .row > button { flex: 0 0 auto; }
+    .codeActions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+    .codeActions button.applyCode { font-size: .9em; padding: 3px 8px; }
     details { border: 1px solid var(--vscode-panel-border); border-radius: 4px; padding: 6px; }
     summary { cursor: pointer; opacity: .9; }
     label { display: block; margin: 6px 0 2px; font-size: .9em; opacity: .9; }
@@ -386,7 +409,27 @@ function html(webview: vscode.Webview): string {
         return parts.map((part, i) => (i % 2 === 1 ? '<pre>' + part.replace(/^\\w*\\n/, '') + '</pre>' : part)).join('');
     }
 
-    function addTurn(role, text, live) {
+    // The "implement this code" buttons under an answer (asked 2026-10-04). What is offered comes from the
+    // extension (one label per Rust block, plus the turn index); the view only draws them and posts the index
+    // back, so there is no second copy of the rule "is there code in this answer".
+    function addCodeActions(div, turn) {
+        if (!turn || !turn.code || !turn.code.length) return;
+        const row = document.createElement('div');
+        row.className = 'codeActions';
+        turn.code.forEach((label, block) => {
+            const button = document.createElement('button');
+            button.className = 'applyCode';
+            button.textContent = turn.code.length === 1
+                ? 'Implement ' + label + ' in the project…'
+                : 'Implement ' + label + ' (' + (block + 1) + ' of ' + turn.code.length + ')…';
+            button.title = 'Shows a diff against the file, then applies it as a normal undoable edit';
+            button.addEventListener('click', () => vscode.postMessage({ type: 'applyCode', index: turn.index, block: block }));
+            row.appendChild(button);
+        });
+        div.appendChild(row);
+    }
+
+    function addTurn(role, text, live, turn) {
         if (live && current && current.dataset.role === role) {
             current.dataset.text += text;
             current.innerHTML = render(current.dataset.text);
@@ -397,21 +440,23 @@ function html(webview: vscode.Webview): string {
         div.dataset.role = role;
         div.dataset.text = text;
         div.innerHTML = render(text);
+        if (role === 'assistant' && !live) addCodeActions(div, turn);
         log.appendChild(div);
         current = div;
         log.scrollTop = log.scrollHeight;
     }
 
-    function settleTurn(role, text) {
+    function settleTurn(role, text, turn) {
         // The completed turn — not another one. The streamed pieces already drew this answer, so the
         // authoritative text replaces them; appending it is what rendered every answer twice (2026-10-04).
         if (current && current.dataset.role === role) {
             current.dataset.text = text;
             current.innerHTML = render(text);
+            if (role === 'assistant') addCodeActions(current, turn);
             log.scrollTop = log.scrollHeight;
             return;
         }
-        addTurn(role, text, false);
+        addTurn(role, text, false, turn);
     }
 
     function setBusy(busy, message) {
@@ -458,12 +503,12 @@ function html(webview: vscode.Webview): string {
             // A restored conversation: the turns already happened, so they are drawn at once, not streamed.
             log.innerHTML = '';
             current = null;
-            for (const turn of msg.turns || []) addTurn(turn.role, turn.text, false);
+            for (const turn of msg.turns || []) addTurn(turn.role, turn.text, false, turn);
         } else if (msg.type === 'chats') {
             setChats(msg.chats, msg.activeId);
         } else if (msg.type === 'turn') {
-            if (msg.final) settleTurn(msg.role, msg.text);
-            else addTurn(msg.role, msg.text, false);
+            if (msg.final) settleTurn(msg.role, msg.text, msg);
+            else addTurn(msg.role, msg.text, false, msg);
         } else if (msg.type === 'token') {
             addTurn('assistant', msg.text, true);
         } else if (msg.type === 'busy') {
@@ -551,13 +596,16 @@ export class AiChatViewProvider implements vscode.WebviewViewProvider {
         command?: string;
         chatId?: string;
         settings?: Record<string, unknown>;
+        /** `applyCode`: which turn, and which of its code blocks. */
+        index?: number;
+        block?: number;
     }): Promise<void> {
         switch (message.type) {
             case 'ready': {
                 // The chat is restored before anything else is drawn, so reopening the view shows the
                 // conversation instead of an empty page (the server posted it before; the webview dropped it).
                 const chat = ensureActive();
-                post({ type: 'history', turns: chat.turns });
+                post({ type: 'history', turns: turnsForView(chat.turns) });
                 postChats();
                 await refreshAiChat(true);
                 return;
@@ -577,7 +625,7 @@ export class AiChatViewProvider implements vscode.WebviewViewProvider {
                 const wanted = store.chats.find((chat) => chat.id === message.chatId);
                 if (!wanted) return;
                 active = wanted;
-                post({ type: 'history', turns: wanted.turns });
+                post({ type: 'history', turns: turnsForView(wanted.turns) });
                 postChats();
                 return;
             }
@@ -586,8 +634,21 @@ export class AiChatViewProvider implements vscode.WebviewViewProvider {
                 active = undefined;
                 saveChats();
                 const chat = ensureActive();
-                post({ type: 'history', turns: chat.turns });
+                post({ type: 'history', turns: turnsForView(chat.turns) });
                 postChats();
+                return;
+            }
+            case 'applyCode': {
+                // The button under an answer: the block is taken from the *stored* turn, so what is applied is
+                // what the conversation actually says — not a copy the view kept.
+                const turn = active?.turns[message.index ?? -1];
+                const blocks = turn && turn.role === 'assistant' ? rustCodeBlocks(turn.text) : [];
+                const block = blocks[message.block ?? 0];
+                if (!block) {
+                    post({ type: 'error', message: 'That code is no longer in this conversation — ask again and it will be.' });
+                    return;
+                }
+                await applyChatCode(block.code, { label: codeBlockLabel(block.code) });
                 return;
             }
             case 'command':

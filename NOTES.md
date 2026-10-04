@@ -1656,3 +1656,48 @@ and that question is the only thing standing between a click and a machine that 
 path does not ask — it reuses. If a user wants that question gone as well, it is one branch to remove.
 
 Suite: **562 passed, 0 skipped** (was 557).
+
+## 38. The chat writes to the project, through the same door as everything else (2026-10-04)
+
+**The ask.** *"In the ai assist chat box, if the response contains refactored code, add the option to
+implement that code in the project."*
+
+**What that had to mean here.** The chat is where a *question* is answered — "why does this deadlock", "how
+should this be structured" — and a good answer often ends with the code. Until now the user copied it out by
+hand and found the file themselves. The button that appears under such an answer is that copy-paste, but it
+follows the rules the rest of this extension already follows: the right file, the right place in it, the
+file's own attributes respected, a **diff** to review, and one undoable edit. Nothing new was invented for the
+write path — `showProposal` / `applyProposal` (the ✎ flow's diff) do it.
+
+**The decisions, all pure and all tested.**
+
+* **Which answers get a button.** `codeBlocks` (in `assistant.ts`) reports every fenced block with its
+  language; `isRustCodeBlock` keeps `rust`/`rs`/no-language and drops `toml`, `bash`, `json` — a `Cargo.toml`
+  snippet is not code to implement in a `.rs` file. It is *not* `extractCode`: that answers "what is **the**
+  code here" for a flow that has already decided to apply one thing, while the chat has to answer "is there
+  anything here, and how many" — a refactoring answer commonly carries two blocks (before and after), and each
+  is offered separately. **Only closed fences count**: an unclosed one means the token budget cut the answer
+  off, and offering a *button* that writes half a function into a file is a different promise from
+  `extractCode`'s salvage, which is shown to a user who is about to read it anyway.
+* **Which file.** The Rust file in front of the user, with no question — and the diff **names** it
+  (`AI: fn main → main.rs`), so the quiet path is still a visible choice. The first version asked with a
+  two-item picker every time, which the verification run showed immediately: a question that is answered the
+  same way every time is noise. With no Rust file open (or the active editor being the proposal *preview*, a
+  write to nowhere) it offers the project's `src/**/*.rs` plus "a new file…".
+* **Where in the file.** `insertChatCode` (pure, in `rustCode.ts`): a **whole file** replaces the file; an
+  **item** replaces the same-named function in place (keeping the file's attributes and signature via
+  `preserveSignature`), or is added to the file when the name is new.
+* **Is it a whole file?** `looksLikeWholeFile` — `#![…]` anywhere at the start of a line (an inner attribute is
+  illegal anywhere else), **or** `fn main` **with** a `use` line beside it. The `fn main` case is not
+  `fn main` alone, and the test that made the rule is the reason: a *refactor of `main`* comes back as
+  `#[embassy_executor::main] async fn main(…) { … }` with no imports, and treating that as a whole file would
+  replace `main.rs` with one function and silently delete every other item in it. Caught by writing the test
+  first — the first rule was `#![…]` OR `fn main`, and the test failed.
+
+**Verified against a real file**, through the compiled modules with a stubbed `vscode`: an answer containing a
+refactored `main` applied to `.verify/project/src/main.rs` produced a diff titled `AI: fn main → main.rs`
+whose proposed text has the new body (`Timer::after_millis(500)`), the old body gone, and untouched:
+`#![no_std]`, `#![no_main]`, `use embassy_time::Timer;`, `#[embassy_executor::main]`, `fn other_helper` —
+exactly one `main`, and **the file on disk unchanged until Apply**.
+
+Suite: **571 passed, 0 skipped** (was 562).

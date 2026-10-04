@@ -62,6 +62,14 @@ Type a question or a request in the box at the bottom and press **Ask** (`Ctrl+E
 assistant answers with the active Rust file, the board's own profile and your `Cargo.toml` crates as
 context. Follow-up questions keep the thread.
 
+**If an answer contains Rust code, a button appears under it: "Implement `fn flash_led` in the project…"**
+(one per block, labelled by the item it defines). Pressing it writes that code into the Rust file you have
+open — replacing the function of the same name where there is one, adding it to the file where there is not,
+and replacing the file only when the answer is a whole file (it starts with `#![…]` or has `use` lines beside
+`fn main`). Your file's own attributes and signature are kept, so a refactored `main` cannot lose
+`#[embassy_executor::main]`. The result opens as a **diff** and nothing is written until you press **Apply**
+— the same review step as §4. No Rust file open? It asks which file, or offers to create one.
+
 ## 4. Review and apply
 
 The answer opens as a **diff** — your file on the left, the proposed file on the right. Then:

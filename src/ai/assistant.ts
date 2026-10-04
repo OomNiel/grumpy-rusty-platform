@@ -766,6 +766,53 @@ export async function chat(
 /** The fence every code answer is asked for, and the one `extractCode` looks for. */
 const CODE_FENCE = '```';
 
+/** One fenced block of code in an answer, with the language the model declared for it. */
+export interface CodeBlock {
+    /** The info string's first word, lower-cased (`rust`, `bash`, `` when the model wrote none). */
+    language: string;
+    code: string;
+}
+
+/**
+ * The code blocks in an answer that are worth offering to apply to a Rust project.
+ *
+ * WHY THIS IS NOT `extractCode` (asked 2026-10-04: *"In the ai assist chat box, if the response contains
+ * refactored code, add the option to implement that code in the project."*). `extractCode` answers "what is
+ * **the** code here" for a flow that already knows it will apply one thing; the chat has to answer "is there
+ * anything here to apply, and how many", because a refactoring answer often carries two blocks (before and
+ * after) or a Rust block beside a `Cargo.toml` one. So every block is reported, and `language` is what lets
+ * the caller leave the `toml` alone.
+ *
+ * Only **closed** fences count. An unclosed fence means the answer was cut off by the token budget (the case
+ * `extractCode` salvages, deliberately, for a flow where the user is watching); offering a *button* that
+ * writes half a function into a file is a different proposition, and the honest answer there is to let the
+ * user read the answer and ask again.
+ */
+export function codeBlocks(answer: string): CodeBlock[] {
+    const text = String(answer ?? '');
+    const out: CodeBlock[] = [];
+    const fenceRe = new RegExp(`${CODE_FENCE}([^\\n]*)${'\\n'}([\\s\\S]*?)${CODE_FENCE}`, 'g');
+    let m: RegExpExecArray | null;
+    while ((m = fenceRe.exec(text)) !== null) {
+        const language = String(m[1] ?? '').trim().split(/\\s+/)[0]?.toLowerCase() ?? '';
+        const code = String(m[2] ?? '').replace(/\\s+$/, '');
+        if (code.trim()) out.push({ language, code });
+    }
+    return out;
+}
+
+/** Is this block worth offering to implement in a Rust project? */
+export function isRustCodeBlock(block: CodeBlock): boolean {
+    // No language at all counts: the assistant answers about this project, and a model that omits the info
+    // string is still almost always writing Rust. Anything that *named* another language is left alone.
+    return block.language === '' || /^(rust|rs|rust-lang)$/.test(block.language);
+}
+
+/** The Rust code blocks in an answer — the ones the chat offers to implement. */
+export function rustCodeBlocks(answer: string): CodeBlock[] {
+    return codeBlocks(answer).filter(isRustCodeBlock);
+}
+
 /**
  * Pulls the code out of a model answer. Takes the **last** fenced block, because a small model often
  * echoes the method it was given first and then answers; falls back to `{"code": …}` and, failing
