@@ -42,6 +42,11 @@ _Nothing yet._
   sha256 `e00082f7…43e520` — the model the Avalonia Designer steps up to, and the numbers are confirmed
   against Hugging Face's own API). If those weights already exist anywhere the searcher reaches, they
   are adopted instead of downloaded.
+- **The two engines keep their own model.** `modelPath` is the *built-in* runtime's pin (the panel marks a
+  bundled entry as loaded by comparing it with it), so the user's own server now has its own
+  `llamaServerModelPath`. A file the built-in runtime knows by name is not an answer to "which model does
+  your llama-server run": on this machine `modelPath` held the Designer's copy of the shipped 4.4 GB 7B, so
+  the old rule would have started that silently instead of the 27B.
 - **Once both answers are known, nothing is asked.** The command starts your `llama-server` and loads
   the weights: the flags question appears only when the model was just chosen by hand, and the one
   question that does survive is "a llama-server is already running — use it or start another?", which
@@ -59,7 +64,7 @@ _Nothing yet._
   (`0.5.0-dev`, build 11384), and the start path reaches `/health {"status":"ok"}` plus a real chat
   completion in **4.0 s**. `NOTES.md` §35 has the evidence, including the trap that
   `/releases/latest` on llama.cpp answers `v0.5.0` — a release with no binaries in it at all.
-- Test suite: **551 passed, 0 skipped** (was 530).
+- Test suite: **552 passed, 0 skipped** (was 530).
 
 ## [0.0.4] - 2026-10-03
 

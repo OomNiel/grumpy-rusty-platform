@@ -1455,6 +1455,17 @@ the same two questions the same way:
   or adopting the copy that is already here (LM Studio's folder, `~/Downloads`, a mounted drive) if it is —
   `ensureModelFile` looks for it by name and size and proves it by hash before spending any bandwidth.
 
+**A second pin, because the first one was the wrong question.** `modelPath` is the **built-in runtime's**
+pin: the panel marks a built-in entry as loaded by comparing it with `modelPath`, and the model picker writes
+it when the extension's own model is chosen. The own-server path had been borrowing it, and on this machine
+that was not a small thing — `modelPath` held the Designer's copy of the shipped 4.4 GB 7B, so "the setting
+wins" meant *My own llama-server* would have started the 7B silently, which is precisely not what the request
+was about. The user's own server now has its own pin (`llamaServerModelPath`), and a file the bundled runtime
+knows by name is **not** an answer to "which model does your llama-server run" — it falls through to the 27B
+and then to the picker, which still lists it as a model to choose. Checked against this machine's real
+settings, not a fixture: the old rule resolved to `qwen2.5-coder-7b-instruct-q4_k_m.gguf`, the new rule to
+`{source: "none"}` — the picker, with the 27B download as its first entry.
+
 The rule is **ask only what we do not already know**. Once a machine has answered both questions, the command
 starts the server and loads the weights with nothing to click, which is what "automatically" means to the
 person who asked for it. The one question that survives a second run is the "a llama-server is already
@@ -1505,7 +1516,7 @@ like success. Both halves of the relation are now checked, and the new test was 
 removing the `startLlamaServer` declaration from `package.json` makes three cases fail, and deleting the
 `llamaServerPath` property makes two more.
 
-Suite: **551 passed, 0 skipped** (was 530), and `tsc` is clean under the project's strict flags.
+Suite: **552 passed, 0 skipped** (was 530), and `tsc` is clean under the project's strict flags.
 
 ### Still open
 

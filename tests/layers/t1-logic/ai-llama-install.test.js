@@ -181,7 +181,7 @@ test('the offer says what will be downloaded and what it costs', () => {
 const exists = (present) => (p) => present.includes(p);
 
 test('a model already chosen or already downloaded needs no question', () => {
-    // The setting wins: it is the user's own last choice.
+    // The setting wins: it is the user's own last choice for this server.
     equal(
         models.ownServerModelPreference({ pinned: '/m/a.gguf', known: '/m/27b.gguf', exists: exists(['/m/a.gguf', '/m/27b.gguf']) }),
         { path: '/m/a.gguf', source: 'setting' }
@@ -202,6 +202,30 @@ test('a model already chosen or already downloaded needs no question', () => {
     equal(
         models.ownServerModelPreference({ pinned: '/m/notes.txt', known: '', exists: exists(['/m/notes.txt']) }),
         { source: 'none' }
+    );
+});
+
+test('the built-in runtime\'s own model is not an answer to which model THIS server runs', () => {
+    // Found on a real machine 2026-10-04: `modelPath` held the built-in runtime's shipped 7B (the Designer's
+    // copy of it), so "the setting wins" meant the user's own llama-server silently started a 4.4 GB model
+    // when the whole request was about the 27B. A pinned file the bundled runtime knows by name falls through
+    // to the 27B, and then to the picker — which still lists it as a model to *choose*.
+    const pinned = '/home/niel/.config/Code/User/globalStorage/grumpy.avalonia-designer/models/qwen2.5-coder-7b-instruct-q4_k_m.gguf';
+    equal(
+        models.ownServerModelPreference({ pinned, pinnedIsBundled: true, known: '/gs/models/Qwen3.8-27B-Q4_K_M.gguf', exists: exists([pinned, '/gs/models/Qwen3.8-27B-Q4_K_M.gguf']) }),
+        { path: '/gs/models/Qwen3.8-27B-Q4_K_M.gguf', source: 'known' },
+        'the 27B, not the built-in runtime\'s 7B'
+    );
+    equal(
+        models.ownServerModelPreference({ pinned, pinnedIsBundled: true, known: '', exists: exists([pinned]) }),
+        { source: 'none' },
+        'and with no 27B yet, the question is asked instead of starting the wrong model'
+    );
+    // The same file is a perfectly good answer when it is the user's own choice for this server (`llamaServer
+    // ModelPath`), which is what `pinnedIsBundled: false` means.
+    equal(
+        models.ownServerModelPreference({ pinned, pinnedIsBundled: false, known: '', exists: exists([pinned]) }),
+        { path: pinned, source: 'setting' }
     );
 });
 

@@ -141,7 +141,7 @@ export function parseChoiceValue(value: string): { kind: string; key: string } {
 }
 
 /** Builds the dropdown: everything that could be loaded, in the order a developer would look. */
-export function buildChoices(found: Discovery, files: FoundModelFile[], endpoint: string, backend = 'off', modelPath = '', bundled: Record<string, { onDisk: boolean; bytes: number }> = {}, specs: ModelSpec[] = MODEL_SPECS, llamaBin = '', llamaRunning = '', native: SidecarBackend = 'cpu'): ModelChoice[] {
+export function buildChoices(found: Discovery, files: FoundModelFile[], endpoint: string, backend = 'off', modelPath = '', bundled: Record<string, { onDisk: boolean; bytes: number }> = {}, specs: ModelSpec[] = MODEL_SPECS, llamaBin = '', llamaRunning = '', native: SidecarBackend = 'cpu', ownModelPath = ''): ModelChoice[] {
     const choices: ModelChoice[] = [];
     // "Whatever is loaded" is a real answer, and it is the one the settings most often hold (`model` empty).
     // Without an entry for it the dropdown showed the *first* LM Studio model as if it had been chosen — and
@@ -224,7 +224,8 @@ export function buildChoices(found: Discovery, files: FoundModelFile[], endpoint
     // because it is the same kind of answer — a local engine this window can start, stop and pin — while the
     // "a server I run myself" entry below stays the one for an address that is *already* serving something.
     const own = ownLlamaServerStatus();
-    const chosenFile = modelPath ? path.basename(modelPath) : '';
+    // The file *this* server was set up with — `llamaServerModelPath`, not the built-in runtime's `modelPath`.
+    const chosenFile = ownModelPath ? path.basename(ownModelPath) : '';
     choices.push({
         value: choiceValue('llama', ''),
         label: `My own llama-server  ·  llama.cpp${own.running && own.info ? `   ● running on port ${own.info.port}` : ''}`,
@@ -307,7 +308,7 @@ export async function panelState(fresh = false): Promise<PanelState> {
     const llamaRunning = elsewhere
         ? `already running on port ${elsewhere.port}${elsewhere.modelId ? ` (${elsewhere.modelId})` : ''}`
         : '';
-    const choices = buildChoices(found, scanned, endpoint, backend, cfg.get<string>('modelPath', ''), bundledFilesOnDisk(), allModelSpecs(), lookup.path ?? '', llamaRunning, sidecarBackend(cfg.get<string>('bundledBackend', 'vulkan')));
+    const choices = buildChoices(found, scanned, endpoint, backend, cfg.get<string>('modelPath', ''), bundledFilesOnDisk(), allModelSpecs(), lookup.path ?? '', llamaRunning, sidecarBackend(cfg.get<string>('bundledBackend', 'vulkan')), cfg.get<string>('llamaServerModelPath', ''));
     if (choices.length === 0 && !found.cli) {
         choices.push({
             value: choiceValue('custom', endpoint),
@@ -493,7 +494,7 @@ async function startLoad(
         // The user's own `llama-server` (asked 2026-09-16). No download and no other program is involved: the
         // binary is theirs, the `.gguf` is theirs, and this window owns the process. `key` carries a file when
         // a caller has one; otherwise the model file is the one the settings already name.
-        const file = key || cfg.get<string>('modelPath', '');
+        const file = key || cfg.get<string>('llamaServerModelPath', '');
         progress('starting your own llama-server…');
         const outcome = await startOwnLlamaServer({
             modelPath: file,

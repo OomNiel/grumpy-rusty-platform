@@ -119,7 +119,7 @@ test('every declared AI setting says what it does', () => {
 test('the llama-server settings the new flow writes are the declared ones', () => {
     // Named explicitly as well as by the audit above, because these are the six that were missing and the
     // failure they caused was a silent no-op rather than a compile error.
-    for (const key of ['llamaServerPath', 'llamaServerArgs', 'llamaServerService', 'llamaServerStartTarget', 'loadContextLength', 'loadGpu', 'loadTtlSeconds']) {
+    for (const key of ['llamaServerPath', 'llamaServerModelPath', 'llamaServerArgs', 'llamaServerService', 'llamaServerStartTarget', 'loadContextLength', 'loadGpu', 'loadTtlSeconds']) {
         ok(declaredSettings.has(`rustyPlatform.assistant.${key}`), `rustyPlatform.assistant.${key} is declared`);
     }
     for (const command of ['rustyPlatform.assistant.startLlamaServer', 'rustyPlatform.assistant.stopLlamaServer']) {

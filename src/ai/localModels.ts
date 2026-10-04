@@ -1018,25 +1018,35 @@ export type OwnServerModelSource = 'setting' | 'known' | 'none';
  * The rule is "only ask what we do not already know", and it is what makes *"the extension must start the
  * llama.cpp server and load the weights automatically"* true on the second run and every one after it:
  *
- *   1. the `modelPath` setting, when the file is there — the user's own last choice, or the model another
- *      runtime already downloaded;
+ *   1. the `llamaServerModelPath` setting, when the file is there and it is **not** one of the bundled
+ *      runtime's own models — a real choice made for this server, so it is honoured without a word;
  *   2. the known 27B, when a copy is anywhere on this machine (extension storage, LM Studio's folder, the
  *      Hub cache, an external drive) — the model this feature exists for;
  *   3. nothing, and then the caller asks: a picker of the files found, the download offer, or both.
  *
- * A pinned path that no longer exists is *not* used and *not* an error here: it falls through to the known
- * model, and the caller's picker will say the file is gone if it comes to that.
+ * WHY `pinnedIsBundled` EXISTS. `modelPath` is the **bundled runtime's** pin — the panel marks a built-in
+ * entry as loaded by comparing it with `modelPath`, and `chooseLocalModel` writes it when the extension's own
+ * model is chosen. It used to be borrowed by this path too, which on a real machine meant the user's own
+ * llama-server started the 4.4 GB Qwen2.5-Coder the *built-in* runtime had been set up with, silently, when
+ * what they had asked for was the 27B (found 2026-10-04: `modelPath` held the Designer's copy of the shipped
+ * 7B). A file the bundled runtime knows by name is therefore not an answer to *this* question, and falls
+ * through to the picker — which still lists it, because it is a perfectly good model to pick.
+ *
+ * A pinned path that no longer exists is not used and not an error here: it falls through, and the caller's
+ * picker will say the file is gone if it comes to that.
  */
 export function ownServerModelPreference(input: {
-    /** The `modelPath` setting. */
+    /** The `llamaServerModelPath` setting. */
     pinned?: string;
+    /** True when that setting names one of the bundled runtime's own models (`MODEL_SPECS`/the user's added ones). */
+    pinnedIsBundled?: boolean;
     /** A verified copy of the known 27B already on this machine, if one was found. */
     known?: string;
     exists: (path: string) => boolean;
     platform?: NodeJS.Platform;
 }): { path?: string; source: OwnServerModelSource } {
     const gguf = (p: string | undefined): p is string => !!p && /\.gguf$/i.test(p) && input.exists(p);
-    if (gguf(input.pinned)) return { path: input.pinned, source: 'setting' };
+    if (!input.pinnedIsBundled && gguf(input.pinned)) return { path: input.pinned, source: 'setting' };
     if (gguf(input.known)) return { path: input.known, source: 'known' };
     return { source: 'none' };
 }

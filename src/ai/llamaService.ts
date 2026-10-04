@@ -490,7 +490,7 @@ async function startViaUnit(opts: { onProgress?: (message: string) => void }): P
 async function startViaProcess(opts: { onProgress?: (message: string) => void }): Promise<StartChoice> {
     const cfg = configView(SETTINGS);
     const outcome = await startOwnLlamaServer({
-        modelPath: cfg.get<string>('modelPath', ''),
+        modelPath: cfg.get<string>('llamaServerModelPath', ''),
         contextLength: cfg.get<number>('loadContextLength', 0),
         gpu: cfg.get<string>('loadGpu', 'auto'),
         threads: cfg.get<number>('threads', 0),
