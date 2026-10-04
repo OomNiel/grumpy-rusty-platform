@@ -216,3 +216,51 @@ test('the search roots cover the usual external-drive mount points', () => {
     }
     ok(roots.some((r) => r.startsWith('/home/someone/Downloads')), 'and the home folders');
 });
+
+// The reported case (2026-10-04): a `.gguf` already on the PC, inside another extension's storage.
+test('the VS Code user-data folders are found per platform', () => {
+    const linux = search.vscodeUserDirs('/home/x', 'linux');
+    ok(linux.includes('/home/x/.config/Code/User'), 'linux stable');
+    ok(linux.includes('/home/x/.vscode-server/data/User'), 'a remote window keeps its storage here');
+
+    const mac = search.vscodeUserDirs('/Users/x', 'darwin');
+    ok(mac.includes('/Users/x/Library/Application Support/Code/User'), 'macOS');
+
+    const win = search.vscodeUserDirs('C:\\Users\\x', 'win32', 'C:\\Users\\x\\AppData\\Roaming');
+    ok(win.some((d) => d.endsWith('Code\\User')), `windows: ${JSON.stringify(win)}`);
+    equal(search.vscodeUserDirs('C:\\Users\\x', 'win32', '').length, 0, 'no APPDATA, nothing to guess');
+});
+
+test('only an extension models folder counts as a model root', () => {
+    const dir = makeDir();
+    try {
+        const userDir = path.join(dir, 'Code', 'User');
+        const wanted = path.join(userDir, 'globalStorage', 'grumpy.avalonia-designer', 'models');
+        fs.mkdirSync(wanted, { recursive: true });
+        fs.mkdirSync(path.join(userDir, 'globalStorage', 'other.extension', 'webview'), { recursive: true });
+        equal(search.globalStorageModelFolders([userDir]), [wanted]);
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test('a model in another extension storage is found and used', async () => {
+    const dir = makeDir();
+    try {
+        const content = 'the-shipped-weights';
+        const spec = specFor('qwen-test-q4_k_m.gguf', content);
+        const userDir = path.join(dir, '.config', 'Code', 'User');
+        const models = path.join(userDir, 'globalStorage', 'grumpy.avalonia-designer', 'models');
+        const file = writeFile(path.join(models, spec.fileName), content);
+
+        // The exact reported scenario: the file is on the PC, in another extension's storage.
+        const roots = search.globalStorageModelFolders(search.vscodeUserDirs(dir, 'linux'));
+        equal(await search.findLocalCopy(spec, { roots }), file);
+
+        // and the roots production actually uses include that folder
+        ok(search.defaultModelRoots({ home: dir, platform: 'linux' }).includes(models),
+            'defaultModelRoots must include extension storage');
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});

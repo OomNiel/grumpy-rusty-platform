@@ -27,13 +27,13 @@ import {
     parseLmsServerStatus,
     parseLoadEstimate,
     parseLockLimitGb,
-    scanRoots,
     type LoadEstimate,
     type LoadOptions,
     type LocalModel,
     type LocalModelList,
     type SetupFacts
 } from './localModels';
+import { defaultModelRoots } from './localSearch';
 
 export const LMSTUDIO_API = 'http://127.0.0.1:1234/api/v0/models';
 /** Where LM Studio keeps imported models. Files already here are listed by `lms ls` — no import needed. */
@@ -434,7 +434,7 @@ export async function scanForModelFiles(opts: {
     const saying = opts.onProgress ?? (() => undefined);
     const budget = opts.budgetMs ?? 12000;
     const started = Date.now();
-    const roots = opts.roots ?? scanRoots(os.homedir());
+    const roots = opts.roots ?? defaultModelRoots();
     const modelsRoot = lmStudioModelsRoot();
     const found: FoundModelFile[] = [];
     const seen = new Set<string>();

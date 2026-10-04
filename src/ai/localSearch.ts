@@ -68,6 +68,86 @@ export function sha256File(file: string): Promise<string> {
  * candidate that fails the hash is skipped rather than fatal: there may be a correct copy further down the
  * list, and the caller's fallback — a download — is always available.
  */
+/**
+ * The VS Code user-data folders that can hold an extension's `globalStorage`.
+ *
+ * Extension storage is one of the most likely places a model already is. This extension's own bundled model,
+ * and the Avalonia Designer's, both live at `<userDir>/globalStorage/<publisher>.<name>/models/<file>.gguf`;
+ * a user who has run either should not download the same bytes twice. (Reported 2026-10-04: the search missed
+ * `/home/niel/.config/Code/User/globalStorage/grumpy.avalonia-designer/models`, which held exactly the shipped
+ * 4.4 GB model.)
+ *
+ * The list is a function of the platform, not of the filesystem, so the tests can assert it without one.
+ */
+export function vscodeUserDirs(
+    home: string,
+    platform: string = process.platform,
+    appData: string = process.env.APPDATA ?? ''
+): string[] {
+    if (platform === 'darwin') {
+        return [
+            `${home}/Library/Application Support/Code/User`,
+            `${home}/Library/Application Support/Code - Insiders/User`,
+            `${home}/Library/Application Support/VSCodium/User`
+        ];
+    }
+    if (platform === 'win32') {
+        return appData ? [`${appData}\\Code\\User`, `${appData}\\Code - Insiders\\User`] : [];
+    }
+    const flavours = ['Code', 'Code - Insiders', 'VSCodium', 'Cursor'];
+    return [
+        ...flavours.map((flavour) => `${home}/.config/${flavour}/User`),
+        // A remote/SSH or browser window keeps its user data here; a snap install nests one more level.
+        `${home}/.vscode-server/data/User`,
+        `${home}/.vscode-oss/data/User`,
+        `${home}/snap/code/common/.config/Code/User`
+    ];
+}
+
+/**
+ * The existing `<userDir>/globalStorage/<extension>/models` folders.
+ *
+ * Only folders literally named `models` are returned: that is the convention both this extension and the
+ * Avalonia Designer follow, and walking all of `globalStorage` — every extension's caches and indexes —
+ * would cost far more than the download it hopes to save.
+ */
+export function globalStorageModelFolders(userDirs: readonly string[]): string[] {
+    const out: string[] = [];
+    for (const userDir of userDirs) {
+        let extensions: fs.Dirent[];
+        try {
+            extensions = fs.readdirSync(path.join(userDir, 'globalStorage'), { withFileTypes: true });
+        } catch {
+            continue; // that VS Code flavour is not installed here
+        }
+        for (const entry of extensions) {
+            if (!entry.isDirectory()) continue;
+            const models = path.join(userDir, 'globalStorage', entry.name, 'models');
+            try {
+                if (fs.statSync(models).isDirectory()) out.push(models);
+            } catch {
+                /* most extensions have no models folder, which is not a problem */
+            }
+        }
+    }
+    return out;
+}
+
+/**
+ * Everywhere a model plausibly is: the usual model folders, plus the storage of every installed extension.
+ *
+ * One function so the targeted search (`findLocalCopy`) and the panel's list of loose `.gguf` files
+ * (`scanForModelFiles`) cannot disagree about where to look — the report that started this was a search that
+ * "did not find .gguf files already on the pc".
+ */
+export function defaultModelRoots(opts: { home?: string; platform?: string; appData?: string } = {}): string[] {
+    const home = opts.home ?? os.homedir();
+    return [
+        ...scanRoots(home),
+        ...globalStorageModelFolders(vscodeUserDirs(home, opts.platform, opts.appData))
+    ];
+}
+
 export async function findLocalCopy(
     spec: ModelSpec,
     opts: LocalSearchOptions = {}
@@ -115,7 +195,7 @@ export async function findLocalCopy(
         }
     };
 
-    for (const root of opts.roots ?? scanRoots(os.homedir())) {
+    for (const root of opts.roots ?? defaultModelRoots()) {
         try {
             if (!fs.existsSync(root)) continue;
         } catch {
