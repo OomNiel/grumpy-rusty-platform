@@ -360,17 +360,22 @@ function attach(provider: AiChatViewProvider, webview: vscode.Webview): void {
  */
 let chatPanel: vscode.WebviewPanel | undefined;
 
-export function openChatPanel(context: vscode.ExtensionContext): vscode.WebviewPanel {
-    if (chatPanel) {
-        chatPanel.reveal(undefined, false);
-        return chatPanel;
-    }
-    const panel = vscode.window.createWebviewPanel(
-        'rustyPlatform.assistantChat',
-        'Rusty AI Assistant',
-        { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true },
-        { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [context.extensionUri] }
-    );
+/** The view type VS Code needs to recognise the tab it is asked to restore. */
+const CHAT_PANEL_TYPE = 'rustyPlatform.assistantChat';
+
+/** What a restored panel is told about itself. The transcript is not here: it lives in the chat store. */
+interface ChatPanelState {
+    title?: string;
+}
+
+/**
+ * Wires a panel — new or restored — up as a chat surface.
+ *
+ * One function for both paths, because the restored one is exactly as real as the new one: it needs the icon,
+ * it needs to be in the surface set or the transcript would not reach it, and it must clear `chatPanel` when it
+ * is closed or the next "open the tab" would reveal a dead tab.
+ */
+function wireChatPanel(context: vscode.ExtensionContext, panel: vscode.WebviewPanel): void {
     panel.iconPath = vscode.Uri.joinPath(context.extensionUri, 'resources', 'icon.svg');
     chatPanel = panel;
     attach(new AiChatViewProvider(), panel.webview);
@@ -378,6 +383,31 @@ export function openChatPanel(context: vscode.ExtensionContext): vscode.WebviewP
         surfaces.delete(panel.webview);
         if (chatPanel === panel) chatPanel = undefined;
     });
+    // What VS Code hands back to the serializer on the next start: the user may have renamed the tab, and a
+    // title that resets itself every reload is a small rudeness.
+}
+
+/**
+ * "Open the Assistant in an Editor Tab" — the chat as an editor tab, which can be dragged onto a second monitor.
+ *
+ * *"Is it possible to make it run in an editor pane which can be dragged outside of the IDE window?"* Yes, and
+ * this is the only shape that can: VS Code moves an **editor** into its own window when its tab is dragged out
+ * (or `View: Move Editor into New Window`), while a side-bar view cannot leave the window at all. The panel is
+ * a singleton — asking twice reveals the one that exists rather than stacking copies — and `retainContextWhen
+ * Hidden` keeps the transcript alive while it is collapsed or behind another tab.
+ */
+export function openChatPanel(context: vscode.ExtensionContext): vscode.WebviewPanel {
+    if (chatPanel) {
+        chatPanel.reveal(undefined, false);
+        return chatPanel;
+    }
+    const panel = vscode.window.createWebviewPanel(
+        CHAT_PANEL_TYPE,
+        'Rusty AI Assistant',
+        { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true },
+        { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [context.extensionUri] }
+    );
+    wireChatPanel(context, panel);
     log('assistant: the chat was opened as an editor tab (it can be dragged onto another monitor)');
     return panel;
 }
@@ -770,6 +800,18 @@ export function registerAiChatView(context: vscode.ExtensionContext): vscode.Dis
         vscode.commands.registerCommand('rustyPlatform.assistant.removeAddedModel', () => removeAddedModel()),
         vscode.commands.registerCommand('rustyPlatform.assistant.unloadModel', () => unloadLoadedModel()),
         vscode.commands.registerCommand('rustyPlatform.assistant.openEditor', () => openChatPanel(context)),
+        // Bring the editor-tab chat back after a reload or a restart — including the copy the user dragged onto
+        // a second monitor, which VS Code re-opens as its own window and then asks for the panel's contents
+        // again. Without this the tab simply vanished on every reload (asked 2026-10-05).
+        vscode.window.registerWebviewPanelSerializer(CHAT_PANEL_TYPE, {
+            deserializeWebviewPanel: async (panel: vscode.WebviewPanel, state: unknown) => {
+                const saved = (state ?? {}) as ChatPanelState;
+                panel.title = saved.title || 'Rusty AI Assistant';
+                panel.webview.options = { enableScripts: true, localResourceRoots: [context.extensionUri] };
+                wireChatPanel(context, panel);
+                log('assistant: the editor-tab chat was restored');
+            }
+        }),
         // The `AiChatViewProvider` class is still registered as the view's provider above; a panel needs no
         // provider at all.
         { dispose: () => { surfaces.clear(); } }

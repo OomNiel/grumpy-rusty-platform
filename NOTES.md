@@ -1832,3 +1832,31 @@ the extension's icon, and `retainContextWhenHidden` keeps the transcript alive w
 or collapsed. `AiChatViewProvider.handle` became public for exactly one reason — two surfaces, one handler.
 
 Suite: **580 passed, 0 skipped** (was 579).
+
+## 42. The tab that was there when you come back (2026-10-05)
+
+**The follow-up.** *"Do that please: so the second-monitor window comes back exactly where you left it after a
+reload."*
+
+VS Code restores an editor **webview panel** only if the extension has registered a
+`WebviewPanelSerializer` for that panel's view type. Without one the tab is simply gone on reload — which is
+exactly what §41 shipped, and why the caveat was written down rather than left implied.
+
+Three details made it more than a call to `registerWebviewPanelSerializer`:
+
+* **The view type has to be the same string in both places.** It is now a named constant
+  (`CHAT_PANEL_TYPE`), used by `createWebviewPanel` and by the serializer, because a typo there fails the way
+  this project keeps meeting: the tab opens perfectly and never comes back, with nothing said.
+* **A restored panel is as real as a new one** — it needs the icon, it has to join the surface set (or the
+  transcript would never reach it), and it must clear the singleton when closed or the next "open the tab"
+  would `reveal()` a dead one. So both paths call one `wireChatPanel(context, panel)`.
+* **A panel dragged onto another monitor is restored by a different window**, with its own extension host: the
+  transcript is not carried in the panel state at all. It comes from the chat store, and the webview's own
+  `ready` handshake (`ensureActive` → `history`) fills it in — the same path that fills a freshly opened tab.
+  The panel state carries only the title, so a tab the user renamed comes back with its name.
+
+**What is restored is the *layout*, by VS Code** — the window it was moved into, its position among the
+groups. Nothing about the monitor is stored by this extension, and nothing could be: the window manager places
+the window, and a comment in the code says so rather than pretending the extension controls it.
+
+Suite: **581 passed, 0 skipped** (was 580).

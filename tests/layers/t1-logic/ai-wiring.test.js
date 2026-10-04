@@ -171,3 +171,15 @@ test('the chat can be an editor tab, which is the only shape that leaves the win
         ok(chat.includes(`registerCommand('${command}'`), `${command} is registered`);
     }
 });
+
+test('the editor-tab chat comes back after a reload', () => {
+    // Asked 2026-10-05: the tab (and the copy dragged onto a second monitor) must return where it was. VS Code
+    // restores a custom panel only if a serializer is registered for its view type — and the type must be the
+    // very one `createWebviewPanel` was called with, or the tab is silently dropped.
+    const chat = fs.readFileSync(path.join(repoRoot(), 'src/ui/aiChatView.ts'), 'utf8');
+    ok(chat.includes('registerWebviewPanelSerializer'), 'a serializer is registered');
+    ok(/const CHAT_PANEL_TYPE = 'rustyPlatform\.assistantChat'/.test(chat), 'the view type is a named constant');
+    ok((chat.match(/CHAT_PANEL_TYPE/g) || []).length >= 3, 'and the same constant is used to create and to restore it');
+    ok(chat.includes('function wireChatPanel('), 'a restored panel is wired by the same code as a new one');
+    ok((chat.match(/wireChatPanel\(/g) || []).length >= 3, 'both paths call it');
+});
