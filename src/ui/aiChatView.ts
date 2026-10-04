@@ -390,6 +390,18 @@ function html(webview: vscode.Webview): string {
         log.scrollTop = log.scrollHeight;
     }
 
+    function settleTurn(role, text) {
+        // The completed turn — not another one. The streamed pieces already drew this answer, so the
+        // authoritative text replaces them; appending it is what rendered every answer twice (2026-10-04).
+        if (current && current.dataset.role === role) {
+            current.dataset.text = text;
+            current.innerHTML = render(text);
+            log.scrollTop = log.scrollHeight;
+            return;
+        }
+        addTurn(role, text, false);
+    }
+
     function setBusy(busy, message) {
         if (busy) {
             progress.hidden = false;
@@ -426,7 +438,8 @@ function html(webview: vscode.Webview): string {
         } else if (msg.type === 'chats') {
             setChats(msg.chats, msg.activeId);
         } else if (msg.type === 'turn') {
-            addTurn(msg.role, msg.text, !msg.final);
+            if (msg.final) settleTurn(msg.role, msg.text);
+            else addTurn(msg.role, msg.text, false);
         } else if (msg.type === 'token') {
             addTurn('assistant', msg.text, true);
         } else if (msg.type === 'busy') {
