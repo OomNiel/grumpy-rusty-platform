@@ -495,6 +495,11 @@
                     "default": "",
                     "markdownDescription": "Extra flags added to your `llama-server` command line, last so they win. Example: `--flash-attn on --no-warmup`. Relative paths resolve against the model file's own folder."
                 },
+                "rustyPlatform.assistant.llamaServerModelPath": {
+                    "type": "string",
+                    "default": "",
+                    "markdownDescription": "The `.gguf` **My own llama-server** runs. Set by **Rusty AI: Start My llama-server…** — the file you pick, or the known 27B fetched for you. Kept separately from `modelPath`, which is the built-in runtime's own model, so the two engines cannot change each other's weights."
+                },
                 "rustyPlatform.assistant.llamaServerService": {
                     "type": "string",
                     "default": "",

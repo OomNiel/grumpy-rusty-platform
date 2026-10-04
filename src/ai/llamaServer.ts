@@ -58,7 +58,7 @@ import {
     sidecarContextSize,
     sidecarGpuLayers
 } from './localModels';
-import { OWN_SERVER_SPECS, formatBytes, ownServerSpecByFileName, type ModelSpec } from './modelSpecs';
+import { OWN_SERVER_SPECS, formatBytes, ownServerSpecByFileName, specByFileName, type ModelSpec } from './modelSpecs';
 import { scanForModelFiles, setupFacts, type FoundModelFile } from './localModelCore';
 import { allModelSpecs, ensureModelFile, extensionContext, modelFileFor, modelFolder } from './runtime';
 import { describeInstall, installLlamaServer, llamaServerVersion } from './llamaInstall';
@@ -524,14 +524,11 @@ export async function startOwnLlamaServer(request: LlamaStartRequest): Promise<L
     if (!bin) return { ok: false, message: llamaServerMissingMessage(lookup) };
 
     // The model: what the caller named, else the same automatic resolution the palette flow uses (the
-    // `modelPath` setting, a verified copy of the known 27B, then one picker whose first entry is that 27B).
+    // `llamaServerModelPath` setting, a verified copy of the known 27B, then one picker whose first entry is
+    // that 27B).
     let modelPath = String(request.modelPath ?? '').trim();
     if (!modelPath && context) {
-        const preference = ownServerModelPreference({
-            pinned: cfg.get<string>('modelPath', ''),
-            known: knownOwnServerModelPath(context),
-            exists: (p) => { try { return fs.existsSync(p); } catch { return false; } }
-        });
+        const preference = ownServerPreference(context, cfg);
         modelPath = preference.path ?? (await chooseLlamaServerModel(context, cfg)) ?? '';
     }
     if (!modelPath) {
@@ -568,7 +565,10 @@ export async function startOwnLlamaServer(request: LlamaStartRequest): Promise<L
         // The version is logged, never used to decide anything: a build too old for a flag says so itself,
         // and the retry above is what acts on it.
         void llamaServerVersion(bin).then((v) => { if (v) log(`llama-server version ${v}`); });
-        await cfg.update('modelPath', modelPath);
+        // `llamaServerModelPath`, not `modelPath`: that one belongs to the built-in runtime, and pointing it at
+        // a 16.8 GB model would change what the extension's own runtime loads next. The two runtimes keep their
+        // own pins (2026-10-04).
+        await cfg.update('llamaServerModelPath', modelPath);
         await cfg.update('backend', 'external');
         await cfg.update('endpoint', info.endpoint);
         await cfg.update('model', info.modelId);
@@ -836,6 +836,27 @@ export function knownOwnServerModelPath(context: vscode.ExtensionContext): strin
 }
 
 /**
+ * Which model the user's own server will run, decided from what is already known.
+ *
+ * Both callers (the palette flow and `startOwnLlamaServer`) go through this, so they cannot disagree about
+ * what "already chosen" means — the same reason `wireSettings` exists for the endpoint. `pinnedIsBundled` is
+ * the one subtlety: `modelPath` belongs to the *built-in* runtime (see `ownServerModelPreference`), so a file
+ * the built-in runtime knows by name is not an own-server choice and is not allowed to answer this question.
+ */
+function ownServerPreference(
+    context: vscode.ExtensionContext,
+    cfg: vscode.WorkspaceConfiguration
+): ReturnType<typeof ownServerModelPreference> {
+    const pinned = cfg.get<string>('llamaServerModelPath', '');
+    return ownServerModelPreference({
+        pinned,
+        pinnedIsBundled: !!pinned && !!specByFileName(path.basename(pinned), allModelSpecs()),
+        known: knownOwnServerModelPath(context),
+        exists: (p) => { try { return fs.existsSync(p); } catch { return false; } }
+    });
+}
+
+/**
  * "AI: Start My llama-server…" — resolve the binary and the model, start it, prove it answers.
  *
  * The questions are asked in the order the answers become useful, and **only when they are not already
@@ -881,15 +902,10 @@ export async function startMyLlamaServerFlow(context: vscode.ExtensionContext): 
         startAnother = true;
     }
 
-    // The model. Automatic when this machine already answers the question: the `modelPath` setting first (the
-    // user's own last choice), then a verified copy of the known 27B. Otherwise one picker whose first entry
-    // is that 27B — downloaded if it is not here, adopted if it is.
-    const known = knownOwnServerModelPath(context);
-    const preference = ownServerModelPreference({
-        pinned: cfg.get<string>('modelPath', ''),
-        known,
-        exists: (p) => { try { return fs.existsSync(p); } catch { return false; } }
-    });
+    // The model. Automatic when this machine already answers the question: the `llamaServerModelPath` setting
+    // first (a real choice made for *this* server), then a verified copy of the known 27B. Otherwise one picker
+    // whose first entry is that 27B — downloaded if it is not here, adopted if it is.
+    const preference = ownServerPreference(context, cfg);
     let modelPath = preference.path;
     let askedForModel = false;
     if (!modelPath) {
@@ -988,9 +1004,15 @@ async function chooseLlamaServerModel(
         }
     }
 
-    const pinned = cfg.get<string>('modelPath', '');
+    const pinned = cfg.get<string>('llamaServerModelPath', '');
     if (pinned && fs.existsSync(pinned) && /\.gguf$/i.test(pinned)) {
-        push(pinned, `$(star) ${path.basename(pinned)}`, `already chosen · ${shortFolder(pinned)}`);
+        push(pinned, `$(star) ${path.basename(pinned)}`, `already chosen for your llama-server · ${shortFolder(pinned)}`);
+    }
+    // The built-in runtime's own model, listed but not starred: it is the file `modelPath` names, and this flow
+    // deliberately does not treat it as a choice for *this* server (see `ownServerModelPreference`).
+    const bundledPin = cfg.get<string>('modelPath', '');
+    if (bundledPin && fs.existsSync(bundledPin) && /\.gguf$/i.test(bundledPin)) {
+        push(bundledPin, `$(file) ${path.basename(bundledPin)}`, `the built-in runtime's model · ${shortFolder(bundledPin)}`);
     }
     for (const spec of allModelSpecs()) {
         const file = modelFileFor(context, spec);
