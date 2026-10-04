@@ -17,11 +17,11 @@ _Nothing yet._
 
 - **A local model is looked for on this machine before it is downloaded.** Choosing the built-in
   runtime's model now searches the usual model folders (`~/Downloads`, LM Studio, the Hugging Face
-  cache, `/media`, `/run/media`, `/mnt`, `/Volumes`) for the same weights — by exact name or exact size — and adopts the first
+  cache, the storage of every installed extension (`globalStorage/<extension>/models`), `/media`, `/run/media`, `/mnt`, `/Volumes`) for the same weights — by exact name or exact size — and adopts the first
   candidate whose **SHA-256 matches the published hash**. A hard link puts it in the extension's
   storage without duplicating the bytes; across filesystems it falls back to a copy. The search is
   bounded in depth (5) and time (15 s), says what it is doing, and hashes only plausible candidates,
-  so it cannot cost more than the download it avoids. Previously a model already on the disk was
+  so it cannot cost more than the download it avoids. The panel’s list of `.gguf` files on the machine uses the same roots. Previously a model already on the disk was
   fetched again.
 
 ## [0.0.3] - 2026-10-03
