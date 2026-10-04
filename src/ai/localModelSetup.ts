@@ -46,8 +46,28 @@ function modelsOf(found: Discovery): LocalModel[] {
 
 /** "AI: Choose a Local Model…" — the whole setup, with two confirmations and no jargon. */
 export async function chooseLocalModel(context: vscode.ExtensionContext): Promise<void> {
-    const facts = setupFacts();
-    const found = await discover();
+    // The wait is announced, not left to look like a dead button. Two things happen before one word of the
+    // picker can be built: `setupFacts()` reads the machine, and `discover()` asks LM Studio's `lms` helper —
+    // whose FIRST call of a session also starts LM Studio's service, measured at ~4.3 s (see `localModelCore`
+    // and NOTES). Reported 2026-10-04: "the system takes a while to present the picker dialog, causing the
+    // user to wonder if something is happening".
+    //
+    // The notification is deliberately not cancellable: the work is a handful of CLI calls that a cancel
+    // could not stop, and a Cancel button that does nothing is worse than no button.
+    const prepared = await vscode.window.withProgress(
+        {
+            location: vscode.ProgressLocation.Notification,
+            title: 'Looking for local models…',
+            cancellable: false
+        },
+        async (progress) => {
+            progress.report({ message: 'asking LM Studio and checking this machine — the first check can take a few seconds…' });
+            const facts = setupFacts();
+            const found = await discover();
+            return { facts, found };
+        }
+    );
+    const { facts, found } = prepared;
     const items: (vscode.QuickPickItem & { model?: LocalModel; action?: 'bundled' | 'custom' | 'llama' })[] = [];
 
     for (const model of modelsOf(found)) {
