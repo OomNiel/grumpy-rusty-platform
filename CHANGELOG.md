@@ -11,6 +11,25 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.11] - 2026-10-05
+
+### Added
+
+**The assistant as an editor tab — so it can live on a second monitor**
+
+- New command **Rusty AI: Open the Assistant in an Editor Tab** opens the same chat as a **webview panel in
+  the editor area**. Drag that tab out of the VS Code window (or use *View: Move Editor into New Window*) and it
+  becomes a real OS window you can put on another monitor, with the conversation live in both places at once.
+  This is the only shape that can leave the window: a side-bar *view* is always docked.
+- It is the **same conversation**, not a second copy: the transcript, the chat history and the request path are
+  shared, `post` broadcasts to every open surface, and a surface that just opened draws the history
+  immediately. Asking twice reveals the tab that already exists instead of stacking copies, and
+  `retainContextWhenHidden` keeps the transcript while it is behind another tab.
+
+### Notes
+
+- `NOTES.md` §41. Test suite: **580 passed, 0 skipped** (was 579).
+
 ## [0.0.10] - 2026-10-04
 
 ### Fixed
