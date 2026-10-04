@@ -271,6 +271,12 @@
                 "title": "Install .deb",
                 "category": "Rusty Platform",
                 "icon": "$(desktop-download)"
+            },
+            {
+                "command": "rustyPlatform.backupProject",
+                "title": "Back Up Project",
+                "category": "Rusty Platform",
+                "icon": "$(archive)"
             }
         ],
         "viewsContainers": {

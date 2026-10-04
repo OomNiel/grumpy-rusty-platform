@@ -98,6 +98,15 @@ export const PACKAGE_CONTROLS: readonly ControlDescriptor[] = [
             + '.deb in the project root. Install it on any Debian/Ubuntu host to flash the board from there.'
     },
     {
+        command: 'rustyPlatform.backupProject',
+        icon: 'archive',
+        label: 'Back Up Project',
+        detail: 'a dated copy in the parent folder',
+        tooltip: 'Copies this project folder next to itself as "<folder>-<date>_<time>", leaving out target/ and '
+            + 'other build output so the copy is the project rather than the compiler\'s leftovers. Nothing is '
+            + 'overwritten: a second backup in the same second gets a "-2".'
+    },
+    {
         command: 'rustyPlatform.installDeb',
         icon: 'desktop-download',
         label: 'Install .deb',

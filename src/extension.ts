@@ -16,6 +16,7 @@ import { initAiLog } from './ai/log';
 import { initPickerFolders } from './ai/pickers';
 import { registerAssistantEditorCommands } from './ai/editor';
 import { publishDeb, installDeb } from './commands/debCommands';
+import { backupProject } from './commands/backupCommand';
 import { registerAiChatView } from './ui/aiChatView';
 import { initModelRuntime } from './ai/runtime';
 import { initLlamaServer, registerLlamaServerCommands } from './ai/llamaServer';
@@ -55,6 +56,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         // The two packaging controls, registered here because the Controls view runs them by id.
         vscode.commands.registerCommand('rustyPlatform.publishDeb', () => publishDeb()),
         vscode.commands.registerCommand('rustyPlatform.installDeb', () => installDeb()),
+        vscode.commands.registerCommand('rustyPlatform.backupProject', () => backupProject()),
         ...registerAssistantEditorCommands(),
         ...registerAiChatView(context),
         ...registerLlamaServerCommands(context),
