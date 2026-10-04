@@ -11,6 +11,33 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.6] - 2026-10-04
+
+### Fixed
+
+- **Choosing "use the llama-server already running" updated the settings but not the panel**, so the *Model
+  and settings* section went on showing the old endpoint — and pressing **Save** wrote that stale address
+  back over the correct one, after which every prompt failed with *"No server answered"*. The extension's own
+  log has the exact sequence (the reuse at 09:33, two saves at 09:34, the failure at 09:36) and the
+  llama-server logged **no request at all** at 09:36, which is how the stale endpoint was caught rather than
+  guessed. Three things changed:
+  - the view is refreshed after **every** pin write (`useRunningLlamaServer`, `startOwnLlamaServer`), so the
+    form shows what the settings say;
+  - **Save now sends only the fields you changed** — an empty diff is not a write, it answers "Nothing
+    changed" — so a form that has not caught up can never revert a decision it never saw;
+  - the failure **names the address it tried** (*"No server answered at http://127.0.0.1:1234/v1"*) and, when
+    a probe finds a llama-server answering somewhere else, says so: *"A llama-server IS answering on port
+    8080 (qwen3-coder-30b-a3b-instruct-q4_k_s.gguf) — the settings point at http://127.0.0.1:1234/v1, so the
+    endpoint above is the thing to change."*
+
+### Notes
+
+- Verified against this machine's real 30 B service through the compiled modules with a stubbed `vscode`: the
+  reuse pins `backend`/`endpoint`/`model` **and** posts `state {endpoint: http://127.0.0.1:8080/v1, model:
+  qwen3-coder-local}` to the open view; an empty diff writes nothing; a one-key diff writes one key.
+  `NOTES.md` §36 has the log excerpts.
+- Test suite: **557 passed, 0 skipped** (was 552).
+
 ## [0.0.5] - 2026-10-04
 
 ### Fixed
