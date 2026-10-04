@@ -11,6 +11,36 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.8] - 2026-10-04
+
+### Added
+
+**"Implement this code" under a chat answer**
+
+- When an answer in the AI Assist view contains Rust code, a button appears under it — *"Implement `fn
+  flash_led` in the project…"*, one per block, labelled by the item it defines. Pressing it writes that code
+  into the Rust file you have open:
+  - the **same-named function is replaced in place**, keeping your file's attributes and signature (a
+    refactored `main` cannot lose `#[embassy_executor::main]`);
+  - a **new function is added** to the file;
+  - only a **whole file** replaces the file — recognised by `#![…]` or by `use` lines beside `fn main`, so a
+    refactored `main` body is not mistaken for one (that mistake would have replaced `main.rs` with a single
+    function and deleted the rest of it — caught by the test written for it);
+  - a `Cargo.toml`, shell or JSON block in the same answer is **not** offered, and a block cut off by the
+    token budget is not offered either.
+- The result opens as a **diff** and nothing is written until you press **Apply** — the same review step as
+  *Implement in Function* and *Fix with AI* — and the write is one undoable edit. The diff names the file
+  (`AI: fn main → main.rs`), which is why the target needs no question: the file in front of you is it, and
+  the picker appears only when no Rust file is open (or to create a new one).
+
+### Notes
+
+- Verified against a real file, through the compiled modules with a stubbed `vscode`: a refactored `main`
+  produced a diff whose proposed text had the new body, the old body gone, and `#![no_std]`, the embassy
+  attribute, `use embassy_time::Timer;` and an unrelated function all intact — with the file on disk unchanged
+  until Apply. `NOTES.md` §38.
+- Test suite: **571 passed, 0 skipped** (was 562).
+
 ## [0.0.7] - 2026-10-04
 
 ### Changed
