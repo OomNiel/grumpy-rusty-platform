@@ -28,6 +28,7 @@ import {
     chatDetailed,
     describeEmptyAnswer,
     describeModel,
+    describeProgress,
     estimateTokens,
     extractCode,
     looksLikeEmbeddingModel,
@@ -305,18 +306,12 @@ async function runChat(cfg: AssistantConfig, messages: ChatMessage[], title: str
         async (progress, token) => {
             const controller = new AbortController();
             token.onCancellationRequested(() => controller.abort());
-            let chars = 0;
-            let reported = 0;
             return chatDetailed(request, messages, {
                 signal: controller.signal,
-                onToken: (t) => {
-                    chars += t.length;
-                    if (chars - reported >= 60) {
-                        reported = chars;
-                        progress.report({ message: `${chars} characters…` });
-                    }
-                },
-                onReasoning: (n) => progress.report({ message: `thinking… (${n} characters of reasoning)` })
+                // The line is `describeProgress`'s: tokens written, elapsed time, tokens/s, and how much of
+                // the window the prompt took. It arrives on a half-second heartbeat too, so a long prompt
+                // read and a hang no longer look the same.
+                onProgress: (info) => progress.report({ message: describeProgress(info) })
             });
         }
     );

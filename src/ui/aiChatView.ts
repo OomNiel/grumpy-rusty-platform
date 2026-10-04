@@ -24,6 +24,7 @@ import {
     describeModel,
     type ChatMessage
 } from '../ai/assistant';
+import { describeProgress } from '../ai/assistant';
 import { boardFacts } from '../ai/boardFacts';
 import { crateList } from '../ai/rustCode';
 import { log, logError } from '../ai/log';
@@ -118,7 +119,8 @@ async function ask(text: string): Promise<void> {
         const outcome = await chatDetailed(await configWithEndpoint(cfg), messages, {
             signal: controller.signal,
             onToken: (t) => post({ type: 'token', text: t }),
-            onReasoning: (n) => post({ type: 'busy', busy: true, message: `thinking… (${n} characters)` })
+            // Tokens, elapsed and context, on the same half-second heartbeat the editor's notification uses.
+            onProgress: (info) => post({ type: 'busy', busy: true, message: describeProgress(info) })
         });
         const answer = outcome.text.trim();
         if (!answer) {

@@ -58,6 +58,10 @@ pub enum Chunk {
         completion_tokens: u32,
         prompt_tokens: usize,
     },
+    /// The tokenized prompt size, sent before the first token so the client can show how full the window is.
+    Usage {
+        prompt_tokens: usize,
+    },
     Error(String),
     /// The end of the answer; the SSE side renders it as `data: [DONE]`.
     End,
@@ -223,7 +227,9 @@ fn serve_jobs(
         let produced = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let prompt = engine.render_prompt(&messages);
             let mut send = |piece: &str| tx.blocking_send(Chunk::Delta(piece.to_string())).is_ok();
-            engine.generate(&prompt, &params, &mut send)
+            engine.generate(&prompt, &params, &mut send, |prompt_tokens| {
+                let _ = tx.blocking_send(Chunk::Usage { prompt_tokens });
+            })
         }));
         match produced {
             Ok(Ok(stats)) => {
