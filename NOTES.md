@@ -1874,3 +1874,50 @@ both exist, that the button runs `rustyPlatform.assistant.openEditor`, and that 
 for `view == rustyPlatform.assistant` — so the two cannot drift from the command they mean.
 
 Suite: **582 passed, 0 skipped** (was 581).
+
+## 44. Publishing the firmware as a `.deb`, and what that even means (2026-10-05)
+
+**The ask.** *"In the Controls section of the Rusty Platform side panel, add a control to publish the project to
+a .deb file, and another to install the .deb on the host machine. The deb file must land in the project root."*
+
+**The question that had to come first.** A Debian package cannot install anything onto a microcontroller. The
+project the request was about (`my-blinky-pico2w`) is an Embassy `no_std` crate, so "publish to .deb" had three
+possible meanings — the firmware artifacts, a native host binary the project does not have, or a package that
+flashes the board. Rather than guess, the choice was put to the user with the actual constraint in it, and the
+answer was the one that makes sense for firmware: **the artifacts plus a flash helper**.
+
+**What the package is.** `Rusty: Publish .deb` builds `cargo build --release`, finds the newest artifact the
+build produced (`target/<triple>/release/<crate>` plus any `.bin`/`.uf2`/`.elf` beside it) and packs:
+`/usr/share/<package>/` with those files, and `/usr/bin/<package>-flash` — a `#!/bin/sh` wrapper that checks
+`probe-rs` exists and then `exec probe-rs run "$@" "$ARTIFACT"`. So installing it on a host means that host can
+flash the board with `<package>-flash`, with no project checked out. `Architecture:` is the **host's**
+(`amd64` here), never the board's — declaring `arm64` because the microcontroller is an ARM Cortex-M would make
+dpkg refuse to install it on the x86-64 laptop that built it, and a test says so.
+
+**Where the code is, and why.** Every string inside the package — the control file, the file's own name, the
+wrapper — is a pure function in `deb/package.ts`, pinned by nine tests. `dpkg-deb` rejects a malformed control
+file with *"line 6: field name ..."*, which is a slow way to find a missing field; the multi-line description in
+particular (first line, then indented continuations, and a blank one as a single space) is checked line by line.
+
+**The two controls are in the section, not the status bar.** The first attempt added them to `CONTROLS`, which
+also lays out the status bar — and the existing test for the status-bar order caught it immediately. They are
+`PACKAGE_CONTROLS`, returned by `visibleControls` (the side panel) and deliberately absent from `CONTROLS`.
+
+**Verified against the real `dpkg` on this machine**, on a project shaped like the user's:
+
+```
+dpkg-deb exit: 0
+/…/my-blinky-pico2w_0.1.0_amd64.deb  (81 370 bytes, in the project root)
+Package: my-blinky-pico2w · Version: 0.1.0 · Architecture: amd64 · Installed-Size: 79
+Description: Firmware for Raspberry Pi Pico 2 W (my-blinky-pico2w)   ← 11 control lines, parsed
+./usr/bin/my-blinky-pico2w-flash            -rwxr-xr-x  (0755, extracted from the .deb and read back)
+./usr/share/my-blinky-pico2w/my_blinky_pico2w(.bin)
+```
+
+The first build also showed a blemish worth fixing: the staging folder's `mkdtemp` mode (`0700`) became the
+archive's `./` entry, so `publishDeb` now chmods the stage to `0755`. Installing runs `sudo dpkg -i` in a **VS
+Code terminal** rather than a spawned process — it needs the user's password, and a terminal also leaves the
+command in the scrollback — after showing `dpkg-deb --info`. Off Linux both controls say why they cannot work
+instead of failing at the shell.
+
+Suite: **587 passed, 0 skipped** (was 582).

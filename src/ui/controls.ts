@@ -87,6 +87,33 @@ const ACTIONS: readonly ControlDescriptor[] = [
 ];
 
 /** The health control first, then the actions. */
+/** The packaging pair (asked 2026-10-05): publish the project as a `.deb`, then install it here. */
+export const PACKAGE_CONTROLS: readonly ControlDescriptor[] = [
+    {
+        command: 'rustyPlatform.publishDeb',
+        icon: 'package',
+        label: 'Publish .deb',
+        detail: 'firmware + flash helper into the project root',
+        tooltip: 'Builds the firmware for release and packs its artifacts with a <name>-flash helper into a '
+            + '.deb in the project root. Install it on any Debian/Ubuntu host to flash the board from there.'
+    },
+    {
+        command: 'rustyPlatform.installDeb',
+        icon: 'desktop-download',
+        label: 'Install .deb',
+        detail: 'dpkg -i on this machine (sudo)',
+        tooltip: 'Shows what is inside the .deb this project published, then runs sudo dpkg -i in a terminal so '
+            + 'you can type your password. Linux only.'
+    }
+];
+
+/**
+ * The status bar's controls, in order — the six that are about *running* the project.
+ *
+ * The packaging pair is deliberately **not** here: `CONTROLS` also lays out the status bar, and two more items
+ * in it would crowd a strip that has to stay readable. They are rows in the Controls section, which is what the
+ * request asked for (2026-10-05).
+ */
 export const CONTROLS: readonly ControlDescriptor[] = [HEALTH_CONTROL, ...ACTIONS];
 
 /** How a status bar item spells a control: the codicon, then the label. */
@@ -104,7 +131,8 @@ export function statusBarText(control: ControlDescriptor): string {
  * only meaningful then, and another debugger's session is not ours to kill.
  */
 export function visibleControls(sessionRunning: boolean): ControlDescriptor[] {
-    return CONTROLS.filter((control) => control.sessionOnly !== true || sessionRunning);
+    // The side panel shows everything the status bar shows, plus the packaging controls.
+    return [...CONTROLS, ...PACKAGE_CONTROLS].filter((control) => control.sessionOnly !== true || sessionRunning);
 }
 
 /** Caption, one-line detail and tooltip of the health control, for a given toolchain status. */

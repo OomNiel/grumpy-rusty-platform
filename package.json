@@ -259,6 +259,18 @@
                 "command": "rustyPlatform.assistant.stopLlamaServer",
                 "title": "Stop My llama-server",
                 "category": "Rusty AI"
+            },
+            {
+                "command": "rustyPlatform.publishDeb",
+                "title": "Publish .deb",
+                "category": "Rusty Platform",
+                "icon": "$(package)"
+            },
+            {
+                "command": "rustyPlatform.installDeb",
+                "title": "Install .deb",
+                "category": "Rusty Platform",
+                "icon": "$(desktop-download)"
             }
         ],
         "viewsContainers": {
