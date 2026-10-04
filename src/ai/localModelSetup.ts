@@ -112,11 +112,13 @@ export async function chooseLocalModel(context: vscode.ExtensionContext): Promis
     });
     // The user's own llama.cpp server (asked 2026-09-16). Offered here as well as in its own command because
     // this is the picker a developer opens when they want "a local model", and their own binary is often the
-    // fastest of the three engines — it is just not something this extension can install for them.
+    // fastest of the three engines. Since 2026-10-04 it is also the one entry that sets itself up: the command
+    // offers to install llama.cpp when the machine has none, and to fetch the known 27B when that is missing.
     items.push({
         label: '$(server-process) My own llama-server',
         description: 'llama.cpp you have installed',
-        detail: 'Starts your own llama-server with a .gguf of your choice — nothing is downloaded',
+        detail: 'Starts your own llama-server and loads the weights for you — installs llama.cpp and downloads '
+            + 'the 27B model if this machine does not have them yet',
         action: 'llama'
     });
     items.push({

@@ -98,6 +98,62 @@ export function specById(id: string): ModelSpec | undefined {
     return MODEL_SPECS.find((s) => s.id === id);
 }
 
+// ---------------- the model the extension fetches for YOUR llama-server (asked 2026-10-04) ----------------
+//
+// *"Check the path for running my llama.cpp using the 27B model already downloaded. When i select My own
+// llama-server, the extension must start the llama.cpp server and load the weights automatically. If the
+// server or the 27B model is not on the host machine the extension must offer to download and install."*
+//
+// This is the same 27B the developer's Avalonia Designer uses as its step-up model. The Designer never ships
+// it — it is an LM Studio model there, named in `parseLoadEstimate`'s doc block by the name LM Studio prints,
+// `qwen3.8-27b` — so the only portable identity is the Hub repo and the file:
+//
+//     repo  lmstudio-community/Qwen3.8-27B-GGUF
+//     file  Qwen3.8-27B-Q4_K_M.gguf
+//
+// THE NUMBERS ARE VERIFIED TWICE, because a wrong byte count or hash here means a corrupt download for
+// everyone who asks for this model. Read on 2026-10-04 from
+// `https://huggingface.co/api/models/lmstudio-community/Qwen3.8-27B-GGUF?blobs=true` (16 810 714 336 bytes,
+// `lfs.sha256` e00082f7…43e520) **and** from this machine's own LM Studio download record
+// (`~/.lmstudio/.internal/single-downloads-info.json`), which names the identical size and hash for the
+// identical file. Two independent records agreeing is what makes this safe to publish as a checksum.
+//
+// IT IS NOT LISTED IN `MODEL_SPECS`. Those two entries are what the *bundled* runtime serves, and it is built
+// for a 4-8 K context on a laptop. A 27B at 15.7 GiB is a different proposition: it is the model the user's
+// own `llama-server` should run, on a machine that has the memory for it. Keeping the list separate is what
+// lets the panel keep offering the small entries in front of a newcomer.
+//
+// `minRamGb` follows the machine that actually runs this model rather than the "twice the file size" rule the
+// Hub flow uses: the weights are 15.65 GiB and an 8 K context on top of them measured about 0.9 GiB in LM
+// Studio's own estimate (16.52 GiB total, the figure quoted in the Designer). 20 GB is that sum rounded up.
+export const OWN_SERVER_SPECS: ModelSpec[] = [
+    {
+        id: 'qwen3.8-27b-q4_k_m',
+        label: 'Qwen3.8 27B  ·  Q4_K_M',
+        detail: '15.7 GB — the 27B the Avalonia Designer steps up to, for your own llama-server; downloaded once, verified against the hash Hugging Face publishes',
+        fileName: 'Qwen3.8-27B-Q4_K_M.gguf',
+        url: 'https://huggingface.co/lmstudio-community/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-Q4_K_M.gguf',
+        bytes: 16810714336,
+        sha256: 'e00082f779fa385cee8c68a3ec8833a75778cc87272240b942f74e0b8243e520',
+        minRamGb: 20
+    }
+];
+
+/** The known model for the user's own `llama-server`, by id. */
+export function ownServerSpecById(id: string): ModelSpec | undefined {
+    return OWN_SERVER_SPECS.find((s) => s.id === id);
+}
+
+/**
+ * The known model for the user's own `llama-server`, recognised from a file name.
+ *
+ * Called on a path the searcher already found, so a copy the user downloaded themselves — into LM Studio's
+ * folder, into `~/Downloads`, anywhere the walk reaches — is the *same* model and needs no second download.
+ */
+export function ownServerSpecByFileName(file: string): ModelSpec | undefined {
+    return specByFileName(file, OWN_SERVER_SPECS);
+}
+
 // ---------------- models the user brings from Hugging Face (asked 2026-09-16) ----------------
 //
 // *"Should we remove the LM Studio dependency from the extension and load everything from Hugging Face?"*

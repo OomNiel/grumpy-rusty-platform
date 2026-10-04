@@ -229,7 +229,7 @@ export function buildChoices(found: Discovery, files: FoundModelFile[], endpoint
         value: choiceValue('llama', ''),
         label: `My own llama-server  ·  llama.cpp${own.running && own.info ? `   ● running on port ${own.info.port}` : ''}`,
         detail: !llamaBin
-            ? 'llama.cpp · no llama-server on this machine — install llama.cpp, or point "llamaServerPath" at the binary'
+            ? 'llama.cpp · no llama-server on this machine yet — Load Model offers to download llama.cpp for you, or point "llamaServerPath" at your own build'
             : own.running && own.info
                 ? `llama.cpp · serving ${path.basename(own.info.modelPath)} right now`
                 : llamaRunning
@@ -238,7 +238,7 @@ export function buildChoices(found: Discovery, files: FoundModelFile[], endpoint
                     ? `llama.cpp · ${llamaRunning} — Load Model uses that one, it is already in memory`
                     : chosenFile
                         ? `llama.cpp · runs ${chosenFile} with the flags below, using ${llamaBin.replace(os.homedir(), '~')}`
-                        : 'llama.cpp · found — run "AI: Start My llama-server…" once to choose the model file',
+                        : 'llama.cpp · found — Load Model gets the 27B for you (downloading it if this machine has none)',
         kind: 'llama',
         live: own.running
     });

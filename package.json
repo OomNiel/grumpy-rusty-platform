@@ -231,6 +231,17 @@
                 "command": "rustyPlatform.assistant.unloadModel",
                 "title": "Unload the Loaded Model",
                 "category": "Rusty AI"
+            },
+            {
+                "command": "rustyPlatform.assistant.startLlamaServer",
+                "title": "Start My llama-server…",
+                "category": "Rusty AI",
+                "icon": "$(server-process)"
+            },
+            {
+                "command": "rustyPlatform.assistant.stopLlamaServer",
+                "title": "Stop My llama-server",
+                "category": "Rusty AI"
             }
         ],
         "viewsContainers": {
@@ -454,6 +465,49 @@
                     ],
                     "default": "cpu",
                     "markdownDescription": "Which native backend the bundled runtime is built and run with. `cpu` needs nothing beyond Rust; the GPU backends need that platform's SDK at build time. The runtime reports back what it actually loaded, so this is a request, not a guarantee."
+                },
+                "rustyPlatform.assistant.loadContextLength": {
+                    "type": "number",
+                    "default": 0,
+                    "minimum": 0,
+                    "maximum": 262144,
+                    "markdownDescription": "Context window the **Load Model** button asks for, in tokens. `0` means \"use the recommended size for this machine\". It is remembered per machine so the panel reopens with the numbers you last chose."
+                },
+                "rustyPlatform.assistant.loadGpu": {
+                    "type": "string",
+                    "default": "auto",
+                    "markdownDescription": "GPU offload the **Load Model** button asks for: `auto` decides from the model's size and this machine's memory, `off` is CPU only, `max` offloads everything, `0.5` asks for half. A plain string rather than an enum on purpose — the panel writes ratios here, and a value the schema rejects would be silently dropped."
+                },
+                "rustyPlatform.assistant.loadTtlSeconds": {
+                    "type": "number",
+                    "default": 0,
+                    "minimum": 0,
+                    "maximum": 86400,
+                    "markdownDescription": "How long a model loaded through LM Studio stays in memory when idle. `0` means \"no timer\" — it stays until something unloads it."
+                },
+                "rustyPlatform.assistant.llamaServerPath": {
+                    "type": "string",
+                    "default": "",
+                    "markdownDescription": "The `llama-server` binary to run for **My own llama-server**. Empty means \"find it yourself\" (PATH and the usual build folders); if nothing is found, **Rusty AI: Start My llama-server…** offers to download llama.cpp's own prebuilt build for this platform. Set it yourself to use a build you compiled."
+                },
+                "rustyPlatform.assistant.llamaServerArgs": {
+                    "type": "string",
+                    "default": "",
+                    "markdownDescription": "Extra flags added to your `llama-server` command line, last so they win. Example: `--flash-attn on --no-warmup`. Relative paths resolve against the model file's own folder."
+                },
+                "rustyPlatform.assistant.llamaServerService": {
+                    "type": "string",
+                    "default": "",
+                    "markdownDescription": "The systemd **user** unit that runs your `llama-server` (e.g. `llama-server.service`). Empty means \"work it out from the running server\", and on a machine with more than one such unit the extension asks rather than guessing which one to stop."
+                },
+                "rustyPlatform.assistant.llamaServerStartTarget": {
+                    "type": "string",
+                    "enum": [
+                        "unit",
+                        "process"
+                    ],
+                    "default": "unit",
+                    "markdownDescription": "How **Start server** starts your llama.cpp: `unit` starts the systemd user service (so it keeps running after VS Code closes), `process` starts it as a child of this window (so `Stop` can end it). The other route is tried — and reported — when the chosen one fails."
                 },
                 "rustyPlatform.assistant.timeoutSeconds": {
                     "type": "number",
