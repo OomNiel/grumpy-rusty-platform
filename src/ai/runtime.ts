@@ -54,6 +54,7 @@ import {
 } from './modelSpecs';
 import { downloadProgressText, resumeFromBytes } from './localModels';
 import { adoptLocalCopy, findLocalCopy } from './localSearch';
+import { buildIsCurrent, buildMarkerText, fingerprintSources, parseBuildMarker, type SourceFile } from './buildCache';
 import { nativeBackendLine } from './modelSpecs';
 import { configView, updateSetting } from './settings';
 
@@ -68,17 +69,30 @@ export const RUNTIME_NEEDS_CARGO =
 /** How long a cold build + model load may take before the feature gives up with a message. */
 const LOAD_TIMEOUT_MS = 10 * 60 * 1000;
 
-/** Where the sidecar's sources and its release binary live, inside the installed extension. */
-function sidecarPaths(context: vscode.ExtensionContext): { dir: string; bin: string; marker: string } {
+/**
+ * Where the sidecar's sources are, and where its build output goes.
+ *
+ * The sources ship with the extension; the output deliberately does **not** live beside them. An extension
+ * update unpacks a new folder, so `<extension>/sidecar/target` would be a fresh, empty directory every
+ * version — llama.cpp compiled again for sources that had not changed. Global storage is per-machine and
+ * outlives every version, so the same `cargo build` result is reused until the sidecar's own sources change.
+ */
+function sidecarPaths(context: vscode.ExtensionContext): {
+    dir: string;
+    targetDir: string;
+    bin: string;
+    marker: string;
+} {
     const dir = path.join(context.extensionUri.fsPath, 'sidecar');
     const exe = process.platform === 'win32' ? 'rusty-model-host.exe' : 'rusty-model-host';
-    const release = path.join(dir, 'target', 'release');
-    return { dir, bin: path.join(release, exe), marker: path.join(release, '.backend') };
+    const targetDir = path.join(context.globalStorageUri.fsPath, 'sidecar', 'target');
+    const release = path.join(targetDir, 'release');
+    return { dir, targetDir, bin: path.join(release, exe), marker: path.join(release, '.build.json') };
 }
 
-/** Every `.rs` file under `src/`, the manifest and the lock file — what a rebuild depends on. */
-function sidecarSources(dir: string): string[] {
-    const out = [path.join(dir, 'Cargo.toml'), path.join(dir, 'Cargo.lock')];
+/** The sidecar's sources — the manifest, the lock file and every `.rs` file — as text to fingerprint. */
+function sidecarSourceFiles(dir: string): SourceFile[] {
+    const paths = [path.join(dir, 'Cargo.toml'), path.join(dir, 'Cargo.lock')];
     const stack = [path.join(dir, 'src')];
     while (stack.length) {
         const current = stack.pop();
@@ -92,27 +106,32 @@ function sidecarSources(dir: string): string[] {
         for (const entry of entries) {
             const full = path.join(current, entry.name);
             if (entry.isDirectory()) stack.push(full);
-            else if (entry.name.endsWith('.rs')) out.push(full);
+            else if (entry.name.endsWith('.rs')) paths.push(full);
         }
     }
-    return out;
+    const files: SourceFile[] = [];
+    for (const file of paths) {
+        try {
+            files.push({ name: path.relative(dir, file).split(path.sep).join('/'), text: fs.readFileSync(file, 'utf8') });
+        } catch {
+            /* a source that cannot be read makes the fingerprint different, which rebuilds — the safe way */
+        }
+    }
+    return files;
 }
 
-/** True if any sidecar source is newer than the built binary. */
-function sourcesNewer(bin: string, dir: string): boolean {
-    let binTime = 0;
+/** The fingerprint of the sidecar as it is installed right now. */
+export function sidecarFingerprint(context: vscode.ExtensionContext): string {
+    return fingerprintSources(sidecarSourceFiles(path.join(context.extensionUri.fsPath, 'sidecar')));
+}
+
+/** The marker beside a built binary, or undefined when there is none to read. */
+function readBuildMarker(file: string): ReturnType<typeof parseBuildMarker> {
     try {
-        binTime = fs.statSync(bin).mtimeMs;
+        return parseBuildMarker(fs.readFileSync(file, 'utf8'));
     } catch {
-        return true;
+        return undefined;
     }
-    return sidecarSources(dir).some((file) => {
-        try {
-            return fs.statSync(file).mtimeMs > binTime;
-        } catch {
-            return true;
-        }
-    });
 }
 
 /**
@@ -122,14 +141,6 @@ function sourcesNewer(bin: string, dir: string): boolean {
  */
 function backendFeatures(backend: SidecarBackend): string[] {
     return backend === 'cpu' ? [] : ['--features', backend];
-}
-
-function builtBackend(marker: string): string | undefined {
-    try {
-        return fs.readFileSync(marker, 'utf8').trim() || undefined;
-    } catch {
-        return undefined;
-    }
 }
 
 /**
@@ -142,10 +153,14 @@ export async function buildSidecar(
     context: vscode.ExtensionContext,
     options: { force?: boolean; backend?: SidecarBackend } = {}
 ): Promise<string> {
-    const { dir, bin, marker } = sidecarPaths(context);
+    const { dir, targetDir, bin, marker } = sidecarPaths(context);
     const backend = options.backend ?? sidecarBackend(configView(SETTINGS).get('bundledBackend'));
-    const fresh = fs.existsSync(bin) && !sourcesNewer(bin, dir) && builtBackend(marker) === backend;
-    if (!options.force && fresh) return bin;
+    // Same sources, same backend, binary present: cargo is not started at all. This is what makes the build
+    // survive an extension update — the output is in global storage and the fingerprint says it still fits.
+    const fingerprint = sidecarFingerprint(context);
+    if (!options.force && fs.existsSync(bin) && buildIsCurrent(readBuildMarker(marker), backend, fingerprint)) {
+        return bin;
+    }
 
     const cargo = findExecutable('cargo', vscode.workspace.getConfiguration('rustyPlatform').get<string>('cargoPath'));
     if (!cargo) throw new Error(RUNTIME_NEEDS_CARGO);
@@ -155,7 +170,8 @@ export async function buildSidecar(
     // which reads as a broken SDK rather than a missing include path. The compiler that IS installed is asked;
     // a user who already set the variable knows better than we do, so it is never overwritten.
     const bindgenArgs = process.env.BINDGEN_EXTRA_CLANG_ARGS ?? bindgenClangArgs(gccIncludeDir());
-    log(`ModelHost: building the ${backend} runtime: ${cargo} build --release ${backendFeatures(backend).join(' ')}`
+    log(`ModelHost: building the ${backend} runtime into ${targetDir}: `
+        + `${cargo} build --release ${backendFeatures(backend).join(' ')}`
         + `${bindgenArgs ? ` (bindgen args: ${bindgenArgs})` : ''}`);
     try {
         await runCmd(cargo, ['build', '--release', ...backendFeatures(backend)], {
@@ -163,6 +179,8 @@ export async function buildSidecar(
             env: {
                 ...augmentedEnv(),
                 RUSTFLAGS: rustflags,
+                // The output goes to global storage, not beside the sources (see `sidecarPaths`).
+                CARGO_TARGET_DIR: targetDir,
                 ...(bindgenArgs ? { BINDGEN_EXTRA_CLANG_ARGS: bindgenArgs } : {})
             }
         });
@@ -177,7 +195,7 @@ export async function buildSidecar(
     if (!fs.existsSync(bin)) throw new Error('The model runtime was built but its program was not found.');
     try {
         fs.mkdirSync(path.dirname(marker), { recursive: true });
-        fs.writeFileSync(marker, backend, 'utf8');
+        fs.writeFileSync(marker, buildMarkerText(backend, fingerprint), 'utf8');
     } catch {
         /* a marker that cannot be written only costs a rebuild next time */
     }

@@ -17,6 +17,8 @@
  */
 
 import * as vscode from 'vscode';
+import * as fs from 'fs';
+import * as path from 'path';
 import {
     assistantEnabled,
     chatDetailed,
@@ -34,19 +36,92 @@ import { assistantConfig } from '../ai/editor';
 import { configWithEndpoint } from '../ai/runtime';
 import { chooseLocalModel, unloadLoadedModel } from '../ai/localModelSetup';
 import { configView } from '../ai/settings';
+import {
+    chatsFor,
+    emptyStore,
+    newChat,
+    parseStore,
+    removeChat,
+    upsertChat,
+    type ChatStoreFile,
+    type StoredChat
+} from '../ai/chatStore';
 
-/** One turn of the conversation, as the webview renders it. */
-interface Turn {
-    role: 'user' | 'assistant';
-    text: string;
-}
-
-/** The transcript: memory only, capped so a long session cannot grow without bound. */
-const transcript: Turn[] = [];
-const MAX_TRANSCRIPT = 40;
-
+/**
+ * The chats on disk, the one being continued, and where the file lives — the "continue where I left off"
+ * state (asked 2026-10-04). The data decisions are `chatStore.ts`; only the reading and writing are here.
+ */
+let store: ChatStoreFile = emptyStore();
+let active: StoredChat | undefined;
+let storeFile: string | undefined;
 let view: vscode.WebviewView | undefined;
 let busy = false;
+
+/** Reads the chat file once, at registration. A missing or unreadable file is "no chats yet", not an error. */
+function loadChats(context: vscode.ExtensionContext): void {
+    storeFile = path.join(context.globalStorageUri.fsPath, 'ai-chats.json');
+    try {
+        store = parseStore(fs.readFileSync(storeFile, 'utf8'));
+    } catch {
+        store = emptyStore();
+    }
+}
+
+/** Writes the chat file after a turn. A failed write must not break the conversation that caused it. */
+function saveChats(): void {
+    if (!storeFile) return;
+    try {
+        fs.mkdirSync(path.dirname(storeFile), { recursive: true });
+        fs.writeFileSync(storeFile, JSON.stringify(store), 'utf8');
+    } catch (error) {
+        logError(error);
+    }
+}
+
+/** The folder a chat belongs to; undefined in an empty window, which is its own group. */
+function workspaceId(): string | undefined {
+    return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+}
+
+function freshChat(): StoredChat {
+    return newChat(`chat-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`, workspaceId(), Date.now());
+}
+
+/** The chat to continue: the newest for this workspace, or a new empty one. */
+function ensureActive(): StoredChat {
+    const workspace = workspaceId();
+    if (active && active.workspace === workspace) return active;
+    const existing = chatsFor(store, workspace)[0];
+    if (existing) {
+        active = existing;
+        return active;
+    }
+    active = freshChat();
+    store = upsertChat(store, active);
+    saveChats();
+    return active;
+}
+
+/** Stores the chat that just changed, and renames it from its first question once there is one. */
+function remember(): void {
+    if (!active) return;
+    active.updatedAt = Date.now();
+    store = upsertChat(store, active);
+    saveChats();
+}
+
+/** The chat picker's contents, for the workspace being worked in. */
+function postChats(): void {
+    post({
+        type: 'chats',
+        chats: chatsFor(store, workspaceId()).map((chat) => ({
+            id: chat.id,
+            title: chat.title,
+            updatedAt: chat.updatedAt
+        })),
+        activeId: active?.id ?? ''
+    });
+}
 
 function nonce(): string {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
@@ -101,8 +176,10 @@ async function ask(text: string): Promise<void> {
         });
         return;
     }
-    transcript.push({ role: 'user', text });
-    trimTranscript();
+    const chat = ensureActive();
+    chat.turns.push({ role: 'user', text });
+    remember();
+    postChats();
     post({ type: 'turn', role: 'user', text });
     post({ type: 'busy', busy: true, message: 'thinking…' });
 
@@ -111,7 +188,7 @@ async function ask(text: string): Promise<void> {
         const context = await contextBlock();
         const messages: ChatMessage[] = [
             chatSystem(context),
-            ...transcript.map((t) => ({ role: t.role, content: t.text }))
+            ...chat.turns.map((t) => ({ role: t.role, content: t.text }))
         ];
         const controller = new AbortController();
         // `bundled` gets its endpoint only once the runtime is up; sending to the settings' default would ask
@@ -134,8 +211,9 @@ async function ask(text: string): Promise<void> {
             });
             return;
         }
-        transcript.push({ role: 'assistant', text: answer });
-        trimTranscript();
+        chat.turns.push({ role: 'assistant', text: answer });
+        remember();
+        postChats();
         post({ type: 'turn', role: 'assistant', text: answer, final: true });
     } catch (error) {
         logError(error);
@@ -144,11 +222,6 @@ async function ask(text: string): Promise<void> {
         busy = false;
         post({ type: 'busy', busy: false });
     }
-}
-
-/** A chat answer is capped by the same `maxTokens` as a code answer; nothing extra to decide here. */
-function trimTranscript(): void {
-    while (transcript.length > MAX_TRANSCRIPT) transcript.shift();
 }
 
 /** Posts the model/settings state the panel renders. */
@@ -254,6 +327,11 @@ function html(webview: vscode.Webview): string {
         <h2>AI Assist</h2>
         <div id="status">…</div>
     </div>
+    <div class="row" id="chatbar">
+        <select id="chats" title="Earlier conversations in this project"></select>
+        <button id="newChat" class="secondary" title="Start a new conversation">New</button>
+        <button id="deleteChat" class="secondary" title="Delete this conversation">Delete</button>
+    </div>
     <div id="log"></div>
     <div id="progress" class="busy" hidden></div>
     <textarea id="prompt" placeholder="Ask about this project, or describe a change — e.g. &quot;blink the on-board LED once a second&quot;"></textarea>
@@ -261,7 +339,6 @@ function html(webview: vscode.Webview): string {
         <button id="ask">Ask</button>
         <button id="implement" class="secondary" title="Insert a ✎ AI block at the caret">Implement in Function…</button>
         <button id="repair" class="secondary" title="Run cargo check and fix what it can">Fix the Build…</button>
-        <button id="clear" class="secondary">Clear</button>
     </div>
     <details>
         <summary>Model &amp; settings</summary>
@@ -341,6 +418,13 @@ function html(webview: vscode.Webview): string {
             setting('showDiff', s.showDiff);
         } else if (msg.type === 'status') {
             document.getElementById('status').textContent = msg.text || '';
+        } else if (msg.type === 'history') {
+            // A restored conversation: the turns already happened, so they are drawn at once, not streamed.
+            log.innerHTML = '';
+            current = null;
+            for (const turn of msg.turns || []) addTurn(turn.role, turn.text, false);
+        } else if (msg.type === 'chats') {
+            setChats(msg.chats, msg.activeId);
         } else if (msg.type === 'turn') {
             addTurn(msg.role, msg.text, !msg.final);
         } else if (msg.type === 'token') {
@@ -364,11 +448,22 @@ function html(webview: vscode.Webview): string {
     document.getElementById('prompt').addEventListener('keydown', (e) => {
         if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) document.getElementById('ask').click();
     });
-    document.getElementById('clear').addEventListener('click', () => {
-        log.innerHTML = '';
-        current = null;
-        vscode.postMessage({ type: 'clear' });
+    function setChats(list, activeId) {
+        const select = document.getElementById('chats');
+        select.innerHTML = '';
+        for (const chat of list || []) {
+            const option = document.createElement('option');
+            option.value = chat.id;
+            option.textContent = chat.title;
+            if (chat.id === activeId) option.selected = true;
+            select.appendChild(option);
+        }
+    }
+    document.getElementById('chats').addEventListener('change', (event) => {
+        vscode.postMessage({ type: 'selectChat', chatId: event.target.value });
     });
+    document.getElementById('newChat').addEventListener('click', () => vscode.postMessage({ type: 'newChat' }));
+    document.getElementById('deleteChat').addEventListener('click', () => vscode.postMessage({ type: 'deleteChat' }));
     document.getElementById('implement').addEventListener('click', () => vscode.postMessage({ type: 'command', command: 'rustyPlatform.assistant.implement' }));
     document.getElementById('repair').addEventListener('click', () => vscode.postMessage({ type: 'command', command: 'rustyPlatform.assistant.repair' }));
     document.getElementById('statusBtn').addEventListener('click', () => vscode.postMessage({ type: 'command', command: 'rustyPlatform.assistant.status' }));
@@ -409,18 +504,51 @@ export class AiChatViewProvider implements vscode.WebviewViewProvider {
         void refreshAiChat(true);
     }
 
-    private async handle(message: { type?: string; text?: string; command?: string; settings?: Record<string, unknown> }): Promise<void> {
+    private async handle(message: {
+        type?: string;
+        text?: string;
+        command?: string;
+        chatId?: string;
+        settings?: Record<string, unknown>;
+    }): Promise<void> {
         switch (message.type) {
-            case 'ready':
-                post({ type: 'history', turns: transcript });
+            case 'ready': {
+                // The chat is restored before anything else is drawn, so reopening the view shows the
+                // conversation instead of an empty page (the server posted it before; the webview dropped it).
+                const chat = ensureActive();
+                post({ type: 'history', turns: chat.turns });
+                postChats();
                 await refreshAiChat(true);
                 return;
+            }
             case 'ask':
                 if (message.text) await ask(message.text);
                 return;
-            case 'clear':
-                transcript.length = 0;
+            case 'newChat': {
+                active = freshChat();
+                store = upsertChat(store, active);
+                saveChats();
+                post({ type: 'history', turns: [] });
+                postChats();
                 return;
+            }
+            case 'selectChat': {
+                const wanted = store.chats.find((chat) => chat.id === message.chatId);
+                if (!wanted) return;
+                active = wanted;
+                post({ type: 'history', turns: wanted.turns });
+                postChats();
+                return;
+            }
+            case 'deleteChat': {
+                if (active) store = removeChat(store, active.id);
+                active = undefined;
+                saveChats();
+                const chat = ensureActive();
+                post({ type: 'history', turns: chat.turns });
+                postChats();
+                return;
+            }
             case 'command':
                 if (message.command) {
                     try {
@@ -460,6 +588,7 @@ export class AiChatViewProvider implements vscode.WebviewViewProvider {
 
 /** Registers the view and the commands that reveal it or change the model. */
 export function registerAiChatView(context: vscode.ExtensionContext): vscode.Disposable[] {
+    loadChats(context);
     const provider = new AiChatViewProvider();
     return [
         vscode.window.registerWebviewViewProvider('rustyPlatform.assistant', provider, {
