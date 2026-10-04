@@ -386,8 +386,10 @@ export function explainLoadFailure(logTail: string, facts: SetupFacts, modelSize
  */
 export function scanRoots(homeDir: string): string[] {
     const home = homeDir || '';
-    // `/media` and `/mnt` are listed as roots on purpose: an external drive appears one directory deep
-    // inside them, and the walker descends by itself — so nothing here needs to look at the filesystem.
+    // The drive roots are listed as roots on purpose: an external volume appears one directory deep inside
+    // them and the walker descends by itself, so nothing here has to look at the filesystem. All four are
+    // needed — `/media` is the older mount point, `/run/media` is where udisks2 mounts removable drives on
+    // most current desktops, `/mnt` is where an administrator mounts one by hand, and `/Volumes` is macOS.
     return [
         `${home}/.lmstudio/models`,
         `${home}/Downloads`,
@@ -396,7 +398,9 @@ export function scanRoots(homeDir: string): string[] {
         `${home}/.cache/huggingface/hub`,
         `${home}/.cache/lm-studio/models`,
         '/media',
-        '/mnt'
+        '/run/media',
+        '/mnt',
+        '/Volumes'
     ];
 }
 

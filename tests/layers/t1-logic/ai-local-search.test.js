@@ -206,3 +206,13 @@ test('rankLocalCandidates is empty when nothing matches', () => {
     const spec = specs.MODEL_SPECS[0];
     equal(specs.rankLocalCandidates([{ file: '/x/a.gguf', name: 'a.gguf', bytes: 7 }], spec), []);
 });
+
+// The point of the feature is to search the *machine*, so the roots have to include where drives appear.
+test('the search roots cover the usual external-drive mount points', () => {
+    const localModels = compiled('ai/localModels');
+    const roots = localModels.scanRoots('/home/someone');
+    for (const root of ['/media', '/run/media', '/mnt', '/Volumes']) {
+        ok(roots.includes(root), `the roots must include ${root}`);
+    }
+    ok(roots.some((r) => r.startsWith('/home/someone/Downloads')), 'and the home folders');
+});
