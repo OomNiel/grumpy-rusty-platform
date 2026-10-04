@@ -53,6 +53,7 @@ import {
     type SidecarBackend
 } from './modelSpecs';
 import { downloadProgressText, resumeFromBytes } from './localModels';
+import { adoptLocalCopy, findLocalCopy } from './localSearch';
 import { nativeBackendLine } from './modelSpecs';
 import { configView, updateSetting } from './settings';
 
@@ -654,6 +655,24 @@ export async function ensureModelFile(
     }
     fs.rmSync(dest, { force: true });
     fs.rmSync(marker, { force: true });
+
+    // Before any of the user's bandwidth is spent: is this exact file already on this machine? The hash
+    // decides, not the name — a `.gguf` of another quantisation can share a name, and using it would be
+    // worse than downloading the right one.
+    progress?.report({ message: 'looking for a copy already on this machine…' });
+    const local = await findLocalCopy(spec, {
+        onProgress: (message) => progress?.report({ message }),
+        isCancelled: () => token?.isCancellationRequested === true
+    });
+    if (token?.isCancellationRequested) throw new Error('Cancelled.');
+    if (local) {
+        const how = adoptLocalCopy(dest, local);
+        fs.writeFileSync(marker, spec.sha256);
+        progress?.report({ message: `using the copy already on this machine (${how} from ${local})` });
+        log(`ModelHost: reused ${local} (${how}) instead of downloading ${spec.fileName}`);
+        return dest;
+    }
+
     await downloadModel(context, spec, dest, progress, token);
     return dest;
 }
