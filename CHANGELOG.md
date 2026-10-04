@@ -257,6 +257,14 @@ First build: everything the extension does today, packaged as `grumpy-rusty-plat
   helper service (measured at ~4.3 s), and the picker could not be built before that finished; the command
   now shows a progress notification — *“Looking for local models…”* — while it asks LM Studio and reads
   the machine, so a slow first click no longer looks like a dead button.
+### Fixed
+
+- **Models inside LM Studio’s folder are no longer invisible.** The scan dropped every `.gguf` under
+  `~/.lmstudio/models` because `lms ls` was expected to list them; when the `lms` binary is installed but
+  its daemon will not start (“Timed out waiting for LM Studio daemon to start”), that list is empty and the
+  files were offered nowhere. They are scanned now, they appear in **Choose a Local Model…** as well, and
+  a file already inside LM Studio’s folder is served in place by the extension’s own runtime rather than
+  “imported” — `lms import` refuses those, and with the daemon down our runtime is the only route to it.
 [Unreleased]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.4...HEAD
 [0.0.4]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.3...v0.0.4
 [0.0.3]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.2...v0.0.3
