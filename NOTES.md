@@ -1860,3 +1860,17 @@ groups. Nothing about the monitor is stored by this extension, and nothing could
 the window, and a comment in the code says so rather than pretending the extension controls it.
 
 Suite: **581 passed, 0 skipped** (was 580).
+
+## 43. And a way to press it from where the chat already is (2026-10-05)
+
+**The ask.** *"Add a command to move the panel to an editor pane in the Rusty Platform's side panel."* §41 gave
+the move a command, but the command was only in the Command Palette — a user sitting in the AI Assist view,
+looking at the thing they want to move, had to go to the palette and remember a name.
+
+Two entry points now, running that **same** command rather than a second implementation: a footer button
+**In Editor Tab…** beside *Status…/Unload*, and an action in the view's **title bar**
+(`menus.view/title`, group `navigation`) for when the footer is scrolled out of sight. The wiring test asserts
+both exist, that the button runs `rustyPlatform.assistant.openEditor`, and that the title action is declared
+for `view == rustyPlatform.assistant` — so the two cannot drift from the command they mean.
+
+Suite: **582 passed, 0 skipped** (was 581).

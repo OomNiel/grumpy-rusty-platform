@@ -490,6 +490,7 @@ function html(webview: vscode.Webview): string {
             <button id="choose" class="secondary">Choose a local model…</button>
             <button id="unload" class="secondary">Unload</button>
             <button id="statusBtn" class="secondary">Status…</button>
+            <button id="openEditorTab" class="secondary" title="Open this chat in an editor tab, which can be dragged onto a second monitor">In Editor Tab…</button>
         </div>
         <div id="settingsMessage" class="busy" hidden></div>
     </details>
@@ -648,6 +649,7 @@ function html(webview: vscode.Webview): string {
     document.getElementById('statusBtn').addEventListener('click', () => vscode.postMessage({ type: 'command', command: 'rustyPlatform.assistant.status' }));
     document.getElementById('choose').addEventListener('click', () => vscode.postMessage({ type: 'command', command: 'rustyPlatform.assistant.setupModel' }));
     document.getElementById('unload').addEventListener('click', () => vscode.postMessage({ type: 'command', command: 'rustyPlatform.assistant.unloadModel' }));
+    document.getElementById('openEditorTab').addEventListener('click', () => vscode.postMessage({ type: 'command', command: 'rustyPlatform.assistant.openEditor' }));
     document.getElementById('save').addEventListener('click', () => {
         const now = {
             backend: document.getElementById('backend').value,
