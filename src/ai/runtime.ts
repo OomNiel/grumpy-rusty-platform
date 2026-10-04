@@ -27,7 +27,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { assessHardware, readHardwareFacts, type AssistantConfig } from './assistant';
 import { lastPickerFolder, rememberPickerFile } from './pickers';
-import { freePort, isMissingExecutable, runCmd } from './sys';
+import { bindgenClangArgs, freePort, gccIncludeDir, isMissingExecutable, runCmd } from './sys';
 import { augmentedEnv, findExecutable } from '../util/exec';
 import { log, logError } from './log';
 import {
@@ -150,11 +150,21 @@ export async function buildSidecar(
     const cargo = findExecutable('cargo', vscode.workspace.getConfiguration('rustyPlatform').get<string>('cargoPath'));
     if (!cargo) throw new Error(RUNTIME_NEEDS_CARGO);
     const rustflags = process.env.RUSTFLAGS ?? '-C target-cpu=native';
-    log(`ModelHost: building the ${backend} runtime: ${cargo} build --release ${backendFeatures(backend).join(' ')}`);
+    // `libclang` resolves the C library's headers only when something points at them, and a machine with
+    // `libclang` but no `clang` package has none of that set: llama.cpp then fails on `#include <stdbool.h>`,
+    // which reads as a broken SDK rather than a missing include path. The compiler that IS installed is asked;
+    // a user who already set the variable knows better than we do, so it is never overwritten.
+    const bindgenArgs = process.env.BINDGEN_EXTRA_CLANG_ARGS ?? bindgenClangArgs(gccIncludeDir());
+    log(`ModelHost: building the ${backend} runtime: ${cargo} build --release ${backendFeatures(backend).join(' ')}`
+        + `${bindgenArgs ? ` (bindgen args: ${bindgenArgs})` : ''}`);
     try {
         await runCmd(cargo, ['build', '--release', ...backendFeatures(backend)], {
             cwd: dir,
-            env: { ...augmentedEnv(), RUSTFLAGS: rustflags }
+            env: {
+                ...augmentedEnv(),
+                RUSTFLAGS: rustflags,
+                ...(bindgenArgs ? { BINDGEN_EXTRA_CLANG_ARGS: bindgenArgs } : {})
+            }
         });
     } catch (e) {
         if (isMissingExecutable(e)) throw new Error(RUNTIME_NEEDS_CARGO);
@@ -412,6 +422,19 @@ export async function ensureBundledEndpoint(cfg: AssistantConfig): Promise<strin
         { location: vscode.ProgressLocation.Notification, title: 'Starting the local model…', cancellable: false },
         (progress) => requireServer().ensureStarted(cfg, progress)
     );
+}
+
+/**
+ * The config a request must actually be sent with.
+ *
+ * `bundled` has no endpoint in the settings — the runtime picks a free port when it starts — so the default
+ * endpoint (LM Studio's own address) must never reach a request. Skipping this step is exactly what
+ * "No server answered — is the local model server running (and the endpoint correct)?" looked like with
+ * `backend: bundled` and a perfectly good model on disk (reported 2026-10-04).
+ */
+export async function configWithEndpoint(cfg: AssistantConfig): Promise<AssistantConfig> {
+    if (cfg.backend !== 'bundled') return cfg;
+    return { ...cfg, endpoint: await ensureBundledEndpoint(cfg) };
 }
 
 export function stopModelServer(): void {

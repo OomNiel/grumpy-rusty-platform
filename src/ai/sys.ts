@@ -12,6 +12,7 @@
  */
 
 import * as cp from 'child_process';
+import * as fs from 'fs';
 import * as net from 'net';
 
 /**
@@ -56,4 +57,45 @@ export function runCmd(cmd: string, args: string[], options: RunOptions = {}): P
         child.on('error', reject);
         child.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`${cmd} exited with code ${code}`))));
     });
+}
+
+/**
+ * A compiler that can name its own C include directory, or undefined when none is installed.
+ *
+ * `-print-file-name=include` is how GCC and Clang both report where their built-in headers are; asking beats
+ * guessing at `/usr/lib/gcc/<triple>/<version>/include`, whose version changes.
+ */
+export function gccIncludeDir(): string | undefined {
+    for (const compiler of ['cc', 'gcc', 'clang']) {
+        try {
+            const dir = cp.execFileSync(compiler, ['-print-file-name=include'], { encoding: 'utf8' }).trim();
+            if (dir && fs.existsSync(dir)) return dir;
+        } catch {
+            /* that compiler is not installed — try the next */
+        }
+    }
+    return undefined;
+}
+
+/**
+ * `BINDGEN_EXTRA_CLANG_ARGS` for a machine whose `libclang` cannot find the C headers on its own.
+ *
+ * This is the difference between a build and a confusing failure: with `libclang` installed but no `clang`
+ * package — a real machine, 2026-10-04 — bindgen resolves `#include <stdbool.h>` to nothing and llama.cpp
+ * dies on a header the user has never heard of, in a file they never wrote. The C library's own headers live
+ * in `/usr/include` (and the multiarch directory beside it), and the compiler's built-in ones wherever the
+ * compiler says. Linux only: the other platforms' toolchains are found by clang on their own.
+ */
+export function bindgenClangArgs(
+    includeDir: string | undefined,
+    platform: string = process.platform
+): string | undefined {
+    if (platform !== 'linux') return undefined;
+    const dirs = [
+        ...(includeDir ? [includeDir] : []),
+        '/usr/include',
+        '/usr/include/x86_64-linux-gnu',
+        '/usr/include/aarch64-linux-gnu'
+    ];
+    return dirs.map((dir) => `-I${dir}`).join(' ');
 }

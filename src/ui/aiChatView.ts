@@ -30,6 +30,7 @@ import { log, logError } from '../ai/log';
 import { readActiveProject } from '../project/activeProject';
 import { panelState } from '../ai/panel';
 import { assistantConfig } from '../ai/editor';
+import { configWithEndpoint } from '../ai/runtime';
 import { chooseLocalModel, unloadLoadedModel } from '../ai/localModelSetup';
 import { configView } from '../ai/settings';
 
@@ -112,7 +113,9 @@ async function ask(text: string): Promise<void> {
             ...transcript.map((t) => ({ role: t.role, content: t.text }))
         ];
         const controller = new AbortController();
-        const outcome = await chatDetailed(cfg, messages, {
+        // `bundled` gets its endpoint only once the runtime is up; sending to the settings' default would ask
+        // LM Studio's port instead (reported as "No server answered", 2026-10-04).
+        const outcome = await chatDetailed(await configWithEndpoint(cfg), messages, {
             signal: controller.signal,
             onToken: (t) => post({ type: 'token', text: t }),
             onReasoning: (n) => post({ type: 'busy', busy: true, message: `thinking… (${n} characters)` })

@@ -282,3 +282,14 @@ test('describeLoadedNow speaks only for an external server and compares short na
     equal(describeLoadedNow({ backend: 'external', model: 'google/gemma' }, ['gemma']), 'Loaded now: gemma');
     contains(describeLoadedNow({ backend: 'external', model: 'other' }, ['x']), 'not other');
 });
+
+// The trap behind "No server answered" with `backend: bundled` (2026-10-04): the normalised config carries
+// LM Studio's default endpoint, because the bundled runtime picks its own port only when it starts. Every
+// request path therefore has to resolve the endpoint first (`configWithEndpoint` in `runtime.ts`); that
+// function needs `vscode`, so what is pinned here is the fact that makes it necessary.
+test('a bundled config carries no usable endpoint until the runtime is started', () => {
+    const assistant = compiled('ai/assistant');
+    const cfg = assistant.normalizeAssistantConfig({ backend: 'bundled' });
+    equal(cfg.endpoint, assistant.DEFAULT_ENDPOINT, 'the settings default is LM Studio, not the bundled runtime');
+    ok(assistant.assistantEnabled(cfg), 'and bundled still counts as "on" without one');
+});
