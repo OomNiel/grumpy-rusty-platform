@@ -352,3 +352,95 @@ test('a prompt-token count sent before the first token is read', () => {
     const chunk = assistant.parseSseChunk('data: {"choices":[{"delta":{},"finish_reason":null}],"usage":{"prompt_tokens":1640}}');
     equal(chunk.usage.promptTokens, 1640);
 });
+
+// `chatDetailed` end to end against a fake server. This is the test the progress work needed and did not
+// have: it caught nothing at the time, and "Cannot access 'outcome' before initialization" — a temporal dead
+// zone from ticking before the outcome existed — broke every request in the meantime (2026-10-04).
+function streamed(body) {
+    const encoder = new TextEncoder();
+    return new ReadableStream({
+        start(controller) {
+            controller.enqueue(encoder.encode(body));
+            controller.close();
+        }
+    });
+}
+
+test('chatDetailed streams, counts tokens and reports progress', async () => {
+    const assistant = compiled('ai/assistant');
+    const sse = [
+        'data: {"choices":[{"delta":{},"finish_reason":null}],"usage":{"prompt_tokens":120}}',
+        'data: {"choices":[{"delta":{"content":"Hel"}}]}',
+        'data: {"choices":[{"delta":{"content":"lo"}}]}',
+        'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"completion_tokens":2}}',
+        'data: [DONE]',
+        ''
+    ].join('\n');
+    const fetchImpl = async () => ({
+        ok: true,
+        status: 200,
+        body: streamed(sse),
+        text: async () => '',
+        json: async () => ({})
+    });
+    const cfg = assistant.normalizeAssistantConfig({ backend: 'bundled', contextSize: 4096 });
+    const progress = [];
+    const pieces = [];
+    const outcome = await assistant.chatDetailed(cfg, [{ role: 'user', content: 'hi' }], {
+        fetchImpl,
+        onToken: (t) => pieces.push(t),
+        onProgress: (p) => progress.push(p)
+    });
+
+    equal(outcome.text, 'Hello');
+    equal(outcome.finishReason, 'stop');
+    equal(outcome.completionTokens, 2);
+    equal(pieces.join(''), 'Hello');
+
+    ok(progress.length >= 1, 'progress must be reported while the request runs');
+    const last = progress[progress.length - 1];
+    equal(last.tokens, 2, 'two content pieces, two tokens');
+    equal(last.characters, 5);
+    equal(last.promptTokens, 120, 'the count the runtime sends before generating');
+    equal(last.contextSize, 4096);
+    equal(last.phase, 'streaming');
+    contains(assistant.describeProgress(last), '2 tokens');
+    contains(assistant.describeProgress(last), 'context 3% (120/4096)');
+    ok(progress.some((p) => p.phase === 'connecting'), 'and the phase before the response is announced');
+});
+
+test('a server that ignores stream:true still yields its answer', async () => {
+    const assistant = compiled('ai/assistant');
+    const fetchImpl = async () => ({
+        ok: true,
+        status: 200,
+        body: undefined,
+        text: async () => '',
+        json: async () => ({ choices: [{ message: { content: 'Hi there' } }] })
+    });
+    const outcome = await assistant.chatDetailed(assistant.normalizeAssistantConfig({ backend: 'bundled' }), [
+        { role: 'user', content: 'x' }
+    ], { fetchImpl });
+    equal(outcome.text, 'Hi there');
+});
+
+test('an HTTP failure carries the server’s own words', async () => {
+    const assistant = compiled('ai/assistant');
+    const fetchImpl = async () => ({
+        ok: false,
+        status: 503,
+        body: undefined,
+        text: async () => 'the model is still loading',
+        json: async () => ({})
+    });
+    let message = '';
+    try {
+        await assistant.chatDetailed(assistant.normalizeAssistantConfig({ backend: 'bundled' }), [
+            { role: 'user', content: 'x' }
+        ], { fetchImpl });
+    } catch (error) {
+        message = error.message;
+    }
+    contains(message, 'HTTP 503');
+    contains(message, 'still loading');
+});

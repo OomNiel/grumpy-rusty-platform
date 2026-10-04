@@ -607,6 +607,9 @@ export async function chatDetailed(
     // A rough prompt size, so the percentage is there from the first tick and refined by the real count the
     // runtime sends once it has tokenized the prompt.
     let promptTokens: number | undefined = estimateTokens(messages.map((m) => m.content).join('\n'));
+    // Declared before `tick`, which reads its length: calling `tick()` while this was still in its temporal
+    // dead zone threw "Cannot access 'outcome' before initialization" and broke the request outright.
+    const outcome: ChatOutcome = { text: '', reasoning: '' };
     const phaseOf = (): ChatProgress['phase'] =>
         !connected ? 'connecting' : tokens > 0 ? 'streaming' : reasoningChars > 0 ? 'thinking' : 'waiting';
     const tick = (): void => {
@@ -644,7 +647,6 @@ export async function chatDetailed(
         if (chunk.usage?.completionTokens !== undefined) into.completionTokens = chunk.usage.completionTokens;
         if (chunk.usage?.reasoningTokens !== undefined) into.reasoningTokens = chunk.usage.reasoningTokens;
     };
-    const outcome: ChatOutcome = { text: '', reasoning: '' };
     try {
         const res = await doFetch(`${cfg.endpoint}/chat/completions`, {
             method: 'POST',
