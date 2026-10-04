@@ -436,7 +436,8 @@ function fileOnDisk(context: vscode.ExtensionContext, spec: ModelSpec): boolean 
 
 /** True when the Rust sidecar has never been built, so the next start compiles llama.cpp for this machine. */
 function firstBuildNote(context: vscode.ExtensionContext): boolean {
-    return !fs.existsSync(path.join(context.extensionUri.fsPath, 'sidecar', 'target', 'release'));
+    // The build output lives in global storage, not beside the installed sources, so it survives an update.
+    return !fs.existsSync(path.join(context.globalStorageUri.fsPath, 'sidecar', 'target', 'release'));
 }
 
 /**
