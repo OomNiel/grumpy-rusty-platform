@@ -1921,3 +1921,22 @@ command in the scrollback — after showing `dpkg-deb --info`. Off Linux both co
 instead of failing at the shell.
 
 Suite: **587 passed, 0 skipped** (was 582).
+
+## 45. A dated copy next to the project, minus the compiler's leftovers (2026-10-05)
+
+**The ask.** *"Add a control there to back up the project folder (project folder name plus date stamp) in its
+parent folder."*
+
+**One decision, made explicitly.** `target/` is not copied. It is what the compiler produced, routinely tens of
+gigabytes for an embedded workspace, and the next build regenerates it; a backup that included it would be slow,
+huge, and would bury the files that matter. `.git/` **is** copied — it is the project's history, and a backup
+without it is not a backup. A *file* named `target` is the user's own work and is kept; only the directory is
+skipped (`shouldCopyEntry(name, isDirectory)`). Nothing is overwritten: the name carries the time
+(`<folder>-2026-10-05_1804` local), and a second backup in the same second gets `-2`.
+
+**Verified for real**: a project-shaped tree with a 3 MB `target/release/junk/big.bin` produced
+`proj-2026-10-05_180409` beside it with `Cargo.toml`, `src/main.rs` and `.git/HEAD` copied and `target/` absent
+— 3 files, 33 bytes, in the parent folder next to the original. `fs.cpSync` with a filter does the copying; it
+keeps symlinks as symlinks rather than walking into whatever they point at.
+
+Suite: **592 passed, 0 skipped** (was 587).
