@@ -17,7 +17,7 @@ import { initPickerFolders } from './ai/pickers';
 import { registerAssistantEditorCommands } from './ai/editor';
 import { registerAiChatView } from './ui/aiChatView';
 import { initModelRuntime } from './ai/runtime';
-import { initLlamaServer } from './ai/llamaServer';
+import { initLlamaServer, registerLlamaServerCommands } from './ai/llamaServer';
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
     const output = vscode.window.createOutputChannel("Grumpy's Rusty Platform");
@@ -53,6 +53,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         ...registerToolchainCommands(state, output),
         ...registerAssistantEditorCommands(),
         ...registerAiChatView(context),
+        ...registerLlamaServerCommands(context),
         state.onDidChange(() => {
             statusBar.update();
             projectView.refresh();

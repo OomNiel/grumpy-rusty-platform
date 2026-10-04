@@ -13,16 +13,26 @@
  *     downloaded into the extension's storage. The extension is the only thing that knows about it.
  *   - **lmstudio** (`localModelCore.ts`) — a *remote control* for LM Studio's own engine (`lms load`).
  *   - **this one** — the user's `llama-server` binary and the user's `.gguf`, started as a child of this
- *     window. Nothing is downloaded, nothing is installed: if `llama-server` is not on the machine, the
- *     honest answer is to say so and stop.
+ *     window (or as the user's own systemd unit, see `llamaService.ts`).
  *
- * The three share the same settings because they answer the same questions (which file, how much context,
- * how many layers, how many threads) and the same pin (`backend: external` + `endpoint` + `model`), which
- * is what makes the panel treat them alike: a started `llama-server` is just a server that happens to be
- * ours.
+ * WHAT IT WILL FETCH FOR YOU (asked 2026-10-04). *"When i select My own llama-server, the extension must
+ * start the llama.cpp server and load the weights automatically. If the server or the 27B model is not on the
+ * host machine the extention must offer to download and install."* Before that, this module said the honest
+ * but useless thing — "no `llama-server` was found, go and build llama.cpp" — and the model always had to be
+ * found by hand. Now:
+ *
+ *   - the **binary**: PATH and the usual build folders (`llamaServerBinary`), then an offer to download
+ *     llama.cpp's own prebuilt server for this platform (`llamaInstall.ts`), then the file dialog;
+ *   - the **weights**: the `modelPath` setting, else a verified copy of the known 27B already on this
+ *     machine (`OWN_SERVER_SPECS`), else one question whose first entry is that 27B — downloaded and
+ *     checksum-verified if it is not here, adopted from wherever else it already is if it is.
+ *
+ * The rule is *only ask what we do not already know*: on the second run and every one after it the command
+ * starts the server with nothing to answer, which is what "automatically" means to a developer.
  *
  * EVERY DECISION THAT CAN BE TESTED WITHOUT A PROCESS LIVES IN `localModels.ts` — where the binary is,
- * the exact argv, which failure is worth retrying, what `/health` means. What is here is the process.
+ * the exact argv, which failure is worth retrying, what `/health` means, which release asset fits this
+ * machine, and which model needs no question. What is here is the process.
  */
 
 import * as cp from 'child_process';
@@ -42,15 +52,16 @@ import {
     llamaServerAlias,
     llamaServerArgs,
     llamaServerPortCandidates,
+    ownServerModelPreference,
     parseLlamaProps,
-    parseLlamaVersion,
     recommendedLlamaOptions,
     sidecarContextSize,
     sidecarGpuLayers
 } from './localModels';
-import { formatBytes } from './modelSpecs';
+import { OWN_SERVER_SPECS, formatBytes, ownServerSpecByFileName, type ModelSpec } from './modelSpecs';
 import { scanForModelFiles, setupFacts, type FoundModelFile } from './localModelCore';
-import { allModelSpecs, modelFileFor, modelFolder } from './runtime';
+import { allModelSpecs, ensureModelFile, extensionContext, modelFileFor, modelFolder } from './runtime';
+import { describeInstall, installLlamaServer, llamaServerVersion } from './llamaInstall';
 import { configView } from './settings';
 // `proveItWorks` is the shared "is it really answering?" round trip every load path uses. This module is
 // the only one that imports it *downwards* (the palette flows live there, the process lives here), so the
@@ -336,6 +347,40 @@ export function initLlamaServer(context: vscode.ExtensionContext): void {
     context.subscriptions.push(own);
 }
 
+/**
+ * The commands the palette and the "Choose a Local Model…" picker use.
+ *
+ * WHY THIS EXISTS AS A FUNCTION THAT MUST BE CALLED. Both commands were reachable from inside the extension
+ * — the model picker executes `rustyPlatform.assistant.startLlamaServer` for its "My own llama-server" entry
+ * — but the command was never **registered**, and the two settings it writes were never declared in
+ * `package.json`. Selecting that entry therefore failed with "command not found" (the picker's own note even
+ * said the command "is registered by then", which was an assumption, not a fact). Registration and the
+ * contribution are pinned together by `tests/layers/t1-logic/ai-wiring.test.js`, which reads `package.json`
+ * and this file and fails on the next command that is promised and not delivered.
+ */
+export function registerLlamaServerCommands(context: vscode.ExtensionContext): vscode.Disposable[] {
+    return [
+        vscode.commands.registerCommand('rustyPlatform.assistant.startLlamaServer', () => startMyLlamaServerFlow(context)),
+        vscode.commands.registerCommand('rustyPlatform.assistant.stopLlamaServer', () => {
+            const status = ownLlamaServerStatus();
+            if (!status.running || !status.info) {
+                // "Mine" means this window's process. A server started outside it — this machine's own is a
+                // systemd user unit — is deliberately not killed from here, and `unloadEverything` (the
+                // panel's Unload) is where the user is told what is still holding the memory.
+                void vscode.window.showInformationMessage(
+                    'This window is not running a llama-server of its own. One started outside it (a systemd service, '
+                    + 'for instance) is not this command\'s to stop.'
+                );
+                return;
+            }
+            stopOwnLlamaServer();
+            void vscode.window.showInformationMessage(
+                `Stopped your llama-server on port ${status.info.port} (${path.basename(status.info.modelPath)}).`
+            );
+        })
+    ];
+}
+
 /** The running server of ours, if any. */
 export function ownLlamaServerStatus(): { running: boolean; info?: OwnServerInfo } {
     const info = own?.current();
@@ -363,17 +408,6 @@ export function llamaServerBinary(configuredOverride?: string): LlamaBinaryLooku
     });
     if (found) return { path: found };
     return wanted ? { configured: wanted, configuredMissing: true } : {};
-}
-
-/** `llama-server --version`, for the log and the status dialog. Bounded — a binary that hangs must not. */
-export async function llamaServerVersion(bin: string): Promise<string | undefined> {
-    return new Promise((resolve) => {
-        const child = cp.execFile(bin, ['--version'], { timeout: 8000 }, (err, stdout, stderr) => {
-            if (err && !stdout && !stderr) return resolve(undefined);
-            resolve(parseLlamaVersion(String(stdout ?? ''), String(stderr ?? '')));
-        });
-        child.on('error', () => resolve(undefined));
-    });
 }
 
 /**
@@ -426,17 +460,19 @@ export function llamaServerStatusLines(
  * A one-line reason the feature cannot be used, with the way out.
  *
  * Two different failures, two different answers: a path the user set that is not there is *their* setting
- * and is fixable in a second, while "nothing found" means llama.cpp is not installed and the way out is to
- * install it or point the setting at it. Collapsing them into "llama-server not found" would send someone
- * hunting for an install they already have.
+ * and is fixable in a second, while "nothing found" means llama.cpp is not installed — and since
+ * 2026-10-04 that is no longer a dead end, because the flow that shows this line also offers to download
+ * llama.cpp's own prebuilt server. The sentence still names the manual route, for a machine where the
+ * download cannot happen (no network, an unsupported platform).
  */
 export function llamaServerMissingMessage(lookup: LlamaBinaryLookup): string {
     if (lookup.configuredMissing) {
         return `The "llamaServerPath" setting points at ${lookup.configured}, which is not there. Fix or clear `
             + 'that setting (Settings → Grumpy\'s WYSIWYG Designer → Assistant) and try again.';
     }
-    return 'No `llama-server` was found on this machine (checked PATH and the usual build folders). Install '
-        + 'llama.cpp (https://github.com/ggml-org/llama.cpp) or set "llamaServerPath" to the binary, then try again.';
+    return 'No `llama-server` was found on this machine (checked PATH and the usual build folders). This '
+        + 'extension can download llama.cpp\'s own prebuilt server for you, or you can point "llamaServerPath" '
+        + 'at a build you made yourself.';
 }
 
 export interface LlamaStartOutcome {
@@ -478,9 +514,26 @@ export interface LlamaStartRequest {
 export async function startOwnLlamaServer(request: LlamaStartRequest): Promise<LlamaStartOutcome> {
     if (!own) return { ok: false, message: 'The llama-server manager is not initialised — reload the window.' };
     const cfg = configView(SETTINGS);
+    // The binary: the setting, PATH and the usual build folders — and, when this machine has none, the offer
+    // to download llama.cpp's own prebuilt server. Every caller of this function is a click the user just
+    // made (the panel's Load, the panel's Start server, the palette command), so a question is allowed here;
+    // without it, the panel's own-server entry could only ever say "no llama-server was found".
     const lookup = llamaServerBinary();
-    if (!lookup.path) return { ok: false, message: llamaServerMissingMessage(lookup) };
-    const modelPath = String(request.modelPath ?? '').trim();
+    const context = extensionContext();
+    const bin = lookup.path ?? (context ? await ensureLlamaServerBinary(context, cfg) : undefined);
+    if (!bin) return { ok: false, message: llamaServerMissingMessage(lookup) };
+
+    // The model: what the caller named, else the same automatic resolution the palette flow uses (the
+    // `modelPath` setting, a verified copy of the known 27B, then one picker whose first entry is that 27B).
+    let modelPath = String(request.modelPath ?? '').trim();
+    if (!modelPath && context) {
+        const preference = ownServerModelPreference({
+            pinned: cfg.get<string>('modelPath', ''),
+            known: knownOwnServerModelPath(context),
+            exists: (p) => { try { return fs.existsSync(p); } catch { return false; } }
+        });
+        modelPath = preference.path ?? (await chooseLlamaServerModel(context, cfg)) ?? '';
+    }
     if (!modelPath) {
         return {
             ok: false,
@@ -511,10 +564,10 @@ export async function startOwnLlamaServer(request: LlamaStartRequest): Promise<L
         extraArgs: request.extraArgs ?? cfg.get<string>('llamaServerArgs', '')
     };
     try {
-        const info = await own.ensureStarted(lookup.path, launch, request.onProgress);
+        const info = await own.ensureStarted(bin, launch, request.onProgress);
         // The version is logged, never used to decide anything: a build too old for a flag says so itself,
         // and the retry above is what acts on it.
-        void llamaServerVersion(lookup.path).then((v) => { if (v) log(`llama-server version ${v}`); });
+        void llamaServerVersion(bin).then((v) => { if (v) log(`llama-server version ${v}`); });
         await cfg.update('modelPath', modelPath);
         await cfg.update('backend', 'external');
         await cfg.update('endpoint', info.endpoint);
@@ -536,7 +589,7 @@ export async function startOwnLlamaServer(request: LlamaStartRequest): Promise<L
         // The binary exists (it was found) but could not be executed: a wrong architecture, or a file whose
         // execute bit is missing. Saying "not found" here would send the user looking for the wrong thing.
         if (isMissingExecutable(err)) {
-            return { ok: false, message: `llama-server could not be started: ${lookup.path} (is it executable?)` };
+            return { ok: false, message: `llama-server could not be started: ${bin} (is it executable?)` };
         }
         const message = err instanceof Error ? err.message : String(err);
         logError(`llama-server failed to start: ${message}`);
@@ -700,34 +753,103 @@ export function stopOwnLlamaServer(): boolean {
 // ---------------- the palette front door ----------------
 
 /**
- * "AI: Start My llama-server…" — pick the binary's model, see the flags, start it, prove it answers.
+ * Finds the binary, offering to fetch llama.cpp when this machine has none.
  *
- * Deliberately four visible steps (find, model, settings, start) with the machine's own numbers in them:
- * the whole point of the feature is that the user does not have to remember what `-ngl 99 -c 8192 -t 4`
- * means to get the speed they came for.
+ * A path the user set is used without a word. Nothing found means one question with three ways out: install
+ * the prebuilt server (the default, and the whole point of the offer), point at a build of their own, or
+ * stop. Returns the binary to run, or undefined when the user backed out.
+ *
+ * The file dialog is the *old* way out, kept because a developer who already compiled llama.cpp — this one
+ * has, at `~/llama.cpp/build/bin/llama-server` — should never be made to download a second copy of it.
+ */
+export async function ensureLlamaServerBinary(
+    context: vscode.ExtensionContext,
+    cfg: vscode.WorkspaceConfiguration = configView(SETTINGS)
+): Promise<string | undefined> {
+    const lookup = llamaServerBinary(cfg.get<string>('llamaServerPath', ''));
+    if (lookup.path) return lookup.path;
+
+    const pick = await vscode.window.showWarningMessage(
+        llamaServerMissingMessage(lookup), 'Download llama.cpp', 'Point at my own build…', 'Cancel'
+    );
+    if (pick === 'Download llama.cpp') {
+        try {
+            let installed: Awaited<ReturnType<typeof installLlamaServer>> | undefined;
+            await vscode.window.withProgress(
+                { location: vscode.ProgressLocation.Notification, title: 'Installing llama.cpp', cancellable: true },
+                async (progress) => {
+                    installed = await installLlamaServer(context, {
+                        onProgress: (message) => progress.report({ message })
+                    });
+                }
+            );
+            if (!installed) return undefined;
+            await cfg.update('llamaServerPath', installed.bin);
+            void vscode.window.showInformationMessage(
+                `llama.cpp ${describeInstall(installed)} is installed and will be used from now on.`
+            );
+            return installed.bin;
+        } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            logError(`llama.cpp install failed: ${message}`);
+            const again = await vscode.window.showErrorMessage(`llama.cpp could not be installed. ${message}`, 'Point at my own build…');
+            if (again !== 'Point at my own build…') return undefined;
+        }
+    } else if (pick !== 'Point at my own build…') {
+        return undefined;
+    }
+
+    const startFolder = lastPickerFolder('binary');
+    const chosen = await vscode.window.showOpenDialog({
+        title: 'Where is llama-server?',
+        canSelectMany: false,
+        openLabel: 'Use this binary',
+        defaultUri: startFolder ? vscode.Uri.file(startFolder) : undefined,
+        filters: process.platform === 'win32' ? { Program: ['exe'] } : {}
+    });
+    const file = chosen?.[0]?.fsPath;
+    if (!file) return undefined;
+    await rememberPickerFile('binary', file);
+    await cfg.update('llamaServerPath', file);
+    return file;
+}
+
+/**
+ * A copy of the known 27B that this extension has already downloaded and verified.
+ *
+ * Deliberately narrow: the extension's own storage, matching the published byte count to the byte. That is
+ * the file `ensureModelFile` fetched and hashed, so starting it without asking is not a guess. Weights found
+ * *elsewhere* (LM Studio's folder, `~/Downloads`, a mounted drive) are offered by the picker instead — they
+ * are the same model by name and size, and the hash that would prove it costs half a minute of reading on a
+ * 16.8 GB file, which is too long to spend before a menu appears.
+ */
+export function knownOwnServerModelPath(context: vscode.ExtensionContext): string | undefined {
+    for (const spec of OWN_SERVER_SPECS) {
+        const file = modelFileFor(context, spec);
+        try {
+            if (fs.statSync(file).size === spec.bytes) return file;
+        } catch {
+            /* not downloaded here — the picker will offer the copy found anywhere else, or the download */
+        }
+    }
+    return undefined;
+}
+
+/**
+ * "AI: Start My llama-server…" — resolve the binary and the model, start it, prove it answers.
+ *
+ * The questions are asked in the order the answers become useful, and **only when they are not already
+ * known**: the binary (with the install offer), whether to reuse a server that is already running, the model
+ * — and the flags only when the model was just chosen by hand. On a machine that has been through this once,
+ * that is zero questions: the command starts the server and loads the weights, which is what was asked for
+ * (*"the extension must start the llama.cpp server and load the weights automatically"*).
  */
 export async function startMyLlamaServerFlow(context: vscode.ExtensionContext): Promise<boolean> {
     const cfg = configView(SETTINGS);
-    const lookup = llamaServerBinary(cfg.get<string>('llamaServerPath', ''));
-    if (!lookup.path) {
-        const pick = await vscode.window.showWarningMessage(llamaServerMissingMessage(lookup), 'Set the path…', 'Cancel');
-        if (pick !== 'Set the path…') return false;
-        const startFolder = lastPickerFolder('binary');
-        const chosen = await vscode.window.showOpenDialog({
-            title: 'Where is llama-server?',
-            canSelectMany: false,
-            openLabel: 'Use this binary',
-            defaultUri: startFolder ? vscode.Uri.file(startFolder) : undefined,
-            filters: process.platform === 'win32' ? { Program: ['exe'] } : {}
-        });
-        const file = chosen?.[0]?.fsPath;
-        if (!file) return false;
-        await rememberPickerFile('binary', file);
-        await cfg.update('llamaServerPath', file);
-        return startMyLlamaServerFlow(context);
-    }
-    const version = await llamaServerVersion(lookup.path);
-    log(`llama-server: using ${lookup.path}${version ? ` (version ${version})` : ''}`);
+    const bin = await ensureLlamaServerBinary(context, cfg);
+    if (!bin) return false;
+    const version = await llamaServerVersion(bin);
+    log(`llama-server: using ${bin}${version ? ` (version ${version})` : ''}`);
 
     // Is one already answering? On this machine the answer is usually yes — the developer's own llama-server
     // runs as a systemd user service on port 8080 with a 30 B model — and starting a second copy of *any*
@@ -759,13 +881,32 @@ export async function startMyLlamaServerFlow(context: vscode.ExtensionContext): 
         startAnother = true;
     }
 
-    const modelPath = await chooseLlamaServerModel(context, cfg);
+    // The model. Automatic when this machine already answers the question: the `modelPath` setting first (the
+    // user's own last choice), then a verified copy of the known 27B. Otherwise one picker whose first entry
+    // is that 27B — downloaded if it is not here, adopted if it is.
+    const known = knownOwnServerModelPath(context);
+    const preference = ownServerModelPreference({
+        pinned: cfg.get<string>('modelPath', ''),
+        known,
+        exists: (p) => { try { return fs.existsSync(p); } catch { return false; } }
+    });
+    let modelPath = preference.path;
+    let askedForModel = false;
+    if (!modelPath) {
+        modelPath = await chooseLlamaServerModel(context, cfg);
+        askedForModel = true;
+    }
     if (!modelPath) return false;
 
     const facts = setupFacts();
     const sizeGb = sizeOfGb(modelPath);
     const recommended = recommendedLlamaOptions(sizeGb, facts);
-    const settings = await askLlamaFlags(modelPath, sizeGb, recommended, cfg);
+    // The flags are a question only when the model itself was just chosen: after a start that used a model the
+    // settings already named, the panel's ⚙ is where those numbers are changed, and asking again would make
+    // "start it automatically" mean "answer three questions".
+    const settings = askedForModel
+        ? await askLlamaFlags(modelPath, sizeGb, recommended, cfg)
+        : { contextSize: recommended.contextSize, threads: recommended.threads, gpuLayers: recommended.gpuLayers, extraArgs: cfg.get<string>('llamaServerArgs', '') };
     if (!settings) return false;
     await cfg.update('llamaServerArgs', settings.extraArgs);
 
@@ -825,13 +966,27 @@ async function chooseLlamaServerModel(
     context: vscode.ExtensionContext,
     cfg: vscode.WorkspaceConfiguration
 ): Promise<string | undefined> {
-    const items: (vscode.QuickPickItem & { file?: string; browse?: boolean })[] = [];
+    const items: (vscode.QuickPickItem & { file?: string; browse?: boolean; spec?: ModelSpec })[] = [];
     const seen = new Set<string>();
     const push = (file: string, label: string, detail: string) => {
         if (seen.has(file)) return;
         seen.add(file);
         items.push({ label, detail, file });
     };
+
+    // The known 27B first, because it is the model this feature exists for and the one the developer asked
+    // for by name. Present → its path. Absent → the download itself, which is the "offer to download" half of
+    // that request; `ensureModelFile` looks for a verified copy anywhere on this machine before spending any
+    // bandwidth, so a user who already has these weights (in LM Studio, in `~/Downloads`, on a mounted drive)
+    // gets them adopted instead of fetched twice.
+    for (const spec of OWN_SERVER_SPECS) {
+        const file = modelFileFor(context, spec);
+        if (sizeMatches(file, spec.bytes)) {
+            push(file, `$(star) ${spec.label}`, `already downloaded for your llama-server · ${formatBytes(spec.bytes)}`);
+        } else {
+            items.push({ label: `$(cloud-download) ${spec.label}`, detail: `${spec.detail} · download it`, spec });
+        }
+    }
 
     const pinned = cfg.get<string>('modelPath', '');
     if (pinned && fs.existsSync(pinned) && /\.gguf$/i.test(pinned)) {
@@ -850,7 +1005,14 @@ async function chooseLlamaServerModel(
     const found = await withNotification<FoundModelFile[]>('Looking for .gguf files on this machine…', () =>
         scanForModelFiles({ onProgress: () => undefined }));
     for (const file of found) {
-        push(file.file, `$(file) ${file.name}`, `found on this machine · ${file.folder} · ${file.sizeGb.toFixed(1)} GB`);
+        // A copy of the known 27B found somewhere else is still *the* model — said with the star so the
+        // choice between "download 15.7 GB" and "use the one you already have" is obvious at a glance.
+        const known = ownServerSpecByFileName(file.name);
+        push(file.file,
+            `${known ? '$(star)' : '$(file)'} ${file.name}`,
+            known
+                ? `the known 27B, already on this machine · ${file.folder} · ${file.sizeGb.toFixed(1)} GB`
+                : `found on this machine · ${file.folder} · ${file.sizeGb.toFixed(1)} GB`);
     }
     items.push({ label: '$(folder-opened) Another .gguf file…', detail: 'Pick one with the file browser', browse: true });
 
@@ -862,6 +1024,7 @@ async function chooseLlamaServerModel(
         matchOnDescription: true
     });
     if (!pick) return undefined;
+    if (pick.spec) return await downloadOwnServerModel(context, pick.spec);
     if (!pick.browse) return pick.file;
 
     const startFolder = lastPickerFolder('model');
@@ -875,6 +1038,34 @@ async function chooseLlamaServerModel(
     const pickedModel = chosen?.[0]?.fsPath;
     if (pickedModel) await rememberPickerFile('model', pickedModel);
     return pickedModel;
+}
+
+/** Is that file there, and exactly the size the published model is? Reading a size costs nothing; a hash does not. */
+function sizeMatches(file: string, bytes: number): boolean {
+    try {
+        return fs.statSync(file).size === bytes;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Fetches a known model for the user's own server — adopted from this machine when it is already here,
+ * downloaded with progress and a checksum when it is not. Returns the path, or undefined if it failed (the
+ * reason is shown; this is one step of a flow, not the flow's only outcome).
+ */
+async function downloadOwnServerModel(context: vscode.ExtensionContext, spec: ModelSpec): Promise<string | undefined> {
+    try {
+        return await vscode.window.withProgress(
+            { location: vscode.ProgressLocation.Notification, title: `Getting ${spec.label}`, cancellable: true },
+            async (progress, token) => await ensureModelFile(context, spec, progress, token)
+        );
+    } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        logError(`llama-server model download failed: ${message}`);
+        void vscode.window.showErrorMessage(`The model could not be downloaded. ${message}`);
+        return undefined;
+    }
 }
 
 function shortFolder(file: string): string {

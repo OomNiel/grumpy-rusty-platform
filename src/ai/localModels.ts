@@ -839,3 +839,204 @@ export function filesOfferedForSelection<T extends { inLmStudio: boolean }>(
 ): T[] {
     return lmStudioHasModels ? files.filter((f) => !f.inLmStudio) : files.slice();
 }
+
+// ---------------- installing llama.cpp when this machine has none (asked 2026-10-04) ----------------
+//
+// *"If the server or the 27B model is not on the host machine the extention must offer to download and
+// install."* Until now the honest-but-useless answer when no `llama-server` was found was "install llama.cpp
+// yourself" — a sentence that tells a novice to compile C++ before they can use the feature they were just
+// offered. llama.cpp publishes a prebuilt server for every platform it supports, so the offer is now a
+// download.
+//
+// WHICH FILE, EXACTLY. The release page carries 35 assets, most of them GPU builds (cuda, rocm, vulkan,
+// sycl, openvino) plus Android, iOS and s390x. The names have a fixed shape, read from the real release list
+// fetched on 2026-10-04:
+//
+//     llama-b11384-bin-ubuntu-x64.tar.gz          17.7 MB   ← the one this picks on Linux x64
+//     llama-b11384-bin-macos-arm64.tar.gz         11.9 MB
+//     llama-b11384-bin-win-cpu-x64.zip            19.4 MB
+//     llama-b11384-bin-ubuntu-vulkan-x64.tar.gz   31.6 MB   ← never picked: a GPU build is a request this
+//     cudart-llama-b11384-bin-ubuntu-cuda-12.8-x64.tar.gz      extension cannot verify the driver for, and
+//                                                              the CPU build is what runs everywhere.
+//
+// THE HASH COMES FROM THE API, not from the release page: each asset carries `digest: "sha256:…"`, which is
+// the same kind of promise the model download verifies against. A release that carries no digest is not
+// offered — an unverifiable 18 MB download that then has to be executed is not a risk worth taking.
+
+/** One downloadable file on a GitHub release. */
+export interface ReleaseAsset {
+    name: string;
+    url: string;
+    bytes: number;
+    /** The `sha256:<hex>` the API reports, or empty when this release has no digest for it. */
+    digest: string;
+}
+
+export interface LlamaRelease {
+    tag: string;
+    assets: ReleaseAsset[];
+}
+
+/** The GitHub API call that answers "what prebuilt llama.cpp builds are there?" */
+export function llamaReleasesApiUrl(repo = 'ggml-org/llama.cpp'): string {
+    // NOT `/releases/latest`, and that cost a real debugging round on 2026-10-04: on llama.cpp "latest" is
+    // the tagged `v0.5.0` release, whose only asset is `nightly-tag.txt` — the actual binaries ship under
+    // `bNNNNN` tags, which that endpoint does not return. Asking for the list and choosing from it is the
+    // only way to get a file that can be run.
+    return `https://api.github.com/repos/${repo}/releases?per_page=20`;
+}
+
+/** The hex half of a GitHub `digest` field (`sha256:abc…` → `abc…`), or empty. */
+export function digestHex(digest: string): string {
+    const m = /^sha256:([0-9a-f]{64})$/i.exec(String(digest ?? '').trim());
+    return m ? m[1]!.toLowerCase() : '';
+}
+
+/** One entry of that list: the tag, and the files published under it. */
+export function parseReleases(apiAnswer: unknown): LlamaRelease[] {
+    if (!Array.isArray(apiAnswer)) return [];
+    const out: LlamaRelease[] = [];
+    for (const raw of apiAnswer) {
+        const o = (raw ?? {}) as { tag_name?: unknown; assets?: unknown };
+        const tag = typeof o.tag_name === 'string' ? o.tag_name.trim() : '';
+        if (!tag || !Array.isArray(o.assets)) continue;
+        const assets: ReleaseAsset[] = [];
+        for (const entry of o.assets) {
+            const a = entry as { name?: unknown; browser_download_url?: unknown; size?: unknown; digest?: unknown };
+            if (typeof a?.name !== 'string' || typeof a.browser_download_url !== 'string') continue;
+            assets.push({
+                name: a.name,
+                url: a.browser_download_url,
+                bytes: typeof a.size === 'number' ? a.size : 0,
+                digest: typeof a.digest === 'string' ? a.digest : ''
+            });
+        }
+        out.push({ tag, assets });
+    }
+    return out;
+}
+
+/**
+ * The newest release with a runnable, verifiable prebuilt server for this machine.
+ *
+ * The list is newest-first, and a release is used only when it has **both** the asset this platform needs and
+ * a `sha256:` digest to check it against. That is what makes the `v0.5.0` entry harmless: it is at the top of
+ * the list, it has no binary at all, and it is simply passed over rather than reported as "llama.cpp has no
+ * build for you".
+ */
+export function installReleaseFor(
+    apiAnswer: unknown,
+    platform: NodeJS.Platform = process.platform,
+    arch: string = process.arch
+): { tag: string; asset: ReleaseAsset } | undefined {
+    for (const release of parseReleases(apiAnswer)) {
+        const asset = installAssetFor(release.assets, platform, arch);
+        if (asset && digestHex(asset.digest)) return { tag: release.tag, asset };
+    }
+    return undefined;
+}
+
+/**
+ * The prebuilt asset for this platform and architecture, or undefined when llama.cpp does not publish one.
+ *
+ * The suffix is the whole test. `-bin-ubuntu-x64.tar.gz` cannot match the Vulkan build (which ends
+ * `-bin-ubuntu-vulkan-x64.tar.gz`), and the GPU flavours are excluded by name as well, because a *future*
+ * release could name one in a way that collides — and picking a CUDA build on a machine with no CUDA driver
+ * is a failure that arrives as "the server stopped immediately" with no hint of why.
+ */
+export function installAssetFor(
+    assets: readonly ReleaseAsset[],
+    platform: NodeJS.Platform = process.platform,
+    arch: string = process.arch
+): ReleaseAsset | undefined {
+    const suffix =
+        platform === 'linux' && arch === 'x64' ? '-bin-ubuntu-x64.tar.gz'
+            : platform === 'linux' && arch === 'arm64' ? '-bin-ubuntu-arm64.tar.gz'
+                : platform === 'darwin' && arch === 'arm64' ? '-bin-macos-arm64.tar.gz'
+                    : platform === 'darwin' && arch === 'x64' ? '-bin-macos-x64.tar.gz'
+                        : platform === 'win32' && arch === 'x64' ? '-bin-win-cpu-x64.zip'
+                            : platform === 'win32' && arch === 'arm64' ? '-bin-win-cpu-arm64.zip'
+                                : undefined;
+    if (!suffix) return undefined;
+    const unusable = /cuda|rocm|vulkan|sycl|openvino|opencl|cudart|android|xcframework|s390x/i;
+    return assets.find((a) => a.name.startsWith('llama-') && a.name.endsWith(suffix) && !unusable.test(a.name) && a.bytes > 0);
+}
+
+/** `tar.gz` or `zip` — the two shapes llama.cpp publishes, and the two `tar` knows how to unpack. */
+export function archiveKind(name: string): 'tar.gz' | 'zip' {
+    return /\.zip$/i.test(String(name ?? '')) ? 'zip' : 'tar.gz';
+}
+
+/**
+ * The argv that unpacks one of those two, with the system `tar`.
+ *
+ * Deliberately not a Node zip reader: this project has no dependencies, gzip is in Node but zip is not, and
+ * `tar` is present on every platform that can run VS Code — macOS and Linux always, and Windows since 10
+ * ships bsdtar as `tar.exe`, which reads `.zip` as well. `-xzf` vs `-xf` is the only difference (bsdtar
+ * infers gzip on its own, GNU tar needs to be told).
+ */
+export function extractArgs(archive: string, intoDir: string): string[] {
+    return archiveKind(archive) === 'zip' ? ['-xf', archive, '-C', intoDir] : ['-xzf', archive, '-C', intoDir];
+}
+
+/** What the binary is called on this platform — the one name that differs between them. */
+export function llamaBinaryName(platform: NodeJS.Platform = process.platform): string {
+    return platform === 'win32' ? 'llama-server.exe' : 'llama-server';
+}
+
+/**
+ * The `llama-server` inside an archive, from its own file listing (`tar -tzf`).
+ *
+ * The prebuilt archives extract into a folder named after the tag (`llama-b11384/llama-server`) beside a
+ * dozen shared libraries that must stay next to it. So the *directory* of the winner is what the caller
+ * keeps, and the shallowest match wins: a nested copy (`…/bin/llama-server`) is not the one the `.so` files
+ * sit beside.
+ */
+export function pickBinaryFromListing(listing: readonly string[], platform: NodeJS.Platform = process.platform): string | undefined {
+    const wanted = llamaBinaryName(platform);
+    const depth = (entry: string): number => entry.replace(/\\/g, '/').split('/').length;
+    const hits = listing
+        .map((entry) => String(entry ?? '').trim())
+        .filter((entry) => entry.split('/').pop() === wanted)
+        .sort((a, b) => depth(a) - depth(b));
+    return hits[0];
+}
+
+/** The line the install offer shows: what will be fetched, and what it costs. */
+export function installOfferLine(asset: ReleaseAsset): string {
+    return `llama.cpp's own prebuilt server for this machine — ${asset.name} (${formatBytes(asset.bytes)})`;
+}
+
+// ---------------- which model the user's own server should run (asked 2026-10-04) ----------------
+
+/** Where the `.gguf` for the user's own server came from, which is what decides whether to ask again. */
+export type OwnServerModelSource = 'setting' | 'known' | 'none';
+
+/**
+ * The model to serve, without asking anything — or `none`, which means "ask".
+ *
+ * The rule is "only ask what we do not already know", and it is what makes *"the extension must start the
+ * llama.cpp server and load the weights automatically"* true on the second run and every one after it:
+ *
+ *   1. the `modelPath` setting, when the file is there — the user's own last choice, or the model another
+ *      runtime already downloaded;
+ *   2. the known 27B, when a copy is anywhere on this machine (extension storage, LM Studio's folder, the
+ *      Hub cache, an external drive) — the model this feature exists for;
+ *   3. nothing, and then the caller asks: a picker of the files found, the download offer, or both.
+ *
+ * A pinned path that no longer exists is *not* used and *not* an error here: it falls through to the known
+ * model, and the caller's picker will say the file is gone if it comes to that.
+ */
+export function ownServerModelPreference(input: {
+    /** The `modelPath` setting. */
+    pinned?: string;
+    /** A verified copy of the known 27B already on this machine, if one was found. */
+    known?: string;
+    exists: (path: string) => boolean;
+    platform?: NodeJS.Platform;
+}): { path?: string; source: OwnServerModelSource } {
+    const gguf = (p: string | undefined): p is string => !!p && /\.gguf$/i.test(p) && input.exists(p);
+    if (gguf(input.pinned)) return { path: input.pinned, source: 'setting' };
+    if (gguf(input.known)) return { path: input.known, source: 'known' };
+    return { source: 'none' };
+}

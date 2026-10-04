@@ -1409,3 +1409,109 @@ sentence. The load now checks the file itself, and every panic is caught and tur
 * The chat panel's settings block writes backend/endpoint/model/showDiff; the per-model load options
   (context length, GPU offload, TTL) are reachable from the model picker but not yet surfaced in the panel.
 * Windows: `libclang`/`cmake` discovery in `buildSidecar` is Unix-first, like the rest of the extension.
+
+## 35. Making "My own llama-server" set itself up (2026-10-04)
+
+**The report, verbatim.** *"Check the path for running my llama.cpp using the 27B model already downloaded.
+When i select My own llama-server, the extension must start the llama.cpp server and load the weights
+automatically. If the server or the 27 B model is not on the host machine the extention must offer to download
+and install. Check my Grumpy Designer project for the 27 model used."*
+
+**What the check found.** Three things, each verified rather than assumed, and none of them what the report
+expected:
+
+1. **The command did not exist.** `Rusty AI: Choose a Local Model… → My own llama-server` runs
+   `vscode.commands.executeCommand('rustyPlatform.assistant.startLlamaServer')`, and *nothing anywhere*
+   registered that id — the comment beside it even said "the command is registered by then", which was an
+   assumption, not a fact. The two settings the path writes (`llamaServerPath`, `llamaServerArgs`) and four
+   more the same feature touches (`llamaServerService`, `llamaServerStartTarget`, `loadContextLength`,
+   `loadGpu`, plus `loadTtlSeconds` in the panel) were never declared in `package.json` either, so
+   `WorkspaceConfiguration.update()` on them raised *"… is not a registered configuration"*. A whole feature
+   sat in `src/` looking finished and could not be reached: TypeScript cannot see either mistake, because
+   `executeCommand('anything')` and `update('anything')` both type-check.
+2. **The 27B is the Designer's `qwen3.8-27b`** — `lmstudio-community/Qwen3.8-27B-GGUF`, file
+   `Qwen3.8-27B-Q4_K_M.gguf`. The Designer never names a Hub repo (there the model is LM Studio's, and its
+   only trace is the label in `parseLoadEstimate`'s doc block), so the identity was pinned from this machine's
+   own LM Studio records — `model-data.json` (`uiIdentifier: "qwen3.8-27b"` → repo + file) and
+   `single-downloads-info.json` (the download that fetched it) — and then confirmed **independently** against
+   Hugging Face's API: **16 810 714 336 bytes, sha256 `e00082f7…43e520`**. Two independent records agreeing is
+   what makes it safe to publish as a checksum.
+3. **The weights are not on this machine.** The report said "already downloaded"; only LM Studio's *record* of
+   the download survives. `~/.lmstudio/models/` holds four models, none of them the 27B, and the only
+   27B-shaped file on any mounted filesystem is `Bonsai-27B-Q1_0.gguf` (a different model — prism-ml's, 1-bit,
+   3.8 GB). So the download offer is not a hypothetical on this machine: it is the only route to the model the
+   user asked for.
+
+**What it does now.** The palette command, the panel's Load button and the panel's Start button all resolve
+the same two questions the same way:
+
+* **the binary** — the `llamaServerPath` setting, then PATH and the usual build folders (`~/llama.cpp/build/bin`,
+  `/usr/local/bin`, …), and when there is none, an offer to **download llama.cpp's own prebuilt server**
+  (~18 MB) or to point at a build you made yourself. The installed build goes into the extension's global
+  storage, so an extension update does not re-fetch it, and the digest GitHub publishes is verified before
+  anything is unpacked or executed.
+* **the weights** — the `modelPath` setting, then a verified copy of the known 27B already in the extension's
+  storage, and otherwise *one* question whose first entry is that 27B: downloading it if this machine has none,
+  or adopting the copy that is already here (LM Studio's folder, `~/Downloads`, a mounted drive) if it is —
+  `ensureModelFile` looks for it by name and size and proves it by hash before spending any bandwidth.
+
+The rule is **ask only what we do not already know**. Once a machine has answered both questions, the command
+starts the server and loads the weights with nothing to click, which is what "automatically" means to the
+person who asked for it. The one question that survives a second run is the "a llama-server is already
+running" choice, and that one is deliberate: two models of this size do not fit in 28 GB, and it is the only
+thing standing between a click and a machine that swaps for an hour.
+
+**The installer was run for real, and the first run failed.** `/releases/latest` on `ggml-org/llama.cpp`
+answers `v0.5.0`, whose single asset is `nightly-tag.txt` — the runnable builds are published under `bNNNNN`
+tags that endpoint does not return. The first real execution of the installer died with *"llama.cpp publishes
+no prebuilt server for this machine (linux/x64)"*, which was simply false. It now asks for the release *list*
+and takes the newest entry that has both the asset this platform needs and a `sha256:` digest to check it
+against, which also means a future release that is all metadata is passed over instead of reported as "no
+build for you". After the fix, the same run: **4.4 s, `llama-b11384-bin-ubuntu-x64.tar.gz` (17 669 671 bytes),
+digest verified, unpacked, and `llama-server --version` → `0.5.0-dev (build 11384, commit 0faee5004)`**.
+
+**The start path was run for real too** — the extension's own `startOwnLlamaServer`, driven through a stubbed
+`vscode` against the machine's own binary and the lightest model on disk
+(`Qwen2.5-Coder-3B-Instruct-Q4_K_M.gguf`, 1 929 903 072 bytes), with the developer's 30B systemd unit still
+answering on 8080:
+
+```
+llama-server --model …/Qwen2.5-Coder-3B-Instruct-Q4_K_M.gguf --host 127.0.0.1 --port 44979 \
+             --ctx-size 4096 --threads 4 --n-gpu-layers 0 --alias Qwen2.5-Coder-3B-Instruct-Q4_K_M
+→ /health {"status":"ok"} · /v1/models → the alias · chat → "OK"      (4.0 s to ready)
+```
+
+…and the answer said the thing the user needs to hear when it happens: *"your llama-server on port 8080 is
+still running its own model, so both are in memory now."*
+
+### What is pinned by tests
+
+`tests/layers/t1-logic/ai-llama-install.test.js` pins the install decisions against the **real** release list of
+2026-10-04 (real names, real sizes, real digests): which asset fits each platform/arch, that no CUDA/Vulkan/
+ROCm/SYCL/Android/CUDA-runtime asset is ever chosen, that a digest which is not exactly one sha256 is refused,
+the `tar` flags for `.tar.gz` vs `.zip`, how the binary is found in the archive listing, and the 27B's own
+numbers.
+
+`ai-wiring.test.js` is the new guard for the bug class that caused all of this: it reads `src/**` as text and
+compares it with `package.json` in both directions — a command the source runs but the manifest does not
+declare, a command the manifest declares but nothing registers, a setting the source reads or writes but the
+manifest does not define, and a declared setting with no description. The `rustyPlatform.assistant.focus`
+command is the one allowed exception, because VS Code generates `<viewId>.focus` for every contributed view.
+
+`manifest.test.js` already had *"every command the code registers is declared in the manifest"*, and it could
+not have caught this: it walks from **registered → declared**, so a command that nothing registered was
+invisible to it in both directions, and the failure ("this feature cannot be reached at all") looked exactly
+like success. Both halves of the relation are now checked, and the new test was verified to fail on purpose —
+removing the `startLlamaServer` declaration from `package.json` makes three cases fail, and deleting the
+`llamaServerPath` property makes two more.
+
+Suite: **551 passed, 0 skipped** (was 530), and `tsc` is clean under the project's strict flags.
+
+### Still open
+
+* The 27B itself has not been downloaded here (15.7 GB) — the spec is Hub-verified and the download path is the
+  one the 7B already exercised (checksum, resume, adopt-a-local-copy), but the first real 27B run on this
+  machine will be the user's.
+* GPU builds of llama.cpp are deliberately not offered by the installer: they are 150-600 MB and depend on a
+  driver this extension cannot inspect. A developer who wants Vulkan/CUDA builds their own and points
+  `llamaServerPath` at it.
