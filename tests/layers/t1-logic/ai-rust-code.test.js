@@ -423,3 +423,81 @@ test('alreadyImported matches a use line modulo whitespace, and useBlockStart po
     ok(declarationRegion('#[task]\npub async fn run(a: u8) -> u8 {\n    a\n}').text.includes('pub async fn run'));
     equal(braceBlockEnd(['fn f() {}'], 0), 0);
 });
+
+// ------------------------------------------------ code from the chat (asked 2026-10-04)
+
+test('a whole file is told apart from one item — because one replaces and the other is placed', () => {
+    const rc = compiled('ai/rustCode');
+    // An inner attribute is illegal anywhere but the top of a file, so it settles the question on its own.
+    ok(rc.looksLikeWholeFile('#![no_std]\n#![no_main]\n\nfn main() {}'));
+    ok(rc.looksLikeWholeFile('#![no_std]\nuse embassy_executor::Spawner;\n\n#[embassy_executor::main]\nasync fn main(spawner: Spawner) {}'));
+    // `use` beside `main` is a file too: a single function never needs to import anything.
+    ok(rc.looksLikeWholeFile('use std::io;\n\nfn main() {\n    println!("hi");\n}'));
+    // A *refactor of main* is not a file. It carries no `use` line, and treating it as one would replace
+    // `main.rs` with a single function — deleting every other item in it. This is the case that made the rule:
+    // it must be spliced in, where the file's own `#[embassy_executor::main]` is preserved by the signature fix.
+    notOk(rc.looksLikeWholeFile('#[embassy_executor::main]\nasync fn main(spawner: Spawner) {}'));
+    notOk(rc.looksLikeWholeFile('pub fn main() {}'));
+    // Everything else is an item, and an item must not delete the file it lands in.
+    notOk(rc.looksLikeWholeFile('fn flash_led(interval: u64) {\n    led.toggle();\n}'));
+    notOk(rc.looksLikeWholeFile('impl Led {\n    fn set(&self) {}\n}'));
+    notOk(rc.looksLikeWholeFile('struct Config {\n    interval: u64,\n}'));
+    notOk(rc.looksLikeWholeFile(''));
+});
+
+test('a code block is labelled by the item it defines, so two blocks are told apart', () => {
+    const rc = compiled('ai/rustCode');
+    equal(rc.codeBlockLabel('#![no_std]\nfn main() {}'), 'the whole file');
+    equal(rc.codeBlockLabel('pub async fn flash_led(interval: u64) {}'), 'fn flash_led');
+    equal(rc.codeBlockLabel('impl Display for Led {}'), 'impl Display');
+    equal(rc.codeBlockLabel('struct Config {}'), 'struct Config');
+    equal(rc.codeBlockLabel('pub const MAX: u32 = 10;'), 'const MAX');
+    equal(rc.codeBlockLabel('macro_rules! twice {}'), 'macro twice');
+    equal(rc.codeBlockLabel('let x = 1;'), 'the code');
+});
+
+test('an item from the chat replaces its own function and leaves the rest of the file alone', () => {
+    const rc = compiled('ai/rustCode');
+    const file = [
+        'use embassy_time::Timer;',
+        '',
+        'fn flash_led(interval: u64) {',
+        '    Timer::after_millis(100).await;',
+        '}',
+        '',
+        'fn other() -> u32 {',
+        '    42',
+        '}',
+        ''
+    ].join('\n');
+    const refactor = 'fn flash_led(interval: u64) {\n    Timer::after_millis(500).await;\n}\n';
+    const out = rc.insertChatCode(file, refactor);
+    contains(out, 'Timer::after_millis(500)');
+    notContains(out, 'Timer::after_millis(100)');
+    contains(out, 'fn other() -> u32 {', 'the function that was not mentioned survives');
+    contains(out, 'use embassy_time::Timer;');
+    // Exactly one flash_led: a replace that also appended would leave two.
+    equal(out.split('fn flash_led').length - 1, 1);
+});
+
+test('a brand-new function is added to the file, and the whole file replaces it', () => {
+    const rc = compiled('ai/rustCode');
+    const file = 'fn existing() {\n    // ...\n}\n';
+    const added = rc.insertChatCode(file, 'fn added_from_chat() {\n    // new\n}\n');
+    contains(added, 'fn existing()');
+    contains(added, 'fn added_from_chat()');
+
+    const replaced = rc.insertChatCode(file, '#![no_std]\n\nfn main() {\n    loop {}\n}\n');
+    notContains(replaced, 'fn existing()', 'a whole file is a whole file');
+    contains(replaced, '#![no_std]');
+});
+
+test('the file\'s own signature and attributes outrank the model\'s', () => {
+    const rc = compiled('ai/rustCode');
+    // The refactor returns the body only; the entry-point attribute and the parameter list are the file's.
+    const file = '#[embassy_executor::main]\nasync fn main(spawner: Spawner) {\n    old();\n}\n';
+    const out = rc.insertChatCode(file, 'async fn main(spawner: Spawner) {\n    new();\n}\n');
+    contains(out, '#[embassy_executor::main]');
+    contains(out, 'new();');
+    notContains(out, 'old();');
+});

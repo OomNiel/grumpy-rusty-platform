@@ -9,7 +9,7 @@
  * `fetch`, so the suite pins them without a server, a model or a window.
  */
 
-const { test, ok, equal, contains, runtimeSkip } = require('../../lib/harness');
+const { test, ok, equal, contains, runtimeSkip, notContains } = require('../../lib/harness');
 const { compiled } = require('../../lib/harness');
 const {
     normalizeAssistantConfig,
@@ -480,4 +480,60 @@ test('a timeout names the address too, and anything else is passed through untou
     // A message from the server itself is never rewritten: it is the server's own words about its own problem.
     equal(assistant.describeError(new Error('The server answered HTTP 400: context overflow'), 'http://x/v1'),
         'The server answered HTTP 400: context overflow');
+});
+
+// ------------------------------------------------ "implement this code" under an answer (2026-10-04)
+
+test('the code in an answer is found, and only the Rust is offered', () => {
+    const assistant = compiled('ai/assistant');
+    const answer = [
+        'Here is the refactor.',
+        '',
+        '```rust',
+        'fn flash_led(interval: u64) {',
+        '    led.toggle();',
+        '}',
+        '```',
+        '',
+        'And the dependency:',
+        '',
+        '```toml',
+        '[dependencies]',
+        'embassy-time = "0.3"',
+        '```',
+        '',
+        'Done.'
+    ].join('\n');
+    const all = assistant.codeBlocks(answer);
+    equal(all.length, 2);
+    equal(all[0].language, 'rust');
+    equal(all[1].language, 'toml');
+    // The button is offered for the Rust block only: a `Cargo.toml` snippet is not code to implement in a .rs
+    // file, and neither is a shell command.
+    const offered = assistant.rustCodeBlocks(answer);
+    equal(offered.length, 1);
+    contains(offered[0].code, 'fn flash_led');
+    notContains(offered[0].code, 'embassy-time');
+});
+
+test('a block with no language counts as Rust, and an unclosed one is not offered at all', () => {
+    const assistant = compiled('ai/assistant');
+    // Models omit the info string often, and this project is Rust — refusing those would hide the button on
+    // perfectly good answers.
+    equal(assistant.rustCodeBlocks('```\nfn helper() {}\n```').length, 1);
+    equal(assistant.rustCodeBlocks('```RS\nfn helper() {}\n```').length, 1);
+    // A block cut off by the token budget: `extractCode` salvages it for the editor flows, where the user is
+    // watching a diff. A *button* that writes half a function into a file is a different promise.
+    equal(assistant.rustCodeBlocks('```rust\nfn cut_off() {\n    led.toggle();').length, 0);
+});
+
+test('two blocks in one answer are two offers, and prose alone is none', () => {
+    const assistant = compiled('ai/assistant');
+    const two = assistant.rustCodeBlocks('before:\n```rust\nfn old() {}\n```\nafter:\n```rust\nfn new() {}\n```');
+    equal(two.length, 2);
+    contains(two[0].code, 'fn old');
+    contains(two[1].code, 'fn new');
+    equal(assistant.rustCodeBlocks('The loop is blocking because the timer future is not awaited.').length, 0);
+    equal(assistant.rustCodeBlocks('').length, 0);
+    equal(assistant.rustCodeBlocks('```\n\n```').length, 0, 'an empty block is not code');
 });

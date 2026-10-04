@@ -790,6 +790,72 @@ export function useBlockStart(text: string): number {
 }
 
 /** The exact EOL the document uses, so a proposal never mixes line endings. */
+/**
+ * Does this code look like a whole file, rather than one item to put *into* a file?
+ *
+ * The two signals are the ones only a file can carry: an **inner attribute** (`#![no_std]`, `#![no_main]`) is
+ * illegal anywhere but the top of a file, and `fn main` is the entry point. Everything else — a function, an
+ * `impl`, a `struct` — is an item, and an item is spliced into the file it belongs to instead of replacing it
+ * (asked 2026-10-04, for the chat's "implement this code" button: a refactor that returns one function must
+ * not delete the rest of the file it came from).
+ */
+export function looksLikeWholeFile(code: string): boolean {
+    const text = String(code ?? '');
+    // An inner attribute cannot appear anywhere but the top of a file — the one unambiguous signal.
+    if (/^\s*#!\[/m.test(text)) return true;
+    // `fn main` alone is NOT enough, and that matters: a refactor of `main`'s body comes back as
+    // `#[embassy_executor::main] async fn main(…) { … }` with no `use` line — treating that as a whole file
+    // would replace `main.rs` with one function and silently delete every other item in it (found by the test
+    // for exactly this case, 2026-10-04). With a `use` line beside it, the answer imports something, which a
+    // single function never needs — that is a file.
+    const hasMain = /(?:^|\n)\s*(?:pub\s+)?(?:async\s+)?fn\s+main\s*[(<]/.test(text);
+    const imports = /(?:^|\n)\s*(?:pub\s+)?use\s+[^;]+;/.test(text);
+    return hasMain && imports;
+}
+
+/**
+ * What to call one code block in a chat answer — the label on the button that applies it.
+ *
+ * Cosmetic, but it is the only thing that tells two blocks in one answer apart ("Implement `fn flash_led`…"
+ * against "Implement `struct Config`…"), and a model that returns a before/after pair is common enough that
+ * the distinction has to exist.
+ */
+export function codeBlockLabel(code: string): string {
+    const text = String(code ?? '');
+    if (looksLikeWholeFile(text)) return 'the whole file';
+    const item = /(?:^|\n)\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:unsafe\s+)?(?:extern\s+"[^"]*"\s+)?(fn|struct|enum|trait|impl|mod|const|static|type|union)\s+([A-Za-z_]\w*)/.exec(text);
+    if (item) return `${item[1]} ${item[2]}`;
+    const macro = /macro_rules!\s*([A-Za-z_]\w*)/.exec(text);
+    return macro ? `macro ${macro[1]}` : 'the code';
+}
+
+/**
+ * The file's text after `code` has been put into it.
+ *
+ * An **item** (the common case: the answer returns one function) goes where it belongs — replacing the
+ * same-named function in place, attributes and all, or added to the file when there is no such name. A whole
+ * file replaces the file. Pure, so which of the two happens is pinned by a test rather than by the model's
+ * mood.
+ */
+export function insertChatCode(text: string, code: string): string {
+    if (looksLikeWholeFile(code)) return code;
+    const parsed = parseNewItemAnswer(code, '');
+    const item = unwrapItem(parsed.item).item;
+    const named = /(?:^|\n)\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:unsafe\s+)?fn\s+([A-Za-z_]\w*)/.exec(item);
+    if (named) {
+        const existing = fnSignatures(text).find((f) => f.name === named[1]);
+        const span = existing ? enclosingItemSpan(text, existing.line) : undefined;
+        if (span) {
+            const offsets = itemOffsets(text, span);
+            const original = text.slice(offsets.start, offsets.end);
+            // The signature and attributes are the *file's* business, not the model's: a refactor that drops
+            // `#[embassy_executor::main]` would otherwise leave a program that never runs.
+            return spliceItem(text, span, preserveSignature(original, item).item, detectEol(text));
+        }
+    }
+    return addItemToFile({ text, caretLine: 1, item, uses: parsed.uses }).text;
+}
+
 export function detectEol(text: string): string {
     return String(text ?? '').includes('\r\n') ? '\r\n' : '\n';
 }

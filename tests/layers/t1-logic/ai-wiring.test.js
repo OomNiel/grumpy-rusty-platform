@@ -139,3 +139,17 @@ test('the settings form sends only what the user changed', () => {
     ok(chat.includes('String(now[key]) !== String(applied[key])'), 'Save posts the diff, not the whole form');
     ok(chat.includes("if (Object.keys(settings).length === 0)"), 'and an empty diff is not a write');
 });
+
+test('the chat offers to implement the code in an answer', () => {
+    // A textual guard, like the settings-form one: this is a live-webview contract no unit test can click.
+    // The rule "is there code in this answer" must stay in ONE place — the extension computes the labels and
+    // the view only draws them — or the button and the apply would disagree about which block was meant.
+    const chat = fs.readFileSync(path.join(repoRoot(), 'src/ui/aiChatView.ts'), 'utf8');
+    ok(chat.includes('rustCodeBlocks'), 'the view is told which answers carry code');
+    ok(chat.includes("type: 'applyCode'"), 'and the button posts the turn it belongs to');
+    ok(chat.includes('await applyChatCode('), 'which the extension applies through the one diff-and-write path');
+    // The dangerous half: applying into the *proposal* preview would be a write to nowhere.
+    const editor = fs.readFileSync(path.join(repoRoot(), 'src/ai/editor.ts'), 'utf8');
+    ok(editor.includes("active.document.uri.scheme === 'file'"), 'a proposal diff is never a target file');
+    ok(editor.includes('insertChatCode'), 'an item is placed, a whole file replaces');
+});

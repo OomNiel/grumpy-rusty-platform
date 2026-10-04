@@ -52,6 +52,7 @@ import {
     enclosingItemSpan,
     fnSignatures,
     itemOffsets,
+    insertChatCode,
     moduleHeader,
     parseNewItemAnswer,
     preserveSignature,
@@ -573,6 +574,120 @@ export async function runImplement(document: vscode.TextDocument, line0: number,
             await checkProject();
         }
     }
+    return true;
+}
+
+// ---------------- "implement this code" from the chat (asked 2026-10-04) ----------------
+//
+// *"In the ai assist chat box, if the response contains refactored code, add the option to implement that code
+// in the project."* The chat is where a *question* gets answered — "how should this be structured", "why does
+// this deadlock" — and a good answer often ends with the code, which the user then had to copy out by hand,
+// find the file for, and paste. The button that appears under such an answer is that copy-paste, done with the
+// rules the rest of the extension already follows: the right file, the right place in it, a **diff** to review,
+// and one undoable edit.
+
+/**
+ * Where a chat answer's code should go, and what the file looks like afterwards.
+ *
+ * The target is the file in front of the user when it is a Rust file (that is what "implement this in my
+ * project" almost always means), and otherwise a short list of the project's own sources plus "a new file…".
+ * Never the *proposal* diff editor: applying code into a preview of a change would be a write to nowhere.
+ */
+async function chatCodeTarget(): Promise<vscode.Uri | undefined> {
+    // The file in front of the user, without a question. "Implement this in my project" means this file in
+    // every case but one, and the **diff names the file** before anything is written — so the quiet path is
+    // still a visible choice, and a wrong one costs a Discard. (Asking here was the first version; it made a
+    // two-item picker appear for every answer even with the target on screen, which is noise, not consent.)
+    const active = vscode.window.activeTextEditor;
+    if (active && active.document.languageId === 'rust' && active.document.uri.scheme === 'file') {
+        return active.document.uri;
+    }
+
+    // No Rust file open (or the active editor is the proposal *preview*, which is a write to nowhere): offer
+    // the project's own sources. Bounded, with the build output excluded — a `.rs` under `target/` is an
+    // artifact, not a file to edit.
+    type Item = vscode.QuickPickItem & { uri?: vscode.Uri; create?: boolean };
+    const items: Item[] = [];
+    let sources: vscode.Uri[] = [];
+    try {
+        sources = await vscode.workspace.findFiles('**/src/**/*.rs', '**/{target,.git,.dsh-worktrees,node_modules}/**', 25);
+    } catch (error) {
+        logError(error);
+    }
+    for (const uri of sources) {
+        let short = uri.fsPath;
+        try { short = vscode.workspace.asRelativePath(uri); } catch { /* keep the absolute path */ }
+        items.push({ label: `$(file-code) ${short}`, uri });
+    }
+    items.push({ label: '$(new-file) A new file…', detail: 'pick a name and it is created', create: true });
+
+    const pick = items.length === 1
+        ? items[0]
+        : await vscode.window.showQuickPick(items, {
+            title: 'Where should this code go?',
+            placeHolder: 'No Rust file is open — the diff shows the result before anything is written',
+            ignoreFocusOut: true,
+            matchOnDescription: true
+        });
+    if (!pick) return undefined;
+    if (!pick.create) return pick.uri;
+
+    const folder = sources[0] ? vscode.Uri.joinPath(sources[0], '..') : undefined;
+    const chosen = await vscode.window.showSaveDialog({
+        title: 'New Rust file for this code',
+        saveLabel: 'Create it',
+        filters: { Rust: ['rs'] },
+        defaultUri: folder ? vscode.Uri.joinPath(folder, 'new_item.rs') : undefined
+    });
+    if (!chosen) return undefined;
+    await vscode.workspace.fs.writeFile(chosen, new Uint8Array());
+    return chosen;
+}
+
+/**
+ * Puts one code block from a chat answer into a project file, after showing the diff.
+ *
+ * `showDiff` (on by default) is honoured exactly as the editor flows honour it: with it on the user reviews
+ * the change and presses Apply; with it off the edit is written and a check is offered. Either way the write is
+ * a normal undoable edit, and the diff names the file — which is why choosing the target can be quiet.
+ */
+export async function applyChatCode(code: string, opts: { label?: string } = {}): Promise<boolean> {
+    const snippet = String(code ?? '').replace(/\s+$/, '');
+    if (!snippet.trim()) return false;
+    const target = await chatCodeTarget();
+    if (!target) return false;
+
+    let proposed: string;
+    try {
+        const document = await vscode.workspace.openTextDocument(target);
+        const text = document.getText();
+        proposed = insertChatCode(text, `${snippet}\n`);
+        if (proposed === text) {
+            void vscode.window.showInformationMessage(`That code is already in ${path.basename(target.fsPath)}.`);
+            return false;
+        }
+    } catch (error) {
+        logError(error);
+        void vscode.window.showErrorMessage(`Could not read ${path.basename(target.fsPath)}: ${error instanceof Error ? error.message : String(error)}`);
+        return false;
+    }
+
+    // The file is in the title on purpose: the target was chosen without a question, so the diff is where the
+    // user sees *which* file this is about.
+    const title = `AI: ${opts.label ?? 'from the chat'} → ${path.basename(target.fsPath)}`;
+    const isNew = (await vscode.workspace.openTextDocument(target)).getText().trim() === '';
+    if (configView(SETTINGS).get<boolean>('showDiff') === false) {
+        if (!(await writeDocument(target, proposed))) {
+            void vscode.window.showErrorMessage('The code could not be written — the file may be read-only.');
+            return false;
+        }
+        void vscode.window.showInformationMessage(
+            isNew ? `Created ${path.basename(target.fsPath)} with the code from the answer.` : `Rephrased into ${path.basename(target.fsPath)}.`
+        );
+        await checkProject();
+        return true;
+    }
+    await showProposal(target, proposed, title);
     return true;
 }
 
