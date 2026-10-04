@@ -233,6 +233,12 @@
                 "category": "Rusty AI"
             },
             {
+                "command": "rustyPlatform.assistant.openEditor",
+                "title": "Open the Assistant in an Editor Tab (draggable to another monitor)",
+                "category": "Rusty AI",
+                "icon": "$(multiple-windows)"
+            },
+            {
                 "command": "rustyPlatform.assistant.addModel",
                 "title": "Add a Model from Hugging Face…",
                 "category": "Rusty AI",

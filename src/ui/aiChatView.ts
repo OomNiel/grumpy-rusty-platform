@@ -57,7 +57,18 @@ import {
 let store: ChatStoreFile = emptyStore();
 let active: StoredChat | undefined;
 let storeFile: string | undefined;
-let view: vscode.WebviewView | undefined;
+/**
+ * The webviews showing this chat: the side-bar **view**, and any number of editor-**panel** tabs.
+ *
+ * WHY MORE THAN ONE (asked 2026-10-05): *"I would like the option to run the Chat window outside of the IDE on
+ * a 2nd monitor. Is it possible to make it run in an editor pane which can be dragged outside of the IDE
+ * window?"* A view is docked inside the window — VS Code has no way to drag one onto another monitor — while
+ * an **editor tab can be dragged out into its own OS window**, which is what a second monitor is for. So the
+ * chat is one piece of state broadcast to a set of surfaces: everything that renders goes to all of them, and
+ * `post` is the only place that knows there is more than one. Two open surfaces are two mirrors of one
+ * conversation, not two conversations.
+ */
+const surfaces = new Set<vscode.Webview>();
 let busy = false;
 
 /** Reads the chat file once, at registration. A missing or unreadable file is "no chats yet", not an error. */
@@ -150,9 +161,9 @@ function nonce(): string {
     return out;
 }
 
-/** Posts one message to the view, if it is open. */
+/** Posts one message to every open surface (the view and any tab). */
 function post(message: unknown): void {
-    void view?.webview.postMessage(message);
+    for (const surface of surfaces) void surface.postMessage(message);
 }
 
 /** The project context a question is answered against: the board, the crates, and the active file. */
@@ -311,9 +322,64 @@ export async function statusLine(): Promise<string> {
 
 /** Re-renders the panel, when one is open. Called after a model load or a settings change. */
 export async function refreshAiChat(fresh = false): Promise<void> {
-    if (!view) return;
+    if (surfaces.size === 0) return;
     await pushState(fresh);
     post({ type: 'status', text: await statusLine() });
+}
+
+/**
+ * Wires one webview up as a chat surface, and takes it out of the set when it goes away.
+ *
+ * Both surfaces (the view and a panel tab) go through this, so they cannot drift: the same HTML, the same
+ * message handling, the same transcript. The fresh `refreshAiChat(true)` at the end is what draws the
+ * conversation into a surface that just opened — including one that was dragged onto another monitor.
+ */
+function attach(provider: AiChatViewProvider, webview: vscode.Webview): void {
+    surfaces.add(webview);
+    webview.options = { enableScripts: true };
+    webview.html = html(webview);
+    webview.onDidReceiveMessage((message: {
+        type?: string;
+        text?: string;
+        command?: string;
+        settings?: Record<string, unknown>;
+    }) => {
+        void provider.handle(message);
+    });
+    void refreshAiChat(true);
+}
+
+/**
+ * "Open the Assistant in an Editor Tab" — the chat as an editor tab, which can be dragged onto a second monitor.
+ *
+ * *"Is it possible to make it run in an editor pane which can be dragged outside of the IDE window?"* Yes, and
+ * this is the only shape that can: VS Code moves an **editor** into its own window when its tab is dragged out
+ * (or `View: Move Editor into New Window`), while a side-bar view cannot leave the window at all. The panel is
+ * a singleton — asking twice reveals the one that exists rather than stacking copies — and `retainContextWhen
+ * Hidden` keeps the transcript alive while it is collapsed or behind another tab.
+ */
+let chatPanel: vscode.WebviewPanel | undefined;
+
+export function openChatPanel(context: vscode.ExtensionContext): vscode.WebviewPanel {
+    if (chatPanel) {
+        chatPanel.reveal(undefined, false);
+        return chatPanel;
+    }
+    const panel = vscode.window.createWebviewPanel(
+        'rustyPlatform.assistantChat',
+        'Rusty AI Assistant',
+        { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true },
+        { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [context.extensionUri] }
+    );
+    panel.iconPath = vscode.Uri.joinPath(context.extensionUri, 'resources', 'icon.svg');
+    chatPanel = panel;
+    attach(new AiChatViewProvider(), panel.webview);
+    panel.onDidDispose(() => {
+        surfaces.delete(panel.webview);
+        if (chatPanel === panel) chatPanel = undefined;
+    });
+    log('assistant: the chat was opened as an editor tab (it can be dragged onto another monitor)');
+    return panel;
 }
 
 function html(webview: vscode.Webview): string {
@@ -577,21 +643,11 @@ function html(webview: vscode.Webview): string {
 /** The provider VS Code asks for the view's HTML and forwards its messages to. */
 export class AiChatViewProvider implements vscode.WebviewViewProvider {
     resolveWebviewView(webviewView: vscode.WebviewView): void {
-        view = webviewView;
-        webviewView.webview.options = { enableScripts: true };
-        webviewView.webview.html = html(webviewView.webview);
-        webviewView.webview.onDidReceiveMessage((message: {
-            type?: string;
-            text?: string;
-            command?: string;
-            settings?: Record<string, unknown>;
-        }) => {
-            void this.handle(message);
-        });
-        void refreshAiChat(true);
+        attach(this, webviewView.webview);
     }
 
-    private async handle(message: {
+    /** Public because both surfaces (the view and an editor-tab panel) funnel into the same handler. */
+    async handle(message: {
         type?: string;
         text?: string;
         command?: string;
@@ -713,6 +769,9 @@ export function registerAiChatView(context: vscode.ExtensionContext): vscode.Dis
         vscode.commands.registerCommand('rustyPlatform.assistant.addModel', () => addModelFromHub(context)),
         vscode.commands.registerCommand('rustyPlatform.assistant.removeAddedModel', () => removeAddedModel()),
         vscode.commands.registerCommand('rustyPlatform.assistant.unloadModel', () => unloadLoadedModel()),
-        { dispose: () => { view = undefined; } }
+        vscode.commands.registerCommand('rustyPlatform.assistant.openEditor', () => openChatPanel(context)),
+        // The `AiChatViewProvider` class is still registered as the view's provider above; a panel needs no
+        // provider at all.
+        { dispose: () => { surfaces.clear(); } }
     ];
 }

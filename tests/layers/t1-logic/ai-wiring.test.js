@@ -153,3 +153,21 @@ test('the chat offers to implement the code in an answer', () => {
     ok(editor.includes("active.document.uri.scheme === 'file'"), 'a proposal diff is never a target file');
     ok(editor.includes('insertChatCode'), 'an item is placed, a whole file replaces');
 });
+
+test('the chat can be an editor tab, which is the only shape that leaves the window', () => {
+    // Asked 2026-10-05: "run the Chat window outside of the IDE on a 2nd monitor … in an editor pane which can
+    // be dragged outside of the IDE window?" A side-bar *view* cannot leave the window in VS Code; an *editor*
+    // tab can be moved into its own OS window. So the panel must exist, and both surfaces must share one
+    // transcript — a second copy of the state would be two conversations pretending to be one.
+    const chat = fs.readFileSync(path.join(repoRoot(), 'src/ui/aiChatView.ts'), 'utf8');
+    ok(chat.includes('createWebviewPanel'), 'the editor-tab panel exists');
+    ok(chat.includes('const surfaces = new Set<vscode.Webview>()'), 'and it is one of a set of surfaces');
+    ok(chat.includes('for (const surface of surfaces)'), 'posting goes to every open surface');
+    ok(chat.includes('function attach('), 'both surfaces are wired through one function');
+    ok(chat.includes('registerWebviewViewProvider') && chat.includes('attach(this, webviewView.webview)'),
+        'the view still works and shares that function');
+    for (const command of ['rustyPlatform.assistant.openEditor']) {
+        ok(declaredCommands.has(command), `${command} is declared`);
+        ok(chat.includes(`registerCommand('${command}'`), `${command} is registered`);
+    }
+});
