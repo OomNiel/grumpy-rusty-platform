@@ -25,6 +25,19 @@ Save. With **A server I run**, also fill in the **Endpoint** (for example `http:
 
 ## 2. Get a model
 
+Three ways, and none of them need you to have installed anything first:
+
+* **Your own llama-server** (the fastest of the three, and the one a developer usually wants). If llama.cpp is
+  not on the machine, the extension **offers to download its prebuilt server** for your platform, verifies the
+  checksum and installs it into its own storage; if the known **27B** (Qwen3.8-27B Q4_K_M) is not on disk it
+  offers to fetch that too. Once both are known, *Rusty AI: Start My llama-server…* starts it and loads the
+  weights with nothing to answer.
+* **Any model from Hugging Face.** *Rusty AI: Add a Model from Hugging Face…* takes `owner/repo` or a Hub link,
+  lists the `.gguf` files with their sizes, quantisation and whether they fit **this** machine, and adds the one
+  you pick. Sizes and thread/context/offload defaults are worked out from the hardware in front of you, and a
+  model that may not fit is a warning, not a refusal. *Rusty AI: Remove a Model I Added…* takes it off the list.
+* **This extension's own runtime**, or LM Studio if you use it — both still there, both unchanged.
+
 - **A server you already run:** start LM Studio / Ollama / `llama-server` yourself. If it serves more than
   one model, put the model id in **Model id** — some servers (Ollama) refuse an unnamed request.
 - **The extension's own runtime:** run **Rusty AI: Choose a Local Model…**. It downloads the weights
@@ -57,6 +70,11 @@ local inference — and offers *Use it anyway*, which sets `rustyPlatform.assist
 The block is removed either way, so the file is byte-identical to how it was before.
 
 ### In the AI Assist view
+
+**On a second monitor.** The same conversation can be an **editor tab**: *Rusty AI: Open the Assistant in an
+Editor Tab* (or the **In Editor Tab…** button in the view's footer). Drag that tab out of the VS Code window and
+it becomes its own OS window you can put wherever you like; it returns there after a reload. Both surfaces show
+one conversation — asking a question in either streams into both.
 
 Type a question or a request in the box at the bottom and press **Ask** (`Ctrl+Enter` also sends). The
 assistant answers with the active Rust file, the board's own profile and your `Cargo.toml` crates as
@@ -107,6 +125,9 @@ ones you tick. Accepted rules go into every prompt afterwards. They live in
 
 ## Commands
 
+The two that matter outside this document: **Rusty AI: Open the Assistant in an Editor Tab** (see §3) and
+**Rusty AI: Add a Model from Hugging Face…** (see §2).
+
 | Command (Command Palette → `Rusty AI:`) | What it does |
 |---|---|
 | **Open the Assistant Panel** | Focus the AI Assist view |
@@ -123,6 +144,12 @@ Two commands have no palette entry because they are offered where you need them 
 Proposed Change** on the diff.
 
 ## Settings (`rustyPlatform.assistant.*`)
+
+Beyond the model and endpoint, these decide the *engine*: `llamaServerPath` (your `llama-server` binary, empty
+= find it), `llamaServerModelPath` (the `.gguf` **your** server runs — kept apart from `modelPath`, which is the
+built-in runtime's), `llamaServerArgs`, `llamaServerService` and `llamaServerStartTarget` (systemd unit on Linux
+by default, a child process elsewhere), plus `gpuVramGb` for a card the extension cannot detect and
+`loadContextLength` / `loadGpu` / `loadTtlSeconds` for what **Load Model** asks for.
 
 | Setting | Default | What it decides |
 |---|---|---|
