@@ -2,7 +2,7 @@
     "name": "grumpy-rusty-platform",
     "displayName": "Grumpy's Rusty Platform for VS Code",
     "description": "PlatformIO-style embedded Rust development for RP2040 and RP2350 (Raspberry Pi Pico) using Embassy and probe-rs.",
-    "version": "0.0.11",
+    "version": "0.0.12",
     "publisher": "grumpy",
     "license": "MIT OR Apache-2.0",
     "repository": {

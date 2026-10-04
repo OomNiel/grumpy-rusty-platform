@@ -11,6 +11,23 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.12] - 2026-10-05
+
+### Fixed
+
+- **The editor-tab assistant now comes back after a reload or a restart**, in the window it was moved into.
+  VS Code only restores a custom webview panel when its extension registers a `WebviewPanelSerializer` for
+  that panel's view type; without one the tab was simply gone, which is what 0.0.11 shipped. The transcript is
+  not carried in the panel state — it comes from the chat store through the webview's normal handshake, so a
+  copy dragged onto another monitor (restored by a separate window, with its own extension host) fills in
+  correctly; only the title travels, so a tab you renamed keeps its name.
+
+### Notes
+
+- The window's **placement** is restored by VS Code, not by this extension: nothing about the monitor is
+  stored, and the code says so rather than implying control it does not have. `NOTES.md` §42.
+- Test suite: **581 passed, 0 skipped** (was 580).
+
 ## [0.0.11] - 2026-10-05
 
 ### Added
