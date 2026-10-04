@@ -21,7 +21,6 @@ import * as fs from 'fs';
 import * as path from 'path';
 import {
     assistantEnabled,
-    chatDetailed,
     describeEmptyAnswer,
     describeModel,
     type ChatMessage
@@ -32,10 +31,10 @@ import { crateList } from '../ai/rustCode';
 import { log, logError } from '../ai/log';
 import { readActiveProject } from '../project/activeProject';
 import { panelState } from '../ai/panel';
-import { assistantConfig } from '../ai/editor';
+import { assistantConfig, chatWithRescue } from '../ai/editor';
 import { findRunningLlamaServer } from '../ai/llamaServer';
 import { endpointMismatchHint } from '../ai/localModels';
-import { configWithEndpoint } from '../ai/runtime';
+
 import { chooseLocalModel, unloadLoadedModel } from '../ai/localModelSetup';
 import { configView } from '../ai/settings';
 import {
@@ -193,13 +192,16 @@ async function ask(text: string): Promise<void> {
             ...chat.turns.map((t) => ({ role: t.role, content: t.text }))
         ];
         const controller = new AbortController();
-        // `bundled` gets its endpoint only once the runtime is up; sending to the settings' default would ask
-        // LM Studio's port instead (reported as "No server answered", 2026-10-04).
-        const outcome = await chatDetailed(await configWithEndpoint(cfg), messages, {
+        // `chatWithRescue` resolves `bundled`'s endpoint (it only exists once the runtime is up) and, when the
+        // address has nothing behind it, gets a llama-server up and sends the question again — the extension is
+        // not allowed to end at "No server answered" while llama.cpp is on the disk (asked 2026-10-04).
+        const outcome = await chatWithRescue(cfg, messages, {
             signal: controller.signal,
             onToken: (t) => post({ type: 'token', text: t }),
             // Tokens, elapsed and context, on the same half-second heartbeat the editor's notification uses.
-            onProgress: (info) => post({ type: 'busy', busy: true, message: describeProgress(info) })
+            onProgress: (info) => post({ type: 'busy', busy: true, message: describeProgress(info) }),
+            // The rescue's steps (starting or installing a llama-server) are progress, not silence.
+            onStep: (message) => post({ type: 'busy', busy: true, message })
         });
         const answer = outcome.text.trim();
         if (!answer) {

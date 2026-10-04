@@ -20,6 +20,9 @@
 // `defaultThreads` is the same rule the sidecar uses ("one less than the cores, capped at 8"), applied to
 // the user's own llama-server so the two runtimes cannot disagree about how many threads a machine wants.
 import { defaultThreads, formatBytes } from './modelSpecs';
+// The one place "nothing is listening there" is decided, shared with the sentence the client writes. Added
+// deliberately: the rescue below, the hint next to it and the message itself must not drift apart.
+import { isNoAnswerError } from './assistant';
 
 /** Which local runtime a model comes from. */
 export type ModelProvider = 'lmstudio' | 'bundled' | 'custom';
@@ -583,12 +586,24 @@ export function findLlamaServer(opts: {
     exists: (path: string) => boolean;
     /** The `llamaServerPath` setting; empty means "find it yourself". */
     preferred?: string;
+    /**
+     * Further absolute paths to try, after the usual build folders and before PATH.
+     *
+     * This is where a build **this extension installed itself** is offered (`<global storage>/llama.cpp/<tag>/…`).
+     * Without it, "a llama-server is installed" meant "the `llamaServerPath` setting survives": clearing that
+     * setting, or opening a window whose settings had not kept it, hid a build the extension had fetched and
+     * verified — and the next start would have offered to download it a second time.
+     */
+    extra?: readonly string[];
     platform?: NodeJS.Platform;
 }): string | undefined {
     const platform = opts.platform ?? process.platform;
     const preferred = String(opts.preferred ?? '').trim();
     if (preferred) return opts.exists(preferred) ? preferred : undefined;
-    for (const candidate of llamaServerCandidates(opts.homeDir, platform)) {
+    // The user's own candidates first (a hand-built llama.cpp may be newer, or built with a GPU backend this
+    // extension never downloads), then whatever was installed for us, then PATH.
+    const candidates = [...llamaServerCandidates(opts.homeDir, platform), ...(opts.extra ?? [])];
+    for (const candidate of candidates) {
         if (!/[\\/]/.test(candidate)) {
             const onPath = findOnPath(candidate, opts.pathValue, opts.exists, platform);
             if (onPath) return onPath;
@@ -1024,9 +1039,94 @@ export function pickBinaryFromListing(listing: readonly string[], platform: Node
     return hits[0];
 }
 
+/**
+ * Where the `llama-server` of one installed release may be, given that folder's own listing.
+ *
+ * The prebuilt archives unpack into a folder named after their tag, and the binary sits either directly in it
+ * (`<tag>/llama-server`) or one level down (`<tag>/llama-b11384/llama-server`) — the second is what the
+ * current releases do, and both are accepted because the archive's own root has changed between builds. Pure
+ * (`entries` is a directory listing), so the layout is pinned by a test instead of by whichever release the
+ * machine happened to fetch.
+ */
+export function installedLlamaServerCandidates(
+    dir: string,
+    entries: readonly string[],
+    platform: NodeJS.Platform = process.platform
+): string[] {
+    const wanted = llamaBinaryName(platform);
+    const join = (a: string, b: string): string => `${a.replace(/[\\/]+$/, '')}/${b}`;
+    const direct = join(dir, wanted);
+    // Every entry is offered as a possible folder, because a flat listing cannot say which entries are
+    // directories — and guessing from the name (`llama-*`) is wrong in the way that matters: a release whose
+    // listing starts with `llama-cli` would stop the search before the real subfolder was tried. The caller
+    // checks each candidate's existence, so a wrong guess costs one `stat`, not a missed install.
+    return [direct, ...entries.filter((e) => e !== wanted).map((e) => join(join(dir, e), wanted))];
+}
+
 /** The line the install offer shows: what will be fetched, and what it costs. */
 export function installOfferLine(asset: ReleaseAsset): string {
     return `llama.cpp's own prebuilt server for this machine — ${asset.name} (${formatBytes(asset.bytes)})`;
+}
+
+// ---------------- getting a server up when the request had nowhere to go (asked 2026-10-04) ----------------
+//
+// *"This extension must not rely on the user to have a llama.cpp server installed. If the server is installed
+// on the host, just start it and use it. If not, offer installation to the user."*
+//
+// The offer to install existed, and the palette flow could start a server — but the *request* paths (the chat
+// view, implement/fix/repair) still ended at "No server answered" when the configured address was dead. So a
+// prompt that failed went on failing, however much llama.cpp was sitting on the disk: the one moment the user
+// needed the extension to act was the one moment it only complained about. These are the rules for acting
+// instead, and they are decisions of text alone, so they are pinned here rather than in the click handler.
+
+/** What to do about a request that could not reach its endpoint. */
+export type EndpointRescue =
+    /** A llama-server is already answering on another local port — use it. */
+    | 'use-running'
+    /** A `llama-server` binary is available — start it with the model the settings already know. */
+    | 'start-own'
+    /** No binary on this machine — ask the user whether to fetch llama.cpp. */
+    | 'offer-install'
+    /** Not our business: leave the failure alone. */
+    | 'none';
+
+/**
+ * Whether a failed request should be rescued by getting a llama-server up — and how.
+ *
+ * The three refusals matter more than the two actions:
+ *
+ *   - **only for `external`.** A `bundled` failure is the extension's own runtime's problem (it has its own
+ *     retry and its own message), and an LM Studio failure is that program's to explain. Starting a
+ *     llama-server because the sidecar would not build would be a surprise, not a rescue.
+ *   - **only for a local address.** A remote endpoint (`http://build-box:8080/v1`) that is down must not make
+ *     this machine start anything: the user pointed at another computer on purpose, and a local process would
+ *     answer questions they never asked of it.
+ *   - **only for "nothing answered".** A `400`, a context overflow or a cancelled request are not solved by
+ *     starting a server, and retrying them would only waste the user's time.
+ *
+ * `canInstall` is the caller's answer to "could this machine install one at all?" — false when llama.cpp
+ * publishes nothing for the platform, so the user is not offered a download that cannot happen.
+ */
+export function endpointRescuePlan(input: {
+    /** The address the settings point at. */
+    endpoint: string;
+    /** `external`, `bundled`, `lmstudio` or `off`. */
+    backend: string;
+    /** The failure, as the client worded it. */
+    message: string;
+    /** True when a `llama-server` can be run (the setting, PATH, a build folder, or our own install). */
+    binaryFound: boolean;
+    /** The port of a llama-server found answering elsewhere, when one was. */
+    runningPort?: number;
+    /** False when this platform has no prebuilt server to fetch. */
+    canInstall?: boolean;
+}): EndpointRescue {
+    if (String(input.backend ?? '').trim() !== 'external') return 'none';
+    if (!isNoAnswerError(input.message)) return 'none';
+    if (!isLocalEndpoint(input.endpoint)) return 'none';
+    if (input.runningPort !== undefined && input.runningPort !== endpointPort(input.endpoint)) return 'use-running';
+    if (input.binaryFound) return 'start-own';
+    return input.canInstall === false ? 'none' : 'offer-install';
 }
 
 // ---------------- which model the user's own server should run (asked 2026-10-04) ----------------

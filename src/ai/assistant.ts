@@ -352,6 +352,22 @@ function defaultFetch(): FetchLike {
 }
 
 /**
+ * Is this failure "nothing is listening there"?
+ *
+ * Exported because three places have to agree on it: the sentence below, the hint in `localModels` that names
+ * what *is* answering, and the rescue that starts a llama-server and retries (2026-10-04). A second copy of
+ * the regex would let one of them stop recognising the failure the other two are built around.
+ */
+export function isNoAnswerError(message: string): boolean {
+    const text = String(message ?? '');
+    // Both wordings, because the caller of this predicate sees the *sentence*, not the socket: `chatDetailed`
+    // throws `describeError`'s text ("No server answered at …"), which no longer contains the raw
+    // `ECONNREFUSED`. Recognising only the raw form would have left the rescue unreachable — found by the
+    // test below, which is why it asserts on the sentence as well as on the error.
+    return /ECONNREFUSED|fetch failed/i.test(text) || /no server answered/i.test(text);
+}
+
+/**
  * A failure in the words the user needs.
  *
  * `endpoint` is printed **in the message** and not only in the log, because the 2026-10-04 report was exactly
@@ -364,7 +380,7 @@ export function describeError(err: unknown, endpoint?: string): string {
     const msg = err instanceof Error ? err.message : String(err);
     const at = endpoint ? ` at ${endpoint}` : '';
     const to = endpoint ? ` to ${endpoint}` : '';
-    if (/ECONNREFUSED|fetch failed/i.test(msg)) {
+    if (isNoAnswerError(msg)) {
         return `No server answered${at} — is the local model server running (and the endpoint correct)?`;
     }
     if (/aborted|abort/i.test(msg)) return `The request${to} was cancelled or timed out.`;

@@ -38,7 +38,8 @@ import {
     probeServer,
     type AssistantConfig,
     type ChatMessage,
-    type ChatOutcome
+    type ChatOutcome,
+    type ChatOptions
 } from './assistant';
 import {
     addItemToFile,
@@ -300,21 +301,69 @@ function siblingFunction(text: string, span: ItemSpan | undefined): string {
 async function runChat(cfg: AssistantConfig, messages: ChatMessage[], title: string): Promise<ChatOutcome> {
     // A `bundled` request has no endpoint until the runtime is up, and the settings' default endpoint is LM
     // Studio's. Resolving it here means implement, fix and repair all go through one place.
-    const request = await configWithEndpoint(cfg);
     return vscode.window.withProgress(
         { location: vscode.ProgressLocation.Notification, title, cancellable: true },
         async (progress, token) => {
             const controller = new AbortController();
             token.onCancellationRequested(() => controller.abort());
-            return chatDetailed(request, messages, {
+            return chatWithRescue(cfg, messages, {
                 signal: controller.signal,
                 // The line is `describeProgress`'s: tokens written, elapsed time, tokens/s, and how much of
                 // the window the prompt took. It arrives on a half-second heartbeat too, so a long prompt
                 // read and a hang no longer look the same.
-                onProgress: (info) => progress.report({ message: describeProgress(info) })
+                onProgress: (info) => progress.report({ message: describeProgress(info) }),
+                // The rescue's own steps (finding/starting a llama-server) on the same line, so a wait that
+                // is not generation is never mistaken for one.
+                onStep: (message) => progress.report({ message })
             });
         }
     );
+}
+
+/**
+ * Sends a chat, and when there was **nowhere to send it**, gets a llama-server up and sends it again.
+ *
+ * *"This extension must not rely on the user to have a llama.cpp server installed. If the server is installed
+ * on the host, just start it and use it. If not, offer installation to the user."* Every request path goes
+ * through here — the chat view and implement/fix/repair — so the promise is kept at the moment it matters
+ * rather than only in the model picker.
+ *
+ * Two guards, both learned the hard way:
+ *   - nothing is retried once part of an answer has been **streamed**. A connection that dies mid-answer is
+ *     also "fetch failed", and retrying it would print the beginning of the answer twice (2026-10-04);
+ *   - the retry re-reads the settings instead of reusing the first request's config: the rescue *writes* the
+ *     new endpoint and model, and the retry must send exactly what they now say.
+ *
+ * `rescueUnreachableEndpoint` decides whether this failure is one a started server could fix at all, and it
+ * asks before installing anything (`ensureLlamaServerBinary`) or fetching weights (`chooseLlamaServerModel`).
+ * When it declines — a remote address, a `400`, a cancelled request — the original error is rethrown
+ * untouched.
+ */
+export async function chatWithRescue(
+    cfg: AssistantConfig,
+    messages: ChatMessage[],
+    opts: ChatOptions & { onStep?: (message: string) => void } = {}
+): Promise<ChatOutcome> {
+    const request = await configWithEndpoint(cfg);
+    let streamed = false;
+    const tracked: ChatOptions = {
+        ...opts,
+        onToken: (text) => { streamed = true; opts.onToken?.(text); }
+    };
+    try {
+        return await chatDetailed(request, messages, tracked);
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (streamed) throw error;
+        const { rescueUnreachableEndpoint } = await import('./llamaServer');
+        const endpoint = await rescueUnreachableEndpoint(
+            { endpoint: request.endpoint, backend: request.backend },
+            message,
+            opts.onStep
+        );
+        if (!endpoint) throw error;
+        return await chatDetailed(await configWithEndpoint(assistantConfig()), messages, tracked);
+    }
 }
 
 /** The gate: refuse early, with the reason, on a machine that cannot run the feature — unless overridden. */

@@ -32,6 +32,7 @@ import {
     digestHex,
     extractArgs,
     installReleaseFor,
+    installedLlamaServerCandidates,
     llamaBinaryName,
     llamaReleasesApiUrl,
     parseLlamaVersion,
@@ -49,9 +50,60 @@ const FOLDER = 'llama.cpp';
 /** The API call is small and quick; a machine with no route to GitHub should not hang on it. */
 const API_TIMEOUT_MS = 20_000;
 
+/** Where this extension keeps the llama.cpp releases it fetched, inside its global storage. */
+export function llamaInstallRoot(context: vscode.ExtensionContext): string {
+    return path.join(context.globalStorageUri.fsPath, FOLDER);
+}
+
 /** Where the installs live, and where this tag's own folder is. */
 export function llamaInstallDir(context: vscode.ExtensionContext, tag: string): string {
-    return path.join(context.globalStorageUri.fsPath, FOLDER, tag);
+    return path.join(llamaInstallRoot(context), tag);
+}
+
+/**
+ * The `llama-server` binaries this extension installed itself, newest first.
+ *
+ * WHY THIS IS NOT JUST A SETTING. `llamaServerPath` is written when an install finishes, which is enough for
+ * the window that ran it — and not enough for "the extension must not rely on the user". A cleared setting, a
+ * synced profile that brought the setting without the files, or a second window would all hide a verified
+ * build sitting in our own storage and offer to download it again. So the folder itself is the record: a
+ * release is a directory named after its tag, and the binary is inside it, one level down (that is the
+ * archive's own layout — `llama-b11384/llama-server`, beside the shared libraries it loads).
+ *
+ * Newest first, by the directory's modification time, so a machine with two installs runs the one fetched
+ * last.
+ */
+export function findInstalledLlamaServer(root: string, platform: NodeJS.Platform = process.platform, limit = 5): string[] {
+    let tags: fs.Dirent[];
+    try {
+        tags = fs.readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory());
+    } catch {
+        return []; // nothing installed here, which is the honest answer and not an error
+    }
+    const byTime = tags
+        .map((entry) => {
+            const dir = path.join(root, entry.name);
+            let when = 0;
+            try { when = fs.statSync(dir).mtimeMs; } catch { /* unreadable: sorted last, tried anyway */ }
+            return { dir, when };
+        })
+        .sort((a, b) => b.when - a.when);
+
+    const found: string[] = [];
+    for (const { dir } of byTime) {
+        if (found.length >= limit) break;
+        // The layout decision is `installedLlamaServerIn`'s (pure, and pinned by a test); what is here is the
+        // reading: the tag folder's own entries, and an existence check on whatever it proposes.
+        let entries: string[];
+        try {
+            entries = fs.readdirSync(dir);
+        } catch {
+            continue;
+        }
+        const hit = installedLlamaServerCandidates(dir, entries, platform).find((candidate) => fs.existsSync(candidate));
+        if (hit) found.push(hit);
+    }
+    return found;
 }
 
 /** `llama-server --version`, for the log and for proving a fresh install actually runs. Bounded. */
