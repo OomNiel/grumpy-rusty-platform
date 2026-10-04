@@ -37,6 +37,7 @@ import { findRunningLlamaServer } from '../ai/llamaServer';
 import { endpointMismatchHint } from '../ai/localModels';
 
 import { chooseLocalModel, unloadLoadedModel } from '../ai/localModelSetup';
+import { addModelFromHub, removeAddedModel } from '../ai/hubModels';
 import { configView } from '../ai/settings';
 import {
     chatsFor,
@@ -708,6 +709,9 @@ export function registerAiChatView(context: vscode.ExtensionContext): vscode.Dis
             await vscode.commands.executeCommand('rustyPlatform.assistant.focus');
         }),
         vscode.commands.registerCommand('rustyPlatform.assistant.setupModel', () => chooseLocalModel(context)),
+        // The Hub: how a user says "my machine is bigger than the one this list was written for".
+        vscode.commands.registerCommand('rustyPlatform.assistant.addModel', () => addModelFromHub(context)),
+        vscode.commands.registerCommand('rustyPlatform.assistant.removeAddedModel', () => removeAddedModel()),
         vscode.commands.registerCommand('rustyPlatform.assistant.unloadModel', () => unloadLoadedModel()),
         { dispose: () => { view = undefined; } }
     ];

@@ -19,7 +19,7 @@
 // without VS Code while giving the download progress line the same "4.7 GB" wording everywhere.
 // `defaultThreads` is the same rule the sidecar uses ("one less than the cores, capped at 8"), applied to
 // the user's own llama-server so the two runtimes cannot disagree about how many threads a machine wants.
-import { defaultThreads, formatBytes } from './modelSpecs';
+import { CONTEXT_ALLOWANCE_GB, defaultThreads, formatBytes, recommendedContextFor } from './modelSpecs';
 // The one place "nothing is listening there" is decided, shared with the sentence the client writes. Added
 // deliberately: the rescue below, the hint next to it and the message itself must not drift apart.
 import { isNoAnswerError } from './assistant';
@@ -200,12 +200,48 @@ export function parseLoadEstimate(stdout: string): LoadEstimate | undefined {
 }
 
 /** Machine facts the recommendation depends on (passed in, so it is testable). */
+/**
+ * GPU offload, decided from the **graphics card's own memory** when that is known.
+ *
+ * The old rule was `sizeGb > 8 ? off : max` — written when the only GPU in the room was an integrated one
+ * sharing system RAM, where offloading a large model really is slower. On a machine with a card (8-48 GB of
+ * dedicated VRAM) that rule refuses the one thing the card is for, which is the same complaint as the model
+ * list: the extension was deciding from *this* PC. Without a VRAM figure the conservative rule stands, and
+ * the reason says which of the two it is.
+ */
+export function gpuOffloadFor(sizeGb: number, vramGb: number | undefined): { gpuLayers: number; reason: string } {
+    const size = Number.isFinite(sizeGb) ? sizeGb : 0;
+    if (vramGb === undefined || !Number.isFinite(vramGb) || vramGb <= 0) {
+        return sidecarGpuLayers(size > 8 ? 'off' : 'max') > 0
+            ? { gpuLayers: sidecarGpuLayers('max'), reason: `GPU offload on (all layers) — ${size.toFixed(1)} GB is small enough for a shared-memory GPU` }
+            : { gpuLayers: 0, reason: `GPU offload off — a ${size.toFixed(1)} GB model does not fit a shared-memory GPU, where offloading is slower. Set "gpuVramGb" if this machine has a dedicated card` };
+    }
+    // Weights + the context cache have to fit together, with a little room for the driver.
+    const needed = Math.round((size + CONTEXT_ALLOWANCE_GB) * 10) / 10;
+    if (needed <= vramGb) {
+        return { gpuLayers: sidecarGpuLayers('max'), reason: `GPU offload on (all layers) — ${needed.toFixed(1)} GB of weights and context fit in ${vramGb.toFixed(1)} GB of VRAM` };
+    }
+    return {
+        gpuLayers: 0,
+        reason: `GPU offload off — this model needs about ${needed.toFixed(1)} GB of VRAM with its context and the card has ${vramGb.toFixed(1)} GB, `
+            + 'so its layers would be swapped through PCIe, which is slower than keeping them in RAM'
+    };
+}
+
 export interface SetupFacts {
     totalRamGb: number;
     freeRamGb: number;
     cpuCount: number;
     /** The kernel's `ulimit -l`, in GB — the reason `mlock` fails on big models. */
     lockLimitGb: number;
+    /**
+     * The **dedicated** graphics memory, in GB, when this machine has a card this extension can ask.
+     *
+     * Optional and undefined by default, because it is the fact the old recommendations silently did without:
+     * with no VRAM figure every machine was treated like the laptop this was written on, so a model too large
+     * for a shared-memory iGPU was never offloaded even on a machine with a 24 GB card (2026-10-04).
+     */
+    vramGb?: number;
 }
 
 /**
@@ -220,20 +256,14 @@ export interface SetupFacts {
  */
 export function recommendedLoadOptions(model: LocalModel, facts: SetupFacts): LoadOptions {
     const reasons: string[] = [];
-    const contextLength = facts.freeRamGb >= 20 ? 16384 : facts.freeRamGb >= 12 ? 8192 : 4096;
+    const contextLength = recommendedContextFor(facts.freeRamGb);
     reasons.push(
         `Context ${contextLength.toLocaleString('en-US')} tokens — sized to the ${Math.max(0, Math.round(facts.freeRamGb))} GB you have free`
     );
 
-    const large = model.sizeGb > 8;
-    const gpu = large ? 'off' : 'max';
-    if (large) {
-        reasons.push(
-            `GPU offload off — ${model.sizeGb.toFixed(1)} GB is larger than dedicated VRAM on most machines, and on a shared-memory GPU that is slower, not faster`
-        );
-    } else {
-        reasons.push(`GPU offload max — ${model.sizeGb.toFixed(1)} GB fits in GPU memory, where it is faster`);
-    }
+    const offload = gpuOffloadFor(model.sizeGb, facts.vramGb);
+    const gpu = offload.gpuLayers > 0 ? 'max' : 'off';
+    reasons.push(offload.reason);
 
     reasons.push('Unloads itself after 15 idle minutes, so the RAM comes back on its own');
     if (model.kind !== 'embeddings' && model.sizeGb > facts.lockLimitGb) {
@@ -719,17 +749,16 @@ export function classifyHealth(status: number): HealthVerdict {
 /** The recommended settings for the user's own server, with a reason for each. Pure. */
 export function recommendedLlamaOptions(
     sizeGb: number,
-    facts: Pick<SetupFacts, 'freeRamGb' | 'cpuCount'>
+    facts: Pick<SetupFacts, 'freeRamGb' | 'cpuCount'> & { vramGb?: number }
 ): { contextSize: number; threads: number; gpuLayers: number; reasons: string[] } {
     const reasons: string[] = [];
-    const contextSize = facts.freeRamGb >= 20 ? 16384 : facts.freeRamGb >= 12 ? 8192 : 4096;
+    const contextSize = recommendedContextFor(facts.freeRamGb);
     reasons.push(`Context ${contextSize.toLocaleString('en-US')} tokens — sized to the ${Math.max(0, Math.round(facts.freeRamGb))} GB free`);
-    // Same rule as the LM Studio path: only a model that fits in *dedicated* VRAM benefits, and on a
-    // shared-memory iGPU offloading a large model is slower, not faster.
-    const gpuLayers = sidecarGpuLayers(sizeGb > 8 ? 'off' : 'max');
-    reasons.push(gpuLayers > 0
-        ? `GPU offload on (all layers) — ${sizeGb.toFixed(1)} GB fits in GPU memory, where it is faster`
-        : `GPU offload off — a ${sizeGb.toFixed(1)} GB model is larger than dedicated VRAM on most machines, and on a shared-memory GPU that is slower, not faster`);
+    // The same decision the LM Studio path makes, from the same place: the card's own VRAM when it is known,
+    // the conservative shared-memory rule when it is not (`gpuOffloadFor`).
+    const offload = gpuOffloadFor(sizeGb, facts.vramGb);
+    const gpuLayers = offload.gpuLayers;
+    reasons.push(offload.reason);
     const threads = defaultThreads(facts.cpuCount);
     reasons.push(`${threads} CPU thread(s) — one less than this machine's ${facts.cpuCount} logical cores, which is where llama.cpp is fastest`);
     return { contextSize, threads, gpuLayers, reasons };

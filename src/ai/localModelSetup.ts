@@ -17,7 +17,9 @@
 import * as vscode from 'vscode';
 import { chatDetailed, describeEmptyAnswer, normalizeAssistantConfig } from './assistant';
 import { refreshPanels } from './editor';
+import { addModelFromHub } from './hubModels';
 import { configView } from './settings';
+import { customModelSpecs } from './runtime';
 import { log } from './log';
 import { setupBundledModel, useModelFile } from './runtime';
 import {
@@ -77,7 +79,7 @@ export async function chooseLocalModel(context: vscode.ExtensionContext): Promis
     const { facts, found, files } = prepared;
     const items: (vscode.QuickPickItem & {
         model?: LocalModel;
-        action?: 'bundled' | 'custom' | 'llama' | 'file';
+        action?: 'bundled' | 'custom' | 'llama' | 'file' | 'hub';
         file?: string;
     })[] = [];
 
@@ -110,6 +112,15 @@ export async function chooseLocalModel(context: vscode.ExtensionContext): Promis
         detail: 'Downloads a code-specialised 3B/7B model once and runs it locally',
         action: 'bundled'
     });
+    // The Hub — the entry for anyone whose machine is not the one the built-in list was written around
+    // (asked 2026-10-04). Without it the only models on offer were the two 4.4 GB entries below.
+    items.push({
+        label: '$(cloud) Add a model from Hugging Face…',
+        description: 'any .gguf on the Hub',
+        detail: 'Names the repo, lists its files with sizes, and adds the one that suits this machine — '
+            + `${customModelSpecs().length ? `${customModelSpecs().length} added so far` : 'nothing added yet'}`,
+        action: 'hub'
+    });
     // The user's own llama.cpp server (asked 2026-09-16). Offered here as well as in its own command because
     // this is the picker a developer opens when they want "a local model", and their own binary is often the
     // fastest of the three engines. Since 2026-10-04 it is also the one entry that sets itself up: the command
@@ -138,6 +149,11 @@ export async function chooseLocalModel(context: vscode.ExtensionContext): Promis
     });
     if (!pick) return;
 
+    if (pick.action === 'hub') {
+        await addModelFromHub(context);
+        void refreshPanels();
+        return;
+    }
     if (pick.action === 'bundled') {
         await setupBundledModel(context);
         // The built-in path changes `backend`/`modelPath` just like the others, and it returns early — without

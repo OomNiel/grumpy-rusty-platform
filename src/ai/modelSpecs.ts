@@ -273,7 +273,9 @@ export function hubFileSpec(input: {
         url: hubResolveUrl(input.repo, revision, file),
         bytes,
         sha256: input.sha256 ?? '',
-        minRamGb: bytes > 0 ? Math.max(8, Math.round((bytes / (1024 * 1024 * 1024)) * 2)) : 16
+        // Weights plus the context allowance — not "twice the file size", which refused a 16.8 GB model on
+        // the 28 GB machine that runs it comfortably (2026-10-04).
+        minRamGb: bytes > 0 ? Math.max(8, Math.ceil(bytes / 1e9 + CONTEXT_ALLOWANCE_GB)) : 16
     };
 }
 
@@ -309,7 +311,61 @@ export function shortHash(sha256: string): string {
  */
 export function defaultThreads(cpuCount: number): number {
     const n = Number.isFinite(cpuCount) ? Math.floor(cpuCount) : 1;
-    return Math.max(1, Math.min(8, n - 1));
+    // The cap was 8, chosen on a 12-thread laptop, and it silently left most of a bigger machine idle: a
+    // 16-core desktop got 8 threads, so half its cores did nothing while the user waited (asked 2026-10-04 —
+    // *"this extension must allow users with high spec hardware to select models that suit their
+    // environment"*). 16 is where llama.cpp's returns flatten on the machines this runs on, and it still
+    // leaves room for the editor; the `threads` setting overrides it either way.
+    return Math.max(1, Math.min(16, n - 1));
+}
+
+/**
+ * The context window worth recommending, from the memory this machine actually has.
+ *
+ * The old ceiling was 16 384 because that is what a 28 GB laptop wants; a 128 GB workstation offering the
+ * same window is a machine nobody sized anything for. Pure, so each step is asserted rather than discovered
+ * on someone else's hardware.
+ */
+export function recommendedContextFor(freeRamGb: number): number {
+    const free = Number.isFinite(freeRamGb) ? freeRamGb : 0;
+    if (free >= 96) return 65536;
+    if (free >= 48) return 32768;
+    if (free >= 20) return 16384;
+    if (free >= 12) return 8192;
+    return 4096;
+}
+
+/** How much room the context cache and the runtime need on top of the weights themselves. */
+export const CONTEXT_ALLOWANCE_GB = 2;
+
+/** Does this model fit in the memory this machine has free right now? */
+export interface SpecFit {
+    fits: boolean;
+    /** Weights plus the context allowance, in GB. */
+    neededGb: number;
+    /** One sentence for the picker, present whenever it does not fit. */
+    reason?: string;
+}
+
+/**
+ * Whether to *offer* `spec` here, with the arithmetic shown.
+ *
+ * This replaces a veto. The old rule refused a model when the machine had less RAM than `minRamGb`, and for
+ * a model added from the Hub that number was **twice its own size** — so a 16.8 GB 27B was refused on a
+ * 28 GB machine that loads it in 16.5 GiB (LM Studio's own estimate, quoted in the Designer's notes). A user
+ * with a big machine was told which small models they were allowed; a user who asked for something big got
+ * "not offered here". The honest answer is to say what it costs, say what is free, and let them decide —
+ * llama.cpp reports its own allocation failure if it really cannot.
+ */
+export function specFit(spec: ModelSpec, facts: { totalRamGb: number; freeRamGb: number }): SpecFit {
+    const neededGb = Math.round((spec.bytes / 1e9 + CONTEXT_ALLOWANCE_GB) * 10) / 10;
+    const free = Number.isFinite(facts.freeRamGb) ? facts.freeRamGb : 0;
+    if (free >= neededGb) return { fits: true, neededGb };
+    return {
+        fits: false,
+        neededGb,
+        reason: `needs about ${neededGb.toFixed(1)} GB free (${free.toFixed(1)} GB free now, ${facts.totalRamGb.toFixed(0)} GB in total)`
+    };
 }
 
 export interface SidecarOptions {

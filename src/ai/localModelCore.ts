@@ -34,6 +34,8 @@ import {
     type SetupFacts
 } from './localModels';
 import { defaultModelRoots } from './localSearch';
+import { configView } from './settings';
+import { readGpuVramGb } from './sys';
 
 export const LMSTUDIO_API = 'http://127.0.0.1:1234/api/v0/models';
 /** Where LM Studio keeps imported models. Files already here are listed by `lms ls` — no import needed. */
@@ -90,7 +92,30 @@ export function lockLimitGb(): number {
 
 export function setupFacts(): SetupFacts {
     const hw = readHardwareFacts();
-    return { totalRamGb: hw.totalRamGb, freeRamGb: hw.freeRamGb, cpuCount: hw.cpuCount, lockLimitGb: lockLimitGb() };
+    return {
+        totalRamGb: hw.totalRamGb,
+        freeRamGb: hw.freeRamGb,
+        cpuCount: hw.cpuCount,
+        lockLimitGb: lockLimitGb(),
+        vramGb: gpuVramGb()
+    };
+}
+
+/**
+ * The dedicated VRAM to plan with: what the user says, else what the driver reports.
+ *
+ * The setting exists because detection cannot be complete — Intel Arc, Apple silicon and a card behind an
+ * older driver all answer "unknown" — and a machine whose owner knows it has a 24 GB card should not be
+ * argued with by a rule written for an iGPU (asked 2026-10-04). `0` means "work it out from the hardware".
+ */
+export function gpuVramGb(): number | undefined {
+    try {
+        const configured = Number(configView('rustyPlatform.assistant').get('gpuVramGb', 0));
+        if (Number.isFinite(configured) && configured > 0) return configured;
+    } catch {
+        /* no settings available (a test, a headless call) — fall through to detection */
+    }
+    return readGpuVramGb();
 }
 
 /** Asks LM Studio's REST API rather than parsing a table whose loaded format has never been observed. */
