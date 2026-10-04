@@ -392,3 +392,39 @@ export function canRunSpec(
 export function isGgufPath(file: string): boolean {
     return /\.gguf$/i.test(String(file).trim());
 }
+
+/**
+ * One `.gguf` a local search found. `bytes` is absent when the file was recognised by its name before its
+ * size was read — the caller still stats it before hashing.
+ */
+export interface LocalModelCandidate {
+    file: string;
+    name: string;
+    bytes?: number;
+}
+
+/**
+ * The files worth hashing against `spec`, best first.
+ *
+ * An exact filename match is the strongest signal — the same file, fetched by something else — so it is
+ * tried first; an exact byte count is next, because the same quantisation under another name is the same
+ * weights. A file that matches neither is not a candidate: hashing every `.gguf` on a drive to find out
+ * would cost more than the download it hopes to save. Ranking is not verification — the caller hashes the
+ * winner against `spec.sha256`.
+ */
+export function rankLocalCandidates(
+    candidates: readonly LocalModelCandidate[],
+    spec: ModelSpec
+): LocalModelCandidate[] {
+    const wanted = spec.fileName.toLowerCase();
+    const named = (c: LocalModelCandidate): boolean => c.name.toLowerCase() === wanted;
+    return candidates
+        .filter((c) => named(c) || c.bytes === spec.bytes)
+        .slice()
+        .sort((a, b) => {
+            const an = named(a) ? 0 : 1;
+            const bn = named(b) ? 0 : 1;
+            if (an !== bn) return an - bn;
+            return Math.abs((a.bytes ?? 0) - spec.bytes) - Math.abs((b.bytes ?? 0) - spec.bytes);
+        });
+}
