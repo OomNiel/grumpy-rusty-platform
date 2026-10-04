@@ -351,12 +351,23 @@ function defaultFetch(): FetchLike {
     return f as FetchLike;
 }
 
-function describeError(err: unknown): string {
+/**
+ * A failure in the words the user needs.
+ *
+ * `endpoint` is printed **in the message** and not only in the log, because the 2026-10-04 report was exactly
+ * this failure with no address in it: *"Ready. Using the llama-server already running on port 8080"*, then a
+ * prompt that answered "No server answered — is the local model server running (and the endpoint correct)?"
+ * with nothing saying **which** address it had asked. The answer was in the settings (a stale form had
+ * overwritten port 8080 with LM Studio's 1234), and the message made the user hunt for it.
+ */
+export function describeError(err: unknown, endpoint?: string): string {
     const msg = err instanceof Error ? err.message : String(err);
+    const at = endpoint ? ` at ${endpoint}` : '';
+    const to = endpoint ? ` to ${endpoint}` : '';
     if (/ECONNREFUSED|fetch failed/i.test(msg)) {
-        return 'No server answered — is the local model server running (and the endpoint correct)?';
+        return `No server answered${at} — is the local model server running (and the endpoint correct)?`;
     }
-    if (/aborted|abort/i.test(msg)) return 'The request was cancelled or timed out.';
+    if (/aborted|abort/i.test(msg)) return `The request${to} was cancelled or timed out.`;
     return msg;
 }
 
@@ -378,7 +389,7 @@ export async function probeServer(
             .filter((m): m is ServerModelInfo => !!m);
         return { ok: true, models };
     } catch (err) {
-        return { ok: false, models: [], error: describeError(err) };
+        return { ok: false, models: [], error: describeError(err, cfg.endpoint) };
     } finally {
         clearTimeout(timer);
     }
@@ -712,7 +723,7 @@ export async function chatDetailed(
         }
         return outcome;
     } catch (err) {
-        throw new Error(describeError(err));
+        throw new Error(describeError(err, cfg.endpoint));
     } finally {
         clearInterval(heartbeat);
         if (timer) clearTimeout(timer);

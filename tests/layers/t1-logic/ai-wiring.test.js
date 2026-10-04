@@ -127,3 +127,15 @@ test('the llama-server settings the new flow writes are the declared ones', () =
         ok(ALL_TEXT.includes(`registerCommand('${command}'`), `${command} is registered`);
     }
 });
+
+test('the settings form sends only what the user changed', () => {
+    // A textual guard, and deliberately so: this is a live-webview rule that no unit test can run. On
+    // 2026-10-04 the view still showed LM Studio's 1234 after "use the llama-server already running on 8080"
+    // (the palette flow pinned 8080 and nothing told the view), the user pressed Save to try to fix it, and
+    // that stale form wrote 1234 back over the pin — after which every prompt failed with "No server
+    // answered". Sending the whole form, changed or not, is how a settings panel overwrites a fresh pin.
+    const chat = fs.readFileSync(path.join(repoRoot(), 'src/ui/aiChatView.ts'), 'utf8');
+    ok(chat.includes('let applied ='), 'the form remembers what it was last told');
+    ok(chat.includes('String(now[key]) !== String(applied[key])'), 'Save posts the diff, not the whole form');
+    ok(chat.includes("if (Object.keys(settings).length === 0)"), 'and an empty diff is not a write');
+});

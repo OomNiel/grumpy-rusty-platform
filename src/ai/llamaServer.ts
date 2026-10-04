@@ -574,6 +574,7 @@ export async function startOwnLlamaServer(request: LlamaStartRequest): Promise<L
         await cfg.update('model', info.modelId);
         await vscode.commands.executeCommand('setContext', 'rustyPlatform.aiEnabled', true);
         forgetRunningProbe();
+        await refreshAssistantView();
         // Say it out loud when this makes a *second* server: two sets of weights in RAM is the user's
         // memory, and the sentence is the only place they would hear about it.
         const twin = runningElsewhere
@@ -726,6 +727,9 @@ export async function useRunningLlamaServer(running: RunningLlamaServer): Promis
     await cfg.update('endpoint', running.endpoint);
     await cfg.update('model', running.modelId);
     await vscode.commands.executeCommand('setContext', 'rustyPlatform.aiEnabled', true);
+    // The view renders its own copy of these three; without this the form keeps the old address and its Save
+    // button writes it back (see `refreshAssistantView`).
+    await refreshAssistantView();
     const name = running.modelPath ? path.basename(running.modelPath) : running.modelId;
     log(`llama-server: using the one already running on ${running.endpoint} (${running.modelId})`);
     return {
@@ -741,6 +745,28 @@ export async function useRunningLlamaServer(running: RunningLlamaServer): Promis
 /** Forgets the cached "is one running?" answer — called after we start or stop something ourselves. */
 export function forgetRunningProbe(): void {
     runningProbe = { at: 0 };
+}
+
+/**
+ * Makes the AI view show the settings this module just wrote.
+ *
+ * WHY THIS IS NOT OPTIONAL (2026-10-04). Handing the pin to the settings is only half of "point it at this
+ * server": the view renders its **own copy** of backend/endpoint/model, and its Save button sends whatever
+ * those fields hold. So without this call the form went on showing LM Studio's `http://127.0.0.1:1234/v1`
+ * after the reuse of a server on 8080 — and the next press of Save wrote that stale address back over the
+ * correct pin, after which every prompt failed with "No server answered". The user's own words: *"the
+ * endpoint and Model ID is not updated in the Model and settings section"*.
+ *
+ * A dynamic import on purpose, exactly like `refreshPanels` itself: this module is imported by the view's
+ * dependencies, and a static `import` here would close the cycle at load time.
+ */
+async function refreshAssistantView(): Promise<void> {
+    try {
+        const { refreshPanels } = await import('./editor');
+        await refreshPanels();
+    } catch (error) {
+        logError(`assistant: the view could not be refreshed: ${error instanceof Error ? error.message : String(error)}`);
+    }
 }
 
 /** "Stop My llama-server" — ours to stop, because ours is the process we started. */

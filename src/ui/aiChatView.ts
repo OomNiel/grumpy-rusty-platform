@@ -33,6 +33,8 @@ import { log, logError } from '../ai/log';
 import { readActiveProject } from '../project/activeProject';
 import { panelState } from '../ai/panel';
 import { assistantConfig } from '../ai/editor';
+import { findRunningLlamaServer } from '../ai/llamaServer';
+import { endpointMismatchHint } from '../ai/localModels';
 import { configWithEndpoint } from '../ai/runtime';
 import { chooseLocalModel, unloadLoadedModel } from '../ai/localModelSetup';
 import { configView } from '../ai/settings';
@@ -217,7 +219,15 @@ async function ask(text: string): Promise<void> {
         post({ type: 'turn', role: 'assistant', text: answer, final: true });
     } catch (error) {
         logError(error);
-        post({ type: 'error', message: error instanceof Error ? error.message : String(error) });
+        let message = error instanceof Error ? error.message : String(error);
+        // The one failure where knowing what *is* running changes everything: "No server answered at
+        // http://127.0.0.1:1234/v1" is a puzzle until the next sentence says a llama-server is answering on
+        // 8080 (the exact report of 2026-10-04, where a stale form had overwritten the endpoint).
+        if (/No server answered/i.test(message)) {
+            const running = await findRunningLlamaServer(cfg.endpoint, { cacheMs: 0 }).catch(() => undefined);
+            message += endpointMismatchHint(cfg.endpoint, running);
+        }
+        post({ type: 'error', message });
     } finally {
         busy = false;
         post({ type: 'busy', busy: false });
@@ -420,6 +430,12 @@ function html(webview: vscode.Webview): string {
         else el.value = value === undefined || value === null ? '' : String(value);
     }
 
+    // What the fields were last *told* the truth is. Save sends only the fields that differ from this, which
+    // is what stops a form that has not caught up from writing a stale address over a fresh pin: on
+    // 2026-10-04 the view still held LM Studio's 1234 after "use the llama-server on 8080", the user pressed
+    // Save, and every prompt after that failed with "No server answered" (see refreshAssistantView).
+    let applied = { backend: '', endpoint: '', model: '', showDiff: false };
+
     window.addEventListener('message', (event) => {
         const msg = event.data;
         if (msg.type === 'state') {
@@ -428,6 +444,12 @@ function html(webview: vscode.Webview): string {
             setting('endpoint', s.endpoint);
             setting('model', s.model);
             setting('showDiff', s.showDiff);
+            applied = {
+                backend: s.backend === undefined || s.backend === null ? '' : String(s.backend),
+                endpoint: s.endpoint === undefined || s.endpoint === null ? '' : String(s.endpoint),
+                model: s.model === undefined || s.model === null ? '' : String(s.model),
+                showDiff: !!s.showDiff
+            };
         } else if (msg.type === 'status') {
             document.getElementById('status').textContent = msg.text || '';
         } else if (msg.type === 'history') {
@@ -483,15 +505,19 @@ function html(webview: vscode.Webview): string {
     document.getElementById('choose').addEventListener('click', () => vscode.postMessage({ type: 'command', command: 'rustyPlatform.assistant.setupModel' }));
     document.getElementById('unload').addEventListener('click', () => vscode.postMessage({ type: 'command', command: 'rustyPlatform.assistant.unloadModel' }));
     document.getElementById('save').addEventListener('click', () => {
-        vscode.postMessage({
-            type: 'save',
-            settings: {
-                backend: document.getElementById('backend').value,
-                endpoint: document.getElementById('endpoint').value,
-                model: document.getElementById('model').value,
-                showDiff: document.getElementById('showDiff').checked
-            }
-        });
+        const now = {
+            backend: document.getElementById('backend').value,
+            endpoint: document.getElementById('endpoint').value,
+            model: document.getElementById('model').value,
+            showDiff: document.getElementById('showDiff').checked
+        };
+        // Only the fields the user actually changed. Sending all four would make a form that is showing
+        // yesterday's endpoint overwrite the one a load just pinned.
+        const settings = {};
+        for (const key of Object.keys(now)) {
+            if (String(now[key]) !== String(applied[key])) settings[key] = now[key];
+        }
+        vscode.postMessage({ type: 'save', settings });
     });
 
     vscode.postMessage({ type: 'ready' });
@@ -580,6 +606,13 @@ export class AiChatViewProvider implements vscode.WebviewViewProvider {
     }
 
     private async save(settings: Record<string, unknown>): Promise<void> {
+        // The view sends only the fields the user actually changed (see its Save handler). An empty diff is
+        // not an error and not a write: it means the form agrees with the settings, which is the common case
+        // when someone presses Save to check.
+        if (Object.keys(settings).length === 0) {
+            post({ type: 'status', text: 'Nothing changed — the settings already say that.' });
+            return;
+        }
         // `configView` writes each key to the scope that already supplies it. Writing to `Global` here would
         // be shadowed by a value the project pinned in `.vscode/settings.json` — the designer's bug, kept
         // fixed: the panel would then save, refresh from the effective value, and appear to have done
