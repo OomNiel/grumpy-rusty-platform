@@ -16,12 +16,19 @@ import { initAiLog } from './ai/log';
 import { initPickerFolders } from './ai/pickers';
 import { registerAssistantEditorCommands } from './ai/editor';
 import { registerAiChatView } from './ui/aiChatView';
+import { initModelRuntime } from './ai/runtime';
+import { initLlamaServer } from './ai/llamaServer';
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
     const output = vscode.window.createOutputChannel("Grumpy's Rusty Platform");
     // The AI subsystem logs through the same channel, so "which log do I read?" has one answer.
     initAiLog(output);
     initPickerFolders(context.globalState);
+    // The two AI runtimes own child processes and per-window state, so they are created once here. Without
+    // these calls `ensureBundledEndpoint` throws "the model runtime is not initialised", which is what the
+    // chat's "No server answered" really was (2026-10-04).
+    initModelRuntime(context);
+    initLlamaServer(context);
     const state = new RustyState(output);
     const boardsView = new BoardsViewProvider();
     const projectView = new ProjectViewProvider(state);

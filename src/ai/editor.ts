@@ -71,6 +71,7 @@ import { describeError as describeCompilerError, repairUntilClean, type RepairRe
 import { conventionsBlock, deriveConventions, normaliseConventions } from './conventions';
 import { hostBlockMessage, hostGate } from './hostCheck';
 import { configView, updateSetting } from './settings';
+import { configWithEndpoint } from './runtime';
 import { readActiveProject, type ActiveProject } from '../project/activeProject';
 import { log, logError } from './log';
 
@@ -296,6 +297,9 @@ function siblingFunction(text: string, span: ItemSpan | undefined): string {
 
 /** One streamed request, with the model's progress in a notification the user can cancel. */
 async function runChat(cfg: AssistantConfig, messages: ChatMessage[], title: string): Promise<ChatOutcome> {
+    // A `bundled` request has no endpoint until the runtime is up, and the settings' default endpoint is LM
+    // Studio's. Resolving it here means implement, fix and repair all go through one place.
+    const request = await configWithEndpoint(cfg);
     return vscode.window.withProgress(
         { location: vscode.ProgressLocation.Notification, title, cancellable: true },
         async (progress, token) => {
@@ -303,7 +307,7 @@ async function runChat(cfg: AssistantConfig, messages: ChatMessage[], title: str
             token.onCancellationRequested(() => controller.abort());
             let chars = 0;
             let reported = 0;
-            return chatDetailed(cfg, messages, {
+            return chatDetailed(request, messages, {
                 signal: controller.signal,
                 onToken: (t) => {
                     chars += t.length;
