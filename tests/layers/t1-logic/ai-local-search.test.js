@@ -264,3 +264,24 @@ test('a model in another extension storage is found and used', async () => {
         fs.rmSync(dir, { recursive: true, force: true });
     }
 });
+
+// A machine can have models and no working LM Studio: the `lms` binary is installed but its daemon will not
+// start, so `discover()` lists nothing while `~/.lmstudio/models` is full. Then the files are the answer.
+test('files inside LM Studio are offered only when LM Studio has models to offer', () => {
+    const localModels = compiled('ai/localModels');
+    const files = [
+        { file: '/home/x/Downloads/a.gguf', inLmStudio: false },
+        { file: '/home/x/.lmstudio/models/b.gguf', inLmStudio: true },
+        { file: '/home/x/.lmstudio/models/c.gguf', inLmStudio: true }
+    ];
+
+    // LM Studio is answering: its own list already has those weights, so they are not shown twice.
+    equal(localModels.filesOfferedForSelection(files, true).map((f) => f.file), ['/home/x/Downloads/a.gguf']);
+
+    // LM Studio is not answering: every file on the machine is offered.
+    equal(localModels.filesOfferedForSelection(files, false).map((f) => f.file), files.map((f) => f.file));
+
+    // The caller's array is never rearranged in place.
+    equal(files.map((f) => f.file), ['/home/x/Downloads/a.gguf', '/home/x/.lmstudio/models/b.gguf', '/home/x/.lmstudio/models/c.gguf']);
+    equal(localModels.filesOfferedForSelection([], false), []);
+});

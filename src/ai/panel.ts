@@ -38,6 +38,7 @@ import {
     recommendedLoadOptions,
     resolveLoadOptions,
     sidecarContextSize,
+    filesOfferedForSelection,
     sidecarGpuLayers,
     type LoadOptions,
     type LocalModel,
@@ -199,15 +200,22 @@ export function buildChoices(found: Discovery, files: FoundModelFile[], endpoint
             live: isPinned && running.running
         });
     }
-    for (const file of files) {
+    // Files inside LM Studio's folder are offered only when `lms ls` is not answering — otherwise they are
+    // already in the LM Studio group above, and two entries for one set of weights is noise. Hiding them
+    // *always* was the bug: with `lms` installed but its daemon refusing to start they appeared nowhere.
+    for (const file of filesOfferedForSelection(files, found.list.chat.length > 0)) {
         choices.push({
             value: choiceValue('file', file.file),
             label: `${file.name}  ·  ${file.sizeGb.toFixed(1)} GB`,
-            // What pressing Load will actually do with a file that is *not* in LM Studio yet — the step that
-            // was invisible, and the reason a model outside My Models looked unusable (2026-09-15).
-            detail: found.cli
-                ? `Found on this machine · ${file.folder} · added to LM Studio first (a symbolic link — your file stays where it is)`
-                : `Found on this machine · ${file.folder} · served by the extension's own runtime (no LM Studio needed)`,
+            detail: file.inLmStudio
+                // It is already where LM Studio keeps its models, so there is nothing to import: our own
+                // runtime reads the file in place, which also works while LM Studio's daemon is down.
+                ? `Found on this machine · ${file.folder} · already inside LM Studio's folder, served by the extension's own runtime`
+                : found.cli
+                    // What pressing Load will actually do with a file that is *not* in LM Studio yet — the step
+                    // that was invisible, and the reason a model outside My Models looked unusable (2026-09-15).
+                    ? `Found on this machine · ${file.folder} · added to LM Studio first (a symbolic link — your file stays where it is)`
+                    : `Found on this machine · ${file.folder} · served by the extension's own runtime (no LM Studio needed)`,
             kind: 'file'
         });
     }
@@ -596,8 +604,11 @@ async function startLoad(
     }
 
     if (kind === 'file') {
-        if (!foundLms()) {
-            // No LM Studio: our own runtime takes any .gguf, which is exactly why the scan is worth it.
+        const insideLmStudio = key.startsWith(lmStudioModelsRoot() + path.sep);
+        if (!foundLms() || insideLmStudio) {
+            // No LM Studio, or the file already lives in LM Studio's own folder: our runtime takes any `.gguf`
+            // and reads it in place. Importing a file that is already there is refused by `lms` (and pointless),
+            // and when LM Studio's daemon will not start this is the only route to the file at all.
             progress('starting the extension\'s own runtime for this file…');
             await cfg.update('backend', 'bundled', vscode.ConfigurationTarget.Global);
             await cfg.update('modelPath', key, vscode.ConfigurationTarget.Global);
@@ -959,11 +970,12 @@ export async function scan(webview: vscode.Webview, onDone: (state: PanelState) 
         onProgress: (message) => progress(message, webview),
         roots: undefined
     });
-    // Files already inside LM Studio's folder are counted and skipped by the core: `lms ls` lists them.
+    // Whether to *show* the ones inside LM Studio's folder is `filesOfferedForSelection`'s decision, not the
+    // scanner's — so the count says what was found, not what was hidden.
     progress(
         scanned.length
-            ? `found ${scanned.length} model file(s) outside ${lmStudioModelsRoot().replace(process.env.HOME ?? '', '~')}`
-            : 'no model files found outside LM Studio\'s own folder',
+            ? `found ${scanned.length} model file(s) on this machine`
+            : 'no model files found on this machine',
         webview
     );
     await onDone(await panelState());

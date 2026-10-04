@@ -824,3 +824,18 @@ export function parseLlamaProps(body: unknown): LlamaProps {
         totalSlots: typeof o.total_slots === 'number' ? o.total_slots : undefined
     };
 }
+
+/**
+ * The scanned files worth offering, given whether LM Studio is already offering its own.
+ *
+ * A `.gguf` inside LM Studio's folder is also listed by `lms ls` as a model key, so when that list is
+ * answering, the file would be a second entry for the same weights. When it is *not* answering — the `lms`
+ * binary is installed but its daemon will not start, which is a state a real machine was found in on
+ * 2026-10-04 — those files are the only route to a model the user already downloaded, so all are offered.
+ */
+export function filesOfferedForSelection<T extends { inLmStudio: boolean }>(
+    files: readonly T[],
+    lmStudioHasModels: boolean
+): T[] {
+    return lmStudioHasModels ? files.filter((f) => !f.inLmStudio) : files.slice();
+}
