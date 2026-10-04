@@ -11,6 +11,56 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.5] - 2026-10-04
+
+### Fixed
+
+- **"My own llama-server" could not be reached at all.** The model picker's *My own llama-server* entry
+  ran `rustyPlatform.assistant.startLlamaServer`, a command nothing ever registered, so choosing it
+  failed with "command not found"; and the seven settings that path writes
+  (`llamaServerPath`, `llamaServerArgs`, `llamaServerService`, `llamaServerStartTarget`,
+  `loadContextLength`, `loadGpu`, `loadTtlSeconds`) were never declared in `package.json`, so writing
+  any of them raised *"… is not a registered configuration"*. Both the commands and the settings are
+  declared now, and `tests/layers/t1-logic/ai-wiring.test.js` checks the source against the manifest in
+  **both** directions — the existing check only walked *registered → declared*, which is blind to a
+  command that was never registered in the first place.
+
+### Added
+
+**`llama-server` installs itself, and so does its model**
+
+- **The prebuilt server, when this machine has none.** Where the flow used to say "install llama.cpp
+  yourself", it now offers to download llama.cpp's own prebuilt build for this platform (~18 MB) into
+  the extension's storage, verify it against the `sha256:` digest GitHub publishes, unpack it with the
+  system `tar`, and point `llamaServerPath` at it. A build you compiled yourself is still one click
+  away ("Point at my own build…"), and no GPU build is ever downloaded: those are 150-600 MB and depend
+  on a driver this extension cannot inspect.
+- **The 27B, when it is not on the machine.** The palette command and the panel's Load button resolve
+  the model in the order "the `modelPath` setting → a verified copy already in the extension's storage →
+  one picker", and the picker's first entry is the known 27B
+  (`lmstudio-community/Qwen3.8-27B-GGUF`, `Qwen3.8-27B-Q4_K_M.gguf`, 16 810 714 336 bytes,
+  sha256 `e00082f7…43e520` — the model the Avalonia Designer steps up to, and the numbers are confirmed
+  against Hugging Face's own API). If those weights already exist anywhere the searcher reaches, they
+  are adopted instead of downloaded.
+- **Once both answers are known, nothing is asked.** The command starts your `llama-server` and loads
+  the weights: the flags question appears only when the model was just chosen by hand, and the one
+  question that does survive is "a llama-server is already running — use it or start another?", which
+  exists because two models of this size do not fit in the same RAM.
+- New commands **Rusty AI: Start My llama-server…** and **Rusty AI: Stop My llama-server**.
+- `llamaServerPath`, `llamaServerArgs`, `llamaServerService`, `llamaServerStartTarget`,
+  `loadContextLength`, `loadGpu` and `loadTtlSeconds` now appear in the Settings UI with descriptions,
+  instead of being written by code into keys the manifest had never heard of.
+
+### Notes
+
+- The known 27B **was not on this machine** when this was written: only LM Studio's record of the
+  download survives, so the download offer is the only route to it here (15.7 GB).
+- Verified for real, not assumed: the installer reaches a running `llama-server --version` in **4.4 s**
+  (`0.5.0-dev`, build 11384), and the start path reaches `/health {"status":"ok"}` plus a real chat
+  completion in **4.0 s**. `NOTES.md` §35 has the evidence, including the trap that
+  `/releases/latest` on llama.cpp answers `v0.5.0` — a release with no binaries in it at all.
+- Test suite: **551 passed, 0 skipped** (was 530).
+
 ## [0.0.4] - 2026-10-03
 
 ### Added
