@@ -279,6 +279,10 @@ First build: everything the extension does today, packaged as `grumpy-rusty-plat
   something points at the compiler’s include directory, so on a machine with `libclang` but no `clang`
   package the build died there. The installed compiler is asked (`gcc -print-file-name=include`) and the
   answer is passed as `BINDGEN_EXTRA_CLANG_ARGS`, unless the environment already sets it.
+- **A regression that broke every request is fixed.** The live-progress work called its first tick before
+  the outcome object it reads existed, so `chatDetailed` threw *“Cannot access ‘outcome’ before
+  initialization”* and no request ever reached the model. The declaration now precedes the first tick, and
+  a test drives `chatDetailed` against an injected SSE stream — the coverage whose absence let it ship.
 [Unreleased]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.4...HEAD
 [0.0.4]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.3...v0.0.4
 [0.0.3]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.2...v0.0.3
