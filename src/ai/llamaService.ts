@@ -40,6 +40,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { log, logError } from './log';
+import { canInspectServerOwner, resolveStartTarget } from './localModels';
 import { configView } from './settings';
 import {
     findRunningLlamaServer,
@@ -179,6 +180,8 @@ export type ServerOwner =
     | { kind: 'ours'; pid?: number; model?: string }
     | { kind: 'unit'; unit: string; scope: 'user' | 'system'; pid?: number; since?: string; enabled?: boolean }
     | { kind: 'process'; pid?: number; since?: string; command?: string }
+    /** Nothing could be *inspected* on this platform — which is not the same answer as "nothing is running". */
+    | { kind: 'unknown'; port?: number; why: string }
     | { kind: 'none' };
 
 /**
@@ -200,6 +203,8 @@ export function describeOwner(owner: ServerOwner): string {
             return `started outside systemd (${owner.pid ? `pid ${owner.pid}` : 'pid not visible'}`
                 + `${owner.since ? `, since ${owner.since}` : ''})`
                 + `${owner.command ? ` — ${owner.command}` : ''}`;
+        case 'unknown':
+            return `running, but this platform cannot say who started it (${owner.why})`;
         case 'none':
             return 'not running';
     }
@@ -294,6 +299,13 @@ export async function detectServerOwner(query: { port?: number; endpoint?: strin
     if (own.running && own.info) {
         return { kind: 'ours', pid: own.info.pid, model: path.basename(own.info.modelPath) };
     }
+    // Off Linux there is no `ss` and no `/proc`, so nothing here can say what holds a port. Saying "nothing is
+    // running" would be a claim this platform cannot make — and a lie is worse than "I cannot tell", especially
+    // when the server is answering requests at that very moment.
+    if (!canInspectServerOwner()) {
+        const port = query.port ?? endpointPort(query.endpoint ?? '') ?? undefined;
+        return { kind: 'unknown', port, why: 'listing a port\'s owner needs `ss` and `/proc`, which are Linux-only' };
+    }
     const port = query.port ?? endpointPort(query.endpoint ?? '') ?? undefined;
     if (!port) return { kind: 'none' };
     const listener = await listenerFor(port);
@@ -374,8 +386,15 @@ export async function resolveLlamaUnit(detected?: ServerOwner): Promise<{ unit?:
 export type StartTarget = 'unit' | 'process';
 
 export function startTarget(): StartTarget {
-    const configured = String(configView(SETTINGS).get<string>('llamaServerStartTarget', 'unit') ?? '').trim().toLowerCase();
-    return configured === 'process' ? 'process' : 'unit';
+    // The platform decides the *default*, never an explicit choice: the setting's declared default is `unit`,
+    // so "has the user ever set it?" is read from the scopes rather than from the value, or a Windows user
+    // would be stuck with a systemd request they never made (`resolveStartTarget`).
+    const cfg = configView(SETTINGS);
+    const inspect = cfg.inspect?.('llamaServerStartTarget') as
+        | { globalValue?: unknown; workspaceValue?: unknown; workspaceFolderValue?: unknown }
+        | undefined;
+    const chosen = inspect && (inspect.globalValue !== undefined || inspect.workspaceValue !== undefined || inspect.workspaceFolderValue !== undefined);
+    return resolveStartTarget(chosen ? cfg.get('llamaServerStartTarget') : undefined) as StartTarget;
 }
 
 export interface StartChoice {
@@ -556,6 +575,16 @@ export async function stopLlamaServerConfirmed(
     const confirm = opts.confirm ?? defaultConfirm;
     if (owner.kind === 'none') {
         return { ok: false, message: 'No llama-server is running on the configured address, so there is nothing to stop.' };
+    }
+    if (owner.kind === 'unknown') {
+        // The stop flow must not pretend it checked. Nothing here can name the owner, and the only honest way
+        // out is to say where the user can end it themselves.
+        return {
+            ok: false,
+            message: `Something is answering on that address, but this platform cannot say what: ${owner.why}. `
+                + 'Stop it where it was started — its own window, or Task Manager — or let this window start and stop '
+                + 'a llama-server of its own (My own llama-server → Start).'
+        };
     }
     const freed = rssGb(owner.pid);
     const consequence = owner.kind === 'unit' && owner.scope === 'user'
