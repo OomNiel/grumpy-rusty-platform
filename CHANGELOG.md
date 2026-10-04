@@ -265,6 +265,15 @@ First build: everything the extension does today, packaged as `grumpy-rusty-plat
   files were offered nowhere. They are scanned now, they appear in **Choose a Local Model…** as well, and
   a file already inside LM Studio’s folder is served in place by the extension’s own runtime rather than
   “imported” — `lms import` refuses those, and with the daemon down our runtime is the only route to it.
+- **`backend: bundled` really starts the bundled runtime.** Two initialisers (`initModelRuntime`,
+  `initLlamaServer`) were never called, and no request path resolved the runtime’s own endpoint, so a chat
+  with a perfectly good local model went to the settings’ default address — LM Studio’s — and came back
+  *“No server answered — is the local model server running (and the endpoint correct)?”*. Both runtimes are
+  created at activation now, and every chat resolves the endpoint first (`configWithEndpoint`).
+- **The sidecar’s first build finds the C headers.** `libclang` resolves `#include <stdbool.h>` only when
+  something points at the compiler’s include directory, so on a machine with `libclang` but no `clang`
+  package the build died there. The installed compiler is asked (`gcc -print-file-name=include`) and the
+  answer is passed as `BINDGEN_EXTRA_CLANG_ARGS`, unless the environment already sets it.
 [Unreleased]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.4...HEAD
 [0.0.4]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.3...v0.0.4
 [0.0.3]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.2...v0.0.3
