@@ -1592,3 +1592,67 @@ LM Studio is also dead (the `lms` daemon answers nothing, and every probe spends
 is why the settings' old `1234` endpoint had no chance of working.
 
 Suite: **557 passed, 0 skipped** (was 552).
+
+## 37. The extension owns the llama.cpp it needs (2026-10-04)
+
+**The rule, from the user.** *"This extension must not rely on the user to have a llama.cpp server installed.
+If the server is installed on the host, just start it and use it. If not, offer installation to the user."*
+
+**What was still missing.** The offer to install existed (0.0.5) and the palette flow could start a server —
+but the two places where the need actually arises did not use either:
+
+1. **A request that met a dead address only complained.** `implement`, `fix`, `repair` and the chat view ended
+   at *"No server answered"*, however much llama.cpp was on the disk. The extension was still relying on the
+   user to notice, go to the model picker, choose the entry and press the button.
+2. **"Installed" meant "the `llamaServerPath` setting survives".** The lookup knew the setting, PATH and the
+   usual build folders — *not* `<global storage>/llama.cpp/<tag>/…`, which is where this extension puts the
+   release it fetches. Clear that setting, open a second window, or move the profile, and a verified build
+   sitting in our own storage was invisible: the next start would have offered to download it again.
+
+**What happens now.**
+
+* **Every request path goes through `chatWithRescue`** (`editor.ts`), so the chat view, implement, fix and
+  repair all behave the same. On failure, `rescueUnreachableEndpoint` (`llamaServer.ts`) decides from
+  `endpointRescuePlan` and acts: a llama-server answering on another local port is **used** (and the step is
+  announced: *"nothing is answering at http://127.0.0.1:1234/v1 — using the llama-server on port 8080
+  instead"*); otherwise the binary we have is **started** with the model the settings already know; otherwise
+  the **install is offered** (and accepted, the ~18 MB prebuilt is fetched, verified and unpacked); and only
+  then is the original failure reported.
+* **The rules that keep that from being reckless** are pure (`endpointRescuePlan`, pinned by tests): only
+  `backend: external`; only a **local** address (a down remote endpoint must never make this machine start a
+  process nobody asked for); only a "nothing answered" failure (not a 400, not a cancel, not a timeout); and
+  `canInstall: false` suppresses the offer where llama.cpp publishes nothing for the platform.
+* **Retrying is guarded**: nothing is retried once part of an answer has been streamed — a connection that
+  dies mid-answer is also `fetch failed`, and a blind retry would print the beginning of it twice.
+* **Our own installs are found without the setting.** `findInstalledLlamaServer` walks
+  `<global storage>/llama.cpp/*`, newest tag first, and the layout decision (`installedLlamaServerCandidates`)
+  accepts both archive shapes: flat (`<tag>/llama-server`) and nested (`<tag>/llama-b11384/llama-server`).
+  It offers **every** entry as a possible folder rather than guessing from the name — a release whose listing
+  begins with `llama-cli` would otherwise have stopped the search before the real subfolder, which is exactly
+  the sort of thing that only shows up on one machine's release. The status line says which binary it is:
+  *"…/llama.cpp/b11385/llama-b11385/llama-server (installed by this extension) — not running"*.
+
+**Verified by running it, twice, against a machine with nothing installed.**
+
+```
+1. no llama.cpp anywhere → lookup: {}                      (HOME emptied, no PATH entry, no install of ours)
+2. offered: ["Download llama.cpp","Point at my own build…","Cancel"]
+3. installed → "/…/llama.cpp/b11385/llama-b11385/llama-server" in 4.1s
+4. next lookup: {"path":"/…/llama-server","installed":true}
+```
+
+and — the reported failure itself, healed:
+
+```
+configured endpoint      : http://127.0.0.1:1234/v1 (nothing is listening there)
+steps the user would see : ["nothing is answering at http://127.0.0.1:1234/v1 — using the llama-server on port 8080 instead"]
+THE ANSWER               : "OK"
+settings now             : {"backend":"external","endpoint":"http://127.0.0.1:8080/v1","model":"qwen3-coder-local"}
+```
+
+**One judgment call left in place.** The explicit command *"AI: Start My llama-server…"* still **asks** before
+starting a second server when one is already running elsewhere, because two 17 GB models do not fit in 28 GB
+and that question is the only thing standing between a click and a machine that swaps for an hour. The rescue
+path does not ask — it reuses. If a user wants that question gone as well, it is one branch to remove.
+
+Suite: **562 passed, 0 skipped** (was 557).

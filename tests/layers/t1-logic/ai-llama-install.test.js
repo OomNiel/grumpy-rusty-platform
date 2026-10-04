@@ -288,3 +288,107 @@ test('a failure says what IS answering, when something is', () => {
     contains(models.endpointMismatchHint('', { port: 8080, modelId: 'm' }), 'the settings point at no address');
     contains(models.endpointMismatchHint('', { port: 8080, modelId: 'm' }), '(m)');
 });
+
+// ------------------------------------------------ "the extension must not rely on the user"
+
+test('a request that had nowhere to go is rescued from a llama-server this machine already has', () => {
+    const noAnswer = 'No server answered at http://127.0.0.1:1234/v1 — is the local model server running (and the endpoint correct)?';
+    // Nothing is listening on the configured local address, and a llama-server binary is here: start it.
+    equal(models.endpointRescuePlan({ endpoint: 'http://127.0.0.1:1234/v1', backend: 'external', message: noAnswer, binaryFound: true }), 'start-own');
+    // One is already answering elsewhere: use that one rather than starting a second copy of the weights.
+    equal(models.endpointRescuePlan({ endpoint: 'http://127.0.0.1:1234/v1', backend: 'external', message: noAnswer, binaryFound: true, runningPort: 8080 }), 'use-running');
+    // No binary at all: offer the install, which is the other half of the request.
+    equal(models.endpointRescuePlan({ endpoint: 'http://127.0.0.1:1234/v1', backend: 'external', message: noAnswer, binaryFound: false }), 'offer-install');
+    // …unless llama.cpp publishes nothing for this platform, in which case offering it would be a lie.
+    equal(models.endpointRescuePlan({ endpoint: 'http://127.0.0.1:1234/v1', backend: 'external', message: noAnswer, binaryFound: false, canInstall: false }), 'none');
+});
+
+test('and left alone when starting a server is not the answer', () => {
+    const noAnswer = 'No server answered at http://127.0.0.1:1234/v1';
+    // A **remote** endpoint that is down must not make this machine start a process the user did not ask for:
+    // they pointed at another computer on purpose.
+    equal(models.endpointRescuePlan({ endpoint: 'http://build-box:8080/v1', backend: 'external', message: noAnswer, binaryFound: true }), 'none');
+    equal(models.endpointRescuePlan({ endpoint: 'https://api.example.com/v1', backend: 'external', message: noAnswer, binaryFound: true, runningPort: 8080 }), 'none');
+    // Only `external` is this path's business: the bundled runtime explains its own failures, and LM Studio's
+    // are LM Studio's.
+    equal(models.endpointRescuePlan({ endpoint: 'http://127.0.0.1:1234/v1', backend: 'bundled', message: noAnswer, binaryFound: true }), 'none');
+    equal(models.endpointRescuePlan({ endpoint: 'http://127.0.0.1:1234/v1', backend: 'off', message: noAnswer, binaryFound: true }), 'none');
+    // Not every failure is "nothing is listening": a 400, a truncated answer or a cancel is not cured by
+    // starting a server, and retrying it would only waste the user's time.
+    for (const message of [
+        'The server answered HTTP 400: context overflow',
+        'The request to http://127.0.0.1:1234/v1 was cancelled or timed out.',
+        'Could not parse the answer'
+    ]) {
+        equal(models.endpointRescuePlan({ endpoint: 'http://127.0.0.1:1234/v1', backend: 'external', message, binaryFound: true }), 'none', message);
+    }
+});
+
+test('"no server answered" is one decision, shared by the message and the rescue', () => {
+    const assistant = compiled('ai/assistant');
+    ok(assistant.isNoAnswerError('fetch failed'));
+    ok(assistant.isNoAnswerError('connect ECONNREFUSED 127.0.0.1:1234'));
+    ok(assistant.isNoAnswerError(assistant.describeError(new TypeError('fetch failed'), 'http://x/v1')), 'the sentence it writes is recognised again');
+    notOk(assistant.isNoAnswerError('The server answered HTTP 500.'));
+    notOk(assistant.isNoAnswerError(''));
+    notOk(assistant.isNoAnswerError(undefined));
+});
+
+test('a llama.cpp this extension installed is found without the setting that points at it', () => {
+    // The pure half: the extra candidates are tried after the usual build folders, so a hand-built llama.cpp
+    // still wins over the copy we fetched.
+    const exists = new Set(['/usr/local/bin/llama-server']);
+    equal(
+        models.findLlamaServer({
+            homeDir: '/home/u',
+            pathValue: '',
+            preferred: '',
+            extra: ['/gs/llama.cpp/b11384/llama-b11384/llama-server'],
+            exists: (p) => exists.has(p)
+        }),
+        '/usr/local/bin/llama-server',
+        'the user’s own build is preferred'
+    );
+    equal(
+        models.findLlamaServer({
+            homeDir: '/home/u',
+            pathValue: '',
+            preferred: '',
+            extra: ['/gs/llama.cpp/b11384/llama-b11384/llama-server'],
+            exists: (p) => p.startsWith('/gs/')
+        }),
+        '/gs/llama.cpp/b11384/llama-b11384/llama-server',
+        'and ours is found when there is no other'
+    );
+    // A path the user set that is gone still refuses to fall back — that is their setting, and quietly running
+    // a different binary would be worse than saying so.
+    equal(
+        models.findLlamaServer({ homeDir: '/home/u', pathValue: '', preferred: '/gone/llama-server', extra: ['/gs/llama-server'], exists: (p) => p === '/gs/llama-server' }),
+        undefined
+    );
+});
+
+test('a release fetched by the extension is found inside its own folder', () => {
+    // What the real install produced on 2026-10-04: `/…/llama.cpp/b11385/llama-b11385/llama-server`. Both
+    // shapes are offered because the archive's own root has moved between builds, and this is the layout that
+    // decides whether a fetched llama.cpp counts as "installed" or gets offered again.
+    const nested = models.installedLlamaServerCandidates('/gs/llama.cpp/b11385', ['llama-b11385', 'LICENSE', 'llama-cli'], 'linux');
+    equal(nested[0], '/gs/llama.cpp/b11385/llama-server', 'the flat shape is tried first');
+    ok(nested.includes('/gs/llama.cpp/b11385/llama-b11385/llama-server'), 'and the nested shape is offered');
+    // Every entry is offered, including ones that are files: a flat listing cannot tell, and guessing from the
+    // name meant a release whose listing began with `llama-cli` never reached the real subfolder.
+    ok(nested.includes('/gs/llama.cpp/b11385/llama-cli/llama-server'), 'no name heuristic');
+    ok(!nested.includes('/gs/llama.cpp/b11385/llama-server/llama-server'), 'the binary itself is not a folder');
+
+    const flat = models.installedLlamaServerCandidates('/gs/llama.cpp/b1', ['llama-server', 'libllama.so'], 'linux');
+    equal(flat[0], '/gs/llama.cpp/b1/llama-server', 'a flat archive is found directly');
+    // The caller checks existence, so the first real hit wins: that is what makes the list safe.
+    equal(flat.find((c) => c === '/gs/llama.cpp/b1/llama-server'), '/gs/llama.cpp/b1/llama-server');
+
+    equal(
+        models.installedLlamaServerCandidates('C:\\gs\\llama.cpp\\b1', ['llama-server.exe'], 'win32')[0],
+        'C:\\gs\\llama.cpp\\b1/llama-server.exe'
+    );
+    // A trailing separator must not double up.
+    equal(models.installedLlamaServerCandidates('/gs/b1/', ['llama-b1'], 'linux')[1], '/gs/b1/llama-b1/llama-server');
+});

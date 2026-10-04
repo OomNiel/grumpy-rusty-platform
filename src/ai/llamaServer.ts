@@ -46,6 +46,7 @@ import { freePort, isMissingExecutable } from './sys';
 import { log, logError } from './log';
 import {
     classifyHealth,
+    endpointRescuePlan,
     findLlamaServer,
     isLlamaServerModels,
     isUnknownArgumentFailure,
@@ -61,7 +62,7 @@ import {
 import { OWN_SERVER_SPECS, formatBytes, ownServerSpecByFileName, specByFileName, type ModelSpec } from './modelSpecs';
 import { scanForModelFiles, setupFacts, type FoundModelFile } from './localModelCore';
 import { allModelSpecs, ensureModelFile, extensionContext, modelFileFor, modelFolder } from './runtime';
-import { describeInstall, installLlamaServer, llamaServerVersion } from './llamaInstall';
+import { describeInstall, findInstalledLlamaServer, installLlamaServer, llamaInstallRoot, llamaServerVersion } from './llamaInstall';
 import { configView } from './settings';
 // `proveItWorks` is the shared "is it really answering?" round trip every load path uses. This module is
 // the only one that imports it *downwards* (the palette flows live there, the process lives here), so the
@@ -390,6 +391,8 @@ export function ownLlamaServerStatus(): { running: boolean; info?: OwnServerInfo
 export interface LlamaBinaryLookup {
     /** The binary to run. */
     path?: string;
+    /** True when that binary is one this extension downloaded and verified, rather than one the user built. */
+    installed?: boolean;
     /** The `llamaServerPath` setting, when it is the thing that failed. */
     configured?: string;
     /** True when a path was set but does not exist — the one failure the user can fix in a second. */
@@ -400,13 +403,18 @@ export interface LlamaBinaryLookup {
 export function llamaServerBinary(configuredOverride?: string): LlamaBinaryLookup {
     const configured = configuredOverride ?? configView(SETTINGS).get<string>('llamaServerPath', '');
     const wanted = String(configured ?? '').trim();
+    // The extension's own installs are candidates too, so "llama.cpp is available" is a fact about this
+    // machine rather than a fact about the setting surviving (2026-10-04).
+    const context = extensionContext();
+    const installed = context ? findInstalledLlamaServer(llamaInstallRoot(context)) : [];
     const found = findLlamaServer({
         homeDir: os.homedir(),
         pathValue: process.env.PATH ?? '',
         preferred: wanted,
+        extra: installed,
         exists: (p) => { try { return fs.existsSync(p); } catch { return false; } }
     });
-    if (found) return { path: found };
+    if (found) return { path: found, installed: installed.includes(found) };
     return wanted ? { configured: wanted, configuredMissing: true } : {};
 }
 
@@ -451,7 +459,8 @@ export function llamaServerStatusLines(
     if (lookup.configuredMissing) {
         lines.push(`Your llama-server: the path in the settings (${lookup.configured}) does not exist.`);
     } else if (lookup.path) {
-        lines.push(`Your llama-server: ${lookup.path.replace(os.homedir(), '~')} — not running`);
+        lines.push(`Your llama-server: ${lookup.path.replace(os.homedir(), '~')}`
+            + `${lookup.installed ? ' (installed by this extension)' : ''} — not running`);
     }
     return lines;
 }
@@ -970,6 +979,62 @@ export async function startMyLlamaServerFlow(context: vscode.ExtensionContext): 
         }
     );
     return finishLlamaStart(outcome ?? { ok: false, message: 'The start was cancelled before it began.' });
+}
+
+/**
+ * A request had nowhere to go — get a llama-server up, and hand back the address to send it to.
+ *
+ * *"This extension must not rely on the user to have a llama.cpp server installed. If the server is installed
+ * on the host, just start it and use it. If not, offer installation to the user."* The palette flow could do
+ * all of that, but only when the user went looking for it: a **request** that met a dead address still ended
+ * at "No server answered", however much llama.cpp was sitting on the disk. This is that flow, minus every
+ * question that does not have to be asked, put where the need actually arises.
+ *
+ * The decisions are `endpointRescuePlan`'s (backend, locality, kind of failure — a remote address and a
+ * `400` are both left alone); what is here is the doing: use a server that is answering elsewhere, else start
+ * the binary we have (installing it first, with the user's consent, when there is none), else give up and let
+ * the original failure be reported.
+ *
+ * Returns the endpoint to retry against, or undefined when the caller should keep the original error.
+ */
+export async function rescueUnreachableEndpoint(
+    tried: { endpoint: string; backend: string },
+    message: string,
+    onStep?: (message: string) => void
+): Promise<string | undefined> {
+    const context = extensionContext();
+    if (!context) return undefined;
+    const cfg = configView(SETTINGS);
+    const running = await findRunningLlamaServer(tried.endpoint, { cacheMs: 0 }).catch(() => undefined);
+    const lookup = llamaServerBinary();
+    const plan = endpointRescuePlan({
+        endpoint: tried.endpoint,
+        backend: tried.backend,
+        message,
+        binaryFound: !!lookup.path,
+        runningPort: running?.port
+    });
+    if (plan === 'none') return undefined;
+    log(`llama-server: a request could not reach ${tried.endpoint} — rescue plan "${plan}"`);
+
+    if (plan === 'use-running' && running) {
+        // Said out loud, because this changes where the questions go: the address in the settings was dead and
+        // the answers will now come from a server the user did not name in this window.
+        onStep?.(`nothing is answering at ${tried.endpoint} — using the llama-server on port ${running.port} instead`);
+        const outcome = await useRunningLlamaServer(running);
+        return outcome.ok ? outcome.endpoint : undefined;
+    }
+
+    onStep?.('nothing is answering there — getting a llama-server up…');
+    const bin = lookup.path ?? (await ensureLlamaServerBinary(context, cfg));
+    if (!bin) return undefined;
+    const preference = ownServerPreference(context, cfg);
+    const modelPath = preference.path ?? (await chooseLlamaServerModel(context, cfg));
+    if (!modelPath) return undefined;
+    // `reuseRunning: false` on purpose: the endpoint we are rescuing was checked a moment ago and there was
+    // nothing on it, so a server found *now* is a different one and reusing it would be a guess.
+    const outcome = await startOwnLlamaServer({ modelPath, reuseRunning: false, onProgress: onStep });
+    return outcome.ok ? outcome.endpoint : undefined;
 }
 
 /**
