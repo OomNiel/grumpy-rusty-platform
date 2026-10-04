@@ -21,6 +21,9 @@ Espressif boards, `espflash`.
 | One-click installer (rustup, targets, prebuilt probe-rs with SHA-256 check, udev rules) | ✅ plus espup + espflash, only for the chips in use |
 | `Add Cargo to PATH…` for shells that never received `~/.cargo/bin` | ✅ |
 | Status bar, and the same buttons in the side bar's **Controls** section | ✅ |
+| **Publish .deb** — the firmware plus a `<package>-flash` helper, packed into a `.deb` in the project root | ✅ |
+| **Install .deb** — shows `dpkg-deb --info`, then `sudo dpkg -i` in a terminal | ✅ Linux |
+| **Back Up Project** — a dated copy beside the project (`<folder>-2026-10-05_1804`), minus `target/` | ✅ |
 | Debug session (probe-rs-debug + RTT) | ✅ RP only, verified against `probe-rs.probe-rs-debugger` 0.32.0. An ESP32 has no SWD, so **Debug** flashes and monitors instead |
 | Four debug configurations, all on the **debug** build | ✅ RP: flash & run · flash & halt · restart without flashing · attach |
 | Chip check before a no-flash session (`probe-rs verify`) | ✅ RP only |
@@ -58,6 +61,13 @@ it on.
   project's own idioms (indentation, `pub` on helpers, `?` versus `.unwrap()`, `defmt`) and shows the
   evidence; what you keep goes into every prompt.
 - The chat and the model settings live in the **AI Assist** view in the sidebar.
+- **The chat can be an editor tab, so it can live on a second monitor.** *Rusty AI: Open the Assistant in an
+  Editor Tab* (also a button in the AI Assist view) opens the same conversation beside your code; drag that tab
+  out of the window and it becomes its own OS window. It comes back where you left it after a reload.
+- **Any `.gguf` on Hugging Face, not just the two built-in ones.** *Rusty AI: Add a Model from Hugging Face…*
+  lists a repo's files with their sizes and quantisation and says which fit this machine; the model joins the
+  list and downloads with a checksum check. Nothing is refused because of one machine's specs — a model that may
+  not fit is marked with the arithmetic and you decide.
 
 A machine that cannot run a local model is told so, with the reason, by `Rusty AI: Status and Hardware
 Check` — and can override the verdict with `rustyPlatform.assistant.ignoreHostCheck`.
@@ -103,6 +113,9 @@ Wired boards are never asked: the prompt only appears for a project whose `src/m
 |---|---|
 | New Project… | Wizard: board, template, name → a complete workspace |
 | Build / Clean | `cargo build` / `cargo clean` in a terminal |
+| Publish .deb | Builds for release and packs the firmware artifacts plus a `<package>-flash` helper into `<name>_<version>_<arch>.deb` **in the project root** |
+| Install .deb | `dpkg-deb --info`, then `sudo dpkg -i` in a terminal (Linux) |
+| Back Up Project | `<folder>-<date>_<time>` beside the project, leaving out `target/` |
 | Flash | Builds the debug image and writes it — through the probe (`probe-rs download` + `reset`) for RP, or with `espflash` over USB serial for ESP. One-shot in both cases: it releases the probe/port when it is done |
 | Flash over USB (BOOTSEL)… | The UF2 route on purpose (recovery, or a board with no probe). On an ESP project it uses `espflash` instead |
 | Debug / Stop Debugging | RP: build, flash and start a probe-rs session with RTT. ESP: says there are no breakpoints without JTAG, then flashes and monitors in one terminal |
