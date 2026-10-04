@@ -11,6 +11,37 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.7] - 2026-10-04
+
+### Changed
+
+**The extension no longer relies on you having llama.cpp** — if it is on this machine it is started and used,
+and if it is not, the install is offered.
+
+- **A request that had nowhere to go now fixes that itself.** The chat, *Implement in Function*, *Fix* and
+  *Repair* all go through one path: if the address in the settings has nothing behind it, the extension uses a
+  llama-server that is answering on another local port (saying so: *"nothing is answering at
+  http://127.0.0.1:1234/v1 — using the llama-server on port 8080 instead"*), otherwise it starts the binary
+  you have with the model the settings already know, otherwise it offers to download llama.cpp — and then
+  sends your question again. Previously it stopped at *"No server answered"* however much llama.cpp was on the
+  disk.
+- **Only ever when that is the right thing to do**: an `external` backend, a **local** address (a remote
+  endpoint that is down must not make this machine start a process nobody asked for), and a "nothing
+  answered" failure — a `400`, a cancel or a timeout is reported as before. Nothing is retried once part of an
+  answer has been streamed in, so a retry can never print it twice.
+- **A llama.cpp this extension installed is now found without the setting that points at it.** The lookup
+  reads `<global storage>/llama.cpp/<tag>/…` for itself, so clearing `llamaServerPath`, opening a second
+  window or moving a profile no longer hides a verified build (and no longer offers to fetch it again). The
+  status dialog says which it is: *"(installed by this extension)"*.
+
+### Notes
+
+- Verified on a machine with nothing installed: the offer appears with
+  **Download llama.cpp** / **Point at my own build…** / **Cancel**, the ~18 MB prebuilt lands and is verified
+  in **4.1 s**, and the next lookup finds it as `installed: true`. With a dead endpoint configured, the
+  reported failing prompt now answers by reusing the running server and pinning it. `NOTES.md` §37.
+- Test suite: **562 passed, 0 skipped** (was 557).
+
 ## [0.0.6] - 2026-10-04
 
 ### Fixed
