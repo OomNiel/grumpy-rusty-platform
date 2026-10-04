@@ -11,6 +11,31 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.14] - 2026-10-05
+
+### Added
+
+**Publish the project as a `.deb`, and install it on the host** — two new controls in the **Controls** section.
+
+- **Publish .deb** builds the firmware for release and packs what the build produced into a Debian package **in
+  the project root**: `/usr/share/<package>/` gets the `.elf`/`.bin`/`.uf2` and `/usr/bin/<package>-flash` is a
+  small wrapper that runs `probe-rs` on whichever of them is there. So installing it on a host means that host
+  can flash the board (`<package>-flash`, any probe-rs arguments passed through) with no project checked out.
+  `Architecture:` is the **host's** — claiming `arm64` because the microcontroller is an ARM Cortex-M would make
+  dpkg refuse to install it on the x86-64 machine that built it.
+- **Install .deb** shows `dpkg-deb --info` for the package this project published and then runs `sudo dpkg -i`
+  in a VS Code terminal, so you can type your password (and the command stays in the scrollback).
+- Both are rows in the Controls section only — not in the status bar, which has to stay short — and both say why
+  they cannot work on Windows/macOS instead of failing at the shell.
+
+### Notes
+
+- A Debian package cannot install anything onto a microcontroller, so the package is the *firmware plus a flash
+  helper*; the ambiguity was put to the user before building it. `NOTES.md` §44.
+- Verified against the real `dpkg` here: `dpkg-deb --build` exit 0, `my-blinky-pico2w_0.1.0_amd64.deb` (81 370
+  bytes) in the project root, control fields and contents as intended, the wrapper executable at `0755`.
+- Test suite: **587 passed, 0 skipped** (was 582).
+
 ## [0.0.13] - 2026-10-05
 
 ### Added
