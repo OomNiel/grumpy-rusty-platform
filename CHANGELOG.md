@@ -11,6 +11,24 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.16] - 2026-10-05
+
+### Documentation
+
+- **`README.md`** catches up with everything shipped since the port: the three **Controls** additions
+  (*Publish .deb*, *Install .deb*, *Back Up Project*) in the feature and command tables, the **editor-tab chat**
+  that can be dragged onto a second monitor, and the **Hugging Face** flow for choosing any model rather than the
+  two built-in ones.
+- **`AI_ASSIST.md`** — *Get a model* now leads with what the extension does by itself (installing llama.cpp and
+  fetching the 27B for your own server; adding any `.gguf` from the Hub with its size, quantisation and fit for
+  this machine), the view section documents the editor tab and the second monitor, and the commands and settings
+  sections name the new commands, `llamaServerModelPath` and `gpuVramGb`.
+- `NOTES.md` (§35–§45) and this file were written with each release; no code changed in this version.
+
+### Notes
+
+- Test suite unchanged: **592 passed, 0 skipped**.
+
 ## [0.0.15] - 2026-10-05
 
 ### Added
