@@ -500,6 +500,11 @@ export interface ChatProgress {
     contextSize?: number;
 }
 
+/** How long the model has actually been writing: since its first piece, or since the request if none has. */
+function firstTokenMsOr(p: ChatProgress): number {
+    return p.firstTokenMs !== undefined ? Math.max(0, p.elapsedMs - p.firstTokenMs) : p.elapsedMs;
+}
+
 /** Seconds, one decimal while it matters, whole seconds once it stops being a stopwatch. */
 function seconds(ms: number): string {
     return ms < 10_000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms / 1000)}s`;
@@ -525,8 +530,12 @@ export function describeProgress(p: ChatProgress): string {
     if (p.phase === 'thinking') {
         return `Thinking… ${p.reasoningChars} characters of reasoning (${seconds(p.elapsedMs)})${context}`;
     }
-    const rate = p.elapsedMs > 0 && p.tokens > 0
-        ? ` · ${(p.tokens / (p.elapsedMs / 1000)).toFixed(1)} tokens/s`
+    // The rate is measured from the first token, not from the request: a 3 s prompt read followed by 42
+    // tokens in 3.2 s is 13 tokens/s of generation, and dividing by the whole 6.2 s would report 6.8 — a
+    // number that makes a perfectly fast model look slow for the rest of the answer.
+    const generatingMs = firstTokenMsOr(p);
+    const rate = generatingMs >= 250 && p.tokens > 0
+        ? ` · ${(p.tokens / (generatingMs / 1000)).toFixed(1)} tokens/s`
         : '';
     return `Writing… ${p.tokens} token${p.tokens === 1 ? '' : 's'}${rate} (${seconds(p.elapsedMs)})${context}`;
 }

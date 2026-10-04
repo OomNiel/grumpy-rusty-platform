@@ -320,6 +320,13 @@ test('the progress line says what is happening, and how far in', () => {
     contains(writing, '42 tokens');
     contains(writing, 'tokens/s');
     contains(writing, 'context 40%');
+
+    // The rate is generation, not wall clock: 3 s of prompt reading must not be charged to the tokens.
+    const afterPrefill = assistant.describeProgress({
+        ...base, phase: 'streaming', tokens: 42, characters: 120, elapsedMs: 6200, firstTokenMs: 3000,
+        promptTokens: 1640, contextSize: 4096
+    });
+    contains(afterPrefill, '13.1 tokens/s', `expected the post-prefill rate, got: ${afterPrefill}`);
 });
 
 test('an external server gets no context percentage, because its window is not ours to know', () => {
