@@ -137,7 +137,9 @@ test('parseSseChunk reads content, reasoning, finish reason and usage', () => {
         'data: {"choices":[{"delta":{"content":"hi"}}],"usage":{"completion_tokens":42,"completion_tokens_details":{"reasoning_tokens":37}}}',
     );
     equal(withUsage.content, 'hi');
-    equal(withUsage.usage, { completionTokens: 42, reasoningTokens: 37 });
+    // The prompt count is part of the same object now; absent fields are explicitly `undefined`, which is
+    // what makes the runtime's early "this prompt is N tokens" chunk readable by the same parser.
+    equal(withUsage.usage, { promptTokens: undefined, completionTokens: 42, reasoningTokens: 37 });
 });
 
 test('parseSseChunk ignores everything that is not a data payload', () => {
@@ -292,4 +294,54 @@ test('a bundled config carries no usable endpoint until the runtime is started',
     const cfg = assistant.normalizeAssistantConfig({ backend: 'bundled' });
     equal(cfg.endpoint, assistant.DEFAULT_ENDPOINT, 'the settings default is LM Studio, not the bundled runtime');
     ok(assistant.assistantEnabled(cfg), 'and bundled still counts as "on" without one');
+});
+
+// "Is it actually still working?" The line is built in one place so the notification and the chat panel
+// cannot word it differently, and it is a pure function so every branch is pinned here.
+test('the progress line says what is happening, and how far in', () => {
+    const assistant = compiled('ai/assistant');
+    const base = { tokens: 0, characters: 0, reasoningChars: 0, elapsedMs: 400, sinceLastChunkMs: 400 };
+
+    equal(assistant.describeProgress({ ...base, phase: 'connecting' }), 'Asking the model… (0.4s)');
+
+    const reading = assistant.describeProgress({
+        ...base, phase: 'waiting', elapsedMs: 3200, promptTokens: 1640, contextSize: 4096
+    });
+    contains(reading, 'reading the prompt');
+    contains(reading, '3.2s');
+    contains(reading, 'context 40% (1640/4096)');
+
+    const thinking = assistant.describeProgress({ ...base, phase: 'thinking', reasoningChars: 312, elapsedMs: 6100 });
+    contains(thinking, '312 characters of reasoning');
+
+    const writing = assistant.describeProgress({
+        ...base, phase: 'streaming', tokens: 42, characters: 120, elapsedMs: 6200, promptTokens: 1640, contextSize: 4096
+    });
+    contains(writing, '42 tokens');
+    contains(writing, 'tokens/s');
+    contains(writing, 'context 40%');
+});
+
+test('an external server gets no context percentage, because its window is not ours to know', () => {
+    const assistant = compiled('ai/assistant');
+    const line = assistant.describeProgress({
+        phase: 'streaming', tokens: 5, characters: 20, reasoningChars: 0, elapsedMs: 1000, sinceLastChunkMs: 10
+    });
+    ok(!line.includes('context'), `no window, no percentage: ${line}`);
+    contains(line, '5 tokens');
+});
+
+test('the context percentage never exceeds 100', () => {
+    const assistant = compiled('ai/assistant');
+    const line = assistant.describeProgress({
+        phase: 'waiting', tokens: 0, characters: 0, reasoningChars: 0, elapsedMs: 500, sinceLastChunkMs: 500,
+        promptTokens: 5000, contextSize: 4096
+    });
+    contains(line, 'context 100%');
+});
+
+test('a prompt-token count sent before the first token is read', () => {
+    const assistant = compiled('ai/assistant');
+    const chunk = assistant.parseSseChunk('data: {"choices":[{"delta":{},"finish_reason":null}],"usage":{"prompt_tokens":1640}}');
+    equal(chunk.usage.promptTokens, 1640);
 });

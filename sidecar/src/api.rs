@@ -108,6 +108,9 @@ async fn completions(State(state): State<Arc<AppState>>, Json(request): Json<Cha
                 Chunk::Done { finish_reason, completion_tokens, .. } => {
                     openai::final_chunk_json(&model_id, &finish_reason, completion_tokens).to_string()
                 }
+                Chunk::Usage { prompt_tokens } => {
+                    openai::prompt_usage_json(&model_id, prompt_tokens).to_string()
+                }
                 Chunk::Error(message) => json!({ "error": { "message": message } }).to_string(),
                 Chunk::End => "[DONE]".to_string(),
             };
@@ -133,6 +136,8 @@ async fn completions(State(state): State<Arc<AppState>>, Json(request): Json<Cha
                 completion_tokens = tokens;
                 prompt_tokens = prompt;
             }
+            // The prompt count already reached the client in its own chunk; the final body carries it too.
+            Chunk::Usage { .. } => {}
             Chunk::Error(message) => {
                 return error_response(StatusCode::INTERNAL_SERVER_ERROR, message)
             }

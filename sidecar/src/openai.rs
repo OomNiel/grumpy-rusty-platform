@@ -46,6 +46,21 @@ pub fn chunk_json(model: &str, delta: &str) -> Value {
     })
 }
 
+/// The prompt size, sent before the first token.
+///
+/// OpenAI reports usage only in the closing chunk; a client that wants to watch the context fill while it
+/// waits needs the count early, and this is the only moment the runtime knows it. A client that ignores it
+/// loses nothing (the delta is empty).
+pub fn prompt_usage_json(model: &str, prompt_tokens: usize) -> Value {
+    json!({
+        "id": "chatcmpl-local",
+        "object": "chat.completion.chunk",
+        "model": model,
+        "choices": [{ "index": 0, "delta": {}, "finish_reason": null }],
+        "usage": { "prompt_tokens": prompt_tokens }
+    })
+}
+
 /// The closing chunk: it carries the reason the model stopped and how many tokens it wrote, which is what
 /// turns "0 characters" into an explanation (a thinking model that spent its whole budget before answering)
 /// rather than a shrug.

@@ -127,6 +127,7 @@ impl Engine {
         prompt: &str,
         params: &GenParams,
         mut on_token: F,
+        on_prompt: impl FnOnce(usize),
     ) -> Result<GenStats> {
         self.ctx.clear_kv_cache();
         let tokens = self.model.vocab().tokenize(prompt.as_bytes(), true, true);
@@ -142,6 +143,9 @@ impl Engine {
                 n_ctx
             ));
         }
+        // Reported before a single token is generated: the extension shows "how full is the window" while
+        // the model is still reading the prompt, and only the runtime knows the real tokenized count.
+        on_prompt(tokens.len());
         let max_new = (n_ctx - tokens.len()).min(params.max_tokens.max(1) as usize) as u32;
 
         let n_batch = (self.ctx.n_batch() as usize).max(1);

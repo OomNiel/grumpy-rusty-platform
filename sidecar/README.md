@@ -45,6 +45,9 @@ It prints `MODEL_HOST_READY <port>` as soon as the port is bound — **before** 
 | `GET` | `/v1/models` | `{ object: "list", data: [ { id, object: "model" } ] }` |
 | `POST` | `/v1/chat/completions` | OpenAI chat request → SSE `data:` deltas and a closing `data: [DONE]`, or one JSON body when `stream` is absent/false |
 
+The **first** SSE event carries `usage.prompt_tokens` with an empty delta: the prompt is tokenized before
+generation starts, and that count is what lets the client show how full the context window is while it waits.
+
 `backend` in `/health` is what the **binary was compiled with** (a cargo feature), never what was asked for
 on the command line: llama.cpp keeps a layer budget on the CPU when the GPU backend is not there, and the
 status line must not claim otherwise.

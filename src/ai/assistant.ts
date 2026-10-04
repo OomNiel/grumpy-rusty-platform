@@ -401,7 +401,7 @@ export interface SseChunk {
     /** `stop` when it finished on its own, `length` when the token budget ran out. */
     finishReason?: string;
     /** Token counts, when the server reports them. */
-    usage?: { completionTokens?: number; reasoningTokens?: number };
+    usage?: { promptTokens?: number; completionTokens?: number; reasoningTokens?: number };
 }
 
 /**
@@ -417,7 +417,11 @@ export function parseSseChunk(line: string): SseChunk | undefined {
     try {
         const obj = JSON.parse(payload) as {
             choices?: { delta?: { content?: unknown; reasoning_content?: unknown; reasoning?: unknown }; finish_reason?: unknown }[];
-            usage?: { completion_tokens?: unknown; completion_tokens_details?: { reasoning_tokens?: unknown } };
+            usage?: {
+                prompt_tokens?: unknown;
+                completion_tokens?: unknown;
+                completion_tokens_details?: { reasoning_tokens?: unknown };
+            };
         };
         const choice = obj.choices?.[0];
         const delta = choice?.delta ?? {};
@@ -431,6 +435,7 @@ export function parseSseChunk(line: string): SseChunk | undefined {
         if (typeof choice?.finish_reason === 'string') chunk.finishReason = choice.finish_reason;
         if (obj.usage) {
             chunk.usage = {
+                promptTokens: typeof obj.usage.prompt_tokens === 'number' ? obj.usage.prompt_tokens : undefined,
                 completionTokens: typeof obj.usage.completion_tokens === 'number' ? obj.usage.completion_tokens : undefined,
                 reasoningTokens: typeof obj.usage.completion_tokens_details?.reasoning_tokens === 'number'
                     ? obj.usage.completion_tokens_details.reasoning_tokens
@@ -467,8 +472,73 @@ export function parseChatCompletion(body: unknown): string {
     return parseChatCompletionFull(body).text;
 }
 
+/**
+ * What a request is doing right now, for a progress line that answers "is it still working?".
+ *
+ * `promptTokens`/`contextSize` are the "how full is the window" pair: the bundled runtime reports the real
+ * prompt count before it generates (it has just tokenized it), and the window is the one this extension
+ * started it with. Against an external server neither is known, and the fields stay undefined rather than
+ * showing a percentage of a window somebody else chose.
+ */
+export interface ChatProgress {
+    /** `connecting` = the request is in flight; `waiting` = sent, nothing back yet; then thinking/writing. */
+    phase: 'connecting' | 'waiting' | 'thinking' | 'streaming';
+    /** Answer pieces received. Local runtimes send about one per token, which is what makes this a count. */
+    tokens: number;
+    /** Answer characters received. */
+    characters: number;
+    /** Characters of the model's own thinking, when it thinks. */
+    reasoningChars: number;
+    elapsedMs: number;
+    /** Milliseconds since anything arrived — the number that says the model is still alive. */
+    sinceLastChunkMs: number;
+    /** How long the model spent before its first piece (prompt processing). */
+    firstTokenMs?: number;
+    /** Prompt tokens, when the server reported them. */
+    promptTokens?: number;
+    /** The window the request has to fit in, when it is ours to know. */
+    contextSize?: number;
+}
+
+/** Seconds, one decimal while it matters, whole seconds once it stops being a stopwatch. */
+function seconds(ms: number): string {
+    return ms < 10_000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms / 1000)}s`;
+}
+
+/**
+ * One line of "what is happening", for a progress notification or a chat status row.
+ *
+ * The numbers answer the two questions a waiting developer actually has: *is it alive?* (elapsed time, and
+ * how long since anything arrived) and *how far in is it?* (pieces written, and how much of the window the
+ * prompt already took). Pure, so every branch is pinned by the suite rather than by a screenshot.
+ */
+export function describeProgress(p: ChatProgress): string {
+    const context = p.promptTokens !== undefined && p.contextSize
+        ? ` · context ${Math.min(100, Math.round((p.promptTokens / p.contextSize) * 100))}% (${p.promptTokens}/${p.contextSize})`
+        : '';
+    if (p.phase === 'connecting') return `Asking the model… (${seconds(p.elapsedMs)})`;
+    if (p.phase === 'waiting') {
+        return p.firstTokenMs === undefined && p.reasoningChars === 0
+            ? `The model is reading the prompt… (${seconds(p.elapsedMs)})${context}`
+            : `Thinking… (${seconds(p.elapsedMs)})${context}`;
+    }
+    if (p.phase === 'thinking') {
+        return `Thinking… ${p.reasoningChars} characters of reasoning (${seconds(p.elapsedMs)})${context}`;
+    }
+    const rate = p.elapsedMs > 0 && p.tokens > 0
+        ? ` · ${(p.tokens / (p.elapsedMs / 1000)).toFixed(1)} tokens/s`
+        : '';
+    return `Writing… ${p.tokens} token${p.tokens === 1 ? '' : 's'}${rate} (${seconds(p.elapsedMs)})${context}`;
+}
+
 export interface ChatOptions {
     onToken?: (text: string) => void;
+    /**
+     * Called while the request runs — on every piece that arrives and on a half-second heartbeat, so a model
+     * that is reading a long prompt still shows movement. The heartbeat is the point: without it, the gap
+     * before the first token is indistinguishable from a hang.
+     */
+    onProgress?: (progress: ChatProgress) => void;
     /** Progress only: the model is still thinking (reasoning models). `chars` is the running total. */
     onReasoning?: (chars: number) => void;
     signal?: AbortSignal;
@@ -512,20 +582,60 @@ export async function chatDetailed(
     armWatchdog();
     const onAbort = () => controller.abort();
     opts.signal?.addEventListener('abort', onAbort);
+
+    // Live progress. `tokens` counts pieces rather than asking the server, and that is deliberate: every
+    // local runtime streams about one piece per token, and the alternative — counting only at the end — is
+    // exactly the "is it doing anything?" this exists to answer.
+    const startedAt = Date.now();
+    let lastChunkAt = startedAt;
+    let connected = false;
+    let tokens = 0;
+    let reasoningChars = 0;
+    let firstTokenMs: number | undefined;
+    // Only the bundled runtime's window is ours to know: we started it, with this context size. An external
+    // server decides its own, so `describeProgress` shows no percentage rather than a made-up one.
+    const contextSize = cfg.backend === 'bundled' ? cfg.contextSize : undefined;
+    // A rough prompt size, so the percentage is there from the first tick and refined by the real count the
+    // runtime sends once it has tokenized the prompt.
+    let promptTokens: number | undefined = estimateTokens(messages.map((m) => m.content).join('\n'));
+    const phaseOf = (): ChatProgress['phase'] =>
+        !connected ? 'connecting' : tokens > 0 ? 'streaming' : reasoningChars > 0 ? 'thinking' : 'waiting';
+    const tick = (): void => {
+        const now = Date.now();
+        opts.onProgress?.({
+            phase: phaseOf(),
+            tokens,
+            characters: outcome.text.length,
+            reasoningChars,
+            elapsedMs: now - startedAt,
+            sinceLastChunkMs: now - lastChunkAt,
+            firstTokenMs,
+            promptTokens,
+            contextSize
+        });
+    };
+    const heartbeat = setInterval(tick, 500);
+    tick();
     const apply = (chunk: SseChunk | undefined, into: ChatOutcome) => {
         if (!chunk) return;
         if (chunk.content) {
             into.text += chunk.content;
+            tokens += 1;
+            firstTokenMs ??= Date.now() - startedAt;
             opts.onToken?.(chunk.content);
         }
         if (chunk.reasoning) {
             into.reasoning += chunk.reasoning;
-            opts.onReasoning?.(into.reasoning.length);
+            reasoningChars = into.reasoning.length;
+            firstTokenMs ??= Date.now() - startedAt;
+            opts.onReasoning?.(reasoningChars);
         }
         if (chunk.finishReason) into.finishReason = chunk.finishReason;
+        if (chunk.usage?.promptTokens !== undefined) promptTokens = chunk.usage.promptTokens;
         if (chunk.usage?.completionTokens !== undefined) into.completionTokens = chunk.usage.completionTokens;
         if (chunk.usage?.reasoningTokens !== undefined) into.reasoningTokens = chunk.usage.reasoningTokens;
     };
+    const outcome: ChatOutcome = { text: '', reasoning: '' };
     try {
         const res = await doFetch(`${cfg.endpoint}/chat/completions`, {
             method: 'POST',
@@ -547,6 +657,7 @@ export async function chatDetailed(
             const detail = await res.text().catch(() => '');
             throw new Error(`The server answered HTTP ${res.status}${detail ? `: ${detail.slice(0, 300)}` : ''}`);
         }
+        connected = true;
 
         // The response is an SSE stream; read it chunk by chunk and hand every delta to the caller.
         const body = res.body as { getReader?: () => { read(): Promise<{ done: boolean; value?: Uint8Array }> } } | undefined;
@@ -560,11 +671,11 @@ export async function chatDetailed(
         const decoder = new TextDecoder();
         let buffer = '';
         let raw = '';
-        const outcome: ChatOutcome = { text: '', reasoning: '' };
         for (; ;) {
             const { done, value } = await reader.read();
             if (done) break;
             armWatchdog(); // data arrived: the server is alive, whatever its speed
+            lastChunkAt = Date.now();
             const chunk = decoder.decode(value, { stream: true });
             raw += chunk;
             buffer += chunk;
@@ -574,6 +685,7 @@ export async function chatDetailed(
         }
         buffer += decoder.decode();
         apply(parseSseChunk(buffer), outcome);
+        tick();
         // A server that ignores `stream: true` sends one plain JSON body: no `data:` lines at all, so
         // nothing was accumulated and the answer is in the raw body.
         if (!outcome.text && !outcome.reasoning) {
@@ -591,6 +703,7 @@ export async function chatDetailed(
     } catch (err) {
         throw new Error(describeError(err));
     } finally {
+        clearInterval(heartbeat);
         if (timer) clearTimeout(timer);
         opts.signal?.removeEventListener('abort', onAbort);
     }
