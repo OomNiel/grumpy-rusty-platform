@@ -34,7 +34,6 @@ import {
     MODEL_FOLDER,
     MODEL_SPECS,
     READY_PREFIX,
-    canRunSpec,
     defaultThreads,
     formatBytes,
     hubApiUrl,
@@ -42,6 +41,7 @@ import {
     isGgufPath,
     parseHealth,
     shortHash,
+    specFit,
     sidecarBackend,
     type HubFile,
     sidecarArgs,
@@ -876,19 +876,29 @@ export async function setupBundledModel(context: vscode.ExtensionContext): Promi
         return;
     }
 
-    const offered = MODEL_SPECS.filter((s) => canRunSpec(s, { level: verdict.level, totalRamGb: facts.totalRamGb }).ok);
-    const refused = MODEL_SPECS.filter((s) => !offered.includes(s));
-    const items: (vscode.QuickPickItem & { spec?: ModelSpec; action?: 'file' | 'url' })[] = [
-        ...offered.map((spec) => ({
-            label: `$(cloud-download) ${spec.label}`,
-            description: spec.detail,
-            detail: fs.existsSync(modelFileFor(context, spec)) ? 'already downloaded' : `${formatBytes(spec.bytes)} download`,
-            spec
-        })),
-        ...refused.map((spec) => ({
-            label: `$(circle-slash) ${spec.label}`,
-            description: `not offered here — ${canRunSpec(spec, { level: verdict.level, totalRamGb: facts.totalRamGb }).reason}`
-        })),
+    const fit = (spec: ModelSpec): ReturnType<typeof specFit> => specFit(spec, { totalRamGb: facts.totalRamGb, freeRamGb: facts.freeRamGb });
+    // EVERY model this extension can run is offered, here and everywhere else. The old list split them into
+    // "offered" and "not offered here — needs N GB RAM", which told a user with a small machine which models
+    // they were allowed and told a user with a big one nothing at all, because the catalogue itself was
+    // written for one machine (2026-10-04: *"this extension must allow users with high spec hardware to select
+    // models that suit their environment"*). What a model costs, what is free, and what the machine has are
+    // three facts the user can weigh; only the model's own allocation failure is decisive, and llama.cpp
+    // reports that itself.
+    const items: (vscode.QuickPickItem & { spec?: ModelSpec; action?: 'file' | 'url' | 'hub' })[] = [
+        ...allModelSpecs().map((spec) => {
+            const verdictOnSize = fit(spec);
+            const onDisk = fs.existsSync(modelFileFor(context, spec));
+            return {
+                label: `${onDisk ? '$(check)' : verdictOnSize.fits ? '$(cloud-download)' : '$(warning)'} ${spec.label}`,
+                description: spec.detail,
+                detail: [
+                    onDisk ? 'already downloaded' : `${formatBytes(spec.bytes)} download`,
+                    verdictOnSize.fits ? undefined : `may not fit — ${verdictOnSize.reason}`
+                ].filter(Boolean).join(' · '),
+                spec
+            };
+        }),
+        { label: '$(cloud) Add a model from Hugging Face…', detail: 'any .gguf on the Hub: pick the size that suits this machine', action: 'hub' },
         { label: '$(file) Use a .gguf file already on this machine…', action: 'file' },
         { label: '$(link) Paste the address of a .gguf file…', action: 'url' }
     ];
@@ -899,6 +909,14 @@ export async function setupBundledModel(context: vscode.ExtensionContext): Promi
         ignoreFocusOut: true
     });
     if (!pick) return;
+
+    if (pick.action === 'hub') {
+        // Runs the command rather than importing the flow: `hubModels` already imports this module for
+        // `addCustomModelSpec`/`fetchHubFiles`, and a second edge back would close a load-time cycle. Same
+        // reason the model picker runs `startLlamaServer` as a command (2026-09-16).
+        await vscode.commands.executeCommand('rustyPlatform.assistant.addModel');
+        return;
+    }
 
     if (pick.action === 'file') {
         const startFolder = lastPickerFolder('model');
@@ -948,6 +966,17 @@ export async function setupBundledModel(context: vscode.ExtensionContext): Promi
 
     const spec = pick.spec;
     if (!spec) return;
+    const chosenFit = fit(spec);
+    if (!chosenFit.fits) {
+        const over = await vscode.window.showWarningMessage(
+            `${spec.label} ${chosenFit.reason}. Loading it anyway can make this machine swap — or fail with an `
+            + 'allocation error from the runtime. Continue?',
+            { modal: true },
+            'Download it anyway',
+            'Cancel'
+        );
+        if (over !== 'Download it anyway') return;
+    }
     try {
         await vscode.window.withProgress(
             { location: vscode.ProgressLocation.Notification, title: `Getting ${spec.label}`, cancellable: true },

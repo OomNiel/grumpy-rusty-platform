@@ -233,6 +233,17 @@
                 "category": "Rusty AI"
             },
             {
+                "command": "rustyPlatform.assistant.addModel",
+                "title": "Add a Model from Hugging Face…",
+                "category": "Rusty AI",
+                "icon": "$(cloud-download)"
+            },
+            {
+                "command": "rustyPlatform.assistant.removeAddedModel",
+                "title": "Remove a Model I Added…",
+                "category": "Rusty AI"
+            },
+            {
                 "command": "rustyPlatform.assistant.startLlamaServer",
                 "title": "Start My llama-server…",
                 "category": "Rusty AI",
@@ -484,6 +495,13 @@
                     "minimum": 0,
                     "maximum": 86400,
                     "markdownDescription": "How long a model loaded through LM Studio stays in memory when idle. `0` means \"no timer\" — it stays until something unloads it."
+                },
+                "rustyPlatform.assistant.gpuVramGb": {
+                    "type": "number",
+                    "default": 0,
+                    "minimum": 0,
+                    "maximum": 256,
+                    "markdownDescription": "Dedicated graphics memory, in GB, when this extension cannot detect it. `0` means \"ask the driver\" (NVIDIA via `nvidia-smi`, AMD via sysfs). It is used to decide whether a model's layers fit on the card: an integrated GPU shares system memory and is deliberately reported as *no card*, so leave this at `0` unless you know yours has dedicated VRAM."
                 },
                 "rustyPlatform.assistant.llamaServerPath": {
                     "type": "string",

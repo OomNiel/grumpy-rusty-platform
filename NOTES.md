@@ -1701,3 +1701,62 @@ whose proposed text has the new body (`Timer::after_millis(500)`), the old body 
 exactly one `main`, and **the file on disk unchanged until Apply**.
 
 Suite: **571 passed, 0 skipped** (was 562).
+
+## 39. The model list was written around one machine (2026-10-04)
+
+**The complaint.** *"The weight size of the local models are restricted to the specs of this pc. However,
+this extension is bound to be used by other users who might have much better hardware. This extension must
+allow users with high spec hardware to select models that suit their environment."*
+
+**What the check found — four ways the extension decided from the machine it was written on.**
+
+1. **The only models anyone could choose were the two 4.4 GB entries in `MODEL_SPECS`** (plus the 27B for the
+   own-server path). The designer's "add a model from Hugging Face" flow had been ported — `parseHubUrl`,
+   `hubGgufFiles`, `hubFileSpec`, `addCustomModelSpec`, `customModelSpecs`, all tested — and **nothing called
+   any of it**. The mechanism for "choose a model that suits your environment" existed and was unreachable.
+2. **A model was vetoed by this machine's RAM**, and for a Hub model the requirement was **twice its own file
+   size**: `hubFileSpec` derived `minRamGb = size × 2`, so the 16.8 GB 27B was "not offered here" on the 28 GB
+   machine that loads it in 16.5 GiB. A user with a big machine was shown a refusal computed for a small one.
+3. **The GPU was never asked about.** `HardwareFacts` had `cpuCount`, `totalRamGb`, `freeRamGb`, `hasAvx2` —
+   no VRAM at all. The offload rule was `sizeGb > 8 → off`, written when the only GPU in the room was an
+   integrated one: on a 24 GB card, a 27B was pinned to the CPU by a rule that could not tell the two apart.
+   The thread count was capped at 8 (a 12-thread laptop's number) and the recommended context ceiling was
+   16 384 for everyone.
+4. Nothing else — the *own llama-server* path already takes any `.gguf` on disk, and the panel lists every
+   spec via `allModelSpecs()`.
+
+**What it does now.**
+
+* **"Add a Model from Hugging Face…"** (command and a picker entry): type `owner/repo` or paste a Hub link, and
+  the repo's files are listed **with their sizes, quantisation and fit for this machine**; pick one and it goes
+  into `user-models.json` beside the weights and behaves exactly like a built-in entry from then on —
+  picker, panel dropdown, checksum-verified download, hardware arithmetic. `mmproj-*.gguf` (vision projectors)
+  are filtered out with `canImportFile`, the same rule the on-disk scan uses, so the two lists agree on what a
+  chat model is. A companion command removes an added model from the list (the weights are left on disk).
+* **No more veto.** Every model is offered; one that may not fit is marked `$(warning)` with the arithmetic
+  (*"needs about 24.4 GB free (21.3 GB free now, 28 GB in total)"*) and asking for it confirms once. llama.cpp
+  reports its own allocation failure if it really cannot.
+* **`specFit`** replaces the ×2 guess: weights + a 2 GB context allowance, against the memory free *now*.
+* **The card is asked**: `readGpuVramGb()` tries `nvidia-smi`, then the amdgpu sysfs file, and the
+  `gpuVramGb` setting overrides both (Intel Arc, Apple silicon and older drivers answer "unknown"). Offload is
+  then decided by whether **weights + context fit the card** — with a sentence saying why, either way.
+* **Threads** to `min(cores − 1, 16)` and **context** by free RAM (64 k at 96 GB, 32 k at 48 GB, 16 k at 20 GB,
+  unchanged below that), so a workstation is not handed a laptop's numbers.
+
+**One trap found by testing on this machine.** The amdgpu sysfs figure for an **APU** is a slice of *system*
+RAM, not a card: this machine's integrated Radeon reports **3.2 GB**, and its own measurements say offloading
+the 4.7 GB 7B to it is *faster* (9.7 s against 13.0 s on the CPU). Trusting that number would have flipped
+every recommendation here to CPU-only. So a figure under 8 GB is ignored (`isDedicatedAmdVram`) and the
+conservative shared-memory rule stands — verified: `readGpuVramGb()` on this box answers `undefined`.
+
+**Verified on the real machine and the real Hub** (compiled modules, stubbed `vscode`):
+
+```
+this machine : 28 GB RAM, 21.3 GB free, 12 threads, no dedicated card
+the 27B      : was minRamGb 31 (2× the file) → refused here;  now needs about 18.8 GB, 21.3 GB free → offered
+threads      : 11 (was capped at 8)          context: 16384        offload on a 24 GB card for the 27B: GPU
+Hub, for real: lmstudio-community/Qwen3.8-27B-GGUF → 4 files listed with size + quantisation + fit
+               Qwen3.8-27B-Q4_K_M.gguf added → stored in user-models.json → in allModelSpecs() → true
+```
+
+Suite: **575 passed, 0 skipped** (was 571).
