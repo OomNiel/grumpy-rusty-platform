@@ -11,6 +11,39 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.10] - 2026-10-04
+
+### Fixed
+
+**Windows 11: three decisions that assumed Linux**
+
+The extension installs and runs on Windows (`"os"` restricts nothing), the toolchain/flash layer already has
+its Windows branches, nothing spawns through a shell, and the Rust sidecar has no Unix-only code. Three
+AI-side decisions were Linux-shaped and are put right:
+
+- **Start server no longer asks systemd for a unit on Windows.** `systemctl` does not exist there, so the
+  first Start failed against it and only then fell back to a process. The default is now the platform's —
+  a systemd user unit on Linux, a child process elsewhere — and a setting you chose explicitly is always
+  honoured.
+- **The model search looks at your other drives.** It walked `/media`, `/run/media`, `/mnt`, `/Volumes` (which
+  do not exist on Windows and were skipped) and never `D:`-`Z:`, so a `.gguf` on a second drive was invisible
+  to every scan and reachable only through the file dialog. `C:` is deliberately not walked: the interesting
+  folders on it are your own, which are already roots.
+- **"Who is holding this port?" no longer claims "nothing".** That answer came from `ss` and `/proc`, which are
+  Linux-only — so on Windows the panel said nothing was running while a server answered requests. It now says
+  *"running, but this platform cannot say who started it"*, and the stop flow tells you where to end it
+  instead of pretending it checked.
+
+### Notes
+
+- **Good news found in the audit**: the GPU probe already covers Windows (PowerShell/WMI) and macOS
+  (`system_profiler`) and classifies discrete versus integrated cards, so the VRAM-aware offload works there
+  too; `gpuVramGb` covers anything the probe cannot see.
+- **Still unverified on Windows**: a first-run sidecar build with MSVC, and the ESP toolchain install — both
+  audited, neither run. Recorded in `NOTES.md` §40, along with one follow-up this audit surfaced: there are now
+  two VRAM readers (the host gate's probe and `sys.ts`) which agree in practice and should be one.
+- Test suite: **579 passed, 0 skipped** (was 575).
+
 ## [0.0.9] - 2026-10-04
 
 ### Changed
