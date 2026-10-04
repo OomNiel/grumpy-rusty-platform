@@ -290,6 +290,9 @@ First build: everything the extension does today, packaged as `grumpy-rusty-plat
   the outcome object it reads existed, so `chatDetailed` threw *“Cannot access ‘outcome’ before
   initialization”* and no request ever reached the model. The declaration now precedes the first tick, and
   a test drives `chatDetailed` against an injected SSE stream — the coverage whose absence let it ship.
+- **An answer is no longer printed twice in the chat.** The streamed pieces drew the answer and the closing
+  message added the whole thing again as a second turn; the closing message now *settles* the live turn,
+  replacing the streamed text with the authoritative answer.
 [Unreleased]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.4...HEAD
 [0.0.4]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.3...v0.0.4
 [0.0.3]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.2...v0.0.3
