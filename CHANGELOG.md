@@ -251,6 +251,12 @@ First build: everything the extension does today, packaged as `grumpy-rusty-plat
 - Windows is untested — the installer URLs are platform-aware, but probe-rs needs WinUSB/libusb
   handling that differs from Linux.
 
+### Changed
+
+- **“Choose a local model…” announces its wait.** The first check of a session also starts LM Studio’s
+  helper service (measured at ~4.3 s), and the picker could not be built before that finished; the command
+  now shows a progress notification — *“Looking for local models…”* — while it asks LM Studio and reads
+  the machine, so a slow first click no longer looks like a dead button.
 [Unreleased]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.4...HEAD
 [0.0.4]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.3...v0.0.4
 [0.0.3]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.2...v0.0.3
