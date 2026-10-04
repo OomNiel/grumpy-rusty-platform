@@ -183,3 +183,15 @@ test('the editor-tab chat comes back after a reload', () => {
     ok(chat.includes('function wireChatPanel('), 'a restored panel is wired by the same code as a new one');
     ok((chat.match(/wireChatPanel\(/g) || []).length >= 3, 'both paths call it');
 });
+
+test('the side panel itself can move the chat into an editor pane', () => {
+    // Asked 2026-10-05: the move must be reachable from the Rusty Platform side panel, not only from the
+    // Command Palette — a button in the view's own footer and an action in its title bar, both running the one
+    // command (so there is no second path to keep in step).
+    const chat = fs.readFileSync(path.join(repoRoot(), 'src/ui/aiChatView.ts'), 'utf8');
+    ok(chat.includes('id="openEditorTab"'), 'the view renders the button');
+    ok(chat.includes("command: 'rustyPlatform.assistant.openEditor'"), 'and it runs the same command');
+    const titles = PACKAGE.contributes.menus['view/title'];
+    ok(titles.some((m) => m.command === 'rustyPlatform.assistant.openEditor' && m.when === 'view == rustyPlatform.assistant'),
+        'the view title bar offers it too');
+});
