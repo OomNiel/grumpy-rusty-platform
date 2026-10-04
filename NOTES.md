@@ -1760,3 +1760,48 @@ Hub, for real: lmstudio-community/Qwen3.8-27B-GGUF → 4 files listed with size 
 ```
 
 Suite: **575 passed, 0 skipped** (was 571).
+
+## 40. Windows 11: audited, and three Linux-shaped decisions put right (2026-10-04)
+
+**The question.** *"Will this extension also work in Windows 11?"* The honest answer needed an audit, not an
+opinion — and the audit found the manifest restricts nothing (`"os": null`), the toolchain/flash layer already
+carries real Windows branches (`rustup-init.exe`, `x86_64-pc-windows-msvc`, `.exe`/`.cmd` resolution,
+`bootsel` via Windows), nothing anywhere spawns through a shell (so `C:\Program Files\…` cannot be mangled),
+and the Rust sidecar has no Unix-only code. Three **AI-side** decisions, though, were quietly Linux-shaped.
+
+1. **The start target defaulted to a systemd unit on every platform.** On Windows `systemctl` does not exist,
+   so the unit route failed first and the built-in fallback started a process — working, but after a pointless
+   failed attempt and a message about a service manager that is not there. `resolveStartTarget(configured,
+   platform)` now decides the *default* (unit on Linux, process elsewhere) and an explicit setting is always
+   honoured, read from the configuration **scopes** rather than the value: the setting's declared default is
+   `unit`, so the value alone cannot say whether the user ever chose it.
+2. **Model search walked `/media`, `/run/media`, `/mnt`, `/Volumes` and no drives.** On Windows those do not
+   exist (skipped silently), and `D:`-`Z:` were never looked at — so a 16 GB `.gguf` on a second drive was
+   invisible to every scan and reachable only through the file dialog. `windowsDriveRoots(exists)` offers each
+   existing `D:`-`Z:` (never `C:`, whose interesting folders are the user's own, already roots), and
+   `scanRoots(home, platform, extra)` splices them in on win32.
+3. **"Who is holding this port?" answered `none` on Windows** — because `ss` and `/proc` do not exist there.
+   That is a lie the panel then repeats while a server is answering requests at that very moment.
+   `canInspectServerOwner(platform)` pins the fact, `detectServerOwner` returns a new
+   `{ kind: 'unknown', why }`, `describeOwner` says *"running, but this platform cannot say who started it"*,
+   and the stop flow tells the user where to end it instead of claiming it checked.
+
+**Windows is better covered than the audit first suggested**, in one respect worth recording: `hostCheck.ts`
+already probes the GPU on **Windows via PowerShell/WMI** (`Get-CimInstance Win32_VideoController`) and on macOS
+via `system_profiler`, and classifies `discrete` versus `integrated` — so the VRAM-aware offload works there
+too, and the `gpuVramGb` setting covers whatever the probe cannot see.
+
+**Known follow-up, recorded rather than hidden.** There are now **two** VRAM readers: `hostCheck`'s
+`probeGpu`/`classifyGpu` (async, classifies the card, covers all three platforms) and `sys.ts`'s
+`readGpuVramGb` (sync, added in §39 so the synchronous `setupFacts()` could have a number). They agree in
+practice — `sys.ts` refuses anything under 8 GB, which is exactly the APU case `classifyGpu` calls
+`integrated` — but "agree in practice" is the arrangement this project keeps refusing to accept. The fix is to
+give `setupFacts` the probe's verdict (a cached synchronous accessor, or making its callers tolerate a
+promise); it is a small refactor across the picker's call sites and was deliberately not folded into a
+Windows-fix release.
+
+**What is still unverified on Windows**: a first-run sidecar build with MSVC, and the ESP toolchain install.
+Both are code-audited, neither has been run on a Windows machine — the same standing caveat as the sidecar's
+first real generation here.
+
+Suite: **579 passed, 0 skipped** (was 575).

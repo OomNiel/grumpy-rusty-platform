@@ -392,3 +392,54 @@ test('a release fetched by the extension is found inside its own folder', () => 
     // A trailing separator must not double up.
     equal(models.installedLlamaServerCandidates('/gs/b1/', ['llama-b1'], 'linux')[1], '/gs/b1/llama-b1/llama-server');
 });
+
+// ------------------------------------------------ Windows is not Linux (audited 2026-10-04)
+
+test('the start target defaults by platform, and an explicit choice always wins', () => {
+    // systemd is Linux-only. The old default asked for a unit everywhere, so on Windows the first Start failed
+    // against a service manager that does not exist and only then fell back to a process.
+    equal(models.resolveStartTarget(undefined, 'linux'), 'unit');
+    equal(models.resolveStartTarget('', 'linux'), 'unit');
+    equal(models.resolveStartTarget(undefined, 'win32'), 'process');
+    equal(models.resolveStartTarget(undefined, 'darwin'), 'process');
+    equal(models.resolveStartTarget('process', 'linux'), 'process', 'an explicit choice is honoured');
+    equal(models.resolveStartTarget('unit', 'win32'), 'unit', 'even a pointless one');
+    equal(models.resolveStartTarget('PROCESS', 'linux'), 'process');
+    equal(models.resolveStartTarget('nonsense', 'win32'), 'process', 'garbage is the platform default');
+});
+
+test('who holds a port can only be inspected on Linux, and off Linux that is said out loud', () => {
+    equal(models.canInspectServerOwner('linux'), true);
+    equal(models.canInspectServerOwner('win32'), false);
+    equal(models.canInspectServerOwner('darwin'), false);
+});
+
+test('the scan walks the other drives on Windows instead of mount points', () => {
+    const exists = (p) => ['D:\\', 'E:\\'].includes(p);
+    equal(models.windowsDriveRoots(exists), ['D:\\', 'D:\\models', 'E:\\', 'E:\\models']);
+    // C: is the system drive: its interesting folders are the user's own, which are roots already. Walking it
+    // would spend the scan's whole budget on Windows and Program Files.
+    notOk(models.windowsDriveRoots(exists).some((r) => r.startsWith('C:')), 'no C:');
+
+    const drives = models.windowsDriveRoots(exists);
+    const win = models.scanRoots('C:/Users/me', 'win32', drives);
+    ok(win.includes('C:/Users/me/Downloads'), 'the user’s own folders are still roots');
+    ok(win.includes('D:\\models'), 'and so are the other drives');
+    notOk(win.includes('/media'), 'no Linux mount points on Windows');
+    notOk(win.includes('/Volumes'), 'nor macOS ones');
+
+    // Linux and macOS are unchanged: the mount roots are how a removable drive is reached there.
+    const lin = models.scanRoots('/home/me', 'linux');
+    ok(lin.includes('/media') && lin.includes('/run/media') && lin.includes('/mnt'));
+    // macOS shares the Unix list on purpose: the walker skips roots that do not exist, and `/Volumes` is the
+    // one that matters there. Keeping one list is what stops the three Unix platforms drifting apart.
+    const mac = models.scanRoots('/Users/me', 'darwin');
+    ok(mac.includes('/Volumes'), 'macOS reaches external volumes');
+});
+
+test('the model search on Windows uses those roots', () => {
+    const search = compiled('ai/localSearch');
+    const roots = search.defaultModelRoots({ home: '/home/me', platform: 'win32' });
+    ok(roots.some((r) => r.includes('Downloads')), 'the user folders are searched');
+    notOk(roots.includes('/media'), 'and the Linux mount points are not pretended to exist');
+});

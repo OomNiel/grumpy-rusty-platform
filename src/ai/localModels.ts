@@ -417,24 +417,56 @@ export function explainLoadFailure(logTail: string, facts: SetupFacts, modelSize
  * rather than offered twice under two different names (LM Studio's model *key* and its file path have no
  * reliable mapping — the folder says `lmstudio-community` where the key says `google`).
  */
-export function scanRoots(homeDir: string): string[] {
+export function scanRoots(
+    homeDir: string,
+    platform: NodeJS.Platform = process.platform,
+    /** Extra roots the caller found — on Windows, the other drives (`windowsDriveRoots`). */
+    extra: readonly string[] = []
+): string[] {
     const home = homeDir || '';
-    // The drive roots are listed as roots on purpose: an external volume appears one directory deep inside
-    // them and the walker descends by itself, so nothing here has to look at the filesystem. All four are
-    // needed — `/media` is the older mount point, `/run/media` is where udisks2 mounts removable drives on
-    // most current desktops, `/mnt` is where an administrator mounts one by hand, and `/Volumes` is macOS.
-    return [
+    const own = [
         `${home}/.lmstudio/models`,
         `${home}/Downloads`,
         `${home}/models`,
         `${home}/llama.cpp`,
         `${home}/.cache/huggingface/hub`,
-        `${home}/.cache/lm-studio/models`,
-        '/media',
-        '/run/media',
-        '/mnt',
-        '/Volumes'
+        `${home}/.cache/lm-studio/models`
     ];
+    if (platform === 'win32') {
+        // There are no mount points on Windows, and walking every letter is not the same thing: `C:` is the
+        // system drive and everything interesting on it is already in the list above (the user's own folders),
+        // while `D:`-`Z:` are where a 16 GB `.gguf` actually ends up — a second SSD, an external drive, a games
+        // drive with room to spare. Without this, "find my models" found nothing on a Windows machine and the
+        // file dialog was the only way to a model that was sitting right there (2026-10-04).
+        return [...own, ...extra];
+    }
+    // The four mount roots are listed as roots on purpose: an external volume appears one directory deep
+    // inside them and the walker descends by itself, so nothing here has to look at the filesystem. All four
+    // are needed — `/media` is the older mount point, `/run/media` is where udisks2 mounts removable drives on
+    // most current desktops, `/mnt` is where an administrator mounts one by hand, and `/Volumes` is macOS.
+    return [...own, '/media', '/run/media', '/mnt', '/Volumes', ...extra];
+}
+
+/**
+ * The drives worth walking on Windows: `D:`-`Z:`, when they exist.
+ *
+ * `C:` is deliberately left out — it is the system drive, and the folders that matter on it are the user's own
+ * (`~/Downloads`, `~/.lmstudio/models`, …), which are already roots. `A:`/`B:` are the floppy letters and never
+ * a model drive. Each drive contributes itself and its own `models` folder; the walker is bounded in depth and
+ * time, so a large drive costs the scan's budget rather than hanging it.
+ */
+export function windowsDriveRoots(exists: (path: string) => boolean): string[] {
+    const roots: string[] = [];
+    for (const letter of 'DEFGHIJKLMNOPQRSTUVWXYZ') {
+        const drive = `${letter}:\\`;
+        try {
+            if (!exists(drive)) continue;
+        } catch {
+            continue;
+        }
+        roots.push(drive, `${drive}models`);
+    }
+    return roots;
 }
 
 /**
@@ -721,6 +753,38 @@ export function llamaServerArgs(options: LlamaLaunch): string[] {
 export function isUnknownArgumentFailure(text: string): boolean {
     return /unknown argument|unrecognized (argument|option)|invalid argument|invalid option|error: invalid argument/i
         .test(String(text ?? ''));
+}
+
+// ---------------- Windows is not Linux (audited 2026-10-04) ----------------
+//
+// *"Will this extension also work in Windows 11?"* The manifest restricts nothing, and the toolchain layer was
+// written with Windows in mind — but three AI-side decisions were quietly Linux-shaped. They are pure
+// functions of the platform, so they are pinned here rather than being discovered by the first Windows user.
+
+/**
+ * How **Start server** should start llama.cpp: the systemd user unit on Linux, a plain process elsewhere.
+ *
+ * systemd is Linux-only, and the old default asked for a unit on every platform: on Windows `systemctl` is not
+ * there, the unit route failed, and the built-in fallback started a process — which works, but only after a
+ * pointless failed attempt and a message about a service manager that does not exist. An explicit choice is
+ * always honoured; the platform only decides the *default*.
+ */
+export function resolveStartTarget(configured: unknown, platform: NodeJS.Platform = process.platform): 'unit' | 'process' {
+    const word = String(configured ?? '').trim().toLowerCase();
+    if (word === 'unit' || word === 'process') return word;
+    return platform === 'linux' ? 'unit' : 'process';
+}
+
+/**
+ * Can this platform tell **who** is holding a port?
+ *
+ * The answer comes from `ss` plus `/proc/<pid>/{cgroup,cmdline}`, so it is Linux-only. Saying "nothing is
+ * running" on Windows because nothing could be *inspected* would be a lie, and it is the kind of lie that
+ * makes a user uninstall: a server is answering, the panel says nothing is there. Off Linux the honest answer
+ * is "cannot be inspected here", and the stop flow says what to do instead.
+ */
+export function canInspectServerOwner(platform: NodeJS.Platform = process.platform): boolean {
+    return platform === 'linux';
 }
 
 /** What the server's `/health` says. */

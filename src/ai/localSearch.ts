@@ -22,7 +22,7 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { canImportFile, scanRoots } from './localModels';
+import { canImportFile, scanRoots, windowsDriveRoots } from './localModels';
 import { rankLocalCandidates, type LocalModelCandidate, type ModelSpec } from './modelSpecs';
 
 /** How long the search may take before it gives up and lets the download happen. */
@@ -140,11 +140,15 @@ export function globalStorageModelFolders(userDirs: readonly string[]): string[]
  * (`scanForModelFiles`) cannot disagree about where to look — the report that started this was a search that
  * "did not find .gguf files already on the pc".
  */
-export function defaultModelRoots(opts: { home?: string; platform?: string; appData?: string } = {}): string[] {
+export function defaultModelRoots(opts: { home?: string; platform?: NodeJS.Platform; appData?: string } = {}): string[] {
     const home = opts.home ?? os.homedir();
+    const platform = opts.platform ?? process.platform;
+    // On Windows the extra roots are the other drives: without them a `.gguf` on `D:` was invisible to every
+    // scan in the extension (2026-10-04).
+    const drives = platform === 'win32' ? windowsDriveRoots((p) => fs.existsSync(p)) : [];
     return [
-        ...scanRoots(home),
-        ...globalStorageModelFolders(vscodeUserDirs(home, opts.platform, opts.appData))
+        ...scanRoots(home, platform, drives),
+        ...globalStorageModelFolders(vscodeUserDirs(home, platform, opts.appData))
     ];
 }
 
