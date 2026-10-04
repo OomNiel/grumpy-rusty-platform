@@ -98,6 +98,11 @@ ships it.
 - **Debug** on an ESP board explains that Xtensa needs JTAG for breakpoints, and runs flash +
   monitor chained in one terminal instead.
 
+- **The AI assist says what it is doing while it works.** Every request reports a live line — *“Writing… 42
+  tokens · 6.8 tokens/s (6.2s) · context 40% (1640/4096)”* — on a half-second heartbeat, so a long prompt read
+  (*“The model is reading the prompt… (3.2s)”*) no longer looks like a hang. The bundled runtime sends the
+  real tokenized prompt size before it generates, which makes the context percentage a measurement rather
+  than a guess; against an external server the window is not ours to know, and no percentage is shown.
 ### Changed
 
 - `BoardProfile` is now a discriminated RP/ESP union, so the compiler — not a comment — is what
