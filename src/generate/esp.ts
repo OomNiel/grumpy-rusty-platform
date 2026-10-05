@@ -351,7 +351,7 @@ function espImports(board: EspBoardProfile, template: AppTemplate): string {
             'use esp_hal::time::Rate;',
             'use esp_hal::timer::timg::TimerGroup;',
             'use esp_println as _;',
-            'use mipidsi::options::ColorOrder;',
+            'use mipidsi::options::{ColorOrder, Orientation};',
             'use mipidsi::{models, Builder};',
             // The **buffered** interface, and it must be this one: the call below passes a batching buffer
             // (`SPIInterface::new(spi, dc, &mut buffer)`), which is mipidsi's own three-argument type.
@@ -404,10 +404,140 @@ ${body}
 }
 
 /**
- * Panel bring-up, then colour bars.
+ * The panel's own scan direction, as the board data states it.
  *
- * The colour bars are the point: they make a wrong colour order or a dead backlight
- * obvious in one glance, which is exactly the failure a fresh board produces.
+ * `mirrorX` means the panel's X axis runs opposite to the controller's default, which is a property of how
+ * the glass is wired, not of the drawing: mipidsi applies it through MADCTL, so the coordinates in this file
+ * stay the readable ones. Omitted this, the whole image is a mirror -- text included -- which is exactly what
+ * the diagnostic screen showed on the real Sunton board on 2026-10-05, and what the board definition had said
+ * all along. Every panel emits the line, so a board that needs no mirror says so in the generated code.
+ */
+function orientation(display: EspDisplay): string {
+    const flips = `${display.mirrorX ? '.flip_horizontal()' : ''}${display.mirrorY ? '.flip_vertical()' : ''}`;
+    const note = flips
+        ? `
+        // ${display.label}: ${display.mirrorX ? 'X is mirrored' : 'Y is mirrored'} relative to the controller's default.`
+        : '';
+    return `${note}
+        .orientation(Orientation::new()${flips})`;
+}
+
+/**
+ * Geometry for the diagnostic screen, solved from the panel size rather than hard-coded
+ * for the 3.5" CYD: the same template is offered to a 128x128 T-QT, where the CYD's
+ * numbers would put the greeting, the bars and the blinking square off the glass.
+ */
+export interface EspDiagnosticLayout {
+    width: number;
+    height: number;
+    margin: number;
+    cornerSize: number;
+    barGap: number;
+    barWidth: number;
+    barHeight: number;
+    barY: number;
+    greetingFont: 'FONT_6X10' | 'FONT_10X20';
+    greetingX: number;
+    greetingY: number;
+    statusX: number;
+    statusY: number;
+    statusStep: number;
+    statusLines: string[];
+    blinkSize: number;
+    blinkX: number;
+    blinkY: number;
+}
+
+/** FONT_6X10 is a 6 px advance and a 10 px box; FONT_10X20 is 10 and 20. */
+const FONT_METRICS = {
+    FONT_6X10: { advance: 6, height: 10 },
+    FONT_10X20: { advance: 10, height: 20 },
+} as const;
+
+export function espDiagnosticLayout(display: EspDisplay, board: EspBoardProfile): EspDiagnosticLayout {
+    const width = display.width;
+    const height = display.height;
+    const margin = Math.max(8, Math.round(width * 0.05));
+    // Big enough to see at a glance, small enough to leave the drawing room: a 24 px marker is a fifth of a
+    // 128 px panel, so small panels get smaller markers rather than no drawing area.
+    const cornerSize = Math.min(24, Math.floor(Math.min(width, height) / 8));
+    const barGap = Math.max(2, Math.round(width / 64));
+    const barWidth = Math.max(4, Math.floor((width - 2 * margin - 4 * barGap) / 5));
+    const barHeight = Math.max(10, Math.min(60, Math.round(height * 0.14)));
+    // Everything is packed downwards in bands, and no band is allowed to cover an earlier one: bars start
+    // below the corner markers, the greeting below the bars, the status text below the greeting, and the
+    // blinking square is anchored to the bottom edge above the bottom corner markers.
+    const barY = cornerSize + 6;
+
+    // The greeting is the one line that must fit whatever the panel is: FONT_10X20 needs 130 px for it.
+    const greetingFont: 'FONT_6X10' | 'FONT_10X20' = width >= 200 ? 'FONT_10X20' : 'FONT_6X10';
+    const greeting = FONT_METRICS[greetingFont];
+    const greetingX = Math.max(margin, Math.floor((width - 'Hello Grumpy!'.length * greeting.advance) / 2));
+    const greetingY = barY + barHeight + 6;
+
+    // The status text is FONT_6X10 and starts on its own line, below the greeting.
+    const statusX = 6;
+    const statusStep = 12;
+    const statusFont = FONT_METRICS.FONT_6X10;
+    const statusY = greetingY + greeting.height + 6;
+    const maxChars = Math.max(6, Math.floor((width - 2 * statusX) / statusFont.advance));
+    const candidates = width >= 240
+        ? [
+            board.name,
+            `${board.espChip} · ${width}x${height} · ${display.controller}`,
+            'frame complete? corners: red TL, green TR',
+            'blue BL, white BR',
+            'bars L to R: red green blue black white',
+            'text upright? colours right? square blinking?',
+        ]
+        : [
+            `${board.espChip} ${width}x${height}`,
+            display.controller,
+            'cors: R G B W',
+            'bars: R G B K W',
+            'text upright?',
+            'square blinks?',
+        ];
+    // Anything wider than the glass is dropped rather than drawn off the edge: the status lines exist to be
+    // read, and a half-drawn line is worse than a missing one.
+    const fitting = candidates.filter((line) => line.length <= maxChars);
+
+    const blinkSize = Math.min(24, Math.floor(Math.min(width, height) / 6));
+    const blinkX = width - margin - blinkSize;
+    const blinkY = height - (cornerSize + 6) - blinkSize;
+    // As many lines as fit above the blinking square, and never one that would run into it.
+    const room = blinkY - 2 - statusY - statusFont.height;
+    const keep = room < 0 ? 0 : Math.floor(room / statusStep) + 1;
+    const statusLines = (fitting.length > 0 ? fitting : [`${width}x${height}`]).slice(0, keep);
+
+    return {
+        width,
+        height,
+        margin,
+        cornerSize,
+        barGap,
+        barWidth,
+        barHeight,
+        barY,
+        greetingFont,
+        greetingX,
+        greetingY,
+        statusX,
+        statusY,
+        statusStep,
+        statusLines,
+        blinkSize,
+        blinkX,
+        blinkY,
+    };
+}
+
+/**
+ * Panel bring-up, then a diagnostic screen.
+ *
+ * The screen is the point, and it is drawn to be *read*: a colour fill looks the same whether the active
+ * area is cropped, the colour order is swapped or the image is rotated, while a frame, four coloured
+ * corners, named bars and a line of text each answer one of those questions from a photograph.
  */
 function espDisplayBody(display: EspDisplay, board: EspBoardProfile): string {
     const miso =
@@ -418,6 +548,7 @@ function espDisplayBody(display: EspDisplay, board: EspBoardProfile): string {
         display.rst === undefined
             ? ''
             : `\n    let rst = Output::new(peripherals.GPIO${display.rst}, Level::High, OutputConfig::default());\n`;
+    const layout = espDiagnosticLayout(display, board);
 
     return `
     // Backlight first, and note the level: ${display.backlightActiveLow ? 'this board switches the transistor on with a LOW level' : 'this board switches the transistor on with a HIGH level'}.
@@ -450,38 +581,40 @@ ${resetSetup}
     // Delay is a unit struct in esp-hal 1.x, not a value: it is built with new().
     let mut delay = Delay::new();
     let mut display = Builder::new(models::${display.controller}, di)
-        .display_size(${display.width}, ${display.height})${reset}
+        .display_size(${display.width}, ${display.height})${reset}${orientation(display)}
         .color_order(ColorOrder::${display.colorOrder === 'bgr' ? 'Bgr' : 'Rgb'})
         .init(&mut delay)
         .expect("panel initialisation");
 
     log::info!("panel ready: ${rustString(display.label)}");
 
-    // A diagnostic screen rather than flat colour fills. Flat fills hide the three things that go wrong on a
-    // new panel: a cropped or shifted active area, a swapped colour order, and a rotated image. Here the frame
-    // shows cropping (a missing side means the panel is offset), the corners and named bars show a swap at a
-    // glance, and the text says what should be on screen. Replace this with your own drawing once it is right.
+    // A diagnostic screen rather than a flat fill, because a flat fill hides the three things that go wrong
+    // on a new panel: a cropped or shifted active area, a swapped colour order, and a rotated image.
+    //  - the frame: a missing side means the panel is cropped or offset;
+    //  - the corners: red top-left, green top-right, blue bottom-left, white bottom-right, so a shift is
+    //    measurable at a glance (a corner marker that is cut in half is the answer);
+    //  - the bars: named left to right below, so red and blue trading places names the wrong colour order;
+    //  - the cross: centred on the panel size, so an off-centre cross means the active area starts
+    //    somewhere other than where the driver thinks;
+    //  - the text and the blinking square: what this screen is meant to look like, and proof the loop runs.
+    // Replace it with your own drawing once the panel is right.
     display.clear(Rgb565::BLACK).expect("panel write failed");
 
     // A full-size frame, two pixels wide: every side visible means the whole area is addressable.
-    Rectangle::new(Point::new(1, 1), Size::new(${display.width} - 2, ${display.height} - 2))
+    Rectangle::new(Point::new(1, 1), Size::new(${layout.width} - 2, ${layout.height} - 2))
         .into_styled(PrimitiveStyle::with_stroke(Rgb565::WHITE, 2))
         .draw(&mut display)
         .expect("panel write failed");
 
-    // Corner markers, so a shift is measurable: red top-left, green top-right, blue bottom-left, white
-    // bottom-right. A red square that is not in the corner, or one cut in half, is the answer.
-    for (x, y, colour) in [
-        (0, 0, Rgb565::RED),
-        (${display.width} - 24, 0, Rgb565::GREEN),
-        (0, ${display.height} - 24, Rgb565::BLUE),
-        (${display.width} - 24, ${display.height} - 24, Rgb565::WHITE),
-    ] {
-        Rectangle::new(Point::new(x, y), Size::new(24, 24))
-            .into_styled(PrimitiveStyle::with_fill(colour))
-            .draw(&mut display)
-            .expect("panel write failed");
-    }
+    // The centre cross, drawn before the bars and the text so neither is covered by it.
+    Line::new(Point::new(${layout.width} / 2, 0), Point::new(${layout.width} / 2, ${layout.height}))
+        .into_styled(PrimitiveStyle::with_stroke(Rgb565::YELLOW, 1))
+        .draw(&mut display)
+        .expect("panel write failed");
+    Line::new(Point::new(0, ${layout.height} / 2), Point::new(${layout.width}, ${layout.height} / 2))
+        .into_styled(PrimitiveStyle::with_stroke(Rgb565::YELLOW, 1))
+        .draw(&mut display)
+        .expect("panel write failed");
 
     // Five bars, left to right: red, green, blue, black, white. If red and blue trade places, the panel's
     // colour order is the other one — flip ColorOrder in the builder above and reflash.
@@ -489,48 +622,53 @@ ${resetSetup}
         .iter()
         .enumerate()
     {
-        Rectangle::new(Point::new(16 + (index as i32) * 58, 40), Size::new(56, 60))
+        Rectangle::new(
+            Point::new(${layout.margin} + (index as i32) * ${layout.barWidth + layout.barGap}, ${layout.barY}),
+            Size::new(${layout.barWidth}, ${layout.barHeight}),
+        )
             .into_styled(PrimitiveStyle::with_fill(*colour))
             .draw(&mut display)
             .expect("panel write failed");
     }
 
-    // A centre cross: if it is not centred, the panel's active area does not start where the driver thinks.
-    Line::new(Point::new(${display.width} / 2, 0), Point::new(${display.width} / 2, ${display.height}))
-        .into_styled(PrimitiveStyle::with_stroke(Rgb565::YELLOW, 1))
-        .draw(&mut display)
-        .expect("panel write failed");
-    Line::new(Point::new(0, ${display.height} / 2), Point::new(${display.width}, ${display.height} / 2))
-        .into_styled(PrimitiveStyle::with_stroke(Rgb565::YELLOW, 1))
-        .draw(&mut display)
-        .expect("panel write failed");
-
-    Text::new("Hello Grumpy!", Point::new(20, 130), MonoTextStyle::new(&FONT_10X20, Rgb565::YELLOW))
-        .draw(&mut display)
-        .expect("panel write failed");
-
-    let small = MonoTextStyle::new(&FONT_6X10, Rgb565::WHITE);
-    let mut line = 158;
-    for text in [
-        "${rustString(board.name)}",
-        "${board.espChip} · ${display.width}x${display.height} · ${display.controller}",
-        "frame complete? corners: red TL, green TR",
-        "blue BL, white BR",
-        "bars L to R: red green blue black white",
-        "text upright? colours right? square blinking?",
+    // Corner markers, so a shift is measurable: red top-left, green top-right, blue bottom-left, white
+    // bottom-right. A red square that is not in the corner, or one cut in half, is the answer.
+    for (x, y, colour) in [
+        (0, 0, Rgb565::RED),
+        (${layout.width} - ${layout.cornerSize}, 0, Rgb565::GREEN),
+        (0, ${layout.height} - ${layout.cornerSize}, Rgb565::BLUE),
+        (${layout.width} - ${layout.cornerSize}, ${layout.height} - ${layout.cornerSize}, Rgb565::WHITE),
     ] {
-        Text::new(text, Point::new(6, line), small)
+        Rectangle::new(Point::new(x, y), Size::new(${layout.cornerSize}, ${layout.cornerSize}))
+            .into_styled(PrimitiveStyle::with_fill(colour))
             .draw(&mut display)
             .expect("panel write failed");
-        line += 14;
     }
 
+    Text::new("Hello Grumpy!", Point::new(${layout.greetingX}, ${layout.greetingY}), MonoTextStyle::new(&${layout.greetingFont}, Rgb565::YELLOW))
+        .draw(&mut display)
+        .expect("panel write failed");
+
+${layout.statusLines.length === 0 ? '' : `    // What this screen is supposed to look like, in the panel's own words. Each line is only emitted if it
+    // fits: a status line drawn off the edge is worse than no status line.
+    let small = MonoTextStyle::new(&FONT_6X10, Rgb565::WHITE);
+    let mut line = ${layout.statusY};
+    for text in [
+${layout.statusLines.map((line) => `        ${JSON.stringify(line)},`).join('\n')}
+    ] {
+        Text::new(text, Point::new(${layout.statusX}, line), small)
+            .draw(&mut display)
+            .expect("panel write failed");
+        line += ${layout.statusStep};
+    }
+`}
     log::info!("diagnostics drawn: frame, corners, 5 bars, cross and text");
     let mut tick: u32 = 0;
     loop {
-        // One small square, blinking: proof the loop is alive without covering any of the diagnostics.
+        // One small square, blinking: proof the loop is alive, placed clear of every diagnostic so it cannot
+        // be mistaken for one.
         let colour = if tick % 2 == 0 { Rgb565::WHITE } else { Rgb565::BLACK };
-        Rectangle::new(Point::new(8, 420), Size::new(24, 24))
+        Rectangle::new(Point::new(${layout.blinkX}, ${layout.blinkY}), Size::new(${layout.blinkSize}, ${layout.blinkSize}))
             .into_styled(PrimitiveStyle::with_fill(colour))
             .draw(&mut display)
             .expect("panel write failed");

@@ -20,7 +20,7 @@ use esp_hal::spi::master::{Config as SpiConfig, Spi};
 use esp_hal::time::Rate;
 use esp_hal::timer::timg::TimerGroup;
 use esp_println as _;
-use mipidsi::options::ColorOrder;
+use mipidsi::options::{ColorOrder, Orientation};
 use mipidsi::{models, Builder};
 use mipidsi::interface::SpiInterface as SPIInterface;
 use esp_backtrace as _;
@@ -82,16 +82,24 @@ async fn main(_spawner: Spawner) -> ! {
     let mut delay = Delay::new();
     let mut display = Builder::new(models::ST7796, di)
         .display_size(320, 480)
+        // 3.5" ST7796 320x480: X is mirrored relative to the controller's default.
+        .orientation(Orientation::new().flip_horizontal())
         .color_order(ColorOrder::Bgr)
         .init(&mut delay)
         .expect("panel initialisation");
 
     log::info!("panel ready: 3.5\" ST7796 320x480");
 
-    // A diagnostic screen rather than flat colour fills. Flat fills hide the three things that go wrong on a
-    // new panel: a cropped or shifted active area, a swapped colour order, and a rotated image. Here the frame
-    // shows cropping (a missing side means the panel is offset), the corners and named bars show a swap at a
-    // glance, and the text says what should be on screen. Replace this with your own drawing once it is right.
+    // A diagnostic screen rather than a flat fill, because a flat fill hides the three things that go wrong
+    // on a new panel: a cropped or shifted active area, a swapped colour order, and a rotated image.
+    //  - the frame: a missing side means the panel is cropped or offset;
+    //  - the corners: red top-left, green top-right, blue bottom-left, white bottom-right, so a shift is
+    //    measurable at a glance (a corner marker that is cut in half is the answer);
+    //  - the bars: named left to right below, so red and blue trading places names the wrong colour order;
+    //  - the cross: centred on the panel size, so an off-centre cross means the active area starts
+    //    somewhere other than where the driver thinks;
+    //  - the text and the blinking square: what this screen is meant to look like, and proof the loop runs.
+    // Replace it with your own drawing once the panel is right.
     display.clear(Rgb565::BLACK).expect("panel write failed");
 
     // A full-size frame, two pixels wide: every side visible means the whole area is addressable.
@@ -99,6 +107,31 @@ async fn main(_spawner: Spawner) -> ! {
         .into_styled(PrimitiveStyle::with_stroke(Rgb565::WHITE, 2))
         .draw(&mut display)
         .expect("panel write failed");
+
+    // The centre cross, drawn before the bars and the text so neither is covered by it.
+    Line::new(Point::new(320 / 2, 0), Point::new(320 / 2, 480))
+        .into_styled(PrimitiveStyle::with_stroke(Rgb565::YELLOW, 1))
+        .draw(&mut display)
+        .expect("panel write failed");
+    Line::new(Point::new(0, 480 / 2), Point::new(320, 480 / 2))
+        .into_styled(PrimitiveStyle::with_stroke(Rgb565::YELLOW, 1))
+        .draw(&mut display)
+        .expect("panel write failed");
+
+    // Five bars, left to right: red, green, blue, black, white. If red and blue trade places, the panel's
+    // colour order is the other one — flip ColorOrder in the builder above and reflash.
+    for (index, colour) in [Rgb565::RED, Rgb565::GREEN, Rgb565::BLUE, Rgb565::BLACK, Rgb565::WHITE]
+        .iter()
+        .enumerate()
+    {
+        Rectangle::new(
+            Point::new(16 + (index as i32) * 58, 30),
+            Size::new(53, 60),
+        )
+            .into_styled(PrimitiveStyle::with_fill(*colour))
+            .draw(&mut display)
+            .expect("panel write failed");
+    }
 
     // Corner markers, so a shift is measurable: red top-left, green top-right, blue bottom-left, white
     // bottom-right. A red square that is not in the corner, or one cut in half, is the answer.
@@ -114,34 +147,14 @@ async fn main(_spawner: Spawner) -> ! {
             .expect("panel write failed");
     }
 
-    // Five bars, left to right: red, green, blue, black, white. If red and blue trade places, the panel's
-    // colour order is the other one — flip ColorOrder in the builder above and reflash.
-    for (index, colour) in [Rgb565::RED, Rgb565::GREEN, Rgb565::BLUE, Rgb565::BLACK, Rgb565::WHITE]
-        .iter()
-        .enumerate()
-    {
-        Rectangle::new(Point::new(16 + (index as i32) * 58, 40), Size::new(56, 60))
-            .into_styled(PrimitiveStyle::with_fill(*colour))
-            .draw(&mut display)
-            .expect("panel write failed");
-    }
-
-    // A centre cross: if it is not centred, the panel's active area does not start where the driver thinks.
-    Line::new(Point::new(320 / 2, 0), Point::new(320 / 2, 480))
-        .into_styled(PrimitiveStyle::with_stroke(Rgb565::YELLOW, 1))
-        .draw(&mut display)
-        .expect("panel write failed");
-    Line::new(Point::new(0, 480 / 2), Point::new(320, 480 / 2))
-        .into_styled(PrimitiveStyle::with_stroke(Rgb565::YELLOW, 1))
+    Text::new("Hello Grumpy!", Point::new(95, 96), MonoTextStyle::new(&FONT_10X20, Rgb565::YELLOW))
         .draw(&mut display)
         .expect("panel write failed");
 
-    Text::new("Hello Grumpy!", Point::new(20, 130), MonoTextStyle::new(&FONT_10X20, Rgb565::YELLOW))
-        .draw(&mut display)
-        .expect("panel write failed");
-
+    // What this screen is supposed to look like, in the panel's own words. Each line is only emitted if it
+    // fits: a status line drawn off the edge is worse than no status line.
     let small = MonoTextStyle::new(&FONT_6X10, Rgb565::WHITE);
-    let mut line = 158;
+    let mut line = 122;
     for text in [
         "Sunton ESP32-3248S035R (3.5\" CYD)",
         "esp32 · 320x480 · ST7796",
@@ -153,15 +166,16 @@ async fn main(_spawner: Spawner) -> ! {
         Text::new(text, Point::new(6, line), small)
             .draw(&mut display)
             .expect("panel write failed");
-        line += 14;
+        line += 12;
     }
 
     log::info!("diagnostics drawn: frame, corners, 5 bars, cross and text");
     let mut tick: u32 = 0;
     loop {
-        // One small square, blinking: proof the loop is alive without covering any of the diagnostics.
+        // One small square, blinking: proof the loop is alive, placed clear of every diagnostic so it cannot
+        // be mistaken for one.
         let colour = if tick % 2 == 0 { Rgb565::WHITE } else { Rgb565::BLACK };
-        Rectangle::new(Point::new(8, 420), Size::new(24, 24))
+        Rectangle::new(Point::new(280, 426), Size::new(24, 24))
             .into_styled(PrimitiveStyle::with_fill(colour))
             .draw(&mut display)
             .expect("panel write failed");

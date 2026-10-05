@@ -2119,7 +2119,7 @@ Suite: **593 passed, 0 skipped**.
 
 ---
 
-## 51. A diagnostic screen instead of a flat fill (2026-10-05)
+## 51. A diagnostic screen instead of a flat fill — and the mirror it found (2026-10-05)
 
 *"Do the diagnostic patterns and also some basic text like 'Hello Grumpy!'"*
 
@@ -2161,7 +2161,7 @@ arrives transitively, as `embedded-graphics`' own dependency.
 ```
 
 (clean, no warnings; the ELF is 2 113 884 bytes, and espflash reports `App/part. size: 116,464/4,128,768 bytes,
-2.82%`). Then on the real board:
+2.82%`, and 116 480 bytes after the orientation line was added). Then on the real board:
 
 ```
 I (135) boot: Loaded app from partition at offset 0x10000
@@ -2172,15 +2172,54 @@ INFO - diagnostics drawn: frame, corners, 5 bars, cross and text
 INFO - alive (tick 0)
 ```
 
+**The screen then showed a mirror — and that is the whole point of drawing one.** *"The graphics and text is
+rendering but the image is mirrored."* Not shifted, not cropped, not rotated: **mirrored**, with
+`"Hello Grumpy!"` reading backwards, and the told-by-the-corner-markers answer was "red is top-right". A flat
+fill would have reported nothing here, and a photograph of a single colour answers no question at all.
+
+**The cause was not in the drawing; it was board data the template ignored.** The CYD's catalog entry has said
+`mirrorX: true` since the board was added — *"the panel is wired for BGR and its X axis is mirrored relative to
+the controller's default, both of which the board definition states outright"* — and the generator emitted
+`colorOrder` while quietly dropping `mirrorX`/`mirrorY` on the floor. Two of the four panel facts were dead
+data. mipidsi takes the other one through MADCTL rather than through coordinates, so the fix is one line in the
+builder chain, with the coordinates untouched:
+
+```rust
+.orientation(Orientation::new().flip_horizontal())
+```
+
+`Orientation::new().flip_horizontal()` sets `mirrored`, which `MemoryMapping::from_orientation` turns into
+`reverse_columns` and `SetAddressMode::with_orientation` writes as MADCTL's `MX` bit — the panel scans its
+columns right-to-left, and mipidsi's own transform keeps `Point::new(0, 0)` in the corner you meant. The
+generated line is emitted for **every** panel (a board that needs no flip says `Orientation::new()`), so the
+import is never unused and the data path is visible in the code. A test now walks every board and every panel
+and asserts the emitted flips equal the catalog's `mirrorX`/`mirrorY`, which is what would have caught the
+drop on the day it happened.
+
+**Confirmed on the real board after re-flashing**: red top-left, text reading normally, correct colours, and
+the white square blinking in the bottom-right corner. The hardware therefore confirms the community board
+definition's claim about this panel, which is a nice closing of the loop the firmware dump opened.
+
+**The layout had to stop being CYD-shaped while this was being fixed.** The same template is offered to the
+T-QT's 128×128 panel, where the CYD's numbers (bars from x=16 at 58 px pitch, a greetings baseline at y=104, a
+blinking square at y=420) would put the text and the square off the glass. `espDiagnosticLayout()` now solves
+the geometry from the panel: a `min(24, min(w,h)/8)` corner marker, bars fitted into `w - 2*margin`, the
+greeting dropped from `FONT_10X20` to `FONT_6X10` under 200 px wide, and every band packed under the one
+before it — corners, bars, greeting, status lines, blinking square — with status lines emitted **only if they
+fit**. 320×480 gets all six lines; 128×128 gets one short one, and the test above asserts for every panel that
+nothing is off the glass, nothing overlaps, and at least one status line fits.
+
 **What the log proves and what it does not.** `panel ready` is `Builder::init()` returning, which only happens
 if the ST7796 answered, and `diagnostics drawn` is the drawing calls returning without an SPI error — every one
 of them is `.expect("panel write failed")`. The *pixels themselves* are the one thing I cannot see from here:
-the screen is the user's to confirm, and that is why the status lines are on it.
+the screen is the user's to confirm, and that is why the status lines and the corner markers are on it. They
+earned their keep on the first flash.
 
 **The tests were tightened, not loosened.** `the panel template initialises the panel over its own pins` now
-pins `use embedded_graphics::prelude::*;` and asserts the split crate is gone; a new case (`the panel template
-draws a diagnostic screen, not a flat fill`) pins the frame coordinates, the four corner colours, the named bars,
-the centred lines, the greeting, the blink and both fonts — so a future edit that quietly replaces the screen
-with a `fill` fails here instead of on someone's desk.
+pins `use embedded_graphics::prelude::*;`, asserts the split crate is gone and pins the orientation line. Three
+new cases carry the rest: one walks every board and every panel to check the emitted flips against the
+catalog's `mirrorX`/`mirrorY` (the assertion that was missing when the data was dropped), one pins the frame
+coordinates, corner colours, named bars, centred lines, greeting, blink and both fonts, and one checks the
+solved layout for every panel — inside the frame, bands in order, nothing under the blinking square.
 
-Suite: **594 passed, 0 skipped**.
+Suite: **596 passed, 0 skipped**.
