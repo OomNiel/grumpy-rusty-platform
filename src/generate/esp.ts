@@ -31,6 +31,8 @@ export const ESP_CRATE_VERSIONS = {
     embassyTime: '0.5.0',
     embassyNet: '0.9.1',
     mipidsi: '0.10.0',
+    /** The bus-to-device adapter mipidsi's SPI interface needs (`ExclusiveDevice`). */
+    embeddedHalBus: '0.3.0',
     displayInterfaceSpi: '0.5.0',
     embeddedGraphicsCore: '0.4',
 } as const;
@@ -156,6 +158,10 @@ panel-gc9a01 = []
             `mipidsi = "${ESP_CRATE_VERSIONS.mipidsi}"`,
             `display-interface-spi = "${ESP_CRATE_VERSIONS.displayInterfaceSpi}"`,
             `embedded-graphics-core = "${ESP_CRATE_VERSIONS.embeddedGraphicsCore}"`,
+            // esp-hal's `Spi` is a *bus*; mipidsi wants a `SpiDevice` (bus + its own CS), and this is the
+            // crate that joins the two. Without it the generated display project cannot compile at all —
+            // `Spi<'_>` does not implement `SpiDevice` (found by building a generated project, 2026-10-05).
+            `embedded-hal-bus = "${ESP_CRATE_VERSIONS.embeddedHalBus}"`,
         );
     }
 
@@ -323,7 +329,10 @@ function espImports(board: EspBoardProfile, template: AppTemplate): string {
             'use embassy_executor::Spawner;',
             'use embassy_time::{Duration, Timer};',
             "use embedded_graphics_core::draw_target::DrawTarget;",
-            'use embedded_graphics_core::pixelcolor::Rgb565;',
+            // `RgbColor` is the trait that carries `Rgb565::RED` and friends; without it those
+            // constants are "not found in Rgb565" — nine errors from one missing import.
+            'use embedded_graphics_core::pixelcolor::{Rgb565, RgbColor};',
+            'use embedded_hal_bus::spi::ExclusiveDevice;',
             'use esp_hal::clock::CpuClock;',
             'use esp_hal::delay::Delay;',
             'use esp_hal::gpio::{Level, Output, OutputConfig};',
@@ -414,8 +423,12 @@ ${resetSetup}
     )
     .expect("SPI configuration")
         .with_sck(peripherals.GPIO${display.spi.sclk})
-        .with_mosi(peripherals.GPIO${display.spi.mosi})${miso}
-        .with_cs(peripherals.GPIO${display.cs});
+        .with_mosi(peripherals.GPIO${display.spi.mosi})${miso};
+
+    // esp-hal's Spi is a *bus*; mipidsi wants a SpiDevice, which is that bus plus its own CS pin.
+    // embedded-hal-bus is the crate that joins the two (the recipe esp-hal's own examples use).
+    let cs = Output::new(peripherals.GPIO${display.cs}, Level::Low, OutputConfig::default());
+    let spi = ExclusiveDevice::new(spi, cs, Delay::new()).expect("SPI device");
 
     // 512 bytes is mipidsi's own example buffer size: enough to batch pixels, small
     // enough to live on the stack, so this build needs no heap.
@@ -423,7 +436,8 @@ ${resetSetup}
     let dc = Output::new(peripherals.GPIO${display.dc}, Level::Low, OutputConfig::default());
     let di = SPIInterface::new(spi, dc, &mut buffer);
 
-    let mut delay = Delay;
+    // Delay is a unit struct in esp-hal 1.x, not a value: it is built with new().
+    let mut delay = Delay::new();
     let mut display = Builder::new(models::${display.controller}, di)
         .display_size(${display.width}, ${display.height})${reset}
         .color_order(ColorOrder::${display.colorOrder === 'bgr' ? 'Bgr' : 'Rgb'})
