@@ -16,6 +16,7 @@ const { BOARDS, boardById, allTargets, rpTargets, espTargets } = compiled('board
 const { isEspBoard } = compiled('boards/types');
 const { displayFor, needsPanelChoice, panelChoices, defaultChoices } = compiled('boards/esp');
 const { templatesFor, generateProjectFiles, defaultTemplateFor } = compiled('generate/files');
+const { espDiagnosticLayout } = compiled('generate/esp');
 
 const ESP_IDS = ['esp32-devkitc', 'lilygo-tqt', 'sunton-3248s035r'];
 
@@ -294,8 +295,18 @@ test('the panel template initialises the panel over its own pins', () => {
         ok(main.includes('mipidsi::interface::SpiInterface'), 'a buffered call needs the buffered interface');
         notOk(main.includes('display_interface_spi::SPIInterface'), 'and never the two-argument one');
     }
-    contains(main, 'use embedded_graphics_core::draw_target::DrawTarget;', 'clear() comes from this trait');
+    // The full `embedded-graphics` crate, not the `_core` split: the diagnostics need `Text`, `Line` and
+    // `Rectangle`, and its `prelude` is what brings `DrawTarget` (clear()) and `RgbColor` into scope. The
+    // `_core` crate carried the shape but none of the drawing primitives (2026-10-05).
+    contains(main, 'use embedded_graphics::prelude::*;', 'clear() and the colour traits come from the prelude');
+    notOk(main.includes('embedded-graphics-core'), 'the split crate is not depended on any more');
+    contains(main, 'use mipidsi::options::{ColorOrder, Orientation};');
     contains(main, 'Builder::new(models::ST7796, di)');
+    // The panel is wired with its X axis mirroring the controller's default. The board data said so from the
+    // start (mirrorX: true, from the community board definition) and the template simply never emitted it, so
+    // the first flash of this screen came out as a mirror -- text and all. The hardware settled the data's
+    // claim; the pair below stops the emit from going missing again.
+    contains(main, '.orientation(Orientation::new().flip_horizontal())');
     contains(main, '.display_size(320, 480)');
     contains(main, '.color_order(ColorOrder::Bgr)');
     contains(main, `.init(&mut delay)`);
@@ -310,10 +321,98 @@ test('the panel template initialises the panel over its own pins', () => {
     notOk(main.includes('.with_cs('), 'the bus is not given a CS pin it cannot use');
     contains(main, 'embedded-hal-bus', 'the adapter crate is a dependency of the project');
     contains(main, 'let mut delay = Delay::new();', 'Delay is a unit struct in esp-hal 1.x, built with new()');
-    contains(main, 'RgbColor', 'the colour constants need their trait in scope');
+    notOk(/^use embedded_graphics::prelude::RgbColor;/m.test(main),
+        'RgbColor is reached through the prelude, not a second import of the same crate');
     contains(main, `Output::new(peripherals.GPIO${panel.dc}, Level::Low, OutputConfig::default())`);
     contains(main, `peripherals.GPIO${panel.backlight}`, 'the backlight has to be switched on');
     contains(main, 'SPIInterface::new(spi, dc, &mut buffer)');
+});
+
+// A panel that lights up is not the same as a panel that is *right*: cropped active area, swapped colour
+// order and a rotated image all look like "it works" on a flat fill. The generated screen draws the frame,
+// the four corner markers, the named bars, a centred cross, the greeting and a blinking square, so a user
+// (or a support thread) can read the three failures off the screen instead of guessing (2026-10-05).
+test('the panel template draws a diagnostic screen, not a flat fill', () => {
+    const main = filesFor(espBoard('sunton-3248s035r'), 'display').get('src/main.rs');
+
+    contains(main, 'display.clear(Rgb565::BLACK)');
+    notOk(/PrimitiveStyle::with_fill\(Rgb565::BLACK\)\)\s*\.draw\(&mut display\)/.test(main),
+        'a black fill hides everything that matters');
+
+    contains(main, 'Rectangle::new(Point::new(1, 1), Size::new(320 - 2, 480 - 2))', 'the frame is the panel, minus its stroke');
+    // The corners, by colour: each one names what a shifted panel looks like in that spot.
+    for (const corner of ['Rgb565::RED', 'Rgb565::GREEN', 'Rgb565::BLUE', 'Rgb565::WHITE']) {
+        contains(main, corner);
+    }
+    contains(main, 'for (x, y, colour) in [');
+    // The bars are named in the comment in the order they are drawn, so a swap is diagnosable from the read.
+    contains(main, 'bars L to R: red green blue black white');
+    contains(main, 'Line::new(Point::new(320 / 2, 0)', 'the cross has to be centred by the panel size, not a number');
+    contains(main, 'Line::new(Point::new(0, 480 / 2)');
+    contains(main, 'Hello Grumpy!');
+    // The blink is the only moving pixel: it proves the loop runs without covering a diagnostic.
+    contains(main, 'let colour = if tick % 2 == 0 { Rgb565::WHITE } else { Rgb565::BLACK };');
+    contains(main, 'Timer::after(Duration::from_millis(700))');
+    // Every extra text line is a size asked of the font, so check the font that fits the width.
+    contains(main, 'FONT_6X10');
+    contains(main, 'FONT_10X20');
+});
+
+// The panel's scan direction is board data, and every panel states it in the generated code -- including the
+// ones that need no flip. `mirrorX`/`mirrorY` sat in the catalog unused until the first flash of the
+// diagnostic screen came out mirrored (2026-10-05), so this walks *all* of it rather than the CYD alone.
+test('the panel orientation comes from the board data, for every panel', () => {
+    for (const board of BOARDS.filter(isEspBoard)) {
+        for (const panel of board.displays) {
+            const main = filesFor(board, 'display', { panel: panel.panelChoice }).get('src/main.rs');
+            const expected = `.orientation(Orientation::new()`
+                + `${panel.mirrorX ? '.flip_horizontal()' : ''}${panel.mirrorY ? '.flip_vertical()' : ''})`;
+            contains(main, expected, `${board.id} ${panel.label}`);
+            contains(main, 'use mipidsi::options::{ColorOrder, Orientation};');
+        }
+    }
+    // and the data itself still says what the hardware showed: the CYD's X axis is mirrored.
+    const cyd = displayFor(espBoard('sunton-3248s035r'), {});
+    equal(cyd.mirrorX, true, 'the CYD panel mirrors X');
+    equal(cyd.mirrorY, false, 'and not Y');
+    const tqt = displayFor(espBoard('lilygo-tqt'), {});
+    equal(tqt.mirrorX, false, 'the T-QT needs no flip');
+});
+
+// The diagnostic screen is offered to a 128x128 panel as well as the 3.5" CYD, so its geometry is solved
+// from the panel size. These are the properties that make the numbers safe to emit: everything inside the
+// frame, every band below the one before it, and nothing under the blinking square.
+test('the diagnostic layout fits the glass it is drawn on', () => {
+    for (const board of BOARDS.filter(isEspBoard)) {
+        for (const panel of board.displays) {
+            const layout = espDiagnosticLayout(panel, board);
+            const where = `${board.id} ${panel.label}`;
+            const inside = (x, y, w, h, what) => {
+                ok(x >= 0 && y >= 0, `${where}: ${what} starts off the panel`);
+                ok(x + w <= layout.width && y + h <= layout.height, `${where}: ${what} runs off the panel`);
+            };
+
+            inside(1, 1, layout.width - 2, layout.height - 2, 'the frame');
+            equal(layout.barY, layout.cornerSize + 6, `${where}: the bars start below the corners`);
+            inside(layout.margin, layout.barY, 5 * layout.barWidth + 4 * layout.barGap, layout.barHeight, 'the bars');
+            inside(layout.greetingX, layout.greetingY,
+                13 * (layout.greetingFont === 'FONT_10X20' ? 10 : 6),
+                layout.greetingFont === 'FONT_10X20' ? 20 : 10, 'the greeting');
+
+            // The text bands, then the blinking square, in that order and never overlapping.
+            let line = layout.statusY;
+            for (const text of layout.statusLines) {
+                ok(text.length * 6 + layout.statusX <= layout.width, `${where}: "${text}" is wider than the panel`);
+                ok(line >= layout.greetingY + 10, `${where}: status text overlaps the greeting`);
+                ok(line + 10 <= layout.blinkY - 2, `${where}: "${text}" runs into the blinking square`);
+                line += layout.statusStep;
+            }
+            inside(layout.blinkX, layout.blinkY, layout.blinkSize, layout.blinkSize, 'the blinking square');
+            ok(layout.blinkY + layout.blinkSize <= layout.height - layout.cornerSize,
+                `${where}: the blinking square overlaps the bottom corner markers`);
+            ok(layout.statusLines.length > 0, `${where}: at least one status line has to fit`);
+        }
+    }
 });
 
 test('the T-QT panel revision becomes a cargo feature, not dead code', () => {

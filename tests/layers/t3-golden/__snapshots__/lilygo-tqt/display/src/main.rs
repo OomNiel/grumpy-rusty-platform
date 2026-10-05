@@ -7,8 +7,11 @@
 
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Timer};
-use embedded_graphics_core::draw_target::DrawTarget;
-use embedded_graphics_core::pixelcolor::{Rgb565, RgbColor};
+use embedded_graphics::mono_font::{ascii::{FONT_6X10, FONT_10X20}, MonoTextStyle};
+use embedded_graphics::pixelcolor::Rgb565;
+use embedded_graphics::prelude::*;
+use embedded_graphics::primitives::{Line, PrimitiveStyle, Rectangle};
+use embedded_graphics::text::Text;
 use embedded_hal_bus::spi::ExclusiveDevice;
 use esp_hal::clock::CpuClock;
 use esp_hal::delay::Delay;
@@ -17,7 +20,7 @@ use esp_hal::spi::master::{Config as SpiConfig, Spi};
 use esp_hal::time::Rate;
 use esp_hal::timer::timg::TimerGroup;
 use esp_println as _;
-use mipidsi::options::ColorOrder;
+use mipidsi::options::{ColorOrder, Orientation};
 use mipidsi::{models, Builder};
 use mipidsi::interface::SpiInterface as SPIInterface;
 use esp_backtrace as _;
@@ -81,26 +84,101 @@ async fn main(_spawner: Spawner) -> ! {
     let mut display = Builder::new(models::GC9107, di)
         .display_size(128, 128)
         .reset_pin(rst)
+        .orientation(Orientation::new())
         .color_order(ColorOrder::Rgb)
         .init(&mut delay)
         .expect("panel initialisation");
 
     log::info!("panel ready: 0.85\" GC9107 128x128");
 
-    let bars = [
-        ("red", Rgb565::RED),
-        ("green", Rgb565::GREEN),
-        ("blue", Rgb565::BLUE),
-        ("black", Rgb565::BLACK),
-        ("white", Rgb565::WHITE),
-    ];
+    // A diagnostic screen rather than a flat fill, because a flat fill hides the three things that go wrong
+    // on a new panel: a cropped or shifted active area, a swapped colour order, and a rotated image.
+    //  - the frame: a missing side means the panel is cropped or offset;
+    //  - the corners: red top-left, green top-right, blue bottom-left, white bottom-right, so a shift is
+    //    measurable at a glance (a corner marker that is cut in half is the answer);
+    //  - the bars: named left to right below, so red and blue trading places names the wrong colour order;
+    //  - the cross: centred on the panel size, so an off-centre cross means the active area starts
+    //    somewhere other than where the driver thinks;
+    //  - the text and the blinking square: what this screen is meant to look like, and proof the loop runs.
+    // Replace it with your own drawing once the panel is right.
+    display.clear(Rgb565::BLACK).expect("panel write failed");
 
-    let mut index = 0;
+    // A full-size frame, two pixels wide: every side visible means the whole area is addressable.
+    Rectangle::new(Point::new(1, 1), Size::new(128 - 2, 128 - 2))
+        .into_styled(PrimitiveStyle::with_stroke(Rgb565::WHITE, 2))
+        .draw(&mut display)
+        .expect("panel write failed");
+
+    // The centre cross, drawn before the bars and the text so neither is covered by it.
+    Line::new(Point::new(128 / 2, 0), Point::new(128 / 2, 128))
+        .into_styled(PrimitiveStyle::with_stroke(Rgb565::YELLOW, 1))
+        .draw(&mut display)
+        .expect("panel write failed");
+    Line::new(Point::new(0, 128 / 2), Point::new(128, 128 / 2))
+        .into_styled(PrimitiveStyle::with_stroke(Rgb565::YELLOW, 1))
+        .draw(&mut display)
+        .expect("panel write failed");
+
+    // Five bars, left to right: red, green, blue, black, white. If red and blue trade places, the panel's
+    // colour order is the other one — flip ColorOrder in the builder above and reflash.
+    for (index, colour) in [Rgb565::RED, Rgb565::GREEN, Rgb565::BLUE, Rgb565::BLACK, Rgb565::WHITE]
+        .iter()
+        .enumerate()
+    {
+        Rectangle::new(
+            Point::new(8 + (index as i32) * 22, 22),
+            Size::new(20, 18),
+        )
+            .into_styled(PrimitiveStyle::with_fill(*colour))
+            .draw(&mut display)
+            .expect("panel write failed");
+    }
+
+    // Corner markers, so a shift is measurable: red top-left, green top-right, blue bottom-left, white
+    // bottom-right. A red square that is not in the corner, or one cut in half, is the answer.
+    for (x, y, colour) in [
+        (0, 0, Rgb565::RED),
+        (128 - 16, 0, Rgb565::GREEN),
+        (0, 128 - 16, Rgb565::BLUE),
+        (128 - 16, 128 - 16, Rgb565::WHITE),
+    ] {
+        Rectangle::new(Point::new(x, y), Size::new(16, 16))
+            .into_styled(PrimitiveStyle::with_fill(colour))
+            .draw(&mut display)
+            .expect("panel write failed");
+    }
+
+    Text::new("Hello Grumpy!", Point::new(25, 46), MonoTextStyle::new(&FONT_6X10, Rgb565::YELLOW))
+        .draw(&mut display)
+        .expect("panel write failed");
+
+    // What this screen is supposed to look like, in the panel's own words. Each line is only emitted if it
+    // fits: a status line drawn off the edge is worse than no status line.
+    let small = MonoTextStyle::new(&FONT_6X10, Rgb565::WHITE);
+    let mut line = 62;
+    for text in [
+        "esp32s3 128x128",
+    ] {
+        Text::new(text, Point::new(6, line), small)
+            .draw(&mut display)
+            .expect("panel write failed");
+        line += 12;
+    }
+
+    log::info!("diagnostics drawn: frame, corners, 5 bars, cross and text");
+    let mut tick: u32 = 0;
     loop {
-        let (name, color) = bars[index % bars.len()];
-        log::info!("panel: {}", name);
-        display.clear(color).expect("panel write failed");
-        index += 1;
+        // One small square, blinking: proof the loop is alive, placed clear of every diagnostic so it cannot
+        // be mistaken for one.
+        let colour = if tick % 2 == 0 { Rgb565::WHITE } else { Rgb565::BLACK };
+        Rectangle::new(Point::new(99, 85), Size::new(21, 21))
+            .into_styled(PrimitiveStyle::with_fill(colour))
+            .draw(&mut display)
+            .expect("panel write failed");
+        if tick % 10 == 0 {
+            log::info!("alive (tick {})", tick);
+        }
+        tick = tick.wrapping_add(1);
         Timer::after(Duration::from_millis(700)).await;
     }
 }
