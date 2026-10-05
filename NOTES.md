@@ -2415,3 +2415,73 @@ is in the thousands, it is a debug build.
 
 Tests: `flash-route.test.js` pins the profile rule (ESP → release, RP → debug, unknown → debug) and the
 generated-template test pins the timing line. Suite: **607 passed, 0 skipped**.
+
+---
+
+## 55. The profile became the user's choice, not the extension's (2026-10-05)
+
+*"There should be a switch option or an additional control button. Something like 'Flash with debug profile'
+and 'Flash with release profile'."* — the right answer to §54: `auto` is a good default but it is still a
+guess about what the user is doing, and the extension should not be the one deciding whether they meant to
+step through the code or to watch a finished screen.
+
+**Both halves of the request, because they are two different things.** A *switch option* is a standing
+preference — that is a setting. An *additional control button* is a decision made once, in the moment — that
+is a button. Making the buttons mutate the setting would have been the trap here: a control that quietly
+rewrites a configuration is worse than no control, because the next flash does something the user did not ask
+for and cannot see.
+
+**`rustyPlatform.flashProfile`** — `auto` (default), `debug`, `release` — is read at flash time, so a change
+applies to the next flash without a reload. `auto` is the only branch that consults the board:
+
+| setting | RP board | ESP board |
+|---|---|---|
+| `auto` (default) | `debug` | `release` |
+| `debug` | `debug` | `debug` |
+| `release` | `release` | `release` |
+
+**Two new controls**, sidebar-only so the status bar keeps its six rows: **Flash (debug)** and **Flash
+(release)**, each building and writing exactly like Flash with the profile chosen for that one flash. All
+three entry points now run the same `flashProject()` — the routing (serial for ESP, probe or UF2 for RP) used
+to be written out inline at one call site, and two more call sites each re-implementing it would have been two
+more places to forget a fix.
+
+**What the user is told, in the output channel rather than a dialog.** A deliberate choice that costs
+something says so once, because the cost is real and invisible until the screen goes slow:
+
+```
+flash: profile debug (chosen) for sunton-3248s035r
+flash: a debug build paints a panel far slower than a release one — 28 834 ms against 221 ms for
+       the generated display screen on a 3.5" CYD, measured 2026-10-05 (NOTES 54). The chip is still
+       debuggable over JTAG, which needs separate hardware.
+```
+
+and the mirror image when a Pi board is sent a release build (*"breakpoints in a probe-rs session will be
+hollow"*). `auto` prints nothing — the extension does not argue with its own recommendation. The chosen
+profile is also what gets recorded for the no-flash debug entries, so the chip check still compares like with
+like.
+
+**Choosing is one function, so it can be tested as one.** `flashProfileFor(board, choice)` takes the choice
+and falls back to the board, `parseFlashProfileChoice` turns whatever the settings file contains into one of
+the three (anything unrecognised means `auto`, because settings are strings and users are users), and
+`profileWarnings` decides what a choice costs. The t1 layer pins all three: every board × every choice,
+`undefined`/`null`/`''`/`'Debug'`/`'RELEASE'`/`0`/`{}` all landing on `auto`, and the warning text for the two
+cases that have one.
+
+The sidebar now reads:
+
+```
+$(chip) Rusty               check the toolchain
+$(tools) Build              cargo build
+$(zap) Flash                write the board
+$(debug-alt) Debug          build, flash, debug
+$(output) Monitor           defmt over RTT
+$(trash) Clean              cargo clean
+$(bug) Flash (debug)        debug build, then flash
+$(rocket) Flash (release)   release build, then flash
+$(package) Publish .deb     firmware + flash helper into the project root
+$(archive) Back Up Project  a dated copy in the parent folder
+$(desktop-download) Install .deb
+```
+
+Suite: **611 passed, 0 skipped**.

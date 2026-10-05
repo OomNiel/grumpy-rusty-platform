@@ -65,6 +65,18 @@
                 "icon": "$(zap)"
             },
             {
+                "command": "rustyPlatform.flashDebug",
+                "title": "Flash with Debug Profile",
+                "category": "Rusty Platform",
+                "icon": "$(bug)"
+            },
+            {
+                "command": "rustyPlatform.flashRelease",
+                "title": "Flash with Release Profile",
+                "category": "Rusty Platform",
+                "icon": "$(rocket)"
+            },
+            {
                 "command": "rustyPlatform.flashUsb",
                 "title": "Flash over USB (BOOTSEL)…",
                 "category": "Rusty Platform",
@@ -411,6 +423,21 @@
                     "type": "string",
                     "default": "",
                     "markdownDescription": "Explicit path to `espflash`. Leave empty to auto-detect (`~/.cargo/bin`, then `PATH`)."
+                },
+                "rustyPlatform.flashProfile": {
+                    "type": "string",
+                    "enum": [
+                        "auto",
+                        "debug",
+                        "release"
+                    ],
+                    "enumDescriptions": [
+                        "Let the board decide: release for an ESP chip (there is no debug session on the USB-serial route, and a debug build paints a panel about 130x slower), debug for a Raspberry Pi board (the build a probe-rs session can step through).",
+                        "Always build the debug profile. Debuggable, but on a panel it is the slow one: the generated display screen takes tens of seconds to paint.",
+                        "Always build the release profile. Fast and small, but breakpoints in a probe-rs session will be hollow."
+                    ],
+                    "default": "auto",
+                    "markdownDescription": "Which build **Flash** writes to the chip. *Flash with Debug Profile* and *Flash with Release Profile* override it for one flash. `auto` is `release` for ESP boards and `debug` for Raspberry Pi ones."
                 },
                 "rustyPlatform.serialPort": {
                     "type": "string",

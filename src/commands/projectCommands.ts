@@ -17,9 +17,14 @@ import {
     readSerialPortEntries,
     serialPortCandidates,
 } from '../flash/espFlash';
-import { FLASH_PROFILE, flashProfileFor } from '../flash/profile';
+import {
+    FlashProfileChoice,
+    flashProfileFor,
+    parseFlashProfileChoice,
+    profileWarnings,
+} from '../flash/profile';
 import { UsbFlashConfirmation, buildElf, flashProjectOverUsb } from '../flash/usbFlashRunner';
-import { LAST_FLASHED_KEY } from '../project/launchConfig';
+import { BuildProfile, LAST_FLASHED_KEY } from '../project/launchConfig';
 import { activeWifiEnv } from '../wifi/credentials';
 import { ensureWifiEnv } from '../wifi/wifiPrompt';
 import { closeTerminal, defmtEnv, defmtPrefix, espEnv, openTerminalNames, runInTerminal } from './terminal';
@@ -92,7 +97,7 @@ export function registerProjectCommands(
     }
 
     /** Build, convert and wait for BOOTSEL — shared by the fallback and the explicit command. */
-    async function flashOverUsb(project: ActiveProject, reason?: string): Promise<void> {
+    async function flashOverUsb(project: ActiveProject, profile: BuildProfile, reason?: string): Promise<void> {
         const familyId = uf2FamilyForProject(project.board, project.chip);
         if (familyId === undefined) {
             void vscode.window.showErrorMessage(
@@ -103,19 +108,17 @@ export function registerProjectCommands(
         }
 
         try {
-            // A UF2 copy only ever serves the Raspberry Pi boards, and the image it writes exists to
-            // be debugged, so this route stays on the debug build.
             const result = await flashProjectOverUsb(
-                { folder: project.folder, familyId, profile: flashProfileFor(project.board), env: buildEnv() },
+                { folder: project.folder, familyId, profile, env: buildEnv() },
                 { output, confirmWrite: (request) => confirmUsbFlash(request, reason) },
             );
             if (!result.written) {
                 output.appendLine(`Nothing was written to ${result.volume}.`);
                 return;
             }
-            // The UF2 write is the same build as the probe route, so the debug configurations that
-            // load it stay valid.
-            await context.workspaceState.update(LAST_FLASHED_KEY, FLASH_PROFILE);
+            // Record what was written, not what was intended: the no-flash entries are only safe
+            // against a match.
+            await context.workspaceState.update(LAST_FLASHED_KEY, profile);
             const choice = await vscode.window.showInformationMessage(
                 'Flashed over USB. Without a probe there is no RTT, so defmt output is not available.',
                 'Show File',
@@ -196,13 +199,8 @@ export function registerProjectCommands(
      * and the next debug session could not open it. A flash is a one-shot write; streaming is
      * Monitor's job.
      */
-    async function flashOverProbe(project: ActiveProject, chip: string): Promise<void> {
+    async function flashOverProbe(project: ActiveProject, chip: string, profile: BuildProfile): Promise<void> {
         try {
-            // On this route the profile is the one the debug configurations load, never a different
-            // one: a flash whose build differs from what Debug expects leaves the next session unable
-            // to bind a single breakpoint. `flashProfileFor` is what decides it per board — always
-            // `debug` for a probe route, `release` where no session exists at all.
-            const profile = flashProfileFor(project.board);
             const elf = await buildElf(project.folder, output, profile, buildEnv());
             output.appendLine(`Writing ${path.basename(elf)} through the probe (chip ${chip})`);
             runInTerminal('Rusty: flash', probeFlashCommand(probeRsCommand(), chip, elf), project.folder);
@@ -249,7 +247,11 @@ export function registerProjectCommands(
      * on the chip, so the port is free again afterwards. Following the log stays Monitor's job — or,
      * when the Debug button asked for it, the chained `&&` in the same terminal.
      */
-    async function flashOverSerial(project: ActiveProject, monitorAfter: boolean): Promise<void> {
+    async function flashOverSerial(
+        project: ActiveProject,
+        profile: BuildProfile,
+        monitorAfter: boolean,
+    ): Promise<void> {
         const board = project.board;
         if (board === undefined || board.kind !== 'esp') {
             void vscode.window.showErrorMessage(
@@ -273,10 +275,6 @@ export function registerProjectCommands(
         const chip = project.chip ?? board.espChip;
         const port = espPort();
         try {
-            // An ESP board flashes `release`: there is no probe-rs session on that route to bind a
-            // breakpoint in a debug build, and the debug build's drawing is measured in tens of
-            // seconds where the release build's is a fifth of one (see `flash/profile.ts`).
-            const profile = flashProfileFor(project.board);
             const elf = await buildElf(project.folder, output, profile, buildEnv());
             output.appendLine(
                 `Writing ${path.basename(elf)} over USB serial (chip ${chip}${port === undefined ? '' : `, port ${port}`})`,
@@ -295,6 +293,72 @@ export function registerProjectCommands(
         }
     }
 
+    /** The standing answer from `rustyPlatform.flashProfile`. */
+    function configuredProfileChoice(): FlashProfileChoice {
+        const configured = vscode.workspace.getConfiguration('rustyPlatform').get<string>('flashProfile');
+        return parseFlashProfileChoice(configured);
+    }
+
+    /**
+     * One flash, however the route turns out.
+     *
+     * Extracted so the profile controls are exactly the Flash button with one argument changed: three
+     * entry points that each re-implemented the routing would be three places to forget a fix.
+     */
+    async function flashProject(
+        project: ActiveProject,
+        options: { choice: FlashProfileChoice; monitor?: boolean },
+    ): Promise<void> {
+        const profile = flashProfileFor(project.board, options.choice);
+        // Ask for the network before anything is compiled: the wireless templates bake the credentials
+        // in at compile time, so a prompt after the build would arrive too late.
+        await ensureWifiEnv(context, project.folder, output);
+        output.appendLine(
+            `flash: profile ${profile}` +
+                `${options.choice === 'auto' ? ' (auto, from the board)' : ' (chosen)'}` +
+                `${project.board === undefined ? '' : ` for ${project.board.id}`}`,
+        );
+        for (const warning of profileWarnings(project.board, profile, options.choice)) {
+            output.appendLine(`flash: ${warning}`);
+        }
+
+        // The board decides first, and for an ESP that answer depends on no probe at all — so the
+        // (slow) probe diagnosis only runs when it can change the outcome.
+        if (usesSerialFlash(project.board)) {
+            await flashOverSerial(project, profile, options.monitor === true);
+            return;
+        }
+
+        // Always look again: the route depends on whether a probe is usable *now*, and the cached
+        // status may predate plugging the board in.
+        const status = await refreshWithNotice(state);
+        const kind = status.probeDiagnosis.kind;
+
+        if (flashRouteForProject(project.board, kind) === 'probe') {
+            if (!(await releaseSessionHoldingProbe())) {
+                return;
+            }
+            const projectBoard = project.board;
+            const chip =
+                project.chip ??
+                (projectBoard === undefined
+                    ? undefined
+                    : projectBoard.kind === 'rp'
+                        ? projectBoard.probeChip
+                        : projectBoard.espChip);
+            if (chip === undefined) {
+                void vscode.window.showErrorMessage(
+                    'Cannot tell which chip this project targets. Add `runner = "probe-rs run --chip <CHIP>"` to .cargo/config.toml.',
+                );
+                return;
+            }
+            await flashOverProbe(project, chip, profile);
+            return;
+        }
+
+        await flashOverUsb(project, profile, routeReason(kind));
+    }
+
     return [
         vscode.commands.registerCommand('rustyPlatform.build', () =>
             withProject(({ folder }) => {
@@ -303,47 +367,19 @@ export function registerProjectCommands(
         ),
 
         vscode.commands.registerCommand('rustyPlatform.flash', (options?: { monitor?: boolean }) =>
-            withProject(async (project) => {
-                // Ask for the network before anything is compiled: the wireless templates bake the
-                // credentials in at compile time, so a prompt after the build would arrive too late.
-                await ensureWifiEnv(context, project.folder, output);
+            withProject((project) =>
+                flashProject(project, { choice: configuredProfileChoice(), monitor: options?.monitor === true }),
+            ),
+        ),
 
-                // The board decides first, and for an ESP that answer depends on no probe at all — so
-                // the (slow) probe diagnosis only runs when it can change the outcome.
-                if (usesSerialFlash(project.board)) {
-                    await flashOverSerial(project, options?.monitor === true);
-                    return;
-                }
-
-                // Always look again: the route depends on whether a probe is usable *now*, and the
-                // cached status may predate plugging the board in.
-                const status = await refreshWithNotice(state);
-                const kind = status.probeDiagnosis.kind;
-
-                if (flashRouteForProject(project.board, kind) === 'probe') {
-                    if (!(await releaseSessionHoldingProbe())) {
-                        return;
-                    }
-                    const projectBoard = project.board;
-                    const chip =
-                        project.chip ??
-                        (projectBoard === undefined
-                            ? undefined
-                            : projectBoard.kind === 'rp'
-                                ? projectBoard.probeChip
-                                : projectBoard.espChip);
-                    if (chip === undefined) {
-                        void vscode.window.showErrorMessage(
-                            'Cannot tell which chip this project targets. Add `runner = "probe-rs run --chip <CHIP>"` to .cargo/config.toml.',
-                        );
-                        return;
-                    }
-                    await flashOverProbe(project, chip);
-                    return;
-                }
-
-                await flashOverUsb(project, routeReason(kind));
-            }),
+        // The two explicit build choices, from the Controls section (2026-10-05). They override the
+        // setting for this flash only, and do not change it: a control that quietly rewrites a setting
+        // is a worse control than one that does exactly what it says.
+        vscode.commands.registerCommand('rustyPlatform.flashDebug', () =>
+            withProject((project) => flashProject(project, { choice: 'debug' })),
+        ),
+        vscode.commands.registerCommand('rustyPlatform.flashRelease', () =>
+            withProject((project) => flashProject(project, { choice: 'release' })),
         ),
 
         // Available even when a probe is attached: the USB route is also the recovery path
@@ -351,12 +387,13 @@ export function registerProjectCommands(
         vscode.commands.registerCommand('rustyPlatform.flashUsb', () =>
             withProject(async (project) => {
                 await ensureWifiEnv(context, project.folder, output);
+                const profile = flashProfileFor(project.board, configuredProfileChoice());
                 if (usesSerialFlash(project.board)) {
                     // The explicit "USB" route: for an ESP that is espflash over serial, not a UF2 copy.
-                    await flashOverSerial(project, false);
+                    await flashOverSerial(project, profile, false);
                     return;
                 }
-                await flashOverUsb(project);
+                await flashOverUsb(project, profile);
             }),
         ),
 

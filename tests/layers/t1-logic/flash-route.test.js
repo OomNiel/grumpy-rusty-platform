@@ -103,3 +103,45 @@ test('an ESP board flashes release, a Raspberry Pi board debug', () => {
     equal(flashProfileFor(undefined), 'debug', 'an unknown board keeps the old, safe answer');
     equal(flashProfileFor(boardById('lilygo-tqt')), 'release', 'and the same holds for the other ESP boards');
 });
+
+// The user asked for the choice to be theirs: *"There should be a switch option or an additional control
+// button. Something like 'Flash with debug profile' and 'Flash with release profile'"* (2026-10-05).
+test('an explicit choice beats the board, on either board', () => {
+    const { flashProfileFor } = compiled('flash/profile');
+    const esp = boardById('sunton-3248s035r');
+    const rp = boardById('pico');
+
+    for (const board of [esp, rp, undefined]) {
+        equal(flashProfileFor(board, 'debug'), 'debug', 'debug means debug');
+        equal(flashProfileFor(board, 'release'), 'release', 'and release means release');
+    }
+    // `auto` is the only branch that reads the board.
+    equal(flashProfileFor(esp, 'auto'), 'release');
+    equal(flashProfileFor(rp, 'auto'), 'debug');
+});
+
+test('the profile setting is read defensively, because settings are strings', () => {
+    const { parseFlashProfileChoice, FLASH_PROFILE_CHOICES } = compiled('flash/profile');
+
+    equal(FLASH_PROFILE_CHOICES.join(','), 'auto,debug,release');
+    equal(parseFlashProfileChoice('debug'), 'debug');
+    equal(parseFlashProfileChoice('release'), 'release');
+    equal(parseFlashProfileChoice('auto'), 'auto');
+    for (const nonsense of [undefined, null, '', 'Debug', 'RELEASE', 0, {}, 'true']) {
+        equal(parseFlashProfileChoice(nonsense), 'auto', `${JSON.stringify(nonsense)} falls back to auto`);
+    }
+});
+
+test('a deliberate choice says what it costs, and auto says nothing', () => {
+    const { profileWarnings } = compiled('flash/profile');
+    const esp = boardById('sunton-3248s035r');
+    const rp = boardById('pico');
+
+    equal(profileWarnings(esp, 'debug', 'auto').length, 0, 'the extension does not argue with itself');
+    equal(profileWarnings(rp, 'debug', 'auto').length, 0);
+    contains(profileWarnings(esp, 'debug', 'debug').join(' '), '28 834 ms', 'the measured number, not a vague warning');
+    contains(profileWarnings(rp, 'release', 'release').join(' '), 'hollow', 'the breakpoint caveat');
+    equal(profileWarnings(rp, 'debug', 'debug').length, 0, 'debugging a Pi board is never a warning');
+    equal(profileWarnings(esp, 'release', 'release').length, 0, 'and release on an ESP board is the good case');
+    equal(profileWarnings(undefined, 'debug', 'debug').length, 0, 'an unknown board is not guessed at');
+});
