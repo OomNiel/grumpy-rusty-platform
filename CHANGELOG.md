@@ -11,6 +11,28 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.18] - 2026-10-05
+
+### Fixed
+
+- **Setup asked rustup for a target only Espressif's toolchain has**, which ends as
+  *"rustup exited with 1: … toolchain 'stable-x86_64-unknown-linux-gnu' has no prebuilt artifacts available for
+  target 'xtensa-esp32-none-elf'"* — reported from an ESP32 project. The catalog already documents the split
+  (`rpTargets()`/`espTargets()`: *"Xtensa triples are not rustup targets at all … so a plan that lumps them
+  together asks rustup to do the impossible"*), but both planners built their `rustup target add <triple>`
+  steps from the project's whole target list. They now filter through `isRustupTarget()`, and a test asserts
+  **both** sites do (one filtered and one not is how this survived the split).
+
+### Notes
+
+- Setup now finishes instead of erroring; the **ESP toolchain is still its own command** —
+  *Rusty: Install ESP Toolchain* (`espup`, which also writes `~/export-esp.sh`) — and the build path already
+  names it when the Xtensa linker is missing. Making the setup plan chain into that command is a fair
+  follow-up. `NOTES.md` §47.
+- Still open from §46: the ESP **`display`** template's own code does not compile (three defects, listed with
+  the compiler's output). ESP `blinky` is the one to build.
+- Test suite: **593 passed, 0 skipped**.
+
 ## [0.0.17] - 2026-10-05
 
 ### Fixed
