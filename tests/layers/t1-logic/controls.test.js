@@ -204,3 +204,38 @@ test('the two profile overrides are sidebar controls, and the setting behind the
     equal(setting.default, 'auto', 'auto is the default: the board knows best');
     equal(setting.enumDescriptions.length, 3, 'each value has to explain itself in the Settings UI');
 });
+
+// Flash, Debug and Monitor describe a *route*, and the route differs by family: they said "probe" and
+// "RTT" on an ESP project, where Monitor runs `espflash monitor` and Debug has no breakpoints at all. The
+// captions must not move — they are what the status bar shows and what the user has learned to press.
+test('the rows that name a route are worded for the board in front of the user', () => {
+    const rp = visibleControls(false);
+    const esp = visibleControls(false, 'esp');
+    const find = (list, id) => list.find((control) => control.command === id);
+
+    equal(esp.map((c) => c.command).join(','), rp.map((c) => c.command).join(','), 'the same rows');
+    equal(esp.map((c) => c.label).join(','), rp.map((c) => c.label).join(','), 'with the same captions');
+
+    contains(find(rp, 'rustyPlatform.monitor').detail, 'RTT');
+    contains(find(esp, 'rustyPlatform.monitor').detail, 'serial');
+    contains(find(esp, 'rustyPlatform.monitor').tooltip, 'espflash monitor');
+    notContains(find(esp, 'rustyPlatform.monitor').tooltip, 'probe-rs attach');
+
+    contains(find(rp, 'rustyPlatform.debug').tooltip, 'probe-rs');
+    contains(find(esp, 'rustyPlatform.debug').tooltip, 'JTAG', 'an ESP32 gets no breakpoints and is told so');
+    notContains(find(esp, 'rustyPlatform.debug').tooltip, 'probe-rs debug session');
+
+    contains(find(rp, 'rustyPlatform.flash').tooltip, 'probe');
+    contains(find(esp, 'rustyPlatform.flash').tooltip, 'espflash');
+    contains(find(esp, 'rustyPlatform.flash').tooltip, 'flashProfile', 'the profile setting is named where it matters');
+
+    // The rows that are not about a route must not be rewritten at all.
+    for (const id of ['rustyPlatform.build', 'rustyPlatform.clean', 'rustyPlatform.flashDebug', 'rustyPlatform.flashRelease']) {
+        equal(find(esp, id).detail, find(rp, id).detail, `${id} is board-neutral`);
+        equal(find(esp, id).tooltip, find(rp, id).tooltip, `${id} is board-neutral`);
+    }
+
+    // And a project we could not identify keeps the wording every line was written for.
+    equal(visibleControls(false, 'unknown').map((c) => c.tooltip).join('|'),
+        rp.map((c) => c.tooltip).join('|'));
+});

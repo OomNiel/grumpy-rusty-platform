@@ -2485,3 +2485,33 @@ $(desktop-download) Install .deb
 ```
 
 Suite: **611 passed, 0 skipped**.
+
+---
+
+## 56. Three controls were describing the wrong board (2026-10-05)
+
+*"Make the row board-aware too."* — the wart named at the end of §55: the Controls section said **Monitor —
+defmt over RTT / `probe-rs attach`** and **Debug — build, flash, debug / a probe-rs debug session with RTT** on
+an ESP project, where Monitor runs `espflash monitor` and Debug has no breakpoints at all.
+
+`visibleControls(sessionRunning, family)` now words the three controls that describe a *route* — Flash, Debug
+and Monitor — for the family, and both views hand in `state.family` (the same detection the health row and the
+buttons use). **Captions do not move**: `$(output) Monitor` is what the status bar shows and what the user has
+learned to press, so only the grey line and the tooltip change. With an ESP project open:
+
+```
+$(zap) Flash       write the board
+$(debug-alt) Debug flash, then the log
+$(output) Monitor  the serial log
+```
+
+and their tooltips now say `espflash`/USB serial, "No breakpoints: Xtensa is debugged over JTAG", and
+"`espflash monitor` — the log over the same serial port the flash used, without writing anything". A project
+that cannot be identified keeps the wording every line was written for, because a project we cannot identify
+should not be described as if we had.
+
+The status bar repaints only tooltips — its items are created once from the labels, so the family affects the
+hover text and nothing else. Tests pin that the row list and captions are identical across families, that the
+three route rows differ in the expected words, and that the board-neutral rows are untouched.
+
+Suite: **612 passed, 0 skipped**.

@@ -8,6 +8,7 @@ import {
     healthSummary,
     iconText,
     statusBarText,
+    visibleControls,
 } from './controls';
 
 /**
@@ -69,6 +70,14 @@ export class StatusBarView implements vscode.Disposable {
 
     update(): void {
         const health = healthSummary(this.state.healthInput);
+        // The caption never changes with the board — it is what the user has learned to press — but the
+        // tooltip describes the route, and the route does (see `visibleControls`).
+        for (const control of visibleControls(false, this.state.family)) {
+            const item = this.items.find((candidate) => candidate.command === control.command);
+            if (item !== undefined) {
+                item.tooltip = control.tooltip;
+            }
+        }
         this.healthItem.text = iconText(health.icon, health.label);
         this.healthItem.tooltip = new vscode.MarkdownString(health.markdown);
 

@@ -120,7 +120,7 @@ Wired boards are never asked: the prompt only appears for a project whose `src/m
 | Flash (debug) / Flash (release) | The same flash with the profile chosen for that one flash, overriding the setting. Sidebar only. Debug is the build a probe-rs session can step through, and on a panel it is the slow one; release is fast and small, with hollow breakpoints |
 | Flash over USB (BOOTSEL)… | The UF2 route on purpose (recovery, or a board with no probe). On an ESP project it uses `espflash` instead |
 | Debug / Stop Debugging | RP: build, flash and start a probe-rs session with RTT. ESP: says there are no breakpoints without JTAG, then flashes and monitors in one terminal |
-| Monitor (defmt) | RP: `probe-rs attach` — RTT without reflashing. ESP: `espflash monitor` — the serial log. Both hold the device until their terminal is closed |
+| Monitor (defmt) | RP: `probe-rs attach` — RTT without reflashing. ESP: `espflash monitor` — the serial log. The Controls row and its tooltip are worded for the board in front of you. Both hold the device until their terminal is closed |
 | Add Dependency… | crates.io search (bundled catalog + live index); edits `Cargo.toml` |
 | Set / Clear Wi-Fi Credentials | See above |
 | Check Toolchain / Install Missing Toolchain… | Detection, and the one-click installer |
