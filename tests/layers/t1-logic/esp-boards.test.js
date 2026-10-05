@@ -283,7 +283,17 @@ test('the panel template initialises the panel over its own pins', () => {
     const panel = displayFor(espBoard('sunton-3248s035r'), {});
     const main = filesFor(espBoard('sunton-3248s035r'), 'display').get('src/main.rs');
 
-    contains(main, 'use display_interface_spi::SPIInterface;');
+    // The **buffered** interface: the call below passes `&mut buffer`, and only mipidsi's own
+    // `interface::SpiInterface` takes one. `display_interface_spi::SPIInterface::new(spi, dc)` takes two, so
+    // importing that emitted a project that could not compile — a user's working Sunton project carried this
+    // fix by hand before the generator had it (2026-10-05).
+    contains(main, 'use mipidsi::interface::SpiInterface as SPIInterface;');
+    // The pair, pinned together: a call that passes a buffer needs the three-argument type, and this is what
+    // stops the import and the call drifting apart again.
+    if (/SPIInterface::new\([^)]*&mut buffer/.test(main)) {
+        ok(main.includes('mipidsi::interface::SpiInterface'), 'a buffered call needs the buffered interface');
+        notOk(main.includes('display_interface_spi::SPIInterface'), 'and never the two-argument one');
+    }
     contains(main, 'use embedded_graphics_core::draw_target::DrawTarget;', 'clear() comes from this trait');
     contains(main, 'Builder::new(models::ST7796, di)');
     contains(main, '.display_size(320, 480)');

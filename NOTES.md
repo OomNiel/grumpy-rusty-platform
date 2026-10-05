@@ -1940,3 +1940,54 @@ skipped (`shouldCopyEntry(name, isDirectory)`). Nothing is overwritten: the name
 keeps symlinks as symlinks rather than walking into whatever they point at.
 
 Suite: **592 passed, 0 skipped** (was 587).
+
+## 46. The ESP projects the generator emitted could not compile (2026-10-05)
+
+**How this was found.** *"I am busy testing a project created by the extension for the sunton board — my test
+app `blinky-sunton-3248s035r`. Inspect please."* Inspecting it, then **building a freshly generated one** with
+the real Xtensa toolchain, turned up four separate defects in the ESP generator. Two are fixed here; the
+remaining three are written down with the compiler's own words, because the honest state of the display
+template is *"still does not compile"* and shipping that as fixed would be worse than saying so.
+
+**Fixed.**
+
+1. **The panel's SPI interface was the two-argument one, called with three arguments.** The template emitted
+   `use display_interface_spi::SPIInterface;` and then `SPIInterface::new(spi, dc, &mut buffer)`. From the two
+   crates' own sources (`~/.cargo/registry`): `display-interface-spi-0.5` has
+   `pub fn new(spi: SPI, dc: DC)` and `mipidsi-0.10` has `pub fn new(spi: SPI, dc: DC, buffer: &'a mut [u8])`.
+   The generator now emits `use mipidsi::interface::SpiInterface as SPIInterface;` — the buffered type the call
+   already assumed. Affected `sunton-3248s035r` and `lilygo-tqt`. The user's own project had been fixed **by
+   hand**, with a comment saying exactly this, which is what led here.
+2. **`build.rs` did not compile at all.** The panic message escaped backticks — `"Xtensa linker \`{linker}\`
+   was not found"` — and Rust has no `\`` escape:
+
+   ```
+   error: unknown character escape: `  --> build.rs:37:39
+   37 |   "Xtensa linker \`{linker}\` was not found on PATH.\n\n\
+   ```
+
+   Backticks need no escaping in a Rust string, so they are plain now. This one applies to **every ESP board and
+   both ESP templates** (7 snapshots changed), which means their `build.rs` was broken before anything else
+   could happen.
+
+**Still broken, in the display template's own `main.rs`** — the dependency tree now compiles (esp-hal 1.2.2 and
+all), and the crate fails with nine errors:
+
+* `let mut delay = Delay;` → `error[E0423]: expected value, found struct Delay`. esp-hal 1.2.2 has
+  `impl Delay { pub const fn new() -> Self }`, so it must be `Delay::new()`.
+* `SPIInterface::new(spi, dc, &mut buffer)` → `error[E0277]: the trait bound
+  esp_hal::spi::master::Spi<'_, Blocking>: embedded_hal::spi::SpiDevice is not satisfied`. esp-hal's `Spi` is a
+  `SpiBus`; mipidsi's buffered interface wants a `SpiDevice` (bus + CS). The template's
+  `.with_cs(peripherals.GPIO15)` does not make one — the device wrapper has to be constructed.
+* `Rgb565::RED`/`WHITE`/… → `trait RgbColor which provides WHITE is implemented but not in scope`; the template
+  needs `use embedded_graphics_core::pixelcolor::RgbColor;`.
+
+**What this means for the user's project.** `blinky-sunton-3248s035r` carries two of the four defects as
+generated (the import is the one thing that had been fixed by hand, and the `build.rs` escape is still there),
+which is exactly why its `target/` shows an interrupted build: 37 host build scripts, two chip rlibs and
+`dep-graph.part.bin` working files, and no `.elf`. It cannot have built, and no code of its own was at fault.
+
+**Environment, verified while doing this**: Xtensa GCC 16.2.0 via `~/export-esp.sh`, `espflash`, the `esp`
+toolchain — all present, and `cargo build` reaches the project's own code.
+
+Suite: **592 passed, 0 skipped**.

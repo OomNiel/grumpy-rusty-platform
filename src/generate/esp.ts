@@ -270,7 +270,7 @@ fn check_xtensa_linker() {
 
     if std::process::Command::new(&linker).arg("--version").output().is_err() {
         panic!(
-            "Xtensa linker \\\`{linker}\\\` was not found on PATH.\\n\\n\\
+            "Xtensa linker \`{linker}\` was not found on PATH.\\n\\n\\
              Install the toolchain with \`espup install --targets esp32,esp32s3\` and then run\\n\\
              \`source $HOME/export-esp.sh\` in this shell before building."
         );
@@ -333,7 +333,12 @@ function espImports(board: EspBoardProfile, template: AppTemplate): string {
             'use esp_println as _;',
             'use mipidsi::options::ColorOrder;',
             'use mipidsi::{models, Builder};',
-            'use display_interface_spi::SPIInterface;',
+            // The **buffered** interface, and it must be this one: the call below passes a batching buffer
+            // (`SPIInterface::new(spi, dc, &mut buffer)`), which is mipidsi's own three-argument type.
+            // `display_interface_spi::SPIInterface` takes two and has no buffer at all, so importing it here
+            // produced a project that could not compile — found by inspecting a user's working Sunton project
+            // on 2026-10-05, which carried exactly this fix by hand.
+            'use mipidsi::interface::SpiInterface as SPIInterface;',
         ].join('\n');
     }
     const lines = [

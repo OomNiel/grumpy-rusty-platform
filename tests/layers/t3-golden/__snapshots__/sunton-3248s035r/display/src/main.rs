@@ -18,7 +18,7 @@ use esp_hal::timer::timg::TimerGroup;
 use esp_println as _;
 use mipidsi::options::ColorOrder;
 use mipidsi::{models, Builder};
-use display_interface_spi::SPIInterface;
+use mipidsi::interface::SpiInterface as SPIInterface;
 use esp_backtrace as _;
 
 // The ESP-IDF bootloader expects an application descriptor in the image. Without it the
