@@ -3,6 +3,11 @@ import * as os from 'os';
 import * as path from 'path';
 import { rpTargets } from '../boards/catalog';
 import { espToolchainSummary } from '../toolchain/espToolchain';
+import {
+    cargoVisibleOnShellPath,
+    HealthAction,
+    healthReport,
+} from '../toolchain/health';
 import { INSTALL_ESP_TOOLCHAIN, currentEspStatus, installEspToolchain } from './espToolchainCommands';
 import { RustyState } from '../state';
 import { augmentedEnv, cargoBinDir } from '../util/exec';
@@ -70,6 +75,14 @@ function summaryLine(state: RustyState): string {
     }
     return lines.join('\n');
 }
+
+/** What each fix is called on a button. The wording matches the palette entry, so the two agree. */
+const ACTION_LABELS: Record<HealthAction, string> = {
+    'install-toolchain': 'Install Missing Pieces',
+    'install-esp-toolchain': 'Install ESP Toolchain…',
+    'add-cargo-path': 'Add Cargo to PATH…',
+    'update-probe-firmware': 'Update Probe Firmware',
+};
 
 export function registerToolchainCommands(state: RustyState, output: vscode.OutputChannel): vscode.Disposable[] {
     /**
@@ -160,46 +173,30 @@ export function registerToolchainCommands(state: RustyState, output: vscode.Outp
             output.appendLine(summaryLine(state));
             output.show(true);
 
-            // Reported, but never as a *problem*: an RP-only user does not need the Xtensa
-            // toolchain, and telling them it is missing would be noise.
+            // The ESP toolchain is detected for this check whatever the family is: the line is worth
+            // having in the log either way. Whether it is a *problem* is the report's decision, and
+            // that depends on which silicon the open project is for.
             const esp = await currentEspStatus();
+            const report = healthReport({
+                status,
+                esp,
+                family: state.family,
+                cargoOnShellPath: cargoVisibleOnShellPath(process.env.PATH, cargoBinDir(), path.delimiter),
+            });
             output.appendLine(`ESP toolchain: ${espToolchainSummary(esp)}`);
-            if (!esp.ready) {
-                output.appendLine(
-                    `  install it with "Install ESP Toolchain" (chips: ${esp.chips.join(', ')})`,
-                );
+            for (const note of report.notes) {
+                output.appendLine(`  note: ${note}`);
             }
 
-            const problems: string[] = [];
-            if (!status?.cargo.found) {
-                problems.push('cargo is missing');
-            }
-            if (!status?.probeRs.found) {
-                problems.push('probe-rs is missing');
-            }
-            if (status && status.missingTargets.length > 0) {
-                problems.push(`missing targets: ${status.missingTargets.join(', ')}`);
-            }
-            // `chip-not-autodetected` is normal for RP235x and not a problem to fix.
-            if (
-                status &&
-                status.probeDiagnosis.kind !== 'ok' &&
-                status.probeDiagnosis.kind !== 'chip-not-autodetected'
-            ) {
-                problems.push(status.probeDiagnosis.message);
-            }
-
-            // Cargo can be found by us and still be invisible to the user's own shells: rustup
-            // is installed with --no-modify-path, and VS Code inherits a PATH without
-            // ~/.cargo/bin. Our terminals add it, a hand-opened one cannot.
-            const notOnShellPath = Boolean(status?.cargo.found) && !(process.env.PATH ?? '').split(path.delimiter).includes(cargoBinDir());
-
-            if (problems.length === 0 && !notOnShellPath) {
+            if (report.ok) {
                 void vscode.window.showInformationMessage("Grumpy's Rusty Platform: toolchain looks good. 🎉");
                 return;
             }
 
-            if (problems.length === 0) {
+            // The one-problem, one-fix case deserves a sentence rather than a modal with a list.
+            const pathOnly =
+                report.problems.length === 1 && report.actions.length === 1 && report.actions[0] === 'add-cargo-path';
+            if (pathOnly) {
                 const choice = await vscode.window.showInformationMessage(
                     `cargo is installed at ${cargoBinPath()} but is not on this shell's PATH, so \`cargo build\` typed by hand will fail.`,
                     'Add Cargo to PATH…',
@@ -210,27 +207,23 @@ export function registerToolchainCommands(state: RustyState, output: vscode.Outp
                 return;
             }
 
-            const buttons = ['Install Missing Pieces'];
-            if (notOnShellPath) {
-                buttons.push('Add Cargo to PATH…');
+            for (const problem of report.problems) {
+                output.appendLine(`problem: ${problem}`);
             }
-            if (status?.probeDiagnosis.kind === 'firmware-outdated') {
-                buttons.push('Update Probe Firmware');
-            }
-            const notes = [...problems];
-            if (notOnShellPath) {
-                notes.push(`cargo is not on this shell's PATH (${cargoBinPath()})`);
-            }
+            const buttons = report.actions.map((action) => ACTION_LABELS[action]);
             const choice = await vscode.window.showWarningMessage(
-                `Toolchain needs attention:\n• ${notes.join('\n• ')}`,
+                `Toolchain needs attention:\n• ${report.problems.join('\n• ')}`,
                 { modal: true },
                 ...buttons,
             );
-            if (choice === 'Install Missing Pieces') {
+            const chosen = report.actions.find((action) => ACTION_LABELS[action] === choice);
+            if (chosen === 'install-toolchain') {
                 await vscode.commands.executeCommand('rustyPlatform.installToolchain');
-            } else if (choice === 'Add Cargo to PATH…') {
+            } else if (chosen === 'install-esp-toolchain') {
+                await vscode.commands.executeCommand('rustyPlatform.installEspToolchain');
+            } else if (chosen === 'add-cargo-path') {
                 await addCargoToPathInteractive();
-            } else if (choice === 'Update Probe Firmware') {
+            } else if (chosen === 'update-probe-firmware') {
                 await vscode.commands.executeCommand('rustyPlatform.updateProbeFirmware');
             }
         }),

@@ -36,7 +36,7 @@ export class ControlsViewProvider implements vscode.TreeDataProvider<vscode.Tree
     }
 
     getChildren(): vscode.TreeItem[] {
-        const health = healthSummary(this.state.status);
+        const health = healthSummary(this.state.healthInput);
         const healthItem = new vscode.TreeItem(health.label, vscode.TreeItemCollapsibleState.None);
         healthItem.iconPath = new vscode.ThemeIcon(health.icon);
         healthItem.description = health.detail;

@@ -26,11 +26,15 @@ async function ensureSetup(
 ): Promise<boolean> {
     const before = state.status ?? (await state.refresh());
     const target = project.board?.target;
+    const needsProbeRs = purpose === 'monitor' && project.board?.kind !== 'esp';
     const steps = planProjectSetup(before, {
         targets: target === undefined ? [] : [target],
         platform: process.platform,
         arch: process.arch,
-        needsProbeRs: purpose === 'monitor',
+        // probe-rs is only ever part of the Raspberry Pi route: an ESP project is built and monitored
+        // with espup's toolchain and `espflash`, so a missing probe-rs must not stand in the way of
+        // Monitor there (2026-10-05).
+        needsProbeRs,
     });
     if (steps.length === 0) {
         return true;
@@ -41,7 +45,7 @@ async function ensureSetup(
         .join('\n');
     const why = !before.cargo.found
         ? 'cargo and rustc are not installed.'
-        : !before.probeRs.found && purpose === 'monitor'
+        : !before.probeRs.found && needsProbeRs
             ? 'probe-rs is not installed.'
             : `the ${target} target is not installed for this project.`;
     const confirmed = await vscode.window.showWarningMessage(
