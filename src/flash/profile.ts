@@ -1,3 +1,4 @@
+import type { BoardProfile } from '../boards/types';
 import type { BuildProfile } from '../project/launchConfig';
 
 /**
@@ -15,3 +16,18 @@ import type { BuildProfile } from '../project/launchConfig';
  * only build worth flashing from here.
  */
 export const FLASH_PROFILE: BuildProfile = 'debug';
+
+/**
+ * The profile a Flash writes, for a given board.
+ *
+ * `debug` exists so that a probe-rs debug session can bind breakpoints in the image the chip is
+ * running — a rule that only has a subject on Raspberry Pi, where the session loads that same build.
+ * An Xtensa chip is flashed over USB serial and has no session at all (`Debug` there is flash +
+ * monitor), so the debug build buys nothing and costs a great deal: the diagnostic screen this
+ * template draws took **29.4 s** to paint on a 3.5" CYD as a debug build and **0.223 s** as a release
+ * build — the same source, 132x (measured on the board, 2026-10-05). ESP projects therefore flash
+ * `release`, which is also what "Publish .deb" has always built.
+ */
+export function flashProfileFor(board: BoardProfile | undefined): BuildProfile {
+    return board?.kind === 'esp' ? 'release' : FLASH_PROFILE;
+}

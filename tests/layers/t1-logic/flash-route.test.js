@@ -87,3 +87,19 @@ test('a family can be turned back into silicon, for the mismatch warning', () =>
     );
     equal(siliconForUf2Family(0x1234), 'unknown');
 });
+
+// The profile a Flash writes, per board. `debug` exists for probe-rs sessions, which only Raspberry Pi
+// has: an ESP board is flashed over USB serial with no session to bind a breakpoint in, and paying for a
+// debug build there is expensive in a way the user sees — measured on a CYD, the generated display
+// screen took 29.4 s to paint as a debug build and 0.223 s as a release one (2026-10-05).
+test('an ESP board flashes release, a Raspberry Pi board debug', () => {
+    const { flashProfileFor, FLASH_PROFILE } = compiled('flash/profile');
+    const esp = boardById('sunton-3248s035r');
+    const rp = boardById('pico');
+
+    equal(FLASH_PROFILE, 'debug', 'the default is still the build a session can debug');
+    equal(flashProfileFor(esp), 'release', 'no session exists on the Xtensa route, so nothing needs debug');
+    equal(flashProfileFor(rp), 'debug', 'a probe-rs session loads this build, so Flash must match it');
+    equal(flashProfileFor(undefined), 'debug', 'an unknown board keeps the old, safe answer');
+    equal(flashProfileFor(boardById('lilygo-tqt')), 'release', 'and the same holds for the other ESP boards');
+});

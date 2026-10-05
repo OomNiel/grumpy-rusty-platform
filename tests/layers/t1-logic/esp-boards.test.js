@@ -356,6 +356,11 @@ test('the panel template draws a diagnostic screen, not a flat fill', () => {
     // Every extra text line is a size asked of the font, so check the font that fits the width.
     contains(main, 'FONT_6X10');
     contains(main, 'FONT_10X20');
+    // The screen times itself, because "the panel is slow" is otherwise a feeling: a debug build of this
+    // template took 29.4 s to paint on a CYD against 0.223 s for a release build (2026-10-05).
+    contains(main, 'let drawn_at = Instant::now();');
+    contains(main, 'drawn_at.elapsed().as_millis()');
+    contains(main, 'use embassy_time::{Duration, Instant, Timer};');
 });
 
 // The panel's scan direction is board data, and every panel states it in the generated code -- including the

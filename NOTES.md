@@ -2361,3 +2361,57 @@ Tests: a new t1 file (`toolchain-health.test.js`) pins the whole table above, bo
 PATH check, and the no-project fallback; `controls.test.js` gained the regression case — an ESP project with no
 probe is `ready`, the same machine with a Pico project warns, and an RP-only user is never shown `espup`.
 Suite: **606 passed, 0 skipped**.
+
+---
+
+## 54. Flashing from the extension wrote a debug build, and on an ESP that costs 29 seconds (2026-10-05)
+
+*"The flash was successful, but the lcd now renders much slower than the first flash you did."* — and the first
+flash was mine, made with `cargo build --release`.
+
+**The extension's Flash button built the `debug` profile.** `FLASH_PROFILE = 'debug'` is deliberate and
+documented: *"When clicking on the 'Debug' button, the user expects the system to run a debug build so that
+break points can be set at will"* — so Flash writes the same build a probe-rs session loads, and the chip check
+stops reporting a permanent mismatch. That rule has a **subject only on Raspberry Pi**. An Xtensa chip is
+flashed over USB serial, has no session at all (`Debug` there is flash + monitor), and the no-flash debug
+entries that read `LAST_FLASHED_KEY` do not exist for it. The cost was paid for nothing:
+
+```
+target/xtensa-esp32-none-elf/debug/…     11 248 300 bytes   (written by the Flash button)
+target/xtensa-esp32-none-elf/release/…    2 113 856 bytes   (written by hand)
+```
+
+**Measured on the board, by the app itself** — the template now times its own drawing, so this is a number the
+device prints rather than an inference:
+
+| | `diagnostics drawn in …` | blink loop period |
+|---|---|---|
+| release | **221 ms** | 699.8 ms |
+| debug | **28 834 ms** | 735.4 ms |
+
+Cross-checked against the arrival times of the log lines on the serial port, which is independent of the
+device's own clock: `panel ready` → `diagnostics drawn` was **29.43 s** for the debug build and **0.223 s** for
+the release one. The same source, ~130x.
+
+**What was actually slow, and what was not.** The initial paint — a full-screen `clear()` plus the frame, the
+corners, the bars, the cross and the text, about 183 000 pixels — is what the user saw, and any full-screen
+redraw in their own drawing would be the same. The blinking square was fine: 576 pixels, **+35 ms** on top of a
+700 ms sleep, which is why the loop period barely moved (699.8 → 735.4 ms). Worth stating precisely, because
+"the panel is slow" points at the wrong place otherwise: it is the *pixels written*, not the panel or the SPI
+clock, and the debug build's per-pixel path costs about 157 µs against about 1.2 µs optimised.
+
+**The fix is one function, and the extension already disagreed with itself about it.** `flashProfileFor(board)`
+returns `release` for an ESP board and `debug` for everything else, and every write-the-chip site goes through
+it — the ESP serial route and the probe route, plus the UF2 route (which is Raspberry Pi only and stays on
+`debug`). What it makes consistent: **"Publish .deb" has always built `cargo build --release`**, so the same
+project flashed two ways had two performance levels, and only one of them was the one the user experiences on
+the glass.
+
+**And the app now says how long it took.** The generated display template brackets its drawing with
+`embassy_time::Instant` (no new dependency — the `embassy_time` import was already there for the 700 ms timer)
+and logs `diagnostics drawn in {} ms: …`. That is what turned this report into a measurement in one flash
+instead of a guess, and it is the line to look at first for anyone whose own drawing feels slow: if the number
+is in the thousands, it is a debug build.
+
+Tests: `flash-route.test.js` pins the profile rule (ESP → release, RP → debug, unknown → debug) and the
+generated-template test pins the timing line. Suite: **607 passed, 0 skipped**.

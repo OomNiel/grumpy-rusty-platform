@@ -17,7 +17,7 @@ import {
     readSerialPortEntries,
     serialPortCandidates,
 } from '../flash/espFlash';
-import { FLASH_PROFILE } from '../flash/profile';
+import { FLASH_PROFILE, flashProfileFor } from '../flash/profile';
 import { UsbFlashConfirmation, buildElf, flashProjectOverUsb } from '../flash/usbFlashRunner';
 import { LAST_FLASHED_KEY } from '../project/launchConfig';
 import { activeWifiEnv } from '../wifi/credentials';
@@ -103,8 +103,10 @@ export function registerProjectCommands(
         }
 
         try {
+            // A UF2 copy only ever serves the Raspberry Pi boards, and the image it writes exists to
+            // be debugged, so this route stays on the debug build.
             const result = await flashProjectOverUsb(
-                { folder: project.folder, familyId, profile: FLASH_PROFILE, env: buildEnv() },
+                { folder: project.folder, familyId, profile: flashProfileFor(project.board), env: buildEnv() },
                 { output, confirmWrite: (request) => confirmUsbFlash(request, reason) },
             );
             if (!result.written) {
@@ -196,14 +198,16 @@ export function registerProjectCommands(
      */
     async function flashOverProbe(project: ActiveProject, chip: string): Promise<void> {
         try {
-            // The profile is the one the debug configurations load, never a different one: a flash
-            // whose build differs from what Debug expects leaves the next session unable to bind a
-            // single breakpoint, and the chip check then has to report it as a mismatch.
-            const elf = await buildElf(project.folder, output, FLASH_PROFILE, buildEnv());
+            // On this route the profile is the one the debug configurations load, never a different
+            // one: a flash whose build differs from what Debug expects leaves the next session unable
+            // to bind a single breakpoint. `flashProfileFor` is what decides it per board — always
+            // `debug` for a probe route, `release` where no session exists at all.
+            const profile = flashProfileFor(project.board);
+            const elf = await buildElf(project.folder, output, profile, buildEnv());
             output.appendLine(`Writing ${path.basename(elf)} through the probe (chip ${chip})`);
             runInTerminal('Rusty: flash', probeFlashCommand(probeRsCommand(), chip, elf), project.folder);
             // Remember what the chip now holds: the no-flash entries are only safe against a match.
-            await context.workspaceState.update(LAST_FLASHED_KEY, FLASH_PROFILE);
+            await context.workspaceState.update(LAST_FLASHED_KEY, profile);
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             output.appendLine(`flash failed: ${message}`);
@@ -269,7 +273,11 @@ export function registerProjectCommands(
         const chip = project.chip ?? board.espChip;
         const port = espPort();
         try {
-            const elf = await buildElf(project.folder, output, FLASH_PROFILE, buildEnv());
+            // An ESP board flashes `release`: there is no probe-rs session on that route to bind a
+            // breakpoint in a debug build, and the debug build's drawing is measured in tens of
+            // seconds where the release build's is a fifth of one (see `flash/profile.ts`).
+            const profile = flashProfileFor(project.board);
+            const elf = await buildElf(project.folder, output, profile, buildEnv());
             output.appendLine(
                 `Writing ${path.basename(elf)} over USB serial (chip ${chip}${port === undefined ? '' : `, port ${port}`})`,
             );
@@ -278,7 +286,7 @@ export function registerProjectCommands(
                 : espFlashCommand(espflashCommand(), chip, elf, port);
             runInTerminal('Rusty: flash', command, project.folder);
             // Remember what the chip now holds, the same way the RP routes do.
-            await context.workspaceState.update(LAST_FLASHED_KEY, FLASH_PROFILE);
+            await context.workspaceState.update(LAST_FLASHED_KEY, profile);
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             output.appendLine(`flash failed: ${message}`);
