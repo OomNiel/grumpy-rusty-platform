@@ -34,7 +34,7 @@ fn check_xtensa_linker() {
 
     if std::process::Command::new(&linker).arg("--version").output().is_err() {
         panic!(
-            "Xtensa linker \`{linker}\` was not found on PATH.\n\n\
+            "Xtensa linker `{linker}` was not found on PATH.\n\n\
              Install the toolchain with `espup install --targets esp32,esp32s3` and then run\n\
              `source $HOME/export-esp.sh` in this shell before building."
         );
