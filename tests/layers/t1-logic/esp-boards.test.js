@@ -162,10 +162,33 @@ test('an ESP board offers only templates that are implemented', () => {
         ['blinky'],
         'the DevKitC has no panel, so a panel template would be meaningless',
     );
+    equal(
+        templatesFor(espBoard('lilygo-tqt')).map((info) => info.id),
+        ['blinky', 'display'],
+        'the T-QT has a panel and no touch controller',
+    );
+    // The CYD is the only board with a touch controller, so it is the only one offered the touch test.
+    equal(
+        templatesFor(espBoard('sunton-3248s035r')).map((info) => info.id),
+        ['blinky', 'display', 'touch'],
+    );
     for (const id of ['lilygo-tqt', 'sunton-3248s035r']) {
-        equal(templatesFor(espBoard(id)).map((info) => info.id), ['blinky', 'display']);
         equal(defaultTemplateFor(espBoard(id)), 'display', 'a panel board is bought for its panel');
     }
+});
+
+test('the touch template is only offered where a touch controller exists', () => {
+    for (const board of BOARDS.filter(isEspBoard)) {
+        const ids = templatesFor(board).map((info) => info.id);
+        equal(
+            ids.includes('touch'),
+            board.touch !== undefined,
+            `${board.id}: the touch template follows the controller, not the panel`,
+        );
+    }
+    const cyd = espBoard('sunton-3248s035r');
+    equal(cyd.touch.controller, 'XPT2046');
+    equal(defaultTemplateFor(cyd), 'display', 'touch is a test, not the default for a new project');
 });
 
 test('an unimplemented template is refused, not generated', () => {
@@ -499,4 +522,70 @@ test('the ESP catalog entries are the only ones with Xtensa targets', () => {
         equal(xtensa, isEspBoard(board), `${board.id}: Xtensa target and board family disagree`);
     }
     matches(boardById('pico').target, /^thumbv\d/, 'and the RP boards keep their Arm triples');
+});
+
+// The touch template: panel bring-up with the XPT2046 sharing the bus, a four-corner calibration, and a
+// crosshair where the firmware thinks the finger is. Everything asserted here was checked against the
+// datasheet-derived reference implementations and against two independent configurations for this exact
+// board family; **none of it has worked on the one CYD we have**, whose controller never responds to a
+// touch (NOTES §57). So these hold the shape of the code, not a working touch screen.
+test('the touch template shares the panel bus and speaks the XPT2046 protocol', () => {
+    const main = filesFor(espBoard('sunton-3248s035r'), 'touch').get('src/main.rs');
+    const touch = espBoard('sunton-3248s035r').touch;
+    const cargo = filesFor(espBoard('sunton-3248s035r'), 'touch').get('Cargo.toml');
+
+    // The bus goes into a RefCell and each chip gets its own device, with its own chip select.
+    contains(main, 'use core::cell::RefCell;');
+    contains(main, 'let bus = RefCell::new(spi);');
+    contains(main, 'RefCellDevice::new(&bus, cs, Delay::new())');
+    contains(main, `RefCellDevice::new(&bus, touch_cs, Delay::new())`);
+    notContains(main, 'ExclusiveDevice', 'one bus, two devices: the exclusive adapter cannot express that');
+    contains(cargo, 'embedded-hal-bus');
+    contains(cargo, 'embedded-hal = "1.0.0"', 'the read helper is generic over SpiDevice, so the trait is named');
+
+    // The pins come from the board data, not from the template.
+    contains(main, `Output::new(peripherals.GPIO${touch.cs}, Level::Low`);
+    contains(main, `Input::new(peripherals.GPIO${touch.irq}, InputConfig::default().with_pull(Pull::Up))`);
+
+    // The controller's clock is its own, and the bus is switched around each burst.
+    contains(main, `Rate::from_khz(${Math.round(touch.spiHz / 1000)})`);
+    contains(main, 'apply_config(&touch_clock()).expect("touch clock")');
+    contains(main, 'apply_config(&panel_clock()).expect("panel clock")');
+
+    // Control bytes from the datasheet: two axes, and the power-down command that re-enables PENIRQ.
+    contains(main, 'const TOUCH_AXIS_A: u8 = 0xD1;');
+    contains(main, 'const TOUCH_AXIS_B: u8 = 0x91;');
+    contains(main, 'const TOUCH_POWER_DOWN: u8 = 0xD0;');
+    // The result arrives one command behind and is nibble-aligned; the common shift-by-three decode is
+    // eight times too small, which is how the first corner read 14 counts instead of 2050.
+    contains(main, 'fn touch_frame<D: SpiDevice>');
+    contains(main, '(((frame >> 8) & 0x00FF) << 4) | ((frame & 0x00FF) >> 4)');
+    contains(main, 'fn touch_idle<D: SpiDevice>');
+});
+
+test('a touch is the axes moving, never the interrupt line on its own', () => {
+    const main = filesFor(espBoard('sunton-3248s035r'), 'touch').get('src/main.rs');
+
+    // Measured: GPIO36 reads low with nothing near the glass, and every phantom tap arrived with both axes
+    // still on their idle values -- it walked the calibration through all four corners by itself.
+    contains(main, 'let touched = moved;');
+    notContains(main, 'let touched = irq || moved;');
+    contains(main, 'let moved = (i32::from(raw_a) - idle_a).abs() > TOUCH_MOVE');
+    contains(main, '"touch test alive: a={} b={} idle a={} b={} pen={}",',
+        'the interrupt is still logged, just not trusted');
+});
+
+test('the touch template asks for the four corners and says what it measured', () => {
+    const main = filesFor(espBoard('sunton-3248s035r'), 'touch').get('src/main.rs');
+
+    contains(main, 'let corners = ["top-left", "top-right", "bottom-right", "bottom-left"];');
+    contains(main, 'Touch the red square');
+    contains(main, 'Touch anywhere: the crosshair follows');
+    contains(main, '"calibration: raw axis{} {}..{} and axis{} {}..{} over {}x{}"',
+        'the numbers a user can report back');
+    contains(main, 'frames a=[{:04X} {:04X} {:04X}] b=[{:04X} {:04X} {:04X}]',
+        'the raw frames, which is what identified the fault');
+    // The axis choice is worked out from the corners, not assumed.
+    contains(main, 'raw_x_axis = if delta_a >= delta_b { 0 } else { 1 };');
+    contains(main, 'TOUCH_MOVE: i32 = 200');
 });
