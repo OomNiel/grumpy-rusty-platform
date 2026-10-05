@@ -120,6 +120,37 @@ export const PACKAGE_CONTROLS: readonly ControlDescriptor[] = [
 ];
 
 /**
+ * The two explicit build choices (asked 2026-10-05: *"There should be a switch option or an additional
+ * control button. Something like 'Flash with debug profile' and 'Flash with release profile'"*).
+ *
+ * They override `rustyPlatform.flashProfile` for one flash, which is why they are buttons rather than a
+ * toggle: the setting is the standing answer ("auto" by default), and these are the times a user knows
+ * better. Both build and write, exactly like Flash — the profile is the only difference.
+ *
+ * Sidebar only, like the packaging controls, so the status bar keeps its six.
+ */
+export const FLASH_PROFILE_CONTROLS: readonly ControlDescriptor[] = [
+    {
+        command: 'rustyPlatform.flashDebug',
+        icon: 'bug',
+        label: 'Flash (debug)',
+        detail: 'debug build, then flash',
+        tooltip: 'Build the debug profile and write it. This is the build a probe-rs session can step '
+            + 'through, and on a panel it is the slow one: the generated display screen takes tens of '
+            + 'seconds to paint as a debug build against about 0.2 s as a release build.',
+    },
+    {
+        command: 'rustyPlatform.flashRelease',
+        icon: 'rocket',
+        label: 'Flash (release)',
+        detail: 'release build, then flash',
+        tooltip: 'Build the release profile and write it. Optimised, so it is what a finished device '
+            + 'wants and what a display needs to draw at speed — but breakpoints in a probe-rs session '
+            + 'will be hollow, so use the debug profile when you intend to step.',
+    },
+];
+
+/**
  * The status bar's controls, in order — the six that are about *running* the project.
  *
  * The packaging pair is deliberately **not** here: `CONTROLS` also lays out the status bar, and two more items
@@ -143,8 +174,11 @@ export function statusBarText(control: ControlDescriptor): string {
  * only meaningful then, and another debugger's session is not ours to kill.
  */
 export function visibleControls(sessionRunning: boolean): ControlDescriptor[] {
-    // The side panel shows everything the status bar shows, plus the packaging controls.
-    return [...CONTROLS, ...PACKAGE_CONTROLS].filter((control) => control.sessionOnly !== true || sessionRunning);
+    // The side panel shows everything the status bar shows, plus the profile overrides and the
+    // packaging controls.
+    return [...CONTROLS, ...FLASH_PROFILE_CONTROLS, ...PACKAGE_CONTROLS].filter(
+        (control) => control.sessionOnly !== true || sessionRunning,
+    );
 }
 
 /**

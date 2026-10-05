@@ -116,7 +116,8 @@ Wired boards are never asked: the prompt only appears for a project whose `src/m
 | Publish .deb | Builds for release and packs the firmware artifacts plus a `<package>-flash` helper into `<name>_<version>_<arch>.deb` **in the project root** |
 | Install .deb | `dpkg-deb --info`, then `sudo dpkg -i` in a terminal (Linux) |
 | Back Up Project | `<folder>-<date>_<time>` beside the project, leaving out `target/` |
-| Flash | Builds the debug image and writes it — through the probe (`probe-rs download` + `reset`) for RP, or with `espflash` over USB serial for ESP. One-shot in both cases: it releases the probe/port when it is done |
+| Flash | Builds and writes the image — through the probe (`probe-rs download` + `reset`) for RP, or with `espflash` over USB serial for ESP. Which build it writes follows `rustyPlatform.flashProfile`: `auto` (the default) is **release for ESP** and **debug for RP**. One-shot in both cases: it releases the probe/port when it is done |
+| Flash (debug) / Flash (release) | The same flash with the profile chosen for that one flash, overriding the setting. Sidebar only. Debug is the build a probe-rs session can step through, and on a panel it is the slow one; release is fast and small, with hollow breakpoints |
 | Flash over USB (BOOTSEL)… | The UF2 route on purpose (recovery, or a board with no probe). On an ESP project it uses `espflash` instead |
 | Debug / Stop Debugging | RP: build, flash and start a probe-rs session with RTT. ESP: says there are no breakpoints without JTAG, then flashes and monitors in one terminal |
 | Monitor (defmt) | RP: `probe-rs attach` — RTT without reflashing. ESP: `espflash monitor` — the serial log. Both hold the device until their terminal is closed |
@@ -140,9 +141,12 @@ optimised, so the compiler merges or removes lines and breakpoints there show up
 | `Restart & Debug, no flashing` | **no** | yes | at your breakpoints — anywhere, including `main` |
 | `Attach - keeps it running` | **no** | **no** | only in code that runs again (a loop, an interrupt) |
 
-* **Flash and Debug agree on what is on the chip.** Flash writes the same debug build the debug
+* **Flash and Debug agree on what is on the chip.** On RP, Flash writes the same debug build the debug
   configurations load, so Build → Flash → Debug just works: no prompt, no extra flashing, and
-  breakpoints bind.
+  breakpoints bind. On ESP there is no session to agree with, so `auto` writes **release** — a debug
+  build there paints the generated display screen about 130× slower (28 834 ms against 221 ms, measured
+  on a CYD). **Flash (debug)** / **Flash (release)** override the choice for one flash, and
+  `rustyPlatform.flashProfile` sets the standing answer.
 * **A no-flash session is checked first.** Before it starts, the extension reads the chip's flash
   with `probe-rs verify` (~10 s) and compares it with the build the session will use. If they differ
   it offers **Flash & Debug instead** rather than letting breakpoints silently fail to bind. If the

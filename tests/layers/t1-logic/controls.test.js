@@ -13,6 +13,7 @@ const { test, ok, equal, contains, notContains } = require('../../lib/harness');
 const { compiled, repoRoot } = require('../../lib/harness');
 const {
     CONTROLS,
+    FLASH_PROFILE_CONTROLS,
     HEALTH_CONTROL,
     healthSummary,
     iconText,
@@ -174,3 +175,32 @@ function espStatus(options) {
         ready: options.ready ?? missing.length === 0,
     };
 }
+
+// The profile overrides live in the sidebar only: the status bar keeps its six, and the two buttons are
+// one flash each rather than a setting that rewrites itself (2026-10-05).
+test('the two profile overrides are sidebar controls, and the setting behind them exists', () => {
+    const manifest = JSON.parse(fs.readFileSync(path.join(repoRoot(), 'package.json'), 'utf8'));
+    const declared = new Map(manifest.contributes.commands.map((entry) => [entry.command, entry]));
+    const shown = visibleControls(false).map((control) => control.command);
+    const statusBar = CONTROLS.map((control) => control.command);
+    const pkgSettings = manifest.contributes.configuration.properties;
+
+    equal(FLASH_PROFILE_CONTROLS.length, 2, 'one for each profile');
+    equal(FLASH_PROFILE_CONTROLS.map((c) => c.command).join(','),
+        'rustyPlatform.flashDebug,rustyPlatform.flashRelease');
+
+    for (const control of FLASH_PROFILE_CONTROLS) {
+        ok(declared.has(control.command), `${control.command} is not declared in package.json`);
+        ok(shown.includes(control.command), `${control.command} has to be reachable in the sidebar`);
+        ok(!statusBar.includes(control.command), `${control.command} must not crowd the status bar`);
+        ok(control.label.includes(control.command.endsWith('Debug') ? 'debug' : 'release'),
+            'the label says which profile it writes');
+        ok(control.tooltip.length > 60, 'and the tooltip explains when to reach for it');
+    }
+
+    const setting = pkgSettings['rustyPlatform.flashProfile'];
+    ok(setting, 'the standing choice is a setting');
+    equal(setting.enum.join(','), 'auto,debug,release');
+    equal(setting.default, 'auto', 'auto is the default: the board knows best');
+    equal(setting.enumDescriptions.length, 3, 'each value has to explain itself in the Settings UI');
+});
