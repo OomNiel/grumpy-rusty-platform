@@ -11,6 +11,35 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.25] - 2026-10-05
+
+### Added
+
+- **A switch option for the build profile, and two buttons to override it.** `rustyPlatform.flashProfile`
+  is the standing answer — `auto` (default), `debug` or `release` — read at flash time, so a change
+  applies to the next flash. `auto` is the only value that consults the board: **release for ESP** and
+  **debug for RP**.
+- **Flash (debug)** and **Flash (release)** in the Controls section: the same build-and-write as Flash
+  with the profile chosen for that one flash. They deliberately do **not** change the setting — a control
+  that quietly rewrites a configuration makes the next flash do something the user cannot see.
+- A deliberate choice that costs something says so in the output channel: choosing the debug profile on
+  an ESP board reports the measured cost (28 834 ms against 221 ms for the generated display screen), and
+  a release build on a Pi board warns that breakpoints in a probe-rs session will be hollow. `auto` says
+  nothing.
+
+### Changed
+
+- **All three flash entry points run one code path.** The routing (ESP serial, RP probe, RP USB/UF2) was
+  written out inline at a single call site; the two new controls would have been two more copies of it.
+
+### Notes
+
+- `flashProfileFor(board, choice)` and `parseFlashProfileChoice` are the whole decision, so the t1 layer
+  pins every board against every choice, plus `undefined` / `null` / `''` / `'Debug'` / `'RELEASE'` / `0` /
+  `{}` all falling back to `auto`. `NOTES.md` §55.
+- Test suite: **611 passed, 0 skipped**.
+
+
 ## [0.0.24] - 2026-10-05
 
 ### Fixed
