@@ -2113,7 +2113,8 @@ than by a guess.
 bootloader and default partition table** in addition to the app (the chip now runs an ESP-IDF v6.1 bootloader
 with a single `factory` partition, where the factory had v4.4.5 and six OTA partitions). That is espflash's
 behaviour, not the extension's, and it is fully reversible: `espflash write-bin 0 0x400000 cyd-demo-backup.bin`
-restores the whole 4 MB byte-for-byte, from a backup verified against this exact chip.
+restores the whole 4 MB byte-for-byte, from a backup verified against this exact chip — a claim that was an
+inference when this was written and was **tested** in §52, which restores it and compares the read-back.
 
 Suite: **593 passed, 0 skipped**.
 
@@ -2223,3 +2224,64 @@ coordinates, corner colours, named bars, centred lines, greeting, blink and both
 solved layout for every panel — inside the frame, bands in order, nothing under the blinking square.
 
 Suite: **596 passed, 0 skipped**.
+
+---
+
+## 52. The backup was tested as a backup: the factory image went back in (2026-10-05)
+
+*"Finally, lets test flashing the factory firmware back to the board."*
+
+**A dump is not a backup until it has been restored once.** §50 recorded that the flash was reversible
+"byte-for-byte from a verified full-flash backup" — verified by checking the master image's hash and by
+comparing it against what the chip held when it was taken. Neither of those is the same as **writing it back
+and watching the board run it**, which is the only test that matters. So the order was: read the chip as it
+stood, write the master image over it from offset 0, read the chip again, compare.
+
+**Result: byte-for-byte identical.**
+
+```
+master  cyd-demo-backup.bin     sha256 dc4ce79f2011fdfe27216f801a625a7b82fa3c66f52bb43c75fc906b14093f63
+before  cyd-before-restore.bin  sha256 04d886f81a421cf667a69bdf0578f8c0828ed3b96293cba4691ba1abeb7792ad
+after   cyd-after-restore.bin   sha256 dc4ce79f2011fdfe27216f801a625a7b82fa3c66f52bb43c75fc906b14093f63
+```
+
+4 194 304 bytes in each, and `after == master` exactly. **141 898 bytes (3.38 % of the chip) differed before
+the restore**, and they were only ever where espflash had written:
+
+| region | range | differs | what it was |
+|---|---|---|---|
+| bootloader | `0x001000`-`0x008000` | 25 466 B (88.8 %) | espflash's ESP-IDF v6.1, not the factory Arduino one |
+| partition table | `0x008000`-`0x009000` | 135 B (3.3 %) | one `factory` partition instead of six |
+| app0 | `0x010000`-`0x015000` | 116 297 B (8.9 %) | the generated diagnostic app, 116 480 B of it |
+| nvs, otadata, app1, spiffs, coredump | rest | **0 B** | untouched — including `otadata`, still pointing at `ota_0` |
+
+That last row is the reason a restore is *complete* rather than merely plausible: espflash replaced the
+bootloader, the partition table and the app, and left the factory NVS, OTA metadata, unused `app1`, SPIFFS and
+coredump alone, so writing the master back cannot leave a mixture behind. Timings at `-B 921600` over the
+CH340: read 61 s, write 52 s, read again 62 s (about 3 minutes for the whole round trip).
+
+**And the chip runs it.** Monitor immediately after the restore:
+
+```
+rst:0x1 (POWERON_RESET),boot:0x13 (SPI_FAST_FLASH_BOOT)
+load:0x3fff0018,len:4 ... entry 0x400806a8
+Hello Arduino! V8.3.11
+I am LVGL_Arduino
+Setup done
+```
+
+`Hello Arduino! V8.3.11` is the factory firmware's own banner — Arduino core 8.3.11 and the LVGL demo — and the
+bootloader carries the string `/work/esp32-arduino-lib-buil…`, an Arduino build path rather than Espressif's,
+so the bootloader running is the factory one too. The panel then showed the factory demo again, confirmed on
+the hardware.
+
+**What that does and does not prove.** The byte comparison proves the flash *content* matches the master image;
+the boot log and the panel prove the chip actually *executes* it. Together they close the chain
+backup → chip → backup → chip. Nothing about the board is non-factory now: the MAC and the calibration values
+live in efuse, not flash, and were never written by any of this.
+
+**Recorded where the image lives, not only here.** `/home/niel/Downloads/ESP32-035-board-backup/` now holds
+`restore-factory-firmware.sh` (the whole procedure: read, write, read, compare) beside `verify-backup.sh` (the
+read-only integrity check), the master image, and both dumps from this test — so the next person holding that
+folder has the command, the check and the evidence for it. `NOTES.md` §50's reversibility claim now rests on
+this instead of on an inference.
