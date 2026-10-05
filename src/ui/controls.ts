@@ -173,12 +173,55 @@ export function statusBarText(control: ControlDescriptor): string {
  * The controls that apply right now. Stop is left out unless a probe-rs session is running: it is
  * only meaningful then, and another debugger's session is not ours to kill.
  */
-export function visibleControls(sessionRunning: boolean): ControlDescriptor[] {
+/**
+ * Wording that changes with the silicon.
+ *
+ * Three of these controls describe a *route*, and the route is not the same on both families: Flash,
+ * Debug and Monitor all say "probe" and "RTT" because they were written for Raspberry Pi, and on an ESP
+ * project Monitor really runs `espflash monitor` while Debug really has no breakpoints at all. The
+ * labels stay put — they are what the status bar shows and what the user has learned — so only the
+ * line of grey text and the tooltip change (2026-10-05).
+ */
+const ESP_WORDING: Record<string, Pick<ControlDescriptor, 'detail' | 'tooltip'>> = {
+    'rustyPlatform.flash': {
+        detail: 'write the board',
+        tooltip: 'Build and write over USB serial with espflash — an Xtensa chip has no probe route. '
+            + 'Writes the release build by default; see rustyPlatform.flashProfile.',
+    },
+    'rustyPlatform.debug': {
+        detail: 'flash, then the log',
+        tooltip: 'No breakpoints: Xtensa is debugged over JTAG, which needs separate hardware. Builds, '
+            + 'writes the image and follows the log in one terminal.',
+    },
+    'rustyPlatform.monitor': {
+        detail: 'the serial log',
+        tooltip: 'espflash monitor — the log over the same serial port the flash used, without writing '
+            + 'anything. Holds the port until its terminal is closed.',
+    },
+};
+
+/**
+ * The controls that apply now, worded for the board in front of the user.
+ *
+ * The family defaults to `unknown`, which keeps the Raspberry Pi wording: it is the one every line was
+ * written for, and a project we cannot identify should not be described as if we had identified it.
+ */
+export function visibleControls(
+    sessionRunning: boolean,
+    family: HealthFamily = 'unknown',
+): ControlDescriptor[] {
     // The side panel shows everything the status bar shows, plus the profile overrides and the
     // packaging controls.
-    return [...CONTROLS, ...FLASH_PROFILE_CONTROLS, ...PACKAGE_CONTROLS].filter(
+    const controls = [...CONTROLS, ...FLASH_PROFILE_CONTROLS, ...PACKAGE_CONTROLS].filter(
         (control) => control.sessionOnly !== true || sessionRunning,
     );
+    if (family !== 'esp') {
+        return controls;
+    }
+    return controls.map((control) => {
+        const wording = ESP_WORDING[control.command];
+        return wording === undefined ? control : { ...control, ...wording };
+    });
 }
 
 /**
