@@ -219,7 +219,8 @@ build-std = [${needsAlloc ? '"alloc", ' : ''}"core"]
 function espConfigToml(): string {
     return `# Runtime configuration for the ESP logging stack.
 [env]
-# log level for esp-println; change to "debug" or "trace" when something is silent.
+# log level for esp-println, read by esp_println::logger::init_logger_from_env() in main;
+# change to "debug" or "trace" when something is silent.
 ESP_LOG = "info"
 `;
 }
@@ -315,6 +316,13 @@ function espBootBlock(board: EspBoardProfile): string {
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     esp_rtos::start(timg0.timer0, peripherals.FROM_CPU_INTR0);
+
+    // log::info! needs a logger installed, and the log-04 feature does not install one by itself: without
+    // this line every log::info! below is dropped, so a perfectly healthy app looks dead on the serial port.
+    // Found by flashing a generated project to a real board on 2026-10-05 -- the bootloader reported
+    // "Loaded app from partition at offset 0x10000" and then nothing at all, for as long as we listened.
+    // esp-println's logger reads ESP_LOG, which .cargo/esp-config.toml sets.
+    esp_println::logger::init_logger_from_env();
 
     // The USB serial buffer keeps whatever was printed before a reset, so the log starts
     // with a line that can only come from this run.
