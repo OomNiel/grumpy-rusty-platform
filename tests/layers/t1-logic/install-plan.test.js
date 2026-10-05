@@ -1,6 +1,8 @@
 'use strict';
 
-const { test, ok, equal, notOk, contains } = require('../../lib/harness');
+const fs = require('fs');
+const path = require('path');
+const { test, ok, equal, notOk, contains, repoRoot } = require('../../lib/harness');
 const { compiled } = require('../../lib/harness');
 const {
     planInstallation,
@@ -176,4 +178,25 @@ test('the udev rules cover the Raspberry Pi vendor id and use uaccess', () => {
     contains(UDEV_RULES_CONTENT, 'ATTR{idVendor}=="2e8a"');
     contains(UDEV_RULES_CONTENT, 'TAG+="uaccess"');
     equal(UDEV_RULES_PATH, '/etc/udev/rules.d/69-probe-rs.rules');
+});
+
+test('rustup is never asked for a target it cannot install', () => {
+    // Reported 2026-10-05, from an ESP32 project: "Setup did not finish: rustup exited with 1: error: toolchain
+    // 'stable-x86_64-unknown-linux-gnu' has no prebuilt artifacts available for target
+    // 'xtensa-esp32-none-elf'". Xtensa exists only in Espressif's fork, which `espup` installs — so a plan that
+    // lists it as a `rustup target add` step can only fail. `rpTargets`/`espTargets` documented the split; the
+    // planners had not been told.
+    const catalog = compiled('boards/catalog');
+    ok(catalog.isRustupTarget('thumbv6m-none-eabi'));
+    ok(catalog.isRustupTarget('thumbv8m.main-none-eabihf'));
+    ok(catalog.isRustupTarget('riscv32imc-unknown-none-elf'));
+    ok(catalog.isRustupTarget('x86_64-unknown-linux-gnu'));
+    notOk(catalog.isRustupTarget('xtensa-esp32-none-elf'));
+    notOk(catalog.isRustupTarget('xtensa-esp32s3-none-elf'));
+    notOk(catalog.isRustupTarget(' xtensa-esp32-none-elf '));
+    ok(catalog.isRustupTarget(''), 'an empty triple is not an Xtensa one; nothing is asked of rustup for it');
+
+    // And the plan itself: the two families must not be lumped together (the source of the failure).
+    const plan = fs.readFileSync(path.join(repoRoot(), 'src/toolchain/installPlan.ts'), 'utf8');
+    ok((plan.match(/filter\(isRustupTarget\)/g) || []).length >= 2, 'both planners filter, not just one');
 });

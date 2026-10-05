@@ -1991,3 +1991,33 @@ which is exactly why its `target/` shows an interrupted build: 37 host build scr
 toolchain — all present, and `cargo build` reaches the project's own code.
 
 Suite: **592 passed, 0 skipped**.
+
+## 47. Setup asked rustup for a target that only Espressif has (2026-10-05)
+
+**The report.** *"i get this when building: `Setup did not finish: rustup exited with 1: error: toolchain
+'stable-x86_64-unknown-linux-gnu' has no prebuilt artifacts available for target 'xtensa-esp32-none-elf'`"*
+
+**The cause, and why it is embarrassing.** The catalog already knew: `rpTargets()` and `espTargets()` exist as
+two functions precisely because *"the Xtensa triples are not rustup targets at all -- they only exist in
+Espressif's fork of rustc, which espup installs -- so a plan that lumps them together asks rustup to do the
+impossible."* That comment was written when the RP and ESP halves were split. The two **planners** were never
+told: `planInstallation` and `planProjectSetup` both built `rustup target add <triple>` steps from
+`options.targets`, which for an ESP project is that Xtensa triple. So an ESP32 project's setup ended in an error
+that reads like a broken toolchain rather than a wrong plan, and the ESP toolchain — which is `espup`'s job,
+with its own command — was never the thing being run.
+
+**The fix.** `isRustupTarget(triple)` in `catalog.ts` (pure: everything except `xtensa-*`), and both planners
+filter their target steps through it. Three tests: the predicate over both families, and a check that **both**
+planners apply it — one site filtered and the other not is exactly how this survived the split in the first
+place.
+
+**What the user sees now.** Setup finishes instead of erroring. The ESP toolchain itself is still a separate
+step — *Rusty: Install ESP Toolchain* (espup, a few hundred MB) — which is deliberate: that flow chooses targets
+and sets up `~/export-esp.sh`, and the build path already names it when the linker is missing. Whether the setup
+plan should *chain* into that command is a fair follow-up; what it must not do is ask rustup for a target rustup
+cannot install, and now it does not.
+
+**Still open from §46**: the ESP `display` template's own code does not compile (three defects), and the ESP
+`blinky` template is the one to try first.
+
+Suite: **593 passed, 0 skipped**.

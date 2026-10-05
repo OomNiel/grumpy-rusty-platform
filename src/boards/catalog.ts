@@ -305,6 +305,22 @@ export function rpTargets(): string[] {
     return [...new Set(BOARDS.filter((b) => b.kind === 'rp').map((b) => b.target))].sort();
 }
 
+/**
+ * Can `rustup target add` install this triple at all?
+ *
+ * Xtensa is the one family it cannot: those triples exist only in Espressif's fork of rustc, which `espup`
+ * installs as a separate toolchain. Asking stable rustup for one produces
+ *
+ *     error: toolchain 'stable-x86_64-unknown-linux-gnu' has no prebuilt artifacts available for target
+ *     'xtensa-esp32-none-elf'
+ *
+ * — the exact failure reported on 2026-10-05, from a setup plan that lumped the two families together. The
+ * comment above `rpTargets` warned about this; the planners had not been told.
+ */
+export function isRustupTarget(triple: string): boolean {
+    return !/^xtensa-/.test(String(triple ?? '').trim());
+}
+
 /** Every Espressif target triple (installed with the espup toolchain, never with rustup). */
 export function espTargets(): string[] {
     return [...new Set(BOARDS.filter((b) => b.kind === 'esp').map((b) => b.target))].sort();
