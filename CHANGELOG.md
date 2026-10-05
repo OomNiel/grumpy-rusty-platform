@@ -11,6 +11,38 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.24] - 2026-10-05
+
+### Fixed
+
+- **Flashing an ESP board wrote a debug build, which made the panel crawl.** `FLASH_PROFILE` is `debug`
+  so that a probe-rs debug session loads the image the chip is running — a rule that only has a subject
+  on Raspberry Pi: an Xtensa chip is flashed over USB serial and has no session at all, and the
+  no-flash debug entries that read the recorded profile do not exist for it. The cost was paid for
+  nothing. Measured on a Sunton CYD with the same source, the generated display screen reports
+  **28 834 ms** to paint as a debug build against **221 ms** as a release one, and the arrival times of
+  the log lines on the serial port agree (29.43 s against 0.223 s). `flashProfileFor(board)` now decides
+  the profile per board — `release` for ESP, `debug` otherwise — and every write-the-chip site goes
+  through it. It also settles an inconsistency the extension had with itself: **"Publish .deb" has
+  always built `cargo build --release`**, so the same project had two performance levels depending on
+  which button was pressed.
+
+### Added
+
+- **The generated display template times its own drawing.** It brackets the screen with
+  `embassy_time::Instant` (no new dependency — `embassy_time` was already imported for the 700 ms timer)
+  and logs `diagnostics drawn in {} ms: …`. A slow panel now has a number to read rather than a feeling,
+  and the number names the cause: thousands of milliseconds means a debug build, not a slow panel or a
+  slow SPI clock.
+
+### Notes
+
+- What was slow was the **initial paint** — about 183 000 pixels for the clear, frame, corners, bars,
+  cross and text. The blinking square was fine: 576 pixels, **+35 ms** on a 700 ms sleep, so the loop
+  period only moved from 699.8 ms to 735.4 ms. `NOTES.md` §54 has both measurements.
+- Test suite: **607 passed, 0 skipped**.
+
+
 ## [0.0.23] - 2026-10-05
 
 ### Fixed
