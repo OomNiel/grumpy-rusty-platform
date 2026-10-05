@@ -335,7 +335,7 @@ function espImports(board: EspBoardProfile, template: AppTemplate): string {
     if (template === 'display') {
         return [
             'use embassy_executor::Spawner;',
-            'use embassy_time::{Duration, Timer};',
+            'use embassy_time::{Duration, Instant, Timer};',
             // The full embedded-graphics crate, not -core: the diagnostics below need Rectangle, Line, Text
             // and a font, and -core is only the traits and the colour types (which this one re-exports).
             'use embedded_graphics::mono_font::{ascii::{FONT_6X10, FONT_10X20}, MonoTextStyle};',
@@ -598,6 +598,11 @@ ${resetSetup}
     //    somewhere other than where the driver thinks;
     //  - the text and the blinking square: what this screen is meant to look like, and proof the loop runs.
     // Replace it with your own drawing once the panel is right.
+    //
+    // Timed on purpose: this screen takes tens of seconds to paint as a debug build and about a fifth
+    // of a second as a release one, so "the panel is slow" has a number to look at instead of a
+    // feeling. The Flash button builds release for an ESP board for exactly this reason.
+    let drawn_at = Instant::now();
     display.clear(Rgb565::BLACK).expect("panel write failed");
 
     // A full-size frame, two pixels wide: every side visible means the whole area is addressable.
@@ -662,7 +667,10 @@ ${layout.statusLines.map((line) => `        ${JSON.stringify(line)},`).join('\n'
         line += ${layout.statusStep};
     }
 `}
-    log::info!("diagnostics drawn: frame, corners, 5 bars, cross and text");
+    log::info!(
+        "diagnostics drawn in {} ms: frame, corners, 5 bars, cross and text",
+        drawn_at.elapsed().as_millis()
+    );
     let mut tick: u32 = 0;
     loop {
         // One small square, blinking: proof the loop is alive, placed clear of every diagnostic so it cannot
