@@ -2285,3 +2285,79 @@ live in efuse, not flash, and were never written by any of this.
 read-only integrity check), the master image, and both dumps from this test — so the next person holding that
 folder has the command, the check and the evidence for it. `NOTES.md` §50's reversibility claim now rests on
 this instead of on an inference.
+
+---
+
+## 53. The health check was Raspberry Pi-shaped in both directions (2026-10-05)
+
+**How it was found: the user pressed the button the previous message told them to press.** *"I get: Toolchain
+needs attention: No debug probe detected. Connect…"* — on a Sunton CYD, a board with no SWD at all, whose
+whole flash route is USB serial. The dialog was modal, offered "Install Missing Pieces", and said nothing
+about the ESP toolchain the project actually needs.
+
+**Two errors, in opposite directions.** `checkToolchain` collected its problems from the probe-rs half of the
+world only:
+
+- it pushed `status.probeDiagnosis.message` as a **problem** for *every* workspace, so an Xtensa project was
+  told to connect a probe it cannot use (and could press a button that installs probe-rs and udev rules for a
+  board that has no probe port); and
+- it never treated the ESP toolchain as a problem at all — `espToolchainSummary` was printed to the output
+  channel and then ignored, which was deliberate for an RP-only user but wrong in the other case: with the ESP
+  project open, `espup`/`espflash` missing meant *nothing builds*, and the health check still called that fine.
+
+**A dump of what the check saw on this machine**, before the fix: `probe-rs 0.32.0` installed, `probe-rs list`
+empty (`none-connected`), `espup 0.18.0` + `espflash 4.6.0` installed. So the verdict was "no debug probe" —
+the one thing that was not a problem — while the row and the tooltip never mentioned the toolchain that was
+there and required.
+
+**The decision moved into one pure module, `src/toolchain/health.ts`.** `healthReport({status, esp, family,
+cargoOnShellPath})` answers the question once, and the sidebar row, the status-bar tooltip and the modal are
+three renderings of that one answer — they cannot disagree any more, which is what the previous arrangement
+allowed (the row came from `status.ready`, the modal from its own list, the tooltip from a third).
+
+| | Raspberry Pi project | ESP project |
+|---|---|---|
+| no debug probe | **problem** ("Connect a Debug Probe or picoprobe") | not mentioned at all |
+| probe-rs missing | problem, install offered | not mentioned (espflash monitors over serial) |
+| probe firmware outdated | problem, update offered | not mentioned |
+| rustup targets missing | problem, install offered | ignored — Xtensa targets come from espup |
+| ESP toolchain missing | note in the log only (an RP user does not need it) | **problem**, "Install ESP Toolchain…" offered |
+| cargo missing / not on the shell PATH | problem | problem (shared) |
+
+`family` comes from the same `detectBoardFromProject` answer the Build and Flash buttons act on, so the health
+row cannot report for one board while the controls flash another. With no project open the old, safe reading is
+kept: report the probe-rs side, and the ESP toolchain as a line rather than a fault.
+
+**Measured on the real thing** — the compiled extension's own modules, run against the actual project folder
+and the actual machine:
+
+```
+board detected : sunton-3248s035r | Sunton ESP32-3248S035R (3.5" CYD) | kind: esp
+probe diagnosis: none-connected - No debug probe detected. Connect a Debug Probe or picoprobe.
+problems       : []
+actions        : []
+modal shown?   : NO ("toolchain looks good")
+sidebar row    : Rusty: ready / cargo 1.99.0 · esp ready (0.18.0, 4.6.0)
+--- and for comparison, the same machine with a Pico project open ---
+RP problems    : ["No debug probe detected. Connect a Debug Probe or picoprobe."]
+```
+
+**Two smaller things in the same direction, found while fixing it.**
+
+- **Monitor on an ESP project asked for probe-rs.** `withProject` passed `needsProbeRs: purpose === 'monitor'`
+  regardless of family, so a machine without probe-rs would have been offered a probe-rs install before
+  running `espflash monitor` — which does not use probe-rs. It is now `purpose === 'monitor' &&
+  board.kind !== 'esp'`.
+- **The verdict could not change when the project did.** The health input was computed once at activation, so
+  opening the CYD project in a window that had started on a Pico project left the row answering for the Pico.
+  `onDidChangeWorkspaceFolders` now re-detects.
+
+**A blank dialog was fixed on the way past.** For a probe that is merely not plugged in there is nothing to
+install, so the report offers no action — previously the only button was "Install Missing Pieces", which
+answered "Nothing to install — the toolchain is complete", a round trip that taught the user the button does
+not work.
+
+Tests: a new t1 file (`toolchain-health.test.js`) pins the whole table above, both delimiter shapes for the
+PATH check, and the no-project fallback; `controls.test.js` gained the regression case — an ESP project with no
+probe is `ready`, the same machine with a Pico project warns, and an RP-only user is never shown `espup`.
+Suite: **606 passed, 0 skipped**.

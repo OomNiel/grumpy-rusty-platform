@@ -69,6 +69,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             boardsView.refresh();
             await state.refresh();
         }),
+        // Which toolchain is *required* depends on the open project, so a change of folder changes the
+        // verdict: opening the CYD project where a Pico one was open must stop reporting "no probe" and
+        // start reporting the ESP toolchain (and the other way round). Without this the health row keeps
+        // answering for the project that was open when the window started.
+        vscode.workspace.onDidChangeWorkspaceFolders(() => {
+            void state.refresh();
+        }),
     );
 
     // Kick off detection in the background so activation stays fast.

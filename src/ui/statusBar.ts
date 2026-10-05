@@ -68,7 +68,7 @@ export class StatusBarView implements vscode.Disposable {
     }
 
     update(): void {
-        const health = healthSummary(this.state.status);
+        const health = healthSummary(this.state.healthInput);
         this.healthItem.text = iconText(health.icon, health.label);
         this.healthItem.tooltip = new vscode.MarkdownString(health.markdown);
 

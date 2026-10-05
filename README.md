@@ -17,7 +17,7 @@ Espressif boards, `espflash`.
 | Project Wizard (board → working workspace) | ✅ 7 boards: Pico · Pico 2 · Pico W · Pico 2 W (RP2040/RP2350) and ESP32-DevKitC V4 · LilyGo T-QT · Sunton ESP32-3248S035R (ESP32/ESP32-S3) |
 | Generated workspace: `Cargo.toml`, `.cargo/config.toml`, `memory.x`, `build.rs`, `rust-toolchain.toml`, `src/main.rs`, `.vscode/{settings,launch}.json` | ✅ RP; ESP gets `esp-config.toml` instead of `memory.x`/`launch.json` |
 | Templates | ✅ RP: `blinky`, `wifi`, `wifi-bluetooth` (with a credentials prompt) · ESP: periodic task, panel diagnostic screen |
-| Toolchain detection (cargo, rustup, targets, probe-rs, probe health) | ✅ plus espup / Xtensa toolchain / espflash for ESP |
+| Toolchain detection (cargo, rustup, targets, probe-rs, probe health) | ✅ plus espup / Xtensa toolchain / espflash for ESP; the health check asks only for what the open board actually uses (no debug probe for an ESP32) |
 | One-click installer (rustup, targets, prebuilt probe-rs with SHA-256 check, udev rules) | ✅ plus espup + espflash, only for the chips in use |
 | `Add Cargo to PATH…` for shells that never received `~/.cargo/bin` | ✅ |
 | Status bar, and the same buttons in the side bar's **Controls** section | ✅ |

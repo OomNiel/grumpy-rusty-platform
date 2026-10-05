@@ -1,4 +1,7 @@
 import type { ToolchainStatus } from '../toolchain/detect';
+import type { EspToolchainStatus } from '../toolchain/espToolchain';
+import { espToolchainSummary } from '../toolchain/espToolchain';
+import { HealthFamily, healthReport } from '../toolchain/health';
 
 /**
  * The one-click controls, defined once and shown twice: in the status bar and in the sidebar's
@@ -144,8 +147,22 @@ export function visibleControls(sessionRunning: boolean): ControlDescriptor[] {
     return [...CONTROLS, ...PACKAGE_CONTROLS].filter((control) => control.sessionOnly !== true || sessionRunning);
 }
 
+/**
+ * What the health row needs: the two toolchain statuses, plus which silicon the open project is for.
+ *
+ * The family is part of it because the *verdict* depends on it — "no probe" is a fault on a Pico and a
+ * fact of life on an ESP32, and the ESP toolchain is the reverse (see `toolchain/health.ts`).
+ */
+export interface HealthSummaryInput {
+    status?: ToolchainStatus;
+    esp?: EspToolchainStatus;
+    family: HealthFamily;
+    cargoOnShellPath: boolean;
+}
+
 /** Caption, one-line detail and tooltip of the health control, for a given toolchain status. */
-export function healthSummary(status: ToolchainStatus | undefined): HealthSummary {
+export function healthSummary(input: HealthSummaryInput): HealthSummary {
+    const status = input.status;
     if (status === undefined) {
         return {
             icon: 'chip',
@@ -155,32 +172,42 @@ export function healthSummary(status: ToolchainStatus | undefined): HealthSummar
         };
     }
 
-    if (status.ready) {
+    const report = healthReport(input);
+    const espLine = input.esp === undefined ? [] : [`**esp** ${espToolchainSummary(input.esp)}`];
+    const espSummary = input.esp === undefined ? 'not detected' : espToolchainSummary(input.esp);
+    // Which line is worth a row depends on the family: an Xtensa project has no probe to report, and a
+    // Raspberry Pi one has no Xtensa toolchain to install.
+    const versions = input.family === 'esp'
+        ? `cargo ${status.cargo.version ?? '?'} · esp ${espSummary}`
+        : `cargo ${status.cargo.version ?? '?'} · probe-rs ${status.probeRs.version ?? '?'}`;
+
+    if (report.ok) {
         const probe = status.probes[0]?.name ?? 'none';
         return {
             icon: 'chip',
             label: 'Rusty: ready',
-            detail: `cargo ${status.cargo.version ?? '?'} · probe-rs ${status.probeRs.version ?? '?'}`,
+            detail: versions,
             markdown: [
                 `**cargo** ${status.cargo.version ?? '?'}`,
-                `**probe-rs** ${status.probeRs.version ?? '?'}`,
-                `**targets** ${status.installedTargets.filter((t) => t !== 'x86_64-unknown-linux-gnu').join(', ')}`,
-                `**probe** ${probe} — ${status.probeDiagnosis.message}`,
+                ...(input.family === 'esp'
+                    ? [...espLine, `**targets** ${status.installedTargets.filter((t) => t !== 'x86_64-unknown-linux-gnu').join(', ')}`]
+                    : [
+                        `**probe-rs** ${status.probeRs.version ?? '?'}`,
+                        `**targets** ${status.installedTargets.filter((t) => t !== 'x86_64-unknown-linux-gnu').join(', ')}`,
+                        ...espLine,
+                        `**probe** ${probe} — ${status.probeDiagnosis.message}`,
+                    ]),
             ].join('  \n'),
         };
     }
 
-    const problems = [
-        status.cargo.found ? undefined : 'cargo is not installed',
-        status.probeRs.found ? undefined : 'probe-rs is not installed',
-        status.missingTargets.length > 0 ? `missing targets: ${status.missingTargets.join(', ')}` : undefined,
-        status.probeDiagnosis.kind === 'ok' ? undefined : status.probeDiagnosis.message,
-    ].filter((line): line is string => Boolean(line));
-
     return {
         icon: 'warning',
         label: 'Rusty: setup needed',
-        detail: problems[0] ?? 'setup needed',
-        markdown: problems.join('  \n'),
+        detail: report.problems[0] ?? 'setup needed',
+        // Only the problems: the ESP line is a *note* for a Raspberry Pi workspace, and the check
+        // command prints it in the output. Putting it in the warning is how an RP-only user ended up
+        // being told about espup they do not need.
+        markdown: report.problems.join('  \n'),
     };
 }

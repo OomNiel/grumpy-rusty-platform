@@ -9,7 +9,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { test, ok, equal, contains } = require('../../lib/harness');
+const { test, ok, equal, contains, notContains } = require('../../lib/harness');
 const { compiled, repoRoot } = require('../../lib/harness');
 const {
     CONTROLS,
@@ -44,7 +44,14 @@ function status(options) {
         installedTargets: ['x86_64-unknown-linux-gnu', 'thumbv8m.main-none-eabihf'],
         missingTargets: missing,
         probes: [{ index: 0, name: 'Debug Probe', selector: '2e8a:000c', protocol: 'CMSIS-DAP' }],
-        probeDiagnosis: { kind: probe.includes('outdated') ? 'firmware-outdated' : 'ok', message: probe },
+        probeDiagnosis: {
+            kind: probe.includes('outdated')
+                ? 'firmware-outdated'
+                : /no debug probe/i.test(probe)
+                    ? 'none-connected'
+                    : 'ok',
+            message: probe,
+        },
         udevRulesPresent: true,
         ready,
     };
@@ -86,26 +93,84 @@ test('Stop is the only control that comes and goes', () => {
 });
 
 test('the health row says what is wrong, not just that something is', () => {
-    const detecting = healthSummary(undefined);
+    const detecting = healthSummary({ family: 'rp', cargoOnShellPath: true });
     contains(detecting.label, 'detecting');
 
-    const ready = healthSummary(status({ ready: true }));
+    const ready = healthSummary({ status: status({ ready: true }), family: 'rp', cargoOnShellPath: true });
     contains(ready.label, 'ready');
     contains(ready.detail, 'cargo 1.99.0');
     contains(ready.detail, 'probe-rs 0.32.0');
     contains(ready.markdown, '**targets** thumbv8m.main-none-eabihf');
     ok(!ready.markdown.includes('x86_64-unknown-linux-gnu'), 'the host target is noise in the tooltip');
 
-    const broken = healthSummary(
-        status({
+    const broken = healthSummary({
+        status: status({
             ready: false,
             missing: ['thumbv6m-none-eabi'],
             probe: 'Debug Probe firmware is outdated and must be updated.',
         }),
-    );
+        family: 'rp',
+        cargoOnShellPath: true,
+    });
     contains(broken.label, 'setup needed');
     contains(broken.markdown, 'missing targets: thumbv6m-none-eabi');
     contains(broken.markdown, 'firmware is outdated');
     contains(broken.detail, 'missing targets', 'the sidebar row needs its one-line reason');
     equal(broken.icon, 'warning');
 });
+
+// The regression this test exists for: pressing the health control on the Sunton CYD raised a modal
+// about a debug probe that board can never use, while saying nothing about the ESP toolchain it does
+// need (2026-10-05).
+test('the health row reads the open project, not just the probe-rs side', () => {
+    const noProbe = status({ ready: true, probe: 'No debug probe detected. Connect a Debug Probe or picoprobe.' });
+
+    const rp = healthSummary({ status: noProbe, family: 'rp', cargoOnShellPath: true });
+    contains(rp.label, 'setup needed', 'a Pico really is blocked without a probe');
+    contains(rp.markdown, 'No debug probe detected');
+
+    const esp = healthSummary({
+        status: noProbe,
+        esp: espStatus({ ready: true }),
+        family: 'esp',
+        cargoOnShellPath: true,
+    });
+    contains(esp.label, 'ready', 'an ESP32 has no probe route at all');
+    notContains(esp.markdown, 'No debug probe detected', 'so that is not what the user is told');
+    notContains(esp.markdown, 'probe-rs 0.32.0', 'and probe-rs is not advertised as a requirement');
+    contains(esp.markdown, '**esp** ready');
+
+    const espMissing = healthSummary({
+        status: noProbe,
+        esp: espStatus({ missing: ['espup', 'espflash'], chips: ['esp32', 'esp32s3'] }),
+        family: 'esp',
+        cargoOnShellPath: true,
+    });
+    contains(espMissing.label, 'setup needed');
+    contains(espMissing.detail, 'ESP toolchain', 'the first line has to name the thing that is missing');
+    contains(espMissing.markdown, 'missing: espup, espflash');
+
+    // With nothing open the old, safe reading is kept: report the probe-rs side, and the ESP toolchain
+    // as a line rather than a fault.
+    const nothing = healthSummary({
+        status: noProbe,
+        esp: espStatus({ missing: ['espup'] }),
+        family: 'unknown',
+        cargoOnShellPath: true,
+    });
+    contains(nothing.label, 'setup needed');
+    notContains(nothing.markdown, 'espup', 'an RP-only user does not need the Xtensa toolchain');
+});
+
+/** An EspToolchainStatus with only what the health row reads filled in. */
+function espStatus(options) {
+    const missing = options.missing ?? [];
+    return {
+        espup: { found: !missing.includes('espup'), version: '0.14.0' },
+        espflash: { found: !missing.includes('espflash'), version: '4.6.0' },
+        toolchainInstalled: !missing.includes('toolchain'),
+        exportFile: missing.includes('export-esp.sh') ? undefined : '/home/niel/export-esp.sh',
+        chips: options.chips ?? ['esp32'],
+        ready: options.ready ?? missing.length === 0,
+    };
+}
