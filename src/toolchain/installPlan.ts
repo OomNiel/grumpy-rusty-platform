@@ -1,4 +1,5 @@
 import { ToolchainStatus } from './detect';
+import { isRustupTarget } from '../boards/catalog';
 
 /**
  * Pure installation planning. No `vscode` import and no side effects, so the
@@ -152,7 +153,10 @@ export function planInstallation(
     }
 
     // Without rustup we cannot add targets; the rustup step itself will.
-    const targetList = needsRustup ? options.targets : status.missingTargets;
+    // Xtensa triples are dropped here: `rustup target add` cannot install them, and asking produced the
+    // 'no prebuilt artifacts available for target xtensa-esp32-none-elf' failure reported 2026-10-05.
+    // The ESP toolchain is `espup`'s job, run by its own command (`isRustupTarget`).
+    const targetList = (needsRustup ? options.targets : status.missingTargets).filter(isRustupTarget);
     for (const target of [...new Set(targetList)].sort()) {
         steps.push({
             id: `target:${target}`,
@@ -234,7 +238,9 @@ export function planProjectSetup(status: ToolchainStatus, options: ProjectSetupO
     // Without rustup no targets exist yet, and the rustup step installs the toolchain
     // without them — so every target this project needs is added afterwards.
     const wanted = [...new Set(options.targets)].sort();
-    const missing = needsRustup ? wanted : wanted.filter((target) => !status.installedTargets.includes(target));
+    // Same rule as `planInstallation`: Xtensa targets belong to espup, not to rustup.
+    const missing = (needsRustup ? wanted : wanted.filter((target) => !status.installedTargets.includes(target)))
+        .filter(isRustupTarget);
     for (const target of missing) {
         steps.push({
             id: `target:${target}`,
