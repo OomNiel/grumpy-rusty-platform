@@ -11,6 +11,34 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.19] - 2026-10-05
+
+### Fixed
+
+**The ESP `display` template now compiles** — found by building a generated project rather than reading it
+(§48), after the report *"see the terminal for build error"*:
+
+- **`let mut delay = Delay;`** → `E0423`; esp-hal 1.2.2 has `Delay::new()`.
+- **esp-hal's `Spi` is a `SpiBus`, and mipidsi wants a `SpiDevice`.** The template called `.with_cs(pin)` on the
+  bus, which does not make one — the compiler's `E0277` note pointed at the trait impl in **`embedded-hal-bus`**,
+  a crate the template never depended on. It does now (`0.3.0`), and the device is built with
+  `ExclusiveDevice::new(bus, cs, delay)`.
+- **`Rgb565::RED`/`WHITE`/… needed the `RgbColor` trait in scope** — one missing import, nine errors.
+
+Verified: a **freshly generated** Sunton display project compiles with no warnings (29.74 s), and the user's
+own project (repaired in place, its `build.rs` still carrying the 0.0.17 fix) builds too (1.35 s incremental).
+
+### Notes
+
+- Both ESP display boards share the template and `mipidsi 0.10` carries the T-QT's controller, so the fix covers
+  `lilygo-tqt` as well — its own **build** was not run (a different chip means a cold `esp-hal` build), and that
+  is stated rather than assumed.
+- The gap this exposed is worth more than the fixes: `t3-golden` compares **text** against snapshots, so it
+  pinned `SPIInterface::new(spi, dc, &mut buffer)` beside the wrong import for weeks — snapshot and generator
+  agreeing with each other. A golden test proves the generator is *stable*, not that its output *compiles*; that
+  check belongs in the opt-in `t4-e2e` layer. `NOTES.md` §48.
+- Test suite: **593 passed, 0 skipped**.
+
 ## [0.0.18] - 2026-10-05
 
 ### Fixed
