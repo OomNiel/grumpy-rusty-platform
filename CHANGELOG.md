@@ -11,6 +11,23 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.20] - 2026-10-05
+
+### Fixed
+
+- **The generated display projects declared a dependency they never used.** `display-interface-spi` was still
+  in the ESP display template's dependency list, and **no line of generated code references it** — it went dead
+  when the buffered `mipidsi::interface::SpiInterface` replaced it in 0.0.19, and the comment above it still
+  described the old arrangement. Both are gone, along with the now-unused version constant. An unused
+  dependency compiles, links nothing and warns about nothing, so no test could have caught it: it was found by
+  **diffing a real project against the generator**. `NOTES.md` §49.
+
+### Notes
+
+- Projects generated before this version carry that one extra line in `Cargo.toml`; removing it is optional
+  (it changes nothing at runtime) and is a one-line edit plus `cargo update`.
+- Test suite: **593 passed, 0 skipped**.
+
 ## [0.0.19] - 2026-10-05
 
 ### Fixed
