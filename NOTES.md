@@ -2056,3 +2056,20 @@ controller, so the fix covers `lilygo-tqt` as well as `sunton-3248s035r` — the
 run (it is a different chip, so it is a cold `esp-hal` build), and that is stated rather than assumed.
 
 Suite: **593 passed, 0 skipped**.
+
+## 49. The generated display projects were carrying a dead dependency (2026-10-05)
+
+Found while checking the user's test project against what the extension generates now: `Cargo.toml`,
+`build.rs`, `.cargo/config.toml`, `rust-toolchain.toml`, `.vscode/settings.json` and `README.md` were all
+**byte-identical** to the current template, and `main.rs` differed only in rustfmt formatting and two
+explanatory comments — but `display-interface-spi` was still declared in the dependency list and **not
+referenced by a single line of generated code**. It became dead when the buffered interface replaced it (the
+fix in §46), and the comment above it still described the old arrangement ("display-interface-spi is the glue
+to esp-hal's SPI" — the glue is `embedded-hal-bus`). Both are gone: the dependency, and the stale sentence.
+
+Nothing could have caught this by testing: an unused dependency compiles, links nothing into the image, and
+warns about nothing. It is dead weight in every generated display project — two crates' worth of resolution
+for a line that never appears in the code — and it was found by diffing a *real* project against the
+generator, not by reading either.
+
+Suite: **593 passed, 0 skipped**.

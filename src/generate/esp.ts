@@ -33,7 +33,6 @@ export const ESP_CRATE_VERSIONS = {
     mipidsi: '0.10.0',
     /** The bus-to-device adapter mipidsi's SPI interface needs (`ExclusiveDevice`). */
     embeddedHalBus: '0.3.0',
-    displayInterfaceSpi: '0.5.0',
     embeddedGraphicsCore: '0.4',
 } as const;
 
@@ -152,11 +151,12 @@ panel-gc9a01 = []
     ];
 
     if (display) {
-        // mipidsi drives the panel, display-interface-spi is the glue to esp-hal's SPI,
-        // and embedded-graphics-core is where the colour type comes from.
+        // mipidsi drives the panel and embedded-graphics-core is where the colour type comes from. The glue
+        // between esp-hal's SPI bus and mipidsi is embedded-hal-bus (added below); display-interface-spi used
+        // to be declared here and is not referenced by a single line of the generated code — a dead dependency
+        // in every project, left behind by the switch to the buffered interface (found 2026-10-05).
         dependencies.push(
             `mipidsi = "${ESP_CRATE_VERSIONS.mipidsi}"`,
-            `display-interface-spi = "${ESP_CRATE_VERSIONS.displayInterfaceSpi}"`,
             `embedded-graphics-core = "${ESP_CRATE_VERSIONS.embeddedGraphicsCore}"`,
             // esp-hal's `Spi` is a *bus*; mipidsi wants a `SpiDevice` (bus + its own CS), and this is the
             // crate that joins the two. Without it the generated display project cannot compile at all —
