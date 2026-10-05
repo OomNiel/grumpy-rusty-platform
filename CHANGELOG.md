@@ -11,6 +11,23 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.26] - 2026-10-05
+
+### Fixed
+
+- **Three Controls rows described the wrong board.** On an ESP project, **Monitor** said *"defmt over RTT /
+  `probe-rs attach`"* and **Debug** said *"build, flash, debug / a probe-rs debug session with RTT"* — where
+  Monitor actually runs `espflash monitor` and Debug has no breakpoints at all. `visibleControls` now words
+  the rows that describe a *route* (Flash, Debug, Monitor) for the open project's family. **Captions do not
+  move** — `$(output) Monitor` is what the status bar shows and what you have learned to press — so only the
+  grey line and the tooltip change. A project that cannot be identified keeps the wording every line was
+  written for.
+
+### Notes
+
+- Test suite: **612 passed, 0 skipped**. `NOTES.md` §56.
+
+
 ## [0.0.25] - 2026-10-05
 
 ### Added
