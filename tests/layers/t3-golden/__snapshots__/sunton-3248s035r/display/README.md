@@ -28,8 +28,10 @@ cargo build              # compile
 cargo run --release      # flash and follow the log (runner in .cargo/config.toml)
 ```
 
-Or use the extension: **Build**, **Flash** and **Monitor**. Flash writes the *debug*
-build, so a debug session and the chip always agree.
+Or use the extension: **Build**, **Flash** and **Monitor**. Flash writes the *release*
+build for this board — there is no probe-rs session on the USB-serial route, and a debug
+build draws a panel roughly 130x slower. `rustyPlatform.flashProfile` overrides that,
+and **Flash (debug)** / **Flash (release)** override it for one flash.
 
 ## Debugging
 

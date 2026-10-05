@@ -91,6 +91,7 @@ async fn main(_spawner: Spawner) -> ! {
 
     log::info!("panel ready: 0.85\" GC9107 128x128");
 
+
     // A diagnostic screen rather than a flat fill, because a flat fill hides the three things that go wrong
     // on a new panel: a cropped or shifted active area, a swapped colour order, and a rotated image.
     //  - the frame: a missing side means the panel is cropped or offset;

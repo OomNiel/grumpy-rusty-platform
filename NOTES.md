@@ -2515,3 +2515,66 @@ hover text and nothing else. Tests pin that the row list and captions are identi
 three route rows differ in the expected words, and that the board-neutral rows are untouched.
 
 Suite: **612 passed, 0 skipped**.
+
+---
+
+## 57. The touch screen: a working SPI conversation with an analog side that never answers (2026-10-05)
+
+*"Next we must test the touch screen functionality."* — this one ends in an honest negative, and the negative is
+worth as much as a positive would have been: **the generated touch firmware has never seen a single real
+touch, because this unit's controller never reports one.**
+
+**What was built.** A third ESP template, `touch`, offered only for a board with a touch controller (the CYD's
+data has `touch: { controller: 'XPT2046', cs: 33, irq: 36, spiHz: 2 MHz }`): panel bring-up plus a four-corner
+calibration the user carries out on the glass, then a crosshair at the mapped position, with the raw frames,
+the measured calibration and the mapped pixel all going to the serial log. The panel bring-up itself moved into
+`espPanelSetup(display, shared)`, used by both templates — the touch case shares the SPI bus, so the bus lives
+in a `RefCell` and each chip gets its own `RefCellDevice` with its own CS pin. One crate was added
+(`embedded-hal`, so the read helper can be generic over `SpiDevice`).
+
+**What the protocol work established, all of it on this hardware:**
+
+1. **The controller answers one command behind.** The 12 bits of a conversion come back during the *next*
+   command's clocks: high byte first, then the low nibble in the top half of the second byte. Decoding it the
+   way the common Arduino driver does (`>> 3`) gives values eight times too small — the first corner read back
+   as **14 counts instead of 2050**.
+2. **PENIRQ is only enabled by the power-down bits.** `PD=00` is the only setting that leaves the interrupt
+   enabled between conversions, which is why the reference driver ends each burst with a `PD=00` command
+   (`0xD0`). The first firmware here used `PD=01` bytes throughout and the interrupt line was silent by design.
+3. **The interrupt line is not usable on this board anyway.** With `PD=00` in place, GPIO36 still reads low at
+   random with nothing anywhere near the glass — and the *first* version of the template trusted it. The result
+   was a calibration that walked itself through all four corners while nobody was touching anything, ending with
+   a crosshair pinned to the centre. A touch is now the **axes moving** from a baseline measured at boot; the
+   interrupt is logged and never trusted. (The user's report was exactly right: *"The red block moved without
+   me touching the screen."*)
+
+**What the hardware said, and the reason this is unfinished.** A scratch bring-up build logged every channel's
+raw frames, idle and with a finger pressed firmly on the glass for five seconds:
+
+```
+                    Z1           Z2           X            Y
+idle      raw=8000 nb=2048   raw=807F nb=2055   raw=807F/8000   raw=8073/807F
+pressed   raw=8000 nb=2048   raw=807F nb=2055   raw=807F/8000   raw=8073/807F
+```
+
+Byte for byte the same. The chip is *answering* — the values are reproducible, they change with the channel
+selected, and they jitter by the ~7 counts you expect from an ADC — but they sit at mid-scale (2048/2055)
+whatever happens to the glass, and the pressure figure is therefore meaningless. The interrupt stays high. The
+conclusion is that the SPI side of the conversation works and the **analog side never receives the touch**: the
+four-wire membrane is not reaching the controller's ADC on this unit. No firmware change can fix that, and the
+two things to check are physical: the touch flex's seating on the back of the panel, and whether the panel
+really is the resistive variant (the family ships as `…S035R` and `…S035C`; the capacitive one uses a GT911 on
+I2C — SDA 33, SCL 32, reset 25, interrupt 21 — and would read as a silent XPT2046, since its own pin 33 role
+is different).
+
+**The pins and the mode are not the problem.** Two independent configurations for this exact board family agree
+with the board data and with each other: CS 33, interrupt 36, MISO 12, MOSI 13, SCLK 14, SPI mode 0, 2 MHz,
+and a touch threshold in the hundreds. That is what the generated code uses.
+
+**So the state of the feature is: written, tested as code, never verified as hardware.** The `touch` template
+is offered for the CYD and the tests pin its shape — the shared bus, the pins from board data, the three
+control bytes, the nibble decode, the four-corner calibration, and the rule that the interrupt alone is not a
+touch. Everything downstream of "the axes move" is unproven, which is stated in the template's own comment and
+in the test file's header rather than left for someone to discover.
+
+Suite: **616 passed, 0 skipped**.
