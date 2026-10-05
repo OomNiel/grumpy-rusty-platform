@@ -11,6 +11,33 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.23] - 2026-10-05
+
+### Fixed
+
+- **The health check asked every project for a debug probe, and never asked an ESP project for its
+  toolchain.** Pressing the `Rusty` control on a Sunton CYD raised *"Toolchain needs attention: No debug
+  probe detected. Connect…"* — for a board with no SWD at all, whose entire flash route is USB serial —
+  offered to install probe-rs and udev rules it cannot use, and said nothing about the missing `espup` /
+  Xtensa toolchain / `espflash` that would actually stop the build. The verdict is now decided once, in
+  `src/toolchain/health.ts`, from the same board detection the Build and Flash buttons use: a Raspberry Pi
+  project is judged on the probe, an ESP project on its toolchain, cargo is shared, and with no project open
+  the old, safe reading is kept.
+- **Monitor on an ESP project no longer requires probe-rs.** `espflash monitor` reads the same serial port
+  the flash wrote to; only the Raspberry Pi route uses probe-rs.
+- **The verdict is re-detected when the open project changes**, instead of answering for whichever project
+  was open when the window started.
+- A probe that is simply not plugged in no longer offers an install button — there is nothing to install, and
+  the button used to answer *"Nothing to install — the toolchain is complete"*.
+
+### Notes
+
+- Measured against the real project folder: `problems: []` and *"toolchain looks good"* where the modal used
+  to appear, with the Controls row reading `Rusty: ready / cargo 1.99.0 · esp ready (0.18.0, 4.6.0)`; the same
+  machine with a Pico project open still warns about the probe. `NOTES.md` §53.
+- Test suite: **606 passed, 0 skipped**.
+
+
 ## [0.0.22] - 2026-10-05
 
 ### Added
