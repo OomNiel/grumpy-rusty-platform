@@ -11,6 +11,36 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.17] - 2026-10-05
+
+### Fixed
+
+Two defects in the **ESP** generator, found by inspecting a user's Sunton project and then building a freshly
+generated one with the real Xtensa toolchain:
+
+- **`build.rs` did not compile at all.** Its panic message escaped backticks (`\``), and Rust has no such
+  escape — `error: unknown character escape`. **Every ESP board and both ESP templates** were affected: the build
+  script is compiled before anything else, so no ESP project could get past it.
+- **The panel's SPI interface was the two-argument one, called with three.** The template emitted
+  `use display_interface_spi::SPIInterface;` and then `SPIInterface::new(spi, dc, &mut buffer)`:
+  `display-interface-spi-0.5`'s `new` takes two arguments, `mipidsi-0.10`'s buffered
+  `interface::SpiInterface::new` takes three. It now imports mipidsi's. Affected `sunton-3248s035r` and
+  `lilygo-tqt`; the user's project had been fixed by hand, which is what led to the inspection.
+
+### Known broken
+
+- **The ESP `display` template still does not compile.** With `build.rs` fixed, esp-hal and the whole dependency
+  tree now build and the template's own `main.rs` fails with nine errors: `let mut delay = Delay;` is `E0423`
+  (esp-hal 1.2.2 has `Delay::new()`); esp-hal's `Spi` is a `SpiBus` and mipidsi's buffered `SpiInterface` wants
+  a `SpiDevice` (which `.with_cs(...)` does not construct); and `Rgb565::RED`/`WHITE` need the `RgbColor` trait
+  in scope. `NOTES.md` §46 records all three with the compiler's own output. **ESP `blinky` projects should build
+  now; `display` ones will not until these are fixed.**
+
+### Tests
+
+- The ESP board test now pins the import and the buffered call **together**, so they cannot drift apart again;
+  the golden snapshots are regenerated for the two changed templates. Suite: **592 passed, 0 skipped**.
+
 ## [0.0.16] - 2026-10-05
 
 ### Documentation
