@@ -7,8 +7,11 @@
 
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Timer};
-use embedded_graphics_core::draw_target::DrawTarget;
-use embedded_graphics_core::pixelcolor::{Rgb565, RgbColor};
+use embedded_graphics::mono_font::{ascii::{FONT_6X10, FONT_10X20}, MonoTextStyle};
+use embedded_graphics::pixelcolor::Rgb565;
+use embedded_graphics::prelude::*;
+use embedded_graphics::primitives::{Line, PrimitiveStyle, Rectangle};
+use embedded_graphics::text::Text;
 use embedded_hal_bus::spi::ExclusiveDevice;
 use esp_hal::clock::CpuClock;
 use esp_hal::delay::Delay;
@@ -87,20 +90,87 @@ async fn main(_spawner: Spawner) -> ! {
 
     log::info!("panel ready: 0.85\" GC9107 128x128");
 
-    let bars = [
-        ("red", Rgb565::RED),
-        ("green", Rgb565::GREEN),
-        ("blue", Rgb565::BLUE),
-        ("black", Rgb565::BLACK),
-        ("white", Rgb565::WHITE),
-    ];
+    // A diagnostic screen rather than flat colour fills. Flat fills hide the three things that go wrong on a
+    // new panel: a cropped or shifted active area, a swapped colour order, and a rotated image. Here the frame
+    // shows cropping (a missing side means the panel is offset), the corners and named bars show a swap at a
+    // glance, and the text says what should be on screen. Replace this with your own drawing once it is right.
+    display.clear(Rgb565::BLACK).expect("panel write failed");
 
-    let mut index = 0;
+    // A full-size frame, two pixels wide: every side visible means the whole area is addressable.
+    Rectangle::new(Point::new(1, 1), Size::new(128 - 2, 128 - 2))
+        .into_styled(PrimitiveStyle::with_stroke(Rgb565::WHITE, 2))
+        .draw(&mut display)
+        .expect("panel write failed");
+
+    // Corner markers, so a shift is measurable: red top-left, green top-right, blue bottom-left, white
+    // bottom-right. A red square that is not in the corner, or one cut in half, is the answer.
+    for (x, y, colour) in [
+        (0, 0, Rgb565::RED),
+        (128 - 24, 0, Rgb565::GREEN),
+        (0, 128 - 24, Rgb565::BLUE),
+        (128 - 24, 128 - 24, Rgb565::WHITE),
+    ] {
+        Rectangle::new(Point::new(x, y), Size::new(24, 24))
+            .into_styled(PrimitiveStyle::with_fill(colour))
+            .draw(&mut display)
+            .expect("panel write failed");
+    }
+
+    // Five bars, left to right: red, green, blue, black, white. If red and blue trade places, the panel's
+    // colour order is the other one — flip ColorOrder in the builder above and reflash.
+    for (index, colour) in [Rgb565::RED, Rgb565::GREEN, Rgb565::BLUE, Rgb565::BLACK, Rgb565::WHITE]
+        .iter()
+        .enumerate()
+    {
+        Rectangle::new(Point::new(16 + (index as i32) * 58, 40), Size::new(56, 60))
+            .into_styled(PrimitiveStyle::with_fill(*colour))
+            .draw(&mut display)
+            .expect("panel write failed");
+    }
+
+    // A centre cross: if it is not centred, the panel's active area does not start where the driver thinks.
+    Line::new(Point::new(128 / 2, 0), Point::new(128 / 2, 128))
+        .into_styled(PrimitiveStyle::with_stroke(Rgb565::YELLOW, 1))
+        .draw(&mut display)
+        .expect("panel write failed");
+    Line::new(Point::new(0, 128 / 2), Point::new(128, 128 / 2))
+        .into_styled(PrimitiveStyle::with_stroke(Rgb565::YELLOW, 1))
+        .draw(&mut display)
+        .expect("panel write failed");
+
+    Text::new("Hello Grumpy!", Point::new(20, 130), MonoTextStyle::new(&FONT_10X20, Rgb565::YELLOW))
+        .draw(&mut display)
+        .expect("panel write failed");
+
+    let small = MonoTextStyle::new(&FONT_6X10, Rgb565::WHITE);
+    let mut line = 158;
+    for text in [
+        "LilyGo T-QT (ESP32-S3)",
+        "esp32s3 · 128x128 · GC9107",
+        "frame complete? corners: red TL, green TR",
+        "blue BL, white BR",
+        "bars L to R: red green blue black white",
+        "text upright? colours right? square blinking?",
+    ] {
+        Text::new(text, Point::new(6, line), small)
+            .draw(&mut display)
+            .expect("panel write failed");
+        line += 14;
+    }
+
+    log::info!("diagnostics drawn: frame, corners, 5 bars, cross and text");
+    let mut tick: u32 = 0;
     loop {
-        let (name, color) = bars[index % bars.len()];
-        log::info!("panel: {}", name);
-        display.clear(color).expect("panel write failed");
-        index += 1;
+        // One small square, blinking: proof the loop is alive without covering any of the diagnostics.
+        let colour = if tick % 2 == 0 { Rgb565::WHITE } else { Rgb565::BLACK };
+        Rectangle::new(Point::new(8, 420), Size::new(24, 24))
+            .into_styled(PrimitiveStyle::with_fill(colour))
+            .draw(&mut display)
+            .expect("panel write failed");
+        if tick % 10 == 0 {
+            log::info!("alive (tick {})", tick);
+        }
+        tick = tick.wrapping_add(1);
         Timer::after(Duration::from_millis(700)).await;
     }
 }

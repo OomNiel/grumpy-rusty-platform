@@ -70,6 +70,13 @@ ships it.
   Pi concerns.
 - Templates `blinky` (periodic task) and `display` (panel bring-up plus colour bars), the latter the
   default for a board with a panel.
+- **A diagnostic screen in the `display` template**, instead of a flat fill: a full-panel frame, four
+  differently coloured corner markers, five named colour bars, a centred cross, `"Hello Grumpy!"` and
+  six status lines, plus one blinking square that proves the loop is alive. A colour fill looks
+  identical whether the active area is cropped, the colour order is swapped or the image is rotated;
+  a screen you can read answers all three at a glance. Dropping the flat fill is what forced the move
+  from `embedded-graphics-core` to the full `embedded-graphics` crate, whose `prelude` supplies
+  `DrawTarget`/`RgbColor` and which carries the `Text`, `Line` and `Rectangle` primitives.
 - **Guided toolchain install.** Creating an ESP project checks for `espup`, the Xtensa toolchain,
   `~/export-esp.sh` and `espflash`, then offers to install what is missing — and only for the chips
   your boards need. `export-esp.sh` is applied to every build, flash and monitor the extension
@@ -97,23 +104,40 @@ ships it.
   `Output::new` was called with two arguments (esp-hal 1.2 takes three), the display template used
   `SPIInterface` without importing it, and a board whose name contains a quote
   (`Sunton … (3.5" CYD)`) produced Rust that could not compile.
+- Further defects the update above could not see, each found by **building and flashing a generated
+  project** on real hardware: the display template used the two-argument
+  `display_interface_spi::SPIInterface` for a call that passes a buffer (mipidsi's own
+  `interface::SpiInterface` is the three-argument, buffered one), passed the CS pin to a bus that has
+  no CS (`embedded-hal-bus`'s `ExclusiveDevice` is what joins a bus to mipidsi's `SpiDevice`),
+  built `Delay` as a value where esp-hal 1.x makes it a unit struct (`Delay::new()`), and declared a
+  `display-interface-spi` dependency the template no longer used.
+- **The generated apps were silent on the serial port.** `ESP_LOG` was set and `log::info!` was
+  called, but no logger was ever installed — esp-println's `log-04` feature does not install one by
+  itself, so `esp_println::logger::init_logger_from_env()` is now called before the first log line.
+  Found by flashing a generated app: the bootloader reported `Loaded app from partition at offset
+  0x10000` and then nothing at all for a perfectly healthy image.
 - `rustyPlatform.defaultBoard` did not list the new boards, so the wizard could not pre-select them.
 
 ### Tests
 
-370 hermetic checks (t1 345 · t2 21 · t3 4). The RP-only invariants are now explicitly scoped to RP
-boards — which is how the two silent holes in the UF2 path were found — and the ESP side adds 28
-board/generator assertions, 12 toolchain-plan assertions, 8 flash-command and serial-port
-assertions, 5 process-level detection tests against new `espup`/`espflash` shims, and 45 recorded
-golden files (45 of the suite's 131).
+**594 hermetic checks, 0 skipped** (t1 logic · t2 integration · t3 golden · opt-in t4 e2e). The RP-only
+invariants are explicitly scoped to RP boards — which is how the two silent holes in the UF2 path were
+found — and the ESP side carries its own board/generator assertions, toolchain-plan assertions,
+flash-command and serial-port assertions, process-level detection tests against `espup`/`espflash`
+shims, and recorded golden trees per board and template.
 
 ### Known gaps
 
-- The ESP firmware has **not been compiled or flashed yet**: it is verified against the vendor's
-  scaffolding and the crates' published APIs, and the flags are verified against `espflash`'s
-  source, but the first real build is still to come.
+- The ESP firmware **has** now been compiled and flashed — the Sunton ESP32-3248S035R ran a generated
+  `display` project, and every number and defect above came from that board. The DevKitC and the T-QT
+  have not been flashed yet: their templates are verified against the vendor's scaffolding, the crates'
+  published APIs and the same generator the Sunton project came out of, but not on their own silicon.
+- There are no hermetic end-to-end tests that *build* a generated ESP project: the ESP toolchain is a
+  separate 100 MB+ install, so it stays out of the default suite and the checks above are static.
 - There is no `wifi` template for ESP yet, so the wizard offers only the two implemented templates
   rather than generating a project that would compile into nothing.
+- Raspberry Pi boards and the Windows 11 paths are covered by the unit tests but have not been run on
+  Windows hardware.
 
 ## [0.0.1] - 2026-10-03
 

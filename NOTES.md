@@ -2116,3 +2116,71 @@ behaviour, not the extension's, and it is fully reversible: `espflash write-bin 
 restores the whole 4 MB byte-for-byte, from a backup verified against this exact chip.
 
 Suite: **593 passed, 0 skipped**.
+
+---
+
+## 51. A diagnostic screen instead of a flat fill (2026-10-05)
+
+*"Do the diagnostic patterns and also some basic text like 'Hello Grumpy!'"*
+
+**Why patterns at all.** A panel that fills with a colour is not a panel that is *right*. The three things that
+actually go wrong on a new panel — a cropped or shifted active area, a swapped colour order, a rotated image —
+all look exactly like success when the test is one flat fill. A screen you can read answers all three without a
+serial cable.
+
+**What the display template now draws**, in order:
+
+- a full-panel two-pixel frame at `(1, 1)` sized `320 - 2 × 480 - 2`, so a missing side is a cropped active area;
+- four 24×24 corner markers — **red** top-left, **green** top-right, **blue** bottom-left, **white**
+  bottom-right — so a shift is visible and measurable ("the red square is not in the corner, or is cut in half");
+- five 56×60 bars, left to right **red, green, blue, black, white** — if red and blue trade places, the panel's
+  colour order is the other one, and the comment says so: flip `ColorOrder` in the builder;
+- a full-height and a full-width **yellow line through the centre**, from `320 / 2` and `480 / 2` rather than
+  hard-coded numbers, so an off-centre cross means the active area does not start where the driver thinks;
+- `"Hello Grumpy!"` in `FONT_10X20`, then six status lines in `FONT_6X10` naming the board, the chip, the size,
+  the controller, the corner and bar conventions and the question to answer ("text upright? colours right?
+  square blinking?"). The strings are what makes the screen self-describing — a support thread needs the photo
+  to say what it is;
+- one 24×24 square at `(8, 420)` that **blinks** white/black every 700 ms. It is the only moving pixel, and it
+  sits clear of every diagnostic, so "the loop is alive" and "the picture is right" are two independent facts.
+
+**The dependency had to change with it.** The template used `embedded-graphics-core = "0.4"` — the trait crate
+mipidsi itself needs, which carries `DrawTarget` (`clear()`) but **none** of the drawing primitives. `Text`,
+`Line`, `Rectangle`, `PrimitiveStyle` and the fonts live in the full `embedded-graphics` crate (0.8.2 here),
+whose `prelude` re-exports `DrawTarget` and `RgbColor` as well. So the import block became
+`use embedded_graphics::prelude::*;` plus `mono_font`, `primitives` and `text`, and the manifest now declares
+`embedded-graphics = "0.8"` instead of `-core`. Declaring both would be two names for one crate — `-core` still
+arrives transitively, as `embedded-graphics`' own dependency.
+
+**Verified by building it and flashing it, in that order.**
+
+```
+    Compiling embedded-graphics v0.8.2
+    Compiling blinky-sunton-3248s035r v0.1.0
+    Finished `release` profile [optimized + debuginfo] target(s) in 9.37s
+```
+
+(clean, no warnings; the ELF is 2 113 884 bytes, and espflash reports `App/part. size: 116,464/4,128,768 bytes,
+2.82%`). Then on the real board:
+
+```
+I (135) boot: Loaded app from partition at offset 0x10000
+INFO - === blinky-sunton-3248s035r 0.1.0 starting ===
+INFO - board: Sunton ESP32-3248S035R (3.5" CYD) (ESP32), 4 MB flash
+INFO - panel ready: 3.5" ST7796 320x480
+INFO - diagnostics drawn: frame, corners, 5 bars, cross and text
+INFO - alive (tick 0)
+```
+
+**What the log proves and what it does not.** `panel ready` is `Builder::init()` returning, which only happens
+if the ST7796 answered, and `diagnostics drawn` is the drawing calls returning without an SPI error — every one
+of them is `.expect("panel write failed")`. The *pixels themselves* are the one thing I cannot see from here:
+the screen is the user's to confirm, and that is why the status lines are on it.
+
+**The tests were tightened, not loosened.** `the panel template initialises the panel over its own pins` now
+pins `use embedded_graphics::prelude::*;` and asserts the split crate is gone; a new case (`the panel template
+draws a diagnostic screen, not a flat fill`) pins the frame coordinates, the four corner colours, the named bars,
+the centred lines, the greeting, the blink and both fonts — so a future edit that quietly replaces the screen
+with a `fill` fails here instead of on someone's desk.
+
+Suite: **594 passed, 0 skipped**.

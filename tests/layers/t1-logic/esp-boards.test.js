@@ -294,7 +294,11 @@ test('the panel template initialises the panel over its own pins', () => {
         ok(main.includes('mipidsi::interface::SpiInterface'), 'a buffered call needs the buffered interface');
         notOk(main.includes('display_interface_spi::SPIInterface'), 'and never the two-argument one');
     }
-    contains(main, 'use embedded_graphics_core::draw_target::DrawTarget;', 'clear() comes from this trait');
+    // The full `embedded-graphics` crate, not the `_core` split: the diagnostics need `Text`, `Line` and
+    // `Rectangle`, and its `prelude` is what brings `DrawTarget` (clear()) and `RgbColor` into scope. The
+    // `_core` crate carried the shape but none of the drawing primitives (2026-10-05).
+    contains(main, 'use embedded_graphics::prelude::*;', 'clear() and the colour traits come from the prelude');
+    notOk(main.includes('embedded-graphics-core'), 'the split crate is not depended on any more');
     contains(main, 'Builder::new(models::ST7796, di)');
     contains(main, '.display_size(320, 480)');
     contains(main, '.color_order(ColorOrder::Bgr)');
@@ -310,10 +314,41 @@ test('the panel template initialises the panel over its own pins', () => {
     notOk(main.includes('.with_cs('), 'the bus is not given a CS pin it cannot use');
     contains(main, 'embedded-hal-bus', 'the adapter crate is a dependency of the project');
     contains(main, 'let mut delay = Delay::new();', 'Delay is a unit struct in esp-hal 1.x, built with new()');
-    contains(main, 'RgbColor', 'the colour constants need their trait in scope');
+    notOk(/^use embedded_graphics::prelude::RgbColor;/m.test(main),
+        'RgbColor is reached through the prelude, not a second import of the same crate');
     contains(main, `Output::new(peripherals.GPIO${panel.dc}, Level::Low, OutputConfig::default())`);
     contains(main, `peripherals.GPIO${panel.backlight}`, 'the backlight has to be switched on');
     contains(main, 'SPIInterface::new(spi, dc, &mut buffer)');
+});
+
+// A panel that lights up is not the same as a panel that is *right*: cropped active area, swapped colour
+// order and a rotated image all look like "it works" on a flat fill. The generated screen draws the frame,
+// the four corner markers, the named bars, a centred cross, the greeting and a blinking square, so a user
+// (or a support thread) can read the three failures off the screen instead of guessing (2026-10-05).
+test('the panel template draws a diagnostic screen, not a flat fill', () => {
+    const main = filesFor(espBoard('sunton-3248s035r'), 'display').get('src/main.rs');
+
+    contains(main, 'display.clear(Rgb565::BLACK)');
+    notOk(/PrimitiveStyle::with_fill\(Rgb565::BLACK\)\)\s*\.draw\(&mut display\)/.test(main),
+        'a black fill hides everything that matters');
+
+    contains(main, 'Rectangle::new(Point::new(1, 1), Size::new(320 - 2, 480 - 2))', 'the frame is the panel, minus its stroke');
+    // The corners, by colour: each one names what a shifted panel looks like in that spot.
+    for (const corner of ['Rgb565::RED', 'Rgb565::GREEN', 'Rgb565::BLUE', 'Rgb565::WHITE']) {
+        contains(main, corner);
+    }
+    contains(main, 'for (x, y, colour) in [');
+    // The bars are named in the comment in the order they are drawn, so a swap is diagnosable from the read.
+    contains(main, 'bars L to R: red green blue black white');
+    contains(main, 'Line::new(Point::new(320 / 2, 0)', 'the cross has to be centred by the panel size, not a number');
+    contains(main, 'Line::new(Point::new(0, 480 / 2)');
+    contains(main, 'Hello Grumpy!');
+    // The blink is the only moving pixel: it proves the loop runs without covering a diagnostic.
+    contains(main, 'let colour = if tick % 2 == 0 { Rgb565::WHITE } else { Rgb565::BLACK };');
+    contains(main, 'Timer::after(Duration::from_millis(700))');
+    // Every extra text line is a size asked of the font, so check the font that fits the width.
+    contains(main, 'FONT_6X10');
+    contains(main, 'FONT_10X20');
 });
 
 test('the T-QT panel revision becomes a cargo feature, not dead code', () => {

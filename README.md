@@ -16,7 +16,7 @@ Espressif boards, `espflash`.
 |---|---|
 | Project Wizard (board → working workspace) | ✅ 7 boards: Pico · Pico 2 · Pico W · Pico 2 W (RP2040/RP2350) and ESP32-DevKitC V4 · LilyGo T-QT · Sunton ESP32-3248S035R (ESP32/ESP32-S3) |
 | Generated workspace: `Cargo.toml`, `.cargo/config.toml`, `memory.x`, `build.rs`, `rust-toolchain.toml`, `src/main.rs`, `.vscode/{settings,launch}.json` | ✅ RP; ESP gets `esp-config.toml` instead of `memory.x`/`launch.json` |
-| Templates | ✅ RP: `blinky`, `wifi`, `wifi-bluetooth` (with a credentials prompt) · ESP: periodic task, panel test image |
+| Templates | ✅ RP: `blinky`, `wifi`, `wifi-bluetooth` (with a credentials prompt) · ESP: periodic task, panel diagnostic screen |
 | Toolchain detection (cargo, rustup, targets, probe-rs, probe health) | ✅ plus espup / Xtensa toolchain / espflash for ESP |
 | One-click installer (rustup, targets, prebuilt probe-rs with SHA-256 check, udev rules) | ✅ plus espup + espflash, only for the chips in use |
 | `Add Cargo to PATH…` for shells that never received `~/.cargo/bin` | ✅ |
@@ -233,6 +233,14 @@ ESP projects are built with esp-hal and esp-rtos and flashed with `espflash`; th
 `memory.x`, no UF2 image and no CYW43. The touch controller and the SD socket are described in the
 board data and listed in the generated README, but no template drives them yet, and there is no
 Wi-Fi template for ESP either.
+
+The ESP **panel diagnostic screen** is meant to be read off the display: a full-panel frame, four
+corner markers (red top-left, green top-right, blue bottom-left, white bottom-right), five colour bars
+named left to right, a centred cross, `"Hello Grumpy!"` and a line of status text — plus one small
+square that blinks while the loop runs. Cropping, a shifted active area, a swapped colour order and a
+rotated image each look like success on a flat colour fill and are obvious here. Generated `display`
+projects have been built and flashed to the Sunton ESP32-3248S035R; the DevKitC and T-QT templates
+have not been flashed yet (see `NOTES.md` in the repository).
 
 ## Documentation
 

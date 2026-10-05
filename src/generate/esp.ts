@@ -33,7 +33,7 @@ export const ESP_CRATE_VERSIONS = {
     mipidsi: '0.10.0',
     /** The bus-to-device adapter mipidsi's SPI interface needs (`ExclusiveDevice`). */
     embeddedHalBus: '0.3.0',
-    embeddedGraphicsCore: '0.4',
+    embeddedGraphics: '0.8',
 } as const;
 
 /** The Xtensa toolchain espup installs under this rustup channel name. */
@@ -151,13 +151,13 @@ panel-gc9a01 = []
     ];
 
     if (display) {
-        // mipidsi drives the panel and embedded-graphics-core is where the colour type comes from. The glue
-        // between esp-hal's SPI bus and mipidsi is embedded-hal-bus (added below); display-interface-spi used
-        // to be declared here and is not referenced by a single line of the generated code — a dead dependency
-        // in every project, left behind by the switch to the buffered interface (found 2026-10-05).
+        // mipidsi drives the panel, embedded-graphics is where the colours, the geometry, the primitives and
+        // the font come from, and embedded-hal-bus glues esp-hal's SPI bus to it. (`embedded-graphics` pulls
+        // in `embedded-graphics-core` and re-exports it, so only the one is declared — two would be two names
+        // for the same types, and the day they resolve to different versions is the day nothing compiles.)
         dependencies.push(
             `mipidsi = "${ESP_CRATE_VERSIONS.mipidsi}"`,
-            `embedded-graphics-core = "${ESP_CRATE_VERSIONS.embeddedGraphicsCore}"`,
+            `embedded-graphics = "${ESP_CRATE_VERSIONS.embeddedGraphics}"`,
             // esp-hal's `Spi` is a *bus*; mipidsi wants a `SpiDevice` (bus + its own CS), and this is the
             // crate that joins the two. Without it the generated display project cannot compile at all —
             // `Spi<'_>` does not implement `SpiDevice` (found by building a generated project, 2026-10-05).
@@ -336,10 +336,13 @@ function espImports(board: EspBoardProfile, template: AppTemplate): string {
         return [
             'use embassy_executor::Spawner;',
             'use embassy_time::{Duration, Timer};',
-            "use embedded_graphics_core::draw_target::DrawTarget;",
-            // `RgbColor` is the trait that carries `Rgb565::RED` and friends; without it those
-            // constants are "not found in Rgb565" — nine errors from one missing import.
-            'use embedded_graphics_core::pixelcolor::{Rgb565, RgbColor};',
+            // The full embedded-graphics crate, not -core: the diagnostics below need Rectangle, Line, Text
+            // and a font, and -core is only the traits and the colour types (which this one re-exports).
+            'use embedded_graphics::mono_font::{ascii::{FONT_6X10, FONT_10X20}, MonoTextStyle};',
+            'use embedded_graphics::pixelcolor::Rgb565;',
+            'use embedded_graphics::prelude::*;',
+            'use embedded_graphics::primitives::{Line, PrimitiveStyle, Rectangle};',
+            'use embedded_graphics::text::Text;',
             'use embedded_hal_bus::spi::ExclusiveDevice;',
             'use esp_hal::clock::CpuClock;',
             'use esp_hal::delay::Delay;',
@@ -376,7 +379,7 @@ function espMainRs(board: EspBoardProfile, template: AppTemplate, choices: Board
     const led = board.led;
 
     const body = display
-        ? espDisplayBody(display)
+        ? espDisplayBody(display, board)
         : led.kind === 'gpio'
             ? espLedBody(led.pin, led.external === true)
             : espHeartbeatBody();
@@ -406,7 +409,7 @@ ${body}
  * The colour bars are the point: they make a wrong colour order or a dead backlight
  * obvious in one glance, which is exactly the failure a fresh board produces.
  */
-function espDisplayBody(display: EspDisplay): string {
+function espDisplayBody(display: EspDisplay, board: EspBoardProfile): string {
     const miso =
         display.spi.miso === undefined ? '' : `\n        .with_miso(peripherals.GPIO${display.spi.miso})`;
     const reset =
@@ -454,20 +457,87 @@ ${resetSetup}
 
     log::info!("panel ready: ${rustString(display.label)}");
 
-    let bars = [
-        ("red", Rgb565::RED),
-        ("green", Rgb565::GREEN),
-        ("blue", Rgb565::BLUE),
-        ("black", Rgb565::BLACK),
-        ("white", Rgb565::WHITE),
-    ];
+    // A diagnostic screen rather than flat colour fills. Flat fills hide the three things that go wrong on a
+    // new panel: a cropped or shifted active area, a swapped colour order, and a rotated image. Here the frame
+    // shows cropping (a missing side means the panel is offset), the corners and named bars show a swap at a
+    // glance, and the text says what should be on screen. Replace this with your own drawing once it is right.
+    display.clear(Rgb565::BLACK).expect("panel write failed");
 
-    let mut index = 0;
+    // A full-size frame, two pixels wide: every side visible means the whole area is addressable.
+    Rectangle::new(Point::new(1, 1), Size::new(${display.width} - 2, ${display.height} - 2))
+        .into_styled(PrimitiveStyle::with_stroke(Rgb565::WHITE, 2))
+        .draw(&mut display)
+        .expect("panel write failed");
+
+    // Corner markers, so a shift is measurable: red top-left, green top-right, blue bottom-left, white
+    // bottom-right. A red square that is not in the corner, or one cut in half, is the answer.
+    for (x, y, colour) in [
+        (0, 0, Rgb565::RED),
+        (${display.width} - 24, 0, Rgb565::GREEN),
+        (0, ${display.height} - 24, Rgb565::BLUE),
+        (${display.width} - 24, ${display.height} - 24, Rgb565::WHITE),
+    ] {
+        Rectangle::new(Point::new(x, y), Size::new(24, 24))
+            .into_styled(PrimitiveStyle::with_fill(colour))
+            .draw(&mut display)
+            .expect("panel write failed");
+    }
+
+    // Five bars, left to right: red, green, blue, black, white. If red and blue trade places, the panel's
+    // colour order is the other one — flip ColorOrder in the builder above and reflash.
+    for (index, colour) in [Rgb565::RED, Rgb565::GREEN, Rgb565::BLUE, Rgb565::BLACK, Rgb565::WHITE]
+        .iter()
+        .enumerate()
+    {
+        Rectangle::new(Point::new(16 + (index as i32) * 58, 40), Size::new(56, 60))
+            .into_styled(PrimitiveStyle::with_fill(*colour))
+            .draw(&mut display)
+            .expect("panel write failed");
+    }
+
+    // A centre cross: if it is not centred, the panel's active area does not start where the driver thinks.
+    Line::new(Point::new(${display.width} / 2, 0), Point::new(${display.width} / 2, ${display.height}))
+        .into_styled(PrimitiveStyle::with_stroke(Rgb565::YELLOW, 1))
+        .draw(&mut display)
+        .expect("panel write failed");
+    Line::new(Point::new(0, ${display.height} / 2), Point::new(${display.width}, ${display.height} / 2))
+        .into_styled(PrimitiveStyle::with_stroke(Rgb565::YELLOW, 1))
+        .draw(&mut display)
+        .expect("panel write failed");
+
+    Text::new("Hello Grumpy!", Point::new(20, 130), MonoTextStyle::new(&FONT_10X20, Rgb565::YELLOW))
+        .draw(&mut display)
+        .expect("panel write failed");
+
+    let small = MonoTextStyle::new(&FONT_6X10, Rgb565::WHITE);
+    let mut line = 158;
+    for text in [
+        "${rustString(board.name)}",
+        "${board.espChip} · ${display.width}x${display.height} · ${display.controller}",
+        "frame complete? corners: red TL, green TR",
+        "blue BL, white BR",
+        "bars L to R: red green blue black white",
+        "text upright? colours right? square blinking?",
+    ] {
+        Text::new(text, Point::new(6, line), small)
+            .draw(&mut display)
+            .expect("panel write failed");
+        line += 14;
+    }
+
+    log::info!("diagnostics drawn: frame, corners, 5 bars, cross and text");
+    let mut tick: u32 = 0;
     loop {
-        let (name, color) = bars[index % bars.len()];
-        log::info!("panel: {}", name);
-        display.clear(color).expect("panel write failed");
-        index += 1;
+        // One small square, blinking: proof the loop is alive without covering any of the diagnostics.
+        let colour = if tick % 2 == 0 { Rgb565::WHITE } else { Rgb565::BLACK };
+        Rectangle::new(Point::new(8, 420), Size::new(24, 24))
+            .into_styled(PrimitiveStyle::with_fill(colour))
+            .draw(&mut display)
+            .expect("panel write failed");
+        if tick % 10 == 0 {
+            log::info!("alive (tick {})", tick);
+        }
+        tick = tick.wrapping_add(1);
         Timer::after(Duration::from_millis(700)).await;
     }`;
 }
