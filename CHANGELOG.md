@@ -11,6 +11,53 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.22] - 2026-10-05
+
+### Added
+
+- **The ESP `display` template draws a diagnostic screen instead of a flat fill.** A colour fill looks
+  identical whether the active area is cropped or shifted, the colour order is swapped or the image is
+  rotated, so the generated screen is made to be **read**: a full-panel frame (a missing side means the
+  panel is cropped), four differently coloured corner markers — red top-left, green top-right, blue
+  bottom-left, white bottom-right, so a shift is measurable — five bars named left to right, a cross
+  centred on the panel size, `"Hello Grumpy!"`, and a line of status text that says what the screen
+  should look like. One small square blinks while the loop runs, placed clear of every diagnostic so
+  "the picture is right" and "the loop is alive" stay two separate facts.
+- The geometry is **solved from the panel size**, not hard-coded for the 3.5" CYD, because the same
+  template is offered to the T-QT's 128×128 panel: the corner markers shrink, the bars are fitted into
+  the width, the greeting drops from `FONT_10X20` to `FONT_6X10` under 200 px, the bands are packed in
+  order (corners, bars, greeting, status, blinking square) and a status line is only emitted if it fits.
+- The screen needs drawing primitives, which live in the full `embedded-graphics` crate rather than in
+  `embedded-graphics-core`: the template now depends on `embedded-graphics = "0.8"` and takes `DrawTarget`
+  and `RgbColor` from its prelude, with `Text`, `Line`, `Rectangle` and the fonts from their own modules.
+
+### Fixed
+
+- **The panel's mirroring was board data the generator silently dropped.** The CYD's catalog entry has
+  declared `mirrorX: true` (its panel's X axis runs opposite to the controller's default, per the
+  community board definition) since the board was added, and the template emitted `colorOrder` while
+  ignoring `mirrorX`/`mirrorY` — two of the four panel facts were dead data. The first flash of the new
+  diagnostic screen is what reported it: the whole image came out mirrored, text included, with the red
+  corner marker in the top-right. The builder chain now emits
+  `.orientation(Orientation::new().flip_horizontal())` from the board data (mipidsi applies it through
+  MADCTL, so drawing coordinates are unchanged) for **every** panel, so a board that needs no flip says
+  so in the generated code instead of relying on a default.
+- The generated `display` project also no longer carries the unused `display-interface-spi` dependency,
+  and its `log::info!` output actually appears (see 0.0.21).
+
+### Notes
+
+- Verified on the real Sunton ESP32-3248S035R, by building and flashing the generated project: clean
+  release build with no warnings, `App/part. size: 116,480/4,128,768 bytes, 2.82%`, and the board logging
+  `panel ready: 3.5" ST7796 320x480` → `diagnostics drawn: frame, corners, 5 bars, cross and text` →
+  `alive (tick 0)`. After the orientation fix, the screen showed red top-left, `"Hello Grumpy!"` reading
+  normally, correct colours, and the white square blinking in the bottom-right corner — so the hardware
+  confirms the board definition's mirroring claim. `NOTES.md` §51.
+- The DevKitC and T-QT panels have **not** been flashed. Their generated code is covered by the layout and
+  orientation assertions, but not by their own silicon.
+- Test suite: **596 passed, 0 skipped**.
+
+
 ## [0.0.21] - 2026-10-05
 
 ### Fixed
