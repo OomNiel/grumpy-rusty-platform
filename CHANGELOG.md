@@ -11,6 +11,30 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.21] - 2026-10-05
+
+### Fixed
+
+- **Generated ESP apps printed nothing on the serial port.** `main.rs` calls `log::info!` and
+  `.cargo/esp-config.toml` sets `ESP_LOG = "info"`, but **no logger was ever installed** — esp-println's own
+  README requires `init_logger(…)` for the `log-04` feature — so every log line was dropped and a healthy app
+  looked dead. Found by flashing a generated project to a real board: the bootloader reported
+  *"Loaded app from partition at offset 0x10000"* and then nothing at all, for thirty seconds.
+  `esp_println::logger::init_logger_from_env();` is now emitted right after `esp_rtos::start(…)`, and the
+  `ESP_LOG` comment names what reads it. Ten snapshots (five ESP boards × both templates).
+
+### Notes
+
+- Verified on the hardware, immediately after: regenerate → `cargo build --release` → flash → monitor gives
+  `=== <name> 0.1.0 starting ===`, the board line, and **`panel ready: 3.5" ST7796 320x480`** followed by the
+  colour cycle. So the chain works end to end, and the board itself confirms its panel controller — `mipidsi`'s
+  `Builder::init()` only returns if the ST7796 answered, which resolves the question the firmware dump could
+  not answer. `NOTES.md` §50.
+- Worth knowing when flashing any ESP board: `espflash flash <elf>` also writes **its own bootloader and
+  default partition table**, so the factory OTA layout is replaced. That is espflash's behaviour, and it is
+  reversible byte-for-byte from a verified full-flash backup (`espflash write-bin 0 0x400000 <backup>.bin`).
+- Test suite: **593 passed, 0 skipped**.
+
 ## [0.0.20] - 2026-10-05
 
 ### Fixed
