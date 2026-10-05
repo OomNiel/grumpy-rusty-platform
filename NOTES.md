@@ -2073,3 +2073,46 @@ for a line that never appears in the code — and it was found by diffing a *rea
 generator, not by reading either.
 
 Suite: **593 passed, 0 skipped**.
+
+## 50. Every generated ESP app was silent — and the board proved it (2026-10-05)
+
+**How it was found: by flashing one.** *"build the project and flash it to the board"* — so I did, with the
+extension's own argv (`espflash flash --chip esp32 --port /dev/ttyUSB0 <elf>`). The flash succeeded, the board
+reset, the second-stage bootloader reported `Loaded app from partition at offset 0x10000` … and then **nothing**.
+Nothing for thirty seconds, with exactly one boot banner in the whole capture, so it was not boot-looping.
+
+**The cause was in the template, and it was one missing line.** The generated `main.rs` calls `log::info!`
+several times, and `.cargo/esp-config.toml` carefully sets `ESP_LOG = "info"` — but **no logger was ever
+installed**. esp-println 0.18's own README is explicit: *"With the feature `log-04` activated … call
+`init_logger(...)`"*, and its `logger.rs` offers `init_logger(level)` and `init_logger_from_env()`. The template
+had `use esp_println as _;` (for the panic handler and `println!`) and nothing else, so every `log::info!` in
+every generated ESP project was dropped on the floor. A perfectly healthy app looked dead.
+
+**The fix**: `esp_println::logger::init_logger_from_env();` immediately after `esp_rtos::start(...)`, before the
+first log line, with the `ESP_LOG` comment in `esp-config.toml` now saying what actually reads it. Ten snapshots
+(five ESP boards × blinky/display).
+
+**Verified on the real board, immediately after**: regenerate → `cargo build --release` → flash → monitor:
+
+```
+I (132) boot: Loaded app from partition at offset 0x10000
+INFO - === blinky-sunton-3248s035r 0.1.0 starting ===
+INFO - board: Sunton ESP32-3248S035R (3.5" CYD) (ESP32), 4 MB flash
+INFO - panel ready: 3.5" ST7796 320x480
+INFO - panel: red / green / blue / black / white   (cycling, repeatedly)
+```
+
+**Two things this settled beyond the bug.** The whole chain works end to end on this hardware — the extension
+generates, the ESP toolchain builds, `espflash` writes, the chip boots it and the app runs. And
+`panel ready: 3.5" ST7796 320x480` is the **board itself confirming its panel controller**, which the firmware
+dump could never do: `mipidsi`'s `Builder::init()` only returns if the ST7796 answered its init sequence. The
+question §(CYD findings) left open — "identify the exact display controller" — is answered by evidence rather
+than by a guess.
+
+**One side effect worth knowing about flashing this board**: `espflash flash <elf>` writes **its own bundled
+bootloader and default partition table** in addition to the app (the chip now runs an ESP-IDF v6.1 bootloader
+with a single `factory` partition, where the factory had v4.4.5 and six OTA partitions). That is espflash's
+behaviour, not the extension's, and it is fully reversible: `espflash write-bin 0 0x400000 cyd-demo-backup.bin`
+restores the whole 4 MB byte-for-byte, from a backup verified against this exact chip.
+
+Suite: **593 passed, 0 skipped**.
