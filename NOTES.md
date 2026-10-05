@@ -2021,3 +2021,38 @@ cannot install, and now it does not.
 `blinky` template is the one to try first.
 
 Suite: **593 passed, 0 skipped**.
+
+## 48. The ESP display template compiles — found by building it, not by reading it (2026-10-05)
+
+**How it went.** *"see the terminal for build error"* — the terminal is not something I can read, so I built the
+user's project in its own directory instead. What came back was `build.rs`, which 0.0.17 had already fixed in the
+template but not in their generated copy; with that unescaped, the build reached the crate's own code and failed
+on three more things. All four are now fixed, and **a freshly generated Sunton project compiles with no warnings
+(29.74 s)**, as does the user's own project (1.35 s, incremental).
+
+**The four defects, in the order the build revealed them.**
+
+1. `build.rs` escaped backticks in a Rust string (`\``) — Rust has no such escape. Fixed in the template by
+   0.0.17; the user's generated copy still had it, so it was unescaped there too.
+2. `let mut delay = Delay;` → `E0423`; esp-hal 1.2.2 has `Delay::new()` (a unit struct, not a value).
+3. **esp-hal's `Spi` is a `SpiBus`; mipidsi wants a `SpiDevice`.** The template called `.with_cs(pin)` on the
+   bus, which does not make one, and the compiler's `E0277` note pointed at the trait impl in
+   **`embedded-hal-bus`** — a crate the template did not depend on at all. The fix is that crate's
+   `ExclusiveDevice::new(bus, cs, delay)`: the bus without CS, the CS pin as an `Output`, and the device built
+   from the two. `embedded-hal-bus = "0.3.0"` is now a dependency of the ESP display template (added with
+   `cargo add` in the user's project first, to be sure the version resolves against Rust 1.95).
+4. `Rgb565::RED`/`WHITE`/… → *"trait RgbColor which provides WHITE is implemented but not in scope"*; one
+   missing `use embedded_graphics_core::pixelcolor::RgbColor;` produced nine errors.
+
+**The lesson worth keeping.** Every one of these was found by **building** a generated project, and none of them
+by reading it. `t3-golden` compares text against snapshots: it pinned `SpiInterface::new(spi, dc, &mut buffer)`
+next to the wrong import for weeks without complaint, because both the snapshot and the generator agreed with
+each other. A golden test proves the generator is *stable*, not that its output *works* — the compile check
+belongs in the opt-in `t4-e2e` layer, which for the ESP families has evidently never been run. That is the real
+gap this exposed, and it is now written down rather than implied.
+
+**Also checked**: both ESP display boards share this template, and `mipidsi 0.10` does carry the T-QT's
+controller, so the fix covers `lilygo-tqt` as well as `sunton-3248s035r` — the second board's *build* was not
+run (it is a different chip, so it is a cold `esp-hal` build), and that is stated rather than assumed.
+
+Suite: **593 passed, 0 skipped**.

@@ -302,7 +302,15 @@ test('the panel template initialises the panel over its own pins', () => {
     contains(main, `with_sck(peripherals.GPIO${panel.spi.sclk})`);
     contains(main, `with_mosi(peripherals.GPIO${panel.spi.mosi})`);
     contains(main, `with_miso(peripherals.GPIO${panel.spi.miso})`);
-    contains(main, `with_cs(peripherals.GPIO${panel.cs})`);
+    // The CS pin is the board's, but it is *not* handed to the bus: esp-hal's Spi is a SpiBus and mipidsi needs
+    // a SpiDevice. The pin goes to the adapter that makes one — `.with_cs(...)` on the bus was the shape that
+    // could not compile (found by building a generated project, 2026-10-05).
+    contains(main, `Output::new(peripherals.GPIO${panel.cs}`);
+    contains(main, 'ExclusiveDevice::new(spi, cs');
+    notOk(main.includes('.with_cs('), 'the bus is not given a CS pin it cannot use');
+    contains(main, 'embedded-hal-bus', 'the adapter crate is a dependency of the project');
+    contains(main, 'let mut delay = Delay::new();', 'Delay is a unit struct in esp-hal 1.x, built with new()');
+    contains(main, 'RgbColor', 'the colour constants need their trait in scope');
     contains(main, `Output::new(peripherals.GPIO${panel.dc}, Level::Low, OutputConfig::default())`);
     contains(main, `peripherals.GPIO${panel.backlight}`, 'the backlight has to be switched on');
     contains(main, 'SPIInterface::new(spi, dc, &mut buffer)');

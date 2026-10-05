@@ -8,7 +8,8 @@
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Timer};
 use embedded_graphics_core::draw_target::DrawTarget;
-use embedded_graphics_core::pixelcolor::Rgb565;
+use embedded_graphics_core::pixelcolor::{Rgb565, RgbColor};
+use embedded_hal_bus::spi::ExclusiveDevice;
 use esp_hal::clock::CpuClock;
 use esp_hal::delay::Delay;
 use esp_hal::gpio::{Level, Output, OutputConfig};
@@ -55,8 +56,12 @@ async fn main(_spawner: Spawner) -> ! {
     )
     .expect("SPI configuration")
         .with_sck(peripherals.GPIO3)
-        .with_mosi(peripherals.GPIO2)
-        .with_cs(peripherals.GPIO5);
+        .with_mosi(peripherals.GPIO2);
+
+    // esp-hal's Spi is a *bus*; mipidsi wants a SpiDevice, which is that bus plus its own CS pin.
+    // embedded-hal-bus is the crate that joins the two (the recipe esp-hal's own examples use).
+    let cs = Output::new(peripherals.GPIO5, Level::Low, OutputConfig::default());
+    let spi = ExclusiveDevice::new(spi, cs, Delay::new()).expect("SPI device");
 
     // 512 bytes is mipidsi's own example buffer size: enough to batch pixels, small
     // enough to live on the stack, so this build needs no heap.
@@ -64,7 +69,8 @@ async fn main(_spawner: Spawner) -> ! {
     let dc = Output::new(peripherals.GPIO6, Level::Low, OutputConfig::default());
     let di = SPIInterface::new(spi, dc, &mut buffer);
 
-    let mut delay = Delay;
+    // Delay is a unit struct in esp-hal 1.x, not a value: it is built with new().
+    let mut delay = Delay::new();
     let mut display = Builder::new(models::GC9107, di)
         .display_size(128, 128)
         .reset_pin(rst)
