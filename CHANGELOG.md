@@ -11,6 +11,35 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.28] - 2026-10-06
+
+### Added
+
+- **A `Sensors + sound` template for the ESP32-035**: it reads the on-board LDR and plays a tone on the
+  speaker connector, which between them demonstrate the whole analogue half of this board.
+  - The LDR is on **GPIO34 (ADC1 channel 6)**, wired as the *lower* leg of a divider (3.3V - 5k - pin - LDR -
+    GND). The template reads it at 11 dB attenuation and — the part worth having — **says the polarity in the
+    log**, because a brighter room reads *lower* here and assuming it the other way round looks exactly like a
+    dead sensor.
+  - The speaker is on **GPIO26, which is DAC channel 2**, through a 4k7 coupling resistor into an LTK8002D
+    bridge amplifier. A square wave written to the DAC *is* the sound: no PWM, no filter, no timer.
+- **The board's analogue hardware as data**: `ldr` (pin, series resistor, which leg faces ground) and `audio`
+  (pin, amplifier, coupling resistor), so a template cannot get the polarity or the pin wrong by guessing.
+- **`unstable` is asked for automatically** by the template that needs it: esp-hal's ADC and DAC modules are
+  cfg-gated behind that feature, which is confirmed in its source rather than assumed.
+
+### Notes
+
+- The template **compiles for the board** (`cargo build --release`, no warnings). Its behaviour on the glass —
+  the light reading and an audible tone — has not been checked yet.
+- Still to write: the **TF card** template (pins are known: CS 5, CLK 18, MOSI 23, MISO 19), Wi-Fi/Bluetooth
+  for ESP, and the single selectable board template that folds display + touch + card + LED + sensors + sound
+  together.
+- The touch calibration still lives in RAM rather than flash: an interrupt-safe `esp-storage` write needs its
+  own bench round. `NOTES.md` §62-§63.
+- Test suite: **617 passed, 0 skipped**.
+
+
 ## [0.0.27] - 2026-10-06
 
 ### Added
