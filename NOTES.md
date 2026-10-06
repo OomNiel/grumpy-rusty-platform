@@ -2879,3 +2879,33 @@ error to assert on.
 3.3V - 5k - GPIO34 - LDR - GND, a working divider cannot sit at exactly zero in a lit room, so either GPIO34 is
 not the divider's midpoint on this unit, or the 5k/3.3V side is not connected. That is the next measurement, and
 it is the same shape as the touch pins: a traced pin that the data then has to agree with.
+
+---
+
+## 65. The readout is cleared before it is drawn, and a standing rule (2026-10-06)
+
+*"The live touch reading over-write each other without clearing the old values. Delete the old values first
+(without redrawing the whole screen!)"*
+
+He was right, and the reason is worth writing down: the numbers change **length** as a finger moves
+(`raw a=0 b=0` is two characters shorter than `raw a=1806 b=286`), so each reading was drawn over the tail of the
+one before it. The fix is confined to the box — no full-screen clear — and the *order* matters:
+
+```rust
+Rectangle::new(box).into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))   // the interior
+Rectangle::new(box).into_styled(PrimitiveStyle::with_stroke(border, 2))     // then the border
+```
+
+Filling first and stroking second keeps the border whole; the other order erases half its width, which is the
+kind of thing that would have looked almost right.
+
+**The standing rule, recorded because he asked for it as a rule:**
+
+> Never choose the easy way to implement something new. Always do it the correct way.
+
+That is now the tie-breaker for every judgement call in this repository, and it is already visible in the work:
+the touch pins were settled by sweeping every candidate rather than by trusting a published table; the
+calibration is measured on the panel rather than assumed from a datasheet; the board template is the touch
+template *plus* the hardware rather than a copy of it; and the readout above clears its interior rather than
+redrawing a screen it did not need to. Where "correct" costs more than "easy", it is the one to take, and where
+it is genuinely not affordable yet the honest answer is to say so and leave it open rather than to fake it.

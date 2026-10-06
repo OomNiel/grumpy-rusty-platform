@@ -414,6 +414,14 @@ async fn main(_spawner: Spawner) -> ! {
         // Only the readout box is repainted while a finger is down: a full clear costs about 200 ms of
         // SPI, and the numbers are supposed to keep up with the finger.
         if redraw_box {
+            // The interior first, then the border on top of its edges. The numbers change length as a finger
+            // moves -- "raw a=0 b=0" is shorter than "raw a=1806 b=286" -- so without clearing, each reading
+            // is drawn over the tail of the one before it. Filling and then stroking is what keeps the border
+            // whole: the other order erases half its width.
+            Rectangle::new(Point::new(BOX_X, BOX_Y), Size::new(BOX_W as u32, BOX_H as u32))
+                .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
+                .draw(&mut display)
+                .expect("panel write failed");
             Rectangle::new(Point::new(BOX_X, BOX_Y), Size::new(BOX_W as u32, BOX_H as u32))
                 .into_styled(PrimitiveStyle::with_stroke(Rgb565::new(8, 24, 8), 2))
                 .draw(&mut display)
