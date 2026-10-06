@@ -146,6 +146,11 @@ test('the CYD board carries its touch and microSD wiring', () => {
     // The LDR, traced to module pin 6 = GPIO34 = ADC1 channel 6. Recorded before it can be read: the pin is
     // the thing that decides which ADC channel it is, and no template drives it yet.
     equal(board.ldr.pin, '34', 'the light sensor is on an ADC-capable, input-only pin');
+    // 3.3V -> 5k -> pin -> LDR -> GND. The polarity is the part worth pinning: the LDR is the lower leg, so
+    // brighter light has to read as a smaller number, and a template that assumed the other way would look
+    // like a dead sensor on a bright day.
+    equal(board.ldr.seriesOhms, 5_000);
+    equal(board.ldr.toGround, true, 'the LDR faces ground, so the reading falls as the light rises');
     equal(board.sd.cs, 5);
     equal(board.sd.spi.sclk, 18);
     // CMD is the card's data *in* and DAT0 its data out, so in SPI mode MOSI is CMD (23) and MISO is

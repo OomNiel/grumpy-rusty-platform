@@ -284,7 +284,15 @@ export const BOARDS: BoardProfile[] = [
         // relying on a pull -- which is how these boards wire it. Reading it needs the ADC, not a GPIO.
         ldr: {
             pin: '34',
-            note: 'the LDR is half of a divider on ADC1 channel 6; brighter light, lower resistance',
+            // 3.3V -> 5k -> GPIO34 -> LDR -> GND, as traced by hand. Two consequences worth recording
+            // before anyone writes the read: the node is always driven (no pull-up needed, and none
+            // available on GPIO34-39 anyway), and the LDR is the *lower* leg, so the reading falls as the
+            // light rises -- brighter means a smaller number, not a larger one. With 3.3V across it, the
+            // read wants the ADC's 11 dB attenuation to cover the whole span.
+            seriesOhms: 5_000,
+            toGround: true,
+            note: '3.3V - 5k - GPIO34 - LDR - GND: a divider whose lower leg is the LDR, so brighter light '
+                + 'reads lower. Use the 11 dB attenuation to span 0-3.3V.',
         },
         // Only three TF nets exist on the schematic (CS/CLK/MOSI) and the card shares the
         // panel's MISO, which is what the board definition implies as well.

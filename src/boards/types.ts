@@ -155,6 +155,16 @@ export interface EspDisplay {
  */
 export interface EspLdr {
     pin: string;
+    /**
+     * The fixed resistor this sensor divides against, when it has one.
+     *
+     * Recorded because it decides which way the reading goes: the LDR is the lower leg of the divider on
+     * these boards, so a brighter light is a *smaller* number. Without this, a template would have to guess
+     * the polarity, and guessing it backwards is the kind of bug that looks like a broken sensor.
+     */
+    seriesOhms?: number;
+    /** True when the sensor is the leg facing ground rather than the one facing the supply. */
+    toGround?: boolean;
     /** One line for the generated README, e.g. what it is wired against. */
     note?: string;
 }
