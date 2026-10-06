@@ -11,6 +11,47 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.27] - 2026-10-06
+
+### Added
+
+- **A touch template, verified on real hardware.** Panel bring-up plus the XPT2046 on the same SPI bus, a
+  **calibration screen** the user carries out on the glass (a red block in each corner with a crosshair in
+  it, the requested corner lit and named, the live raw pair on screen), and then the **graphics test screen**
+  back again with the live raw/mapped numbers and a touch marker. Measured on the board:
+  `raw axis0 1794..238, axis1 1873..210 over 320x480`, and `a=1809 b=210 -> pixel (22, 456)`.
+- **The board's RGB LED**, as a new `BoardLed` kind with three pins (red 4, green 17, blue 16). The blinky
+  template cycles the channels and names each one in the log, so a swapped pin is the wrong colour rather
+  than nothing at all.
+
+### Changed
+
+- **Controls: `Build for Debug` and `Build for Release` replace the single Build row, and the Debug row is
+  gone.** `rustyPlatform.debug` stays a command - on an ESP board it flashes and follows the log in one
+  terminal - and so does `rustyPlatform.build`, for the palette and for keybindings.
+
+### Fixed
+
+- **The touch controller read mid-scale and never moved for a touch**, at every clock from 2 MHz to 100 kHz:
+  the command byte and the data bytes were clocked back to back, and the XPT2046 needs its conversion time
+  between them. Each frame is now one transaction with an explicit delay between its two halves, and the
+  axis reader consumes two frames before averaging so the average is not dragged towards zero.
+- **The TF card pins were wrong.** CMD is the card's data *in* and DAT0 its data *out*, so MOSI is 23 and
+  MISO is 19 - not 19 and the panel's shared 12 as the community definition had it.
+- **The board is not a Sunton.** It is a clone sold as `ESP32-035` with TZT / 3.5 TFT / 60721 markings; it is
+  now named **ESP32-035 LCD Panel**, vendor *unidentified*, with its wiring confirmed against the
+  `littleCdev/ESP32-035` hardware notes - including that the touch controller's BUSY pin is not connected,
+  which is why the driver waits a fixed conversion time.
+
+### Notes
+
+- The calibration lives in the firmware's state, not yet in flash: writing flash from a running embassy app
+  needs `esp-storage`'s constructor confirmed and an interrupt-safe write, which deserves its own bench round.
+- Still to come for this board: the TF card template, Wi-Fi/Bluetooth, and the LDR and speaker pins, which
+  are not in the reference tables and have to be traced. `NOTES.md` §57-§61.
+- Test suite: **616 passed, 0 skipped**.
+
+
 ## [0.0.26] - 2026-10-05
 
 ### Fixed
