@@ -486,6 +486,7 @@ async fn main(_spawner: Spawner) -> ! {
             pressed = (raw_a - idle_a).abs() > TOUCH_MOVE || (raw_b - idle_b).abs() > TOUCH_MOVE;
 
             if pressed && !was_touched {
+                
                 log::info!(
                     "touch: a={} b={} pen={} frames a=[{:04X} {:04X} {:04X}] b=[{:04X} {:04X} {:04X}]",
                     raw_a,

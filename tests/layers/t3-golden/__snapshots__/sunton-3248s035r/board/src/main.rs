@@ -218,6 +218,21 @@ async fn main(_spawner: Spawner) -> ! {
     let mut adc = Adc::new(peripherals.ADC1, adc_config);
     // The speaker hangs off a DAC channel: what is written is the waveform.
     let mut speaker = Dac::new(peripherals.DAC2, peripherals.GPIO26);
+    // A ~2 kHz square wave for the given number of milliseconds, then back to the middle of the DAC's range
+    // so the amplifier is not left against a rail. 250 us per half period is two half periods per
+    // millisecond, hence the doubling.
+    macro_rules! beep {
+        ($speaker:expr, $millis:expr) => {{
+            for _ in 0..($millis * 2) {
+                $speaker.write(215);
+                Timer::after(Duration::from_micros(250)).await;
+                $speaker.write(40);
+                Timer::after(Duration::from_micros(250)).await;
+            }
+            $speaker.write(128);
+        }};
+    }
+
     log::info!("board hardware: RGB LED, LDR on GPIO34, speaker on GPIO26");
 
     // The calibration lives in the last 4 KB sector of the application partition. The app image is roughly
@@ -499,6 +514,7 @@ async fn main(_spawner: Spawner) -> ! {
             pressed = (raw_a - idle_a).abs() > TOUCH_MOVE || (raw_b - idle_b).abs() > TOUCH_MOVE;
 
             if pressed && !was_touched {
+                beep!(speaker, 40);
                 log::info!(
                     "touch: a={} b={} pen={} frames a=[{:04X} {:04X} {:04X}] b=[{:04X} {:04X} {:04X}]",
                     raw_a,
@@ -513,14 +529,7 @@ async fn main(_spawner: Spawner) -> ! {
                 );
                 if !calibrated {
                     measured[corner] = [a, b];
-                        // A short beep, so the speaker is demonstrated by the calibration itself.
-                        for _ in 0..60 {
-                            speaker.write(200);
-                            Timer::after(Duration::from_micros(400)).await;
-                            speaker.write(56);
-                            Timer::after(Duration::from_micros(400)).await;
-                        }
-                        speaker.write(128);
+                        beep!(speaker, 200);
                     log::info!("touch: corner {} {} recorded", corner + 1, corners[corner]);
                     corner += 1;
                     if corner == 4 {

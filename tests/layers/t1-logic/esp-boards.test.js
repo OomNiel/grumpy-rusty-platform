@@ -673,6 +673,11 @@ test('the board template has the panel, touch, the LED, the sensor and the speak
     contains(main, 'adc.read_oneshot(&mut light)', 'the light sensor is read');
     contains(main, 'Dac::new(peripherals.DAC2, peripherals.GPIO26)', 'and the speaker is driven');
     contains(main, 'board hardware: RGB LED, LDR on GPIO34, speaker on GPIO26');
+    // The speaker answers every touch, not only a recorded corner: with the calibration kept in flash, a
+    // calibrated board never records a corner again, so a corner-only beep left the amplifier untestable.
+    contains(main, 'macro_rules! beep');
+    contains(main, 'beep!(speaker, 40);', 'a short reply to any touch');
+    contains(main, 'beep!(speaker, 200);', 'and a longer confirmation at a corner');
     // The dependencies the analog half needs.
     contains(cargo, '"unstable"');
     contains(cargo, 'embedded-hal = "1.0.0"');

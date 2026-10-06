@@ -752,17 +752,30 @@ function espTouchBody(
         }`,
     ].join('');
 
-    const beep = audio === undefined
+    // One definition of what a beep is, shared by the reply to a touch and the longer confirmation at a
+    // recorded corner, so the two cannot drift apart. A macro rather than a function because it borrows the
+    // DAC -- whose type is not worth naming -- and because it awaits.
+    const beepMacro = audio === undefined
         ? ''
         : `
-                        // A short beep, so the speaker is demonstrated by the calibration itself.
-                        for _ in 0..60 {
-                            speaker.write(200);
-                            Timer::after(Duration::from_micros(400)).await;
-                            speaker.write(56);
-                            Timer::after(Duration::from_micros(400)).await;
-                        }
-                        speaker.write(128);`;
+    // A ~2 kHz square wave for the given number of milliseconds, then back to the middle of the DAC's range
+    // so the amplifier is not left against a rail. 250 us per half period is two half periods per
+    // millisecond, hence the doubling.
+    macro_rules! beep {
+        ($speaker:expr, $millis:expr) => {{
+            for _ in 0..($millis * 2) {
+                $speaker.write(215);
+                Timer::after(Duration::from_micros(250)).await;
+                $speaker.write(40);
+                Timer::after(Duration::from_micros(250)).await;
+            }
+            $speaker.write(128);
+        }};
+    }
+`;
+    // The corner confirmation is the longer of the two.
+    const beep = audio === undefined ? '' : `
+                        beep!(speaker, 200);`;
 
     const hardwareLog = [
         led === undefined ? undefined : 'RGB LED',
@@ -886,7 +899,7 @@ function espTouchBody(
         "touch: ${touch.controller} on GPIO${touch.cs} (cs), GPIO${touch.irq} (irq), pen level now {}",
         touch_irq.is_low()
     );
-${hardwareSetup}
+${hardwareSetup}${beepMacro}
 ${hardwareLog.length > 0 ? `    log::info!("board hardware: ${hardwareLog.join(', ')}");` : ''}
 
     // The calibration lives in the last 4 KB sector of the application partition. The app image is roughly
@@ -1168,6 +1181,7 @@ ${hardwareLog.length > 0 ? `    log::info!("board hardware: ${hardwareLog.join('
             pressed = (raw_a - idle_a).abs() > TOUCH_MOVE || (raw_b - idle_b).abs() > TOUCH_MOVE;
 
             if pressed && !was_touched {
+                ${audio === undefined ? '' : 'beep!(speaker, 40);'}
                 log::info!(
                     "touch: a={} b={} pen={} frames a=[{:04X} {:04X} {:04X}] b=[{:04X} {:04X} {:04X}]",
                     raw_a,
