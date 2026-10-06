@@ -112,7 +112,8 @@ Wired boards are never asked: the prompt only appears for a project whose `src/m
 | Command | What it does |
 |---|---|
 | New Project… | Wizard: board, template, name → a complete workspace |
-| Build / Clean | `cargo build` / `cargo clean` in a terminal |
+| Build for Debug / Build for Release | `cargo build` and `cargo build --release` in a terminal. The Debug *row* was replaced by these two; the **Rusty Platform: Debug** command is still in the palette, and on an ESP board it flashes and follows the log in one terminal |
+| Clean | `cargo clean` |
 | Publish .deb | Builds for release and packs the firmware artifacts plus a `<package>-flash` helper into `<name>_<version>_<arch>.deb` **in the project root** |
 | Install .deb | `dpkg-deb --info`, then `sudo dpkg -i` in a terminal (Linux) |
 | Back Up Project | `<folder>-<date>_<time>` beside the project, leaving out `target/` |

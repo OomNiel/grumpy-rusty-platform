@@ -45,11 +45,23 @@ export const HEALTH_CONTROL: ControlDescriptor = {
 /** In status-bar order; the sidebar section renders the same list in the same order. */
 const ACTIONS: readonly ControlDescriptor[] = [
     {
-        command: 'rustyPlatform.build',
+        // The two builds the user asked for (2026-10-06): the debug one is what a probe-rs session can
+        // step through, the release one is what a finished device runs. The single "Build" and the
+        // "Debug" row are gone from the controls; `rustyPlatform.debug` stays in the palette, because on
+        // an ESP board it is the only button that flashes *and* follows the log in one terminal.
+        command: 'rustyPlatform.buildDebug',
         icon: 'tools',
-        label: 'Build',
+        label: 'Build for Debug',
         detail: 'cargo build',
-        tooltip: 'cargo build',
+        tooltip: 'cargo build - the debug profile, the build a probe-rs session can step through.',
+    },
+    {
+        command: 'rustyPlatform.buildRelease',
+        icon: 'rocket',
+        label: 'Build for Release',
+        detail: 'cargo build --release',
+        tooltip: 'cargo build --release - optimised, and what a finished device wants. This is the profile '
+            + 'Flash writes for an ESP board.',
     },
     {
         command: 'rustyPlatform.flash',
@@ -57,13 +69,6 @@ const ACTIONS: readonly ControlDescriptor[] = [
         label: 'Flash',
         detail: 'write the board',
         tooltip: 'Flash the board (probe, or USB when no probe is usable)',
-    },
-    {
-        command: 'rustyPlatform.debug',
-        icon: 'debug-alt',
-        label: 'Debug',
-        detail: 'build, flash, debug',
-        tooltip: 'Build, flash and start a probe-rs debug session with RTT',
     },
     {
         command: 'rustyPlatform.debugStop',
@@ -188,11 +193,8 @@ const ESP_WORDING: Record<string, Pick<ControlDescriptor, 'detail' | 'tooltip'>>
         tooltip: 'Build and write over USB serial with espflash — an Xtensa chip has no probe route. '
             + 'Writes the release build by default; see rustyPlatform.flashProfile.',
     },
-    'rustyPlatform.debug': {
-        detail: 'flash, then the log',
-        tooltip: 'No breakpoints: Xtensa is debugged over JTAG, which needs separate hardware. Builds, '
-            + 'writes the image and follows the log in one terminal.',
-    },
+    // rustyPlatform.debug has no control row any more (Build for Debug / Build for Release replaced it),
+    // so its ESP wording went with it. The command is still in the palette and still does flash + monitor.
     'rustyPlatform.monitor': {
         detail: 'the serial log',
         tooltip: 'espflash monitor — the log over the same serial port the flash used, without writing '

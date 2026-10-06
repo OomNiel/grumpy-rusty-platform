@@ -2706,3 +2706,75 @@ encode. The rest have their pins.
   corner blocks, the four touches recorded and stored, then the screen returning to the graphics test screen.
 
 Suite: **616 passed, 0 skipped**.
+
+---
+
+## 60. The controls say what they build (2026-10-06)
+
+*"Add a 'Build for Debug' and 'Build for Release' buttons to the Controls and remove the current Debug one."*
+
+The single **Build** row and the **Debug** row are gone from the controls; in their place:
+
+```
+$(tools)  Build for Debug     cargo build
+$(rocket) Build for Release   cargo build --release
+```
+
+Both rows and the status bar keep the same number of items as before, and the two commands are the honest pair
+of what `cargo` can build: the debug profile is the one a probe-rs session can step through, release is what a
+finished device runs (and what Flash writes for an ESP board, per NOTES §54).
+
+**`rustyPlatform.debug` is still a command.** Removing a *row* is not removing the feature: on an ESP board Debug
+is the only button that flashes and follows the log in one terminal, and it stays in the palette for that. What
+went with the row is the board-aware wording for it — the fact that Xtensa has no breakpoints is already in the
+generated README and in the message the command itself shows.
+
+`rustyPlatform.build` also stays registered for the palette and for anyone who bound it in a keybinding; the two
+new commands are what the controls run.
+
+Suite: **616 passed, 0 skipped**.
+
+---
+
+## 61. The calibration screen (2026-10-06)
+
+*"Implement a touch calibration function where the user is shown a touch calibration screen. The[n] after
+touching the crosshairs in the red corner blocks, the touch calibration values are stored and the screen
+returns to the original graphics test screen."*
+
+What the panel does now, in order:
+
+1. **Calibration screen.** A 44 px red block in each corner, each with a crosshair in it; the corner being
+   asked for is lit and the others dimmed, with its name printed at the top ("top-left", then "top-right",
+   "bottom-right", "bottom-left"). The live raw pair is on screen throughout, so a user can see that the
+   controller is responding before they have finished.
+2. **Four touches recorded**, each logged with its raw frames.
+3. **The values are stored** — applied from that moment and kept in the firmware's state. Writing them to flash
+   is the one part deliberately left out (see below).
+4. **The screen returns to the graphics test**: frame, four coloured corner markers, five bars, the centred
+   cross, the live raw/mapped numbers in the middle and a touch marker.
+
+Measured on the board, first run:
+
+```
+corner 1 top-left     a=1794 b=1873      corner 3 bottom-right a=241  b=210
+corner 2 top-right    a=238  b=1873      corner 4 bottom-left  a=1809 b=210
+calibration: raw axis0 1794..238 and axis1 1873..210 over 320x480
+touch: a=1809 b=210 -> pixel (22, 456)
+```
+
+**Why the values are in RAM and not yet in flash.** `esp-storage` is already in the tree (0.10.0, as a
+transitive dependency of the bootloader crate) and its `erase`/`write_nor`/`read_nor` are the API for this, but
+two things have to be right before I would write flash from a running embassy app: the constructor for
+`FlashStorage` needs confirming in 0.10 (the only `new()` I found is the emulation variant), and a flash write
+disables the cache, so an interrupt that runs code from flash during the write is a crash. That needs its own
+round of verification on the bench, not a hopeful commit. So the calibration survives until reset today, and the
+sector it will live in is chosen: the last 4 KB of the application partition (the app image is ~120 KB of a 4 MB
+partition), which is ours rather than the NVS the bootloader may care about.
+
+**One build bug worth remembering**: the fixed text buffer was originally called `Line`, which shadowed
+embedded-graphics' `Line` and made every crosshair call the wrong constructor. It is `Numbers` now. That is the
+same class of mistake as the generator's backtick trap — a generated template inherits every name it imports,
+so its own types must not be called after them.
+
+Suite: **616 passed, 0 skipped**.

@@ -59,6 +59,18 @@
                 "icon": "$(tools)"
             },
             {
+                "command": "rustyPlatform.buildDebug",
+                "title": "Build for Debug",
+                "category": "Rusty Platform",
+                "icon": "$(tools)"
+            },
+            {
+                "command": "rustyPlatform.buildRelease",
+                "title": "Build for Release",
+                "category": "Rusty Platform",
+                "icon": "$(rocket)"
+            },
+            {
                 "command": "rustyPlatform.flash",
                 "title": "Flash",
                 "category": "Rusty Platform",

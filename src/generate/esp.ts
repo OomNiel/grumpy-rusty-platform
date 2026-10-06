@@ -364,7 +364,7 @@ function espImports(board: EspBoardProfile, template: AppTemplate): string {
             'use embedded_graphics::mono_font::{ascii::{FONT_6X10, FONT_10X20}, MonoTextStyle};',
             'use embedded_graphics::pixelcolor::Rgb565;',
             'use embedded_graphics::prelude::*;',
-            'use embedded_graphics::primitives::{PrimitiveStyle, Rectangle};',
+            'use embedded_graphics::primitives::{Line, PrimitiveStyle, Rectangle};',
             'use embedded_graphics::text::Text;',
             // Named directly: the XPT2046 read helper is generic over `SpiDevice`.
             'use embedded_hal::spi::{Operation, SpiDevice};',
@@ -536,13 +536,14 @@ function espTouchBody(display: EspDisplay, touch: EspTouch): string {
     const TOUCH_REPAINT: i32 = 4;
 
     // Numbers have to become text for the panel, and there is no allocator here: a fixed buffer that
-    // implements core::fmt::Write is the usual no_std answer.
-    struct Line {
+    // implements core::fmt::Write is the usual no_std answer. It is deliberately not named after the
+    // graphics Line type, which would shadow it -- and the crosshairs are drawn with that.
+    struct Numbers {
         bytes: [u8; 32],
         len: usize,
     }
 
-    impl Line {
+    impl Numbers {
         fn new() -> Self {
             Self { bytes: [0; 32], len: 0 }
         }
@@ -552,7 +553,7 @@ function espTouchBody(display: EspDisplay, touch: EspTouch): string {
         }
     }
 
-    impl core::fmt::Write for Line {
+    impl core::fmt::Write for Numbers {
         fn write_str(&mut self, text: &str) -> core::fmt::Result {
             if text.len() > self.bytes.len() - self.len {
                 return Err(core::fmt::Error);
@@ -660,32 +661,88 @@ function espTouchBody(display: EspDisplay, touch: EspTouch): string {
     let mut redraw_screen = true;
     let mut redraw_box = true;
     let mut ticks: u32 = 0;
+    // Whether the four corners have been measured. Until they have, the panel shows the calibration
+    // screen; afterwards it shows the graphics test with the live readout on top.
+    let mut calibrated = false;
 
     loop {
         if redraw_screen {
             display.clear(Rgb565::BLACK).expect("panel write failed");
             let style = MonoTextStyle::new(&FONT_6X10, Rgb565::WHITE);
-            if corner < 4 {
-                Text::new("Touch the red square:", Point::new(8, 10), style)
+
+            if !calibrated {
+                // The calibration screen: one red block per corner, each with a crosshair in it, and the one
+                // being asked for lit up. Touching the crosshair records that corner's raw values.
+                Text::new("Touch the crosshair in the bright block", Point::new(8, 10), style)
                     .draw(&mut display)
                     .expect("panel write failed");
                 Text::new(corners[corner], Point::new(8, 24), style)
                     .draw(&mut display)
                     .expect("panel write failed");
+                for (index, target) in targets.iter().enumerate() {
+                    let (x, y) = *target;
+                    let current = index == corner;
+                    // 44 px blocks: big enough to aim at with a finger, small enough to leave the middle free.
+                    Rectangle::new(Point::new(x - 22, y - 22), Size::new(44, 44))
+                        .into_styled(PrimitiveStyle::with_fill(if current {
+                            Rgb565::RED
+                        } else {
+                            Rgb565::new(4, 6, 4)
+                        }))
+                        .draw(&mut display)
+                        .expect("panel write failed");
+                    // The crosshair: where the user should aim, and the point the calibration is taken from.
+                    let ink = if current { Rgb565::WHITE } else { Rgb565::new(14, 30, 14) };
+                    Line::new(Point::new(x - 16, y), Point::new(x + 16, y))
+                        .into_styled(PrimitiveStyle::with_stroke(ink, 2))
+                        .draw(&mut display)
+                        .expect("panel write failed");
+                    Line::new(Point::new(x, y - 16), Point::new(x, y + 16))
+                        .into_styled(PrimitiveStyle::with_stroke(ink, 2))
+                        .draw(&mut display)
+                        .expect("panel write failed");
+                }
             } else {
-                Text::new("Touch anywhere. The numbers below follow", Point::new(8, 10), style)
+                // The graphics test screen, back again once the calibration is done: a frame around the
+                // whole panel, four coloured corner markers, five bars and a cross through the centre.
+                Text::new("Touch: numbers below, and the log", Point::new(8, 10), style)
                     .draw(&mut display)
                     .expect("panel write failed");
-                Text::new("your finger; everything also goes to the log.", Point::new(8, 24), style)
+                Rectangle::new(Point::new(1, 1), Size::new(WIDTH as u32 - 2, HEIGHT as u32 - 2))
+                    .into_styled(PrimitiveStyle::with_stroke(Rgb565::WHITE, 2))
                     .draw(&mut display)
                     .expect("panel write failed");
-            }
-            for (index, target) in targets.iter().enumerate() {
-                let (x, y) = *target;
-                // The corner being asked for is red; the other three stay dim as reference points.
-                let colour = if index == corner { Rgb565::RED } else { Rgb565::new(2, 10, 2) };
-                Rectangle::new(Point::new(x - 12, y - 12), Size::new(24, 24))
-                    .into_styled(PrimitiveStyle::with_fill(colour))
+                for (index, target) in targets.iter().enumerate() {
+                    let (x, y) = *target;
+                    let colour = match index {
+                        0 => Rgb565::RED,
+                        1 => Rgb565::GREEN,
+                        2 => Rgb565::WHITE,
+                        _ => Rgb565::BLUE,
+                    };
+                    Rectangle::new(Point::new(x - 12, y - 12), Size::new(24, 24))
+                        .into_styled(PrimitiveStyle::with_fill(colour))
+                        .draw(&mut display)
+                        .expect("panel write failed");
+                }
+                for (index, colour) in [Rgb565::RED, Rgb565::GREEN, Rgb565::BLUE, Rgb565::BLACK, Rgb565::WHITE]
+                    .iter()
+                    .enumerate()
+                {
+                    Rectangle::new(
+                        Point::new(16 + (index as i32) * 58, 40),
+                        Size::new(53, 40),
+                    )
+                        .into_styled(PrimitiveStyle::with_fill(*colour))
+                        .draw(&mut display)
+                        .expect("panel write failed");
+                }
+                Line::new(Point::new(WIDTH / 2, 96), Point::new(WIDTH / 2, HEIGHT - 96))
+                    .into_styled(PrimitiveStyle::with_stroke(Rgb565::new(16, 40, 16), 1))
+                    .draw(&mut display)
+                    .expect("panel write failed");
+                Line::new(Point::new(8, HEIGHT / 2), Point::new(WIDTH - 8, HEIGHT / 2))
+                    .into_styled(PrimitiveStyle::with_stroke(Rgb565::new(16, 40, 16), 1))
                     .draw(&mut display)
                     .expect("panel write failed");
             }
@@ -703,8 +760,8 @@ function espTouchBody(display: EspDisplay, touch: EspTouch): string {
             let small = MonoTextStyle::new(&FONT_6X10, Rgb565::WHITE);
             let big = MonoTextStyle::new(&FONT_10X20, Rgb565::YELLOW);
 
-            let mut line = Line::new();
-            if corner < 4 {
+            let mut line = Numbers::new();
+            if !calibrated {
                 let _ = write!(&mut line, "corner {} of 4 - {}", corner + 1, corners[corner]);
             } else if pressed {
                 let _ = write!(&mut line, "TOUCH");
@@ -715,14 +772,14 @@ function espTouchBody(display: EspDisplay, touch: EspTouch): string {
                 .draw(&mut display)
                 .expect("panel write failed");
 
-            let mut line = Line::new();
+            let mut line = Numbers::new();
             let _ = write!(&mut line, "raw a={} b={}", raw_a, raw_b);
             Text::new(line.as_str(), Point::new(BOX_X + 8, BOX_Y + 26), small)
                 .draw(&mut display)
                 .expect("panel write failed");
 
-            let mut line = Line::new();
-            if corner >= 4 {
+            let mut line = Numbers::new();
+            if calibrated {
                 let _ = write!(&mut line, "x={} y={}", point.0, point.1);
             } else {
                 let _ = write!(&mut line, "x=? y=?");
@@ -731,7 +788,7 @@ function espTouchBody(display: EspDisplay, touch: EspTouch): string {
                 .draw(&mut display)
                 .expect("panel write failed");
 
-            let mut line = Line::new();
+            let mut line = Numbers::new();
             let _ = write!(&mut line, "pen={} idle a={} b={}", touch_irq.is_low(), idle_a, idle_b);
             Text::new(line.as_str(), Point::new(BOX_X + 8, BOX_Y + 78), small)
                 .draw(&mut display)
@@ -772,11 +829,12 @@ function espTouchBody(display: EspDisplay, touch: EspTouch): string {
                     frames_b[1],
                     frames_b[2]
                 );
-                if corner < 4 {
+                if !calibrated {
                     measured[corner] = [a, b];
                     log::info!("touch: corner {} {} recorded", corner + 1, corners[corner]);
                     corner += 1;
                     if corner == 4 {
+                        calibrated = true;
                         // Which raw axis follows the display's X is a property of how this panel is wired, so
                         // it is worked out from the two corners that differ only along the display's X.
                         let delta_a = (i32::from(measured[1][0]) - i32::from(measured[0][0])).abs();
@@ -798,7 +856,7 @@ function espTouchBody(display: EspDisplay, touch: EspTouch): string {
 
             // The mapped position follows the finger for as long as it is down, and the readout is
             // repainted when it has moved enough to be worth the pixels.
-            if corner >= 4 && (pressed || was_touched) {
+            if calibrated && (pressed || was_touched) {
                 let axis_x = if raw_x_axis == 0 { a } else { b };
                 let axis_y = if raw_x_axis == 0 { b } else { a };
                 let px = if x_to == x_from {
@@ -821,7 +879,7 @@ function espTouchBody(display: EspDisplay, touch: EspTouch): string {
                     redraw_box = true;
                 }
             }
-            if !pressed && was_touched && corner >= 4 {
+            if !pressed && was_touched && calibrated {
                 log::info!("touch: released");
                 redraw_box = true;
             }
