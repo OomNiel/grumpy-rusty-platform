@@ -3002,3 +3002,30 @@ written for, and a
 [CYD LDR thread](https://forum.arduino.cc/t/cheap-yellow-display-ldr-sensor/1347942/5) has a user finding dark
 gives the *higher* number — the same sense we documented. So this is this unit, or an unreported slip in a batch,
 not a known characteristic of the design.
+
+---
+
+## 69. A third resistor at the node, and the LDR parked (2026-10-06)
+
+*"There is another resistor connected to the common between the LDR and the divider resistor. I can tell where
+the other end of it is going yet. I think we leave the LDR for later."*
+
+So the LDR's front end is a **three-resistor network**, not the two-part divider §62 recorded. The most likely
+role for a resistor hanging off the common node is a **series resistor between that node and the ADC pin** — 1 k
+to 10 k is the usual value, there to protect the pin and to form an RC with its input capacitance. Two
+consequences, both of which matter when the tracing resumes:
+
+1. **The pin may not be sampling the node that was measured.** If the third resistor is in series, the ADC sees
+   the far side of it, and the meter's reading at the node says nothing directly about what the ADC sees.
+2. **A series resistor cannot explain a constant 0 on its own** — a series resistor carries no current once the
+   ADC input's leakage is negligible, so it drops no voltage and the reading equals the node's. Which means the
+   grounded-at-both-ends finding still has to be reconciled with wherever the third resistor actually goes: it
+   could be the 3.3V leg that §67 concluded was missing, sitting at a different point in the network than the
+   5k's far end.
+
+So the catalog keeps the two-part description for now and the firmware is unchanged. **The LDR is parked at the
+user's request**, with everything needed to resume: the pin is confirmed (GPIO34, module pin 6, ADC1 channel 6),
+the polarity is confirmed (0 = full brightness, higher = darker, per the board's own example in §68), the code is
+the correct code for a healthy divider, and the open question is the network around the node — not the firmware.
+
+Suite: **618 passed, 0 skipped**.
