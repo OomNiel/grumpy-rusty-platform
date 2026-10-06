@@ -39,7 +39,7 @@ export const CRATE_VERSIONS = {
 
 // ------------------------------------------------------------------ templates
 
-export type AppTemplate = 'blinky' | 'wifi' | 'wifi-bluetooth' | 'display' | 'touch' | 'peripherals' | 'board';
+export type AppTemplate = 'blinky' | 'wifi' | 'wifi-bluetooth' | 'display' | 'touch' | 'peripherals' | 'board' | 'sdcard';
 
 export interface AppTemplateInfo {
     id: AppTemplate;

@@ -3029,3 +3029,45 @@ the polarity is confirmed (0 = full brightness, higher = darker, per the board's
 the correct code for a healthy divider, and the open question is the network around the node — not the firmware.
 
 Suite: **618 passed, 0 skipped**.
+
+---
+
+## 70. The TF card template, built on embedded-sdmmc (2026-10-06)
+
+*"Start TF card template"* — done, and built the correct way rather than the easy one: **embedded-sdmmc 0.8.2**
+rather than a hand-rolled CMD0/CMD8/ACMD41/CMD58/CMD16 sequence. The init handshake is easy to get subtly wrong,
+and even done perfectly it leaves raw sectors rather than a filesystem; the crate brings FAT12/16/32 with it and
+is the one the ecosystem tests against.
+
+What the template does, on the socket this board wires (CS 5, sclk 18, mosi 23, miso 19):
+
+1. brings up its own SPI bus at **400 kHz** — the clock a card is specified to initialise at;
+2. reports the capacity `SdCard::num_bytes()` returns;
+3. opens volume 0 and its root directory, which walks the FAT (a damaged filesystem fails here rather than
+   quietly reporting a size);
+4. then says plainly whether it is mounted or not, once every ten seconds.
+
+**Verified on the board, with no card in the socket** — which is the useful first result, because it proves the
+whole path runs and reports honestly:
+
+```
+sd: mounting (cs GPIO5, sclk GPIO18, mosi GPIO23, miso GPIO19)
+ERROR - sd: the card did not answer (CardNotFound)
+ERROR - sd: no volume 0 - is the card inserted and FAT formatted? (DeviceError(CardNotFound))
+sd: not mounted - insert a FAT-formatted card in the TF socket and reset
+```
+
+**Two things fixed by reading the crate rather than guessing** (both found by the compiler, in one round trip each):
+
+- `Timestamp` is not a calendar struct: it is `year_since_1970`, `zero_indexed_month`, `zero_indexed_day`,
+  `hours`, `minutes`, `seconds` — 56 is 2026.
+- The directory iterator takes a *raw* handle (`iterate_dir(RawDirectory, …)`), which `Volume::open_root_dir()`
+  does not hand back. **Listing the root is therefore deferred rather than guessed**: the mount, the capacity and
+  opening the root already prove the card and its filesystem, and the raw-handle conversion is worth doing
+  against the crate's source in its own round. The test asserts the listing is *absent*, so it cannot creep in
+  unnoticed.
+
+The closing line is the same lesson as §66 in miniature: with no card the first version still announced "mounted
+and readable". It now tracks whether the mount actually happened and says so.
+
+Suite: **619 passed, 0 skipped**.

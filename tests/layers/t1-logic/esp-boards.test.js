@@ -190,8 +190,8 @@ test('an ESP board offers only templates that are implemented', () => {
     // The CYD is the only board with a touch controller, so it is the only one offered the touch test.
     equal(
         templatesFor(espBoard('sunton-3248s035r')).map((info) => info.id),
-        ['blinky', 'display', 'board', 'peripherals', 'touch'],
-        'the board template sits with the panel templates it is built from',
+        ['blinky', 'display', 'sdcard', 'board', 'peripherals', 'touch'],
+        'the card sits with the panel templates; board is everything, so it comes last of the hardware',
     );
     for (const id of ['lilygo-tqt', 'sunton-3248s035r']) {
         equal(defaultTemplateFor(espBoard(id)), 'display', 'a panel board is bought for its panel');
@@ -688,4 +688,33 @@ test('the board template has the panel, touch, the LED, the sensor and the speak
     notContains(touch, 'led_red', 'the touch template stays touch-only');
     notContains(touch, 'read_oneshot');
     notContains(touch, 'Dac::new');
+});
+
+// The TF card template. Built on embedded-sdmmc rather than a hand-rolled SD SPI sequence: the init handshake
+// is easy to get subtly wrong, and even done perfectly it leaves raw sectors rather than a filesystem.
+test('the TF card template mounts the card on the socket the board wires', () => {
+    const files = filesFor(espBoard('sunton-3248s035r'), 'sdcard');
+    const main = files.get('src/main.rs');
+    const cargo = files.get('Cargo.toml');
+    const sd = espBoard('sunton-3248s035r').sd;
+
+    contains(main, 'use embedded_sdmmc::{SdCard, TimeSource, Timestamp, VolumeIdx, VolumeManager};');
+    contains(cargo, 'embedded-sdmmc', 'the filesystem crate is the dependency');
+    contains(cargo, 'embedded-hal-bus', 'and the bus-to-device adapter the card needs');
+    // The socket's pins, from the board data: CS, CLK, CMD (MOSI) and DAT0 (MISO).
+    contains(main, `with_sck(peripherals.GPIO${sd.spi.sclk})`);
+    contains(main, `with_mosi(peripherals.GPIO${sd.spi.mosi})`);
+    contains(main, `with_miso(peripherals.GPIO${sd.spi.miso})`);
+    contains(main, `Output::new(peripherals.GPIO${sd.cs}, Level::Low`);
+    // 400 kHz: the clock a card is specified to initialise at, and the one it is read at here.
+    contains(main, 'Rate::from_khz(400)');
+    contains(main, 'SdCard::new(card, Delay::new())');
+    contains(main, 'card.num_bytes()');
+    contains(main, 'VolumeManager::new(card, FixedClock)');
+    contains(main, 'volumes.open_volume(VolumeIdx(0))');
+    contains(main, 'volume.open_root_dir()');
+    // The crate counts years from 1970 and indexes months and days from zero.
+    contains(main, 'year_since_1970: 56');
+    contains(main, 'zero_indexed_month: 0');
+    notContains(main, 'iterate_dir', 'the directory listing waits for the raw-handle API to be checked');
 });
