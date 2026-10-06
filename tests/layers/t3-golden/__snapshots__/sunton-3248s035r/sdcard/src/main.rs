@@ -43,8 +43,8 @@ async fn main(_spawner: Spawner) -> ! {
     log::info!("board: ESP32-035 LCD Panel (ESP32), 4 MB flash");
 
 
-    // A fixed timestamp: the filesystem records one when it *writes*, and this template only reads, so a fixed
-    // value is honest rather than a pretended clock. It is also what the crate's own example does.
+    // A fixed timestamp: the filesystem records one when it *writes*, and these templates only read, so a
+    // fixed value is honest rather than a pretended clock. It is also what the crate's own example does.
     struct FixedClock;
 
     impl TimeSource for FixedClock {
@@ -61,58 +61,70 @@ async fn main(_spawner: Spawner) -> ! {
         }
     }
 
-    // The card's own SPI bus. It is not the panel's: these pins are the TF socket's, and no template drives
-    // both at once (the board template does not include the card yet).
-    let card_spi = Spi::new(
-        peripherals.SPI2,
-        // 400 kHz: the clock a card is specified to initialise at, and what it is read at here.
-        SpiConfig::default().with_frequency(Rate::from_khz(400)),
-    )
-    .expect("SPI configuration")
-        .with_sck(peripherals.GPIO18)
-        .with_mosi(peripherals.GPIO23)
-        .with_miso(peripherals.GPIO19);
+    let sd_mounted = {
+        // The card's own SPI bus. These are the TF socket's pins, not the panel's.
+        let card_spi = Spi::new(
+            peripherals.SPI2,
+            // 400 kHz: the clock a card is specified to initialise at, and what it is read at here.
+            SpiConfig::default().with_frequency(Rate::from_khz(400)),
+        )
+        .expect("SPI configuration")
+            .with_sck(peripherals.GPIO18)
+            .with_mosi(peripherals.GPIO23)
+            .with_miso(peripherals.GPIO19);
 
-    let card_cs = Output::new(peripherals.GPIO5, Level::Low, OutputConfig::default());
-    let card = ExclusiveDevice::new(card_spi, card_cs, Delay::new()).expect("card chip select");
+        let card_cs = Output::new(peripherals.GPIO5, Level::Low, OutputConfig::default());
+        let card = ExclusiveDevice::new(card_spi, card_cs, Delay::new()).expect("card chip select");
 
-    log::info!("sd: mounting (cs GPIO5, sclk GPIO18, mosi GPIO23, miso GPIO19)");
+        log::info!(
+            "sd: mounting (cs GPIO5, sclk GPIO18, mosi GPIO23, miso GPIO19)"
+        );
 
-    let card = SdCard::new(card, Delay::new());
-    match card.num_bytes() {
-        Ok(bytes) => log::info!("sd: card reports {} bytes ({} MiB)", bytes, bytes / (1024 * 1024)),
-        Err(error) => log::error!("sd: the card did not answer ({:?})", error),
-    }
-
-    let mut volumes = VolumeManager::new(card, FixedClock);
-    // Remembered so the closing line can tell the truth: a card that never answered must not be reported as
-    // "mounted and readable".
-    let mut mounted = false;
-
-    match volumes.open_volume(VolumeIdx(0)) {
-        Ok(mut volume) => {
-            log::info!("sd: volume 0 opened");
-            match volume.open_root_dir() {
-                Ok(root) => {
-                    // Opening it walks the FAT: a card with a damaged filesystem fails here rather than
-                    // silently reporting a size. Listing the entries is the next step -- the crate's
-                    // directory iterator takes a raw handle, and that conversion is worth doing against its
-                    // source rather than by guessing (2026-10-06).
-                    log::info!("sd: root directory opened - the filesystem is readable");
-                    mounted = true;
-                    drop(root);
-                }
-                Err(error) => log::error!("sd: no root directory ({:?})", error),
-            }
+        let card = SdCard::new(card, Delay::new());
+        match card.num_bytes() {
+            Ok(bytes) => log::info!("sd: card reports {} bytes ({} MiB)", bytes, bytes / (1024 * 1024)),
+            Err(error) => log::error!("sd: the card did not answer ({:?})", error),
         }
-        Err(error) => log::error!("sd: no volume 0 - is the card inserted and FAT formatted? ({:?})", error),
-    }
+
+        let mut volumes = VolumeManager::new(card, FixedClock);
+        let mut mounted = false;
+
+        match volumes.open_raw_volume(VolumeIdx(0)) {
+            Ok(volume) => {
+                log::info!("sd: volume 0 opened");
+                match volumes.open_root_dir(volume) {
+                    Ok(directory) => {
+                        // Walking the directory walks the FAT, so this fails on a damaged filesystem rather
+                        // than quietly reporting a size.
+                        log::info!("sd: root directory opened - the filesystem is readable");
+                        // The callback returns unit in this version of the crate, not a Result: it is
+                        // called for its side effect and the iterator's own error is what comes back.
+                        match volumes.iterate_dir(directory, |entry| {
+                            log::info!("sd:   {} ({} bytes)", entry.name, entry.size);
+                        }) {
+                            Ok(()) => log::info!("sd: root directory listed"),
+                            Err(error) => log::error!("sd: listing failed ({:?})", error),
+                        }
+                        let _ = volumes.close_dir(directory);
+                        mounted = true;
+                    }
+                    Err(error) => log::error!("sd: no root directory ({:?})", error),
+                }
+            }
+            Err(error) => log::error!(
+                "sd: no volume 0 - is the card inserted and FAT formatted? ({:?})",
+                error
+            ),
+        }
+
+        mounted
+    };
 
     loop {
         log::info!(
             "sd: {}",
-            if mounted {
-                "mounted and readable; the card can be removed now"
+            if sd_mounted {
+                "mounted and readable"
             } else {
                 "not mounted - insert a FAT-formatted card in the TF socket and reset"
             }

@@ -3071,3 +3071,45 @@ The closing line is the same lesson as §66 in miniature: with no card the first
 and readable". It now tracks whether the mount actually happened and says so.
 
 Suite: **619 passed, 0 skipped**.
+
+---
+
+## 71. The card lists its directory, and moves into the board template (2026-10-06)
+
+**The listing is real now, and it reads the user's card:**
+
+```
+sd: card reports 15640559616 bytes (14916 MiB)
+sd: volume 0 opened
+sd: root directory opened - the filesystem is readable
+sd:   SPARE (0 bytes)
+sd:   SYSTEM~1 (0 bytes)
+sd: root directory listed
+sd: mounted and readable
+```
+
+`SPARE` is the volume label and `SYSTEM~1` the SD association's folder, which is exactly what a healthy FAT32
+root holds with no user files in it — and the listing walks the FAT entries rather than trusting the header.
+
+It is written against the crate's **raw API** throughout (`open_raw_volume` → `open_root_dir` → `iterate_dir` →
+`close_dir`), so one handle is used for the open, the listing and the close instead of converting between the
+ergonomic wrapper and the raw form. Two facts only the compiler knew, both now commented in the generated code:
+
+- **`Timestamp` is not a calendar struct**: `year_since_1970`, `zero_indexed_month`, `zero_indexed_day`,
+  `hours`, `minutes`, `seconds` — 56 is 2026.
+- **The directory callback returns unit in 0.8**, not a `Result`. It changed from older versions of the crate,
+  and the signature is the kind of thing that is worth reading rather than recalling.
+
+**And the card is part of the board template now — as the same code, not a copy.** `espSdMountCode` emits the
+whole mount as one block expression and both templates call it, which is the only way two templates that both
+mount a card stay in step. Two consequences:
+
+1. **The board template puts the card on SPI3, not SPI2.** A HAL driver owns its peripheral for good once it has
+   been handed over, so the card cannot borrow the panel's bus in the same firmware — and the ESP32 has a second
+   SPI peripheral, which is presumably why the socket was wired to pins that can reach it. That is a real
+   constraint of this HAL, not a preference, and it is named in the generated comment so the next person does not
+   spend an hour on it.
+2. The binding is underscored in the board template (`_sd_mounted`), because only the card template's loop reads
+   it, and both projects now build with **zero warnings**.
+
+Suite: **619 passed, 0 skipped**. Both generated projects compile clean.

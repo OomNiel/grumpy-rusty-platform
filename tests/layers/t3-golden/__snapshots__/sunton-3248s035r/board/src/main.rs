@@ -22,6 +22,8 @@ use esp_hal::gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull};
 use esp_storage::FlashStorage;
 use esp_hal::analog::adc::{Adc, AdcConfig, Attenuation};
 use esp_hal::analog::dac::Dac;
+use embedded_hal_bus::spi::ExclusiveDevice;
+use embedded_sdmmc::{SdCard, TimeSource, Timestamp, VolumeIdx, VolumeManager};
 use esp_hal::spi::master::{Config as SpiConfig, Spi};
 use esp_hal::time::Rate;
 use esp_hal::timer::timg::TimerGroup;
@@ -55,7 +57,82 @@ async fn main(_spawner: Spawner) -> ! {
     log::info!("=== {} {} starting ===", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
     log::info!("board: ESP32-035 LCD Panel (ESP32), 4 MB flash");
 
+    // A fixed timestamp: the filesystem records one when it *writes*, and these templates only read, so a
+    // fixed value is honest rather than a pretended clock. It is also what the crate's own example does.
+    struct FixedClock;
 
+    impl TimeSource for FixedClock {
+        fn get_timestamp(&self) -> Timestamp {
+            // The crate counts years from 1970 and indexes months and days from zero: 56 is 2026.
+            Timestamp {
+                year_since_1970: 56,
+                zero_indexed_month: 0,
+                zero_indexed_day: 0,
+                hours: 0,
+                minutes: 0,
+                seconds: 0,
+            }
+        }
+    }
+
+    let _sd_mounted = {
+        // The card's own SPI bus. These are the TF socket's pins, not the panel's.
+        let card_spi = Spi::new(
+            peripherals.SPI3,
+            // 400 kHz: the clock a card is specified to initialise at, and what it is read at here.
+            SpiConfig::default().with_frequency(Rate::from_khz(400)),
+        )
+        .expect("SPI configuration")
+            .with_sck(peripherals.GPIO18)
+            .with_mosi(peripherals.GPIO23)
+            .with_miso(peripherals.GPIO19);
+
+        let card_cs = Output::new(peripherals.GPIO5, Level::Low, OutputConfig::default());
+        let card = ExclusiveDevice::new(card_spi, card_cs, Delay::new()).expect("card chip select");
+
+        log::info!(
+            "sd: mounting (cs GPIO5, sclk GPIO18, mosi GPIO23, miso GPIO19)"
+        );
+
+        let card = SdCard::new(card, Delay::new());
+        match card.num_bytes() {
+            Ok(bytes) => log::info!("sd: card reports {} bytes ({} MiB)", bytes, bytes / (1024 * 1024)),
+            Err(error) => log::error!("sd: the card did not answer ({:?})", error),
+        }
+
+        let mut volumes = VolumeManager::new(card, FixedClock);
+        let mut mounted = false;
+
+        match volumes.open_raw_volume(VolumeIdx(0)) {
+            Ok(volume) => {
+                log::info!("sd: volume 0 opened");
+                match volumes.open_root_dir(volume) {
+                    Ok(directory) => {
+                        // Walking the directory walks the FAT, so this fails on a damaged filesystem rather
+                        // than quietly reporting a size.
+                        log::info!("sd: root directory opened - the filesystem is readable");
+                        // The callback returns unit in this version of the crate, not a Result: it is
+                        // called for its side effect and the iterator's own error is what comes back.
+                        match volumes.iterate_dir(directory, |entry| {
+                            log::info!("sd:   {} ({} bytes)", entry.name, entry.size);
+                        }) {
+                            Ok(()) => log::info!("sd: root directory listed"),
+                            Err(error) => log::error!("sd: listing failed ({:?})", error),
+                        }
+                        let _ = volumes.close_dir(directory);
+                        mounted = true;
+                    }
+                    Err(error) => log::error!("sd: no root directory ({:?})", error),
+                }
+            }
+            Err(error) => log::error!(
+                "sd: no volume 0 - is the card inserted and FAT formatted? ({:?})",
+                error
+            ),
+        }
+
+        mounted
+    };
     // Backlight first, and note the level: this board switches the transistor on with a HIGH level.
     let _backlight = Output::new(
         peripherals.GPIO27,
