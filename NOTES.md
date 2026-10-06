@@ -2578,3 +2578,66 @@ touch. Everything downstream of "the axes move" is unproven, which is stated in 
 in the test file's header rather than left for someone to discover.
 
 Suite: **616 passed, 0 skipped**.
+
+---
+
+## 58. The touch screen works: the fault was a missing gap between the command byte and the data (2026-10-06)
+
+§57 concluded, wrongly, that this was a hardware problem. It was firmware, and the measurement that proved it was
+a **pin sweep by bit-banging**:
+
+```
+miso 12  cs25 x=0000 y=0000   cs33 x=F87F y=F816     idle
+miso 12  cs25 x=0000 y=0000   cs33 x=6031 y=984D     finger pressed
+miso 12  cs25 x=0000 y=0000   cs33 x=6842 y=0044     finger pressed
+miso 32  ...                  cs33 x=FFFF y=FFFF     a constant, not data
+```
+
+So the controller is on **CS 33** with its data on **GPIO12** — the pins the board data always had — and it answers
+to touch. (The module-pin reading agrees: module pin 9 is GPIO33 and pin 4 is GPIO36.) An earlier hand tracing
+suggested CS 25 / IRQ 39; the sweep selected nothing on 25 and read flat on 39, so the measurement stood.
+
+**What was actually wrong: `transfer_in_place` clocked the command byte and the two data bytes back to back.**
+The XPT2046 needs its conversion time between them. Read that way every channel came back at mid-scale
+(2048/2055) and never moved, at every clock from 2 MHz down to 100 kHz — the rate sweep, with the panel live,
+held nothing else constant:
+
+```
+rate 2000 kHz  a=2048 b=2054      rate  250 kHz  a=2048 b=2054
+rate 1000 kHz  a=2048 b=2054      rate  150 kHz  a=2048 b=2054
+rate  500 kHz  a=2048 b=2054      rate  100 kHz  a=2048 b=2054
+```
+
+The panel was innocent too: a before/after test around `Builder::init` read the same mid-scale values either side,
+so this was never about the shared bus being left in a bad state.
+
+The fix is one transaction per frame with the conversion time explicit between the two halves, which is what
+`Operation::DelayNs` is for — and it also explains why the bit-banged probe worked while the peripheral did not:
+software toggling of SCLK leaves gaping holes between bytes, which is exactly what the controller wanted.
+
+```rust
+device.transaction(&mut [
+    Operation::Write(&[command]),
+    Operation::DelayNs(TOUCH_SETTLE_NS),
+    Operation::Read(&mut frame),
+])
+```
+
+The settle time is **20 µs** rather than the 2 µs the conversion nominally takes: at 2 µs the first sample after
+a channel change still came back as zero. `touch_axis` also consumes two frames before it starts averaging —
+the first is the previous channel's leftover, the second the same channel's earlier conversion — which is what
+stops the average being dragged towards zero.
+
+**Confirmed on the board.** The four-corner calibration completed, and it is a real measurement rather than a
+guess (these are the numbers that came back from this panel):
+
+```
+calibration: raw axis0 1826..298 and axis1 1875..202 over 320x480
+touch: a=1846 b=202 -> pixel (21, 456)
+```
+
+Idle, channel A sits at 0 and channel B around 1696; a touch pulls them to positions in the thousands. The
+panel shows the live readout — raw pair and mapped x/y in the middle of the screen, refreshed while the finger
+moves — which is what was asked for, and the same numbers go to the log.
+
+Suite: **616 passed, 0 skipped**.

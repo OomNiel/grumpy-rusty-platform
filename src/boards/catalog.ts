@@ -263,12 +263,15 @@ export const BOARDS: BoardProfile[] = [
                 spiHz: 24_000_000,
             },
         ],
-        // Traced from the board to the module by hand (2026-10-05) after the published pinout turned out
-        // to be wrong for this unit: the community definition and two independent R-variant
-        // configurations all say CS 33 / IRQ 36, but on this board the chip select goes to GPIO25 and
-        // PENIRQ to GPIO39. With CS 33 the controller was never selected and every read came back from a
-        // floating MISO line -- stable mid-scale values that never moved for a touch (NOTES 57).
-        touch: { controller: 'XPT2046', cs: 25, irq: 39, spiHz: 2_000_000 },
+        // CS 33 / IRQ 36 / MISO 12 are what the community board definition and two independent R-variant
+        // configurations say, and a bit-banged sweep of every plausible pin on this board confirmed it:
+        // with CS 33 and MISO 12 the controller answers and its values move for a touch (idle 0xF87F,
+        // 0x6031 under a finger), while CS 25 and GPIO39 selected nothing and read flat. A hand tracing
+        // suggested 25/39; the measurement disagreed, so the measurement wins (NOTES 58).
+        //
+        // The clock is 1 MHz rather than the controller's 2 MHz maximum: at 2 MHz this board's shared
+        // MISO line returns zeros for every frame, and the same reads are clean at half the rate.
+        touch: { controller: 'XPT2046', cs: 33, irq: 36, spiHz: 1_000_000 },
         // Only three TF nets exist on the schematic (CS/CLK/MOSI) and the card shares the
         // panel's MISO, which is what the board definition implies as well.
         sd: { cs: 5, spi: { sclk: 18, mosi: 19, miso: 12 } },

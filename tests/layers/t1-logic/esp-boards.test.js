@@ -137,12 +137,12 @@ test('the CYD panel matches the board schematic', () => {
 test('the CYD board carries its touch and microSD wiring', () => {
     const board = espBoard('sunton-3248s035r');
     equal(board.touch.controller, 'XPT2046');
-    // Traced by hand from the chip to the module (2026-10-05). The published pinouts -- the community
-    // board definition and two independent configurations for this family -- all say CS 33 / IRQ 36, and
-    // with CS 33 the controller was never selected: the firmware read a floating MISO line and saw the
-    // same mid-scale values whether the glass was touched or not (NOTES 57/58).
-    equal(board.touch.cs, 25, 'the chip select the board actually wires');
-    equal(board.touch.irq, 39, 'PENIRQ, on an input-only pin');
+    // Confirmed by a bit-banged sweep of every candidate pin on this board: CS 33 and MISO 12 are the
+    // pair that answers, and its values move for a touch. A hand tracing had suggested CS 25 / IRQ 39;
+    // the measurement said 33/36, and the measurement wins (NOTES 58).
+    equal(board.touch.cs, 33, 'the chip select the controller actually answers on');
+    equal(board.touch.irq, 36, 'and the line that idles high, which is what PENIRQ does');
+    equal(board.touch.spiHz, 1_000_000, 'half the specified maximum: 2 MHz reads zeros on this board');
     equal(board.sd.cs, 5);
     equal(board.sd.spi.sclk, 18);
     equal(board.sd.spi.mosi, 19);
