@@ -607,8 +607,13 @@ test('the touch template asks for the four corners and says what it measured', (
     // graphics test screen back afterwards.
     contains(main, 'Touch the crosshair in the bright block');
     contains(main, 'Touch: numbers below, and the log');
-    contains(main, 'let mut calibrated = false;');
+    // The calibration starts from whatever the flash sector holds, so a calibrated panel never sees this
+    // screen again; the fourth corner ends it either way.
+    contains(main, 'let mut calibrated = stored.is_some();');
     contains(main, 'calibrated = true;', 'the fourth corner ends the calibration');
+    contains(main, 'FlashStorage::new(peripherals.FLASH)', 'and the values are read back at boot');
+    contains(main, 'flash.write(CALIBRATION_OFFSET, &bytes)', 'and written once the fourth corner lands');
+    contains(main, 'const CALIBRATION_OFFSET: u32 = 0x3F_F000', 'in the sector the application partition leaves free');
     contains(main, 'if !calibrated {', 'the calibration screen is the first thing shown');
     // And the live readout the panel shows while a finger is down.
     contains(main, 'raw a={} b={}', 'the raw pair');

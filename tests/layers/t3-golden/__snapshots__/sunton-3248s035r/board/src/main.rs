@@ -19,6 +19,7 @@ use embedded_hal_bus::spi::RefCellDevice;
 use esp_hal::clock::CpuClock;
 use esp_hal::delay::Delay;
 use esp_hal::gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull};
+use esp_storage::FlashStorage;
 use esp_hal::analog::adc::{Adc, AdcConfig, Attenuation};
 use esp_hal::analog::dac::Dac;
 use esp_hal::spi::master::{Config as SpiConfig, Spi};
@@ -219,6 +220,60 @@ async fn main(_spawner: Spawner) -> ! {
     let mut speaker = Dac::new(peripherals.DAC2, peripherals.GPIO26);
     log::info!("board hardware: RGB LED, LDR on GPIO34, speaker on GPIO26");
 
+    // The calibration lives in the last 4 KB sector of the application partition. The app image is roughly
+    // 120 KB of a 4 MB partition, so that sector is ours -- and it is not the NVS partition the bootloader
+    // may read. esp-storage wraps every flash operation in a critical section (its default feature), which
+    // is what makes this safe with interrupts running.
+    const CALIBRATION_OFFSET: u32 = 0x3F_F000;
+    const CALIBRATION_MAGIC: u32 = 0x5443_5831;
+
+    fn calibration_bytes(
+        axis: usize,
+        x_from: i32,
+        x_to: i32,
+        y_from: i32,
+        y_to: i32,
+    ) -> [u8; 24] {
+        let mut bytes = [0u8; 24];
+        bytes[0..4].copy_from_slice(&CALIBRATION_MAGIC.to_le_bytes());
+        bytes[4] = axis as u8;
+        bytes[5..9].copy_from_slice(&x_from.to_le_bytes());
+        bytes[9..13].copy_from_slice(&x_to.to_le_bytes());
+        bytes[13..17].copy_from_slice(&y_from.to_le_bytes());
+        bytes[17..21].copy_from_slice(&y_to.to_le_bytes());
+        // A plain sum, so a half-written or erased sector is not mistaken for a calibration.
+        let mut sum = 0u8;
+        for byte in &bytes[0..21] {
+            sum = sum.wrapping_add(*byte);
+        }
+        bytes[21] = sum;
+        bytes
+    }
+
+    // Returns the stored calibration, or nothing when the sector has never been written (an erased sector
+    // reads as 0xFF, which fails both the magic and the checksum).
+    fn calibration_load(flash: &mut FlashStorage<'_>) -> Option<(usize, i32, i32, i32, i32)> {
+        let mut bytes = [0u8; 24];
+        flash.read(CALIBRATION_OFFSET, &mut bytes).ok()?;
+        if u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) != CALIBRATION_MAGIC {
+            return None;
+        }
+        let mut sum = 0u8;
+        for byte in &bytes[0..21] {
+            sum = sum.wrapping_add(*byte);
+        }
+        if sum != bytes[21] {
+            return None;
+        }
+        let word = |at: usize| -> i32 {
+            i32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
+        };
+        Some((usize::from(bytes[4]), word(5), word(9), word(13), word(17)))
+    }
+
+    // esp_storage's Flash is the FLASH peripheral itself, so it is handed over rather than constructed.
+    let mut flash = FlashStorage::new(peripherals.FLASH);
+
     // The idle baseline, taken before anything is drawn: this is what the axes read with nothing on the
     // glass, and a touch is judged by how far they move from it.
     bus.borrow_mut().apply_config(&touch_clock()).expect("touch clock");
@@ -228,6 +283,23 @@ async fn main(_spawner: Spawner) -> ! {
     bus.borrow_mut().apply_config(&panel_clock()).expect("panel clock");
     let (idle_a, idle_b) = (i32::from(idle_a), i32::from(idle_b));
     log::info!("touch: idle baseline a={} b={}", idle_a, idle_b);
+
+    // A stored calibration is used straight away; touching the glass during the first two seconds throws it
+    // away and asks for the corners again, which is the only recalibration gesture this firmware offers.
+    let stored = calibration_load(&mut flash);
+    // Two arms rather than a format_args! inside one: the numbers are printed so they can be read back
+    // without a debugger, and the temporary the one-argument form would need does not outlive the log call.
+    match stored {
+        Some((axis, x_from, x_to, y_from, y_to)) => log::info!(
+            "calibration: loaded from flash - axis{} {}..{} {}..{}",
+            axis,
+            x_from,
+            x_to,
+            y_from,
+            y_to
+        ),
+        None => log::info!("calibration: none stored"),
+    }
 
     // The four corners the screen asks for, in the order it asks.
     const MARGIN: i32 = 24;
@@ -246,11 +318,13 @@ async fn main(_spawner: Spawner) -> ! {
     let corners = ["top-left", "top-right", "bottom-right", "bottom-left"];
     let mut measured = [[0u16; 2]; 4];
     let mut corner: usize = 0;
-    let mut raw_x_axis: usize = 0;
-    let mut x_from: i32 = 0;
-    let mut x_to: i32 = 0;
-    let mut y_from: i32 = 0;
-    let mut y_to: i32 = 0;
+    // Initialised from the stored calibration when there is one, so a calibrated panel boots straight into
+    // the graphics test screen and never shows the calibration screen again.
+    let mut raw_x_axis: usize = stored.map(|(axis, _, _, _, _)| axis).unwrap_or(0);
+    let mut x_from: i32 = stored.map(|(_, x_from, _, _, _)| x_from).unwrap_or(0);
+    let mut x_to: i32 = stored.map(|(_, _, x_to, _, _)| x_to).unwrap_or(0);
+    let mut y_from: i32 = stored.map(|(_, _, _, y_from, _)| y_from).unwrap_or(0);
+    let mut y_to: i32 = stored.map(|(_, _, _, _, y_to)| y_to).unwrap_or(0);
     let mut point = (WIDTH / 2, HEIGHT / 2);
     let mut raw_a: i32 = idle_a;
     let mut raw_b: i32 = idle_b;
@@ -261,9 +335,9 @@ async fn main(_spawner: Spawner) -> ! {
     let mut redraw_screen = true;
     let mut redraw_box = true;
     let mut ticks: u32 = 0;
-    // Whether the four corners have been measured. Until they have, the panel shows the calibration
-    // screen; afterwards it shows the graphics test with the live readout on top.
-    let mut calibrated = false;
+    // Whether the four corners have been measured -- by this run or by a previous one, which is what the
+    // flash sector is for. Until they have, the panel shows the calibration screen.
+    let mut calibrated = stored.is_some();
 
     loop {
         if redraw_screen {
@@ -456,6 +530,16 @@ async fn main(_spawner: Spawner) -> ! {
                         log::info!(
                             "calibration: raw axis{} {}..{} and axis{} {}..{} over {}x{}",
                             raw_x_axis, x_from, x_to, raw_y_axis, y_from, y_to, WIDTH, HEIGHT
+                        );
+                        // Written once, and only after a whole set of corners: a half-set is not a
+                        // calibration, so nothing is stored until the fourth one lands.
+                        let bytes = calibration_bytes(raw_x_axis, x_from, x_to, y_from, y_to);
+                        log::info!(
+                            "calibration: {}",
+                            match flash.write(CALIBRATION_OFFSET, &bytes) {
+                                Ok(()) => "stored in flash",
+                                Err(_) => "NOT stored (flash write failed)",
+                            }
                         );
                     }
                     redraw_screen = true;
