@@ -234,8 +234,13 @@ export const BOARDS: BoardProfile[] = [
         kind: 'esp',
         id: 'sunton-3248s035r',
         options: [],
-        name: 'Sunton ESP32-3248S035R (3.5" CYD)',
-        vendor: 'Sunton',
+        // Not a Sunton board. The unit in hand is a clone sold on TEMU with "TZT", "3.5 TFT" and "60721"
+        // markings, and the only text on the PCB is "ESP32-035". The same board is documented, pin by pin,
+        // by the ESP32-035 project (github.com/littleCdev/ESP32-035), which is where the wiring below is
+        // confirmed from. No original manufacturer was identified, so the board is named after the only
+        // thing it calls itself (2026-10-06).
+        name: 'ESP32-035 LCD Panel',
+        vendor: 'unidentified (TZT clone, sold as ESP32-035)',
         family: 'ESP32',
         target: 'xtensa-esp32-none-elf',
         espChip: 'esp32',
@@ -274,8 +279,11 @@ export const BOARDS: BoardProfile[] = [
         touch: { controller: 'XPT2046', cs: 33, irq: 36, spiHz: 1_000_000 },
         // Only three TF nets exist on the schematic (CS/CLK/MOSI) and the card shares the
         // panel's MISO, which is what the board definition implies as well.
-        sd: { cs: 5, spi: { sclk: 18, mosi: 19, miso: 12 } },
-        notes: 'ESP32-WROOM with a 3.5" 320x480 ST7796 panel, resistive touch and a microSD socket. The backlight pin drives a transistor and is active high.',
+        // TF card, from the ESP32-035 hardware notes: CD/DAT3 = CS, CLK = 18, CMD = 23 and DAT0 = 19. The
+        // earlier community definition had MOSI on 19 and the panel's MISO shared on 12, which is wrong:
+        // in SPI mode CMD is the data *out* and DAT0 the data *in* (2026-10-06).
+        sd: { cs: 5, spi: { sclk: 18, mosi: 23, miso: 19 } },
+        notes: 'A 3.5" 320x480 ST7796 panel with resistive XPT2046 touch and a TF card socket, sold as ESP32-035 and as a \'cheap yellow display\'. The XPT2046 shares the panel SPI bus: CS 33, PENIRQ 36, DOUT 12, DIN 13, DCLK 14, and its BUSY pin is not wired - which is why the firmware waits a fixed conversion time instead of polling it. Still to be driven by a template: the TF card, the RGB LED (16 blue / 4 red / 17 green), the LDR and the speaker connector.\n\nThe USB-C connector lacks the 5k1 CC pulldowns, so this board needs a USB-C to USB-A cable or adapter.'
     },
 ];
 

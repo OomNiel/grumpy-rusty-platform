@@ -145,8 +145,10 @@ test('the CYD board carries its touch and microSD wiring', () => {
     equal(board.touch.spiHz, 1_000_000, 'half the specified maximum: 2 MHz reads zeros on this board');
     equal(board.sd.cs, 5);
     equal(board.sd.spi.sclk, 18);
-    equal(board.sd.spi.mosi, 19);
-    equal(board.sd.spi.miso, 12);
+    // CMD is the card's data *in* and DAT0 its data out, so in SPI mode MOSI is CMD (23) and MISO is
+    // DAT0 (19). The community definition had these the other way round (ESP32-035 hardware notes).
+    equal(board.sd.spi.mosi, 23);
+    equal(board.sd.spi.miso, 19);
 });
 
 test('every panel names a controller that mipidsi actually ships', () => {
@@ -474,7 +476,9 @@ test('the README explains the missing debugger and the first-time setup', () => 
     contains(readme, 'no breakpoints', 'there is no SWD on this chip: the README has to say so');
     contains(readme, 'Flash & Monitor', 'and offer what the Debug button does instead');
     contains(readme, 'espup install');
-    contains(readme, 'microSD', "the board's own features belong in its notes");
+    contains(readme, 'TF card', 'the board\'s own features belong in its notes');
+    contains(readme, 'XPT2046', 'including the touch controller it shares the bus with');
+    contains(readme, 'BUSY', 'and that its BUSY pin is not wired, which is why the driver waits');
 });
 
 test('an ESP README only lists pins the generated code drives', () => {
@@ -487,8 +491,9 @@ test('an ESP README only lists pins the generated code drives', () => {
 });
 
 test('no board name reaches generated Rust code unescaped', () => {
-    // The CYD is called `Sunton ESP32-3248S035R (3.5" CYD)`, and that quote broke the
-    // generated log line until the generator started escaping it.
+    // The board used to be called `Sunton ESP32-3248S035R (3.5" CYD)`, and that quote broke the generated
+    // log line until the generator started escaping it. No shipped board name has a quote any more, so this
+    // walks whatever the catalog does say rather than relying on one of them being adversarial.
     for (const board of BOARDS) {
         for (const info of templatesFor(board)) {
             for (const file of generateProjectFiles({ board, projectName: 'x', template: info.id })) {
