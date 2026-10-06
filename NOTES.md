@@ -2706,3 +2706,30 @@ encode. The rest have their pins.
   corner blocks, the four touches recorded and stored, then the screen returning to the graphics test screen.
 
 Suite: **616 passed, 0 skipped**.
+
+---
+
+## 60. The controls say what they build (2026-10-06)
+
+*"Add a 'Build for Debug' and 'Build for Release' buttons to the Controls and remove the current Debug one."*
+
+The single **Build** row and the **Debug** row are gone from the controls; in their place:
+
+```
+$(tools)  Build for Debug     cargo build
+$(rocket) Build for Release   cargo build --release
+```
+
+Both rows and the status bar keep the same number of items as before, and the two commands are the honest pair
+of what `cargo` can build: the debug profile is the one a probe-rs session can step through, release is what a
+finished device runs (and what Flash writes for an ESP board, per NOTES §54).
+
+**`rustyPlatform.debug` is still a command.** Removing a *row* is not removing the feature: on an ESP board Debug
+is the only button that flashes and follows the log in one terminal, and it stays in the palette for that. What
+went with the row is the board-aware wording for it — the fact that Xtensa has no breakpoints is already in the
+generated README and in the message the command itself shows.
+
+`rustyPlatform.build` also stays registered for the palette and for anyone who bound it in a keybinding; the two
+new commands are what the controls run.
+
+Suite: **616 passed, 0 skipped**.

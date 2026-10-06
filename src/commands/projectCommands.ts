@@ -360,9 +360,21 @@ export function registerProjectCommands(
     }
 
     return [
+        // The two build controls. `rustyPlatform.build` stays registered for the palette and for anyone
+        // with it in a keybinding; the controls run these two.
         vscode.commands.registerCommand('rustyPlatform.build', () =>
             withProject(({ folder }) => {
                 runInTerminal('Rusty: build', `${defmtPrefix()}cargo build`, folder);
+            }),
+        ),
+        vscode.commands.registerCommand('rustyPlatform.buildDebug', () =>
+            withProject(({ folder }) => {
+                runInTerminal('Rusty: build', `${defmtPrefix()}cargo build`, folder);
+            }),
+        ),
+        vscode.commands.registerCommand('rustyPlatform.buildRelease', () =>
+            withProject(({ folder }) => {
+                runInTerminal('Rusty: build', `${defmtPrefix()}cargo build --release`, folder);
             }),
         ),
 

@@ -24,9 +24,9 @@ const {
 /** The order the status bar has always shown, health first. */
 const ORDER = [
     'rustyPlatform.checkToolchain',
-    'rustyPlatform.build',
+    'rustyPlatform.buildDebug',
+    'rustyPlatform.buildRelease',
     'rustyPlatform.flash',
-    'rustyPlatform.debug',
     'rustyPlatform.debugStop',
     'rustyPlatform.monitor',
     'rustyPlatform.clean',
@@ -76,7 +76,7 @@ test('every control is a declared command with a plain codicon name', () => {
     }
 
     equal(iconText('tools', 'Build'), '$(tools) Build');
-    equal(statusBarText(CONTROLS[1]), '$(tools) Build', 'the status bar caption comes from the same fields');
+    equal(statusBarText(CONTROLS[1]), '$(tools) Build for Debug', 'the status bar caption comes from the same fields');
 });
 
 test('Stop is the only control that comes and goes', () => {
@@ -221,16 +221,17 @@ test('the rows that name a route are worded for the board in front of the user',
     contains(find(esp, 'rustyPlatform.monitor').tooltip, 'espflash monitor');
     notContains(find(esp, 'rustyPlatform.monitor').tooltip, 'probe-rs attach');
 
-    contains(find(rp, 'rustyPlatform.debug').tooltip, 'probe-rs');
-    contains(find(esp, 'rustyPlatform.debug').tooltip, 'JTAG', 'an ESP32 gets no breakpoints and is told so');
-    notContains(find(esp, 'rustyPlatform.debug').tooltip, 'probe-rs debug session');
+    // Debug is not a control row any more -- the two build buttons took its place -- so the board-aware
+    // wording that mattered there (no breakpoints on Xtensa) now lives in the generated README and the
+    // Debug command's own message.
+    ok(!find(esp, 'rustyPlatform.debug'), 'Debug is not a control row');
 
     contains(find(rp, 'rustyPlatform.flash').tooltip, 'probe');
     contains(find(esp, 'rustyPlatform.flash').tooltip, 'espflash');
     contains(find(esp, 'rustyPlatform.flash').tooltip, 'flashProfile', 'the profile setting is named where it matters');
 
     // The rows that are not about a route must not be rewritten at all.
-    for (const id of ['rustyPlatform.build', 'rustyPlatform.clean', 'rustyPlatform.flashDebug', 'rustyPlatform.flashRelease']) {
+    for (const id of ['rustyPlatform.buildDebug', 'rustyPlatform.buildRelease', 'rustyPlatform.clean', 'rustyPlatform.flashDebug', 'rustyPlatform.flashRelease']) {
         equal(find(esp, id).detail, find(rp, id).detail, `${id} is board-neutral`);
         equal(find(esp, id).tooltip, find(rp, id).tooltip, `${id} is board-neutral`);
     }
