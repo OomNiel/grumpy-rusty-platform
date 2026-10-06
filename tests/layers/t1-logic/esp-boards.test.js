@@ -588,8 +588,13 @@ test('the touch template asks for the four corners and says what it measured', (
     const main = filesFor(espBoard('sunton-3248s035r'), 'touch').get('src/main.rs');
 
     contains(main, 'let corners = ["top-left", "top-right", "bottom-right", "bottom-left"];');
-    contains(main, 'Touch the red square:');
-    contains(main, 'Touch anywhere. The numbers below follow');
+    // The calibration screen: a red block per corner with a crosshair in it, one lit at a time, and the
+    // graphics test screen back afterwards.
+    contains(main, 'Touch the crosshair in the bright block');
+    contains(main, 'Touch: numbers below, and the log');
+    contains(main, 'let mut calibrated = false;');
+    contains(main, 'calibrated = true;', 'the fourth corner ends the calibration');
+    contains(main, 'if !calibrated {', 'the calibration screen is the first thing shown');
     // And the live readout the panel shows while a finger is down.
     contains(main, 'raw a={} b={}', 'the raw pair');
     contains(main, 'x={} y={}', 'the mapped pair');
