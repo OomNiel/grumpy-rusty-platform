@@ -145,8 +145,10 @@ test('the CYD board carries its touch and microSD wiring', () => {
     equal(board.touch.spiHz, 1_000_000, 'half the specified maximum: 2 MHz reads zeros on this board');
     equal(board.sd.cs, 5);
     equal(board.sd.spi.sclk, 18);
-    equal(board.sd.spi.mosi, 19);
-    equal(board.sd.spi.miso, 12);
+    // CMD is the card's data *in* and DAT0 its data out, so in SPI mode MOSI is CMD (23) and MISO is
+    // DAT0 (19). The community definition had these the other way round (ESP32-035 hardware notes).
+    equal(board.sd.spi.mosi, 23);
+    equal(board.sd.spi.miso, 19);
 });
 
 test('every panel names a controller that mipidsi actually ships', () => {
@@ -474,7 +476,8 @@ test('the README explains the missing debugger and the first-time setup', () => 
     contains(readme, 'no breakpoints', 'there is no SWD on this chip: the README has to say so');
     contains(readme, 'Flash & Monitor', 'and offer what the Debug button does instead');
     contains(readme, 'espup install');
-    contains(readme, 'microSD', "the board's own features belong in its notes");
+        contains(main, 'TF card', 'the board\'s own features belong in its notes');
+    contains(main, 'XPT2046', 'including the touch controller it shares the bus with');
 });
 
 test('an ESP README only lists pins the generated code drives', () => {

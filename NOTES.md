@@ -2641,3 +2641,68 @@ panel shows the live readout — raw pair and mapped x/y in the middle of the sc
 moves — which is what was asked for, and the same numbers go to the log.
 
 Suite: **616 passed, 0 skipped**.
+
+---
+
+## 59. The board is not a Sunton, and the reference repo settles the wiring (2026-10-06)
+
+*"The board we are working on is not a 'Sunton' original CYD board. It is a clone I got from TEMU with markings:
+TZT, 3.5 TFT, 60721. The board's only text is: ESP32-035."*
+
+**Renamed to `ESP32-035 LCD Panel`**, vendor `unidentified (TZT clone, sold as ESP32-035)`. The board id stays
+`sunton-3248s035r` for now — it is what the snapshot directory names and the `defaultBoard` setting use — and
+renaming that is a separate, mechanical change rather than something to smuggle into this one.
+
+**The wiring is confirmed, and it agrees with what the measurements said.** The
+[ESP32-035 project](https://github.com/littleCdev/ESP32-035) documents this exact board pin by pin:
+
+| | confirmed |
+|---|---|
+| XPT2046 | CS 33, PENIRQ 36, DOUT 12, DIN 13, DCLK 14 — shared with the panel's SPI bus |
+| **BUSY** | **not connected** |
+| Panel | CS 15, DC 2, SCLK 14, MOSI 13, MISO 12, reset 3 (enable, tied to +3V), backlight through a transistor on 27 |
+| TF card | CS 5, CLK 18, CMD 23, DAT0 19 |
+| RGB LED | blue 16, red 4, green 17 |
+
+Two things follow. First, **the touch pins we settled on are right** (33/36), which the bit-banged sweep had
+already shown and a hand tracing had contradicted. Second, **the BUSY pin really is unwired** — so waiting a fixed
+conversion time (NOTES §58) is not a workaround for an unused signal, it is the only option this board offers.
+Had BUSY been wired, the driver would poll it instead.
+
+**A pin error this corrected: the TF card.** The community definition had MOSI on 19 and the panel's MISO shared
+on 12. In SPI mode the card's CMD is its data *in* and DAT0 its data *out*, so MOSI is **23** and MISO is **19**.
+The catalog now says so, with the reason.
+
+**One more thing the reference explains**: this board's USB-C connector has no 5k1 CC pulldowns, so it only works
+with a USB-C-to-USB-A cable or an adapter. Worth knowing before blaming a cable — and worth a line in the
+generated README.
+
+### The template the user wants for this board
+
+*"My goal with this extension is to create templates for the various boards that the user can select from… For
+this board, I need a template that will include all the libraries to enable functionality for…"*
+
+| | feature | state |
+|---|---|---|
+| a | LCD display | **done** — the `display` template, verified on the glass |
+| b | touch control | **works** (NOTES §58); the calibration screen is the next piece of work |
+| c | TF card | not started — pins now correct (5/23/18/19) |
+| d | Wi-Fi and Bluetooth | not started — `wifi` is not offered for ESP boards at all yet |
+| e | RGB onboard LED | not started — needs a new LED kind in the board data (three pins), not just one |
+| f | LDR onboard sensor | not started — the ADC pin is still to be identified on this clone |
+| g | sound on the speaker connector | not started — the amplifier's data pin is still to be identified |
+
+Two of those (f and g) cannot be written from documentation alone: this clone's LDR and speaker amplifier are not
+in the reference repo's tables, so they need the same treatment the touch pins got — trace or measure, then
+encode. The rest have their pins.
+
+### Also asked, and not yet done
+
+- **Controls: "Add a 'Build for Debug' and 'Build for Release' buttons and remove the current Debug one."** Not
+  started. It is a contained change — two commands that run `cargo build` and `cargo build --release`, the
+  `Debug` row out of the control list, and the tests that pin that list updated — and the `Debug` *command* should
+  stay in the palette, since flash-and-monitor is genuinely useful on a chip with no breakpoints.
+- **The touch calibration routine**, for when a user enables touch: a calibration screen with crosshairs in red
+  corner blocks, the four touches recorded and stored, then the screen returning to the graphics test screen.
+
+Suite: **616 passed, 0 skipped**.
