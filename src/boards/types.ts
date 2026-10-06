@@ -146,6 +146,19 @@ export interface EspDisplay {
     panelChoice?: string;
 }
 
+/**
+ * An on-board light sensor.
+ *
+ * Its own type rather than a bare pin because an LDR is a divider into an ADC, and the *pin* is what decides
+ * which ADC channel and whether it can be read at all -- GPIO34-39 on an ESP32 are input-only with no
+ * internal pull-ups, which is exactly right for a divider and useless for a digital input.
+ */
+export interface EspLdr {
+    pin: string;
+    /** One line for the generated README, e.g. what it is wired against. */
+    note?: string;
+}
+
 /** Resistive touch controller sharing the panel's SPI bus. */
 export interface EspTouch {
     controller: 'XPT2046';
@@ -216,6 +229,8 @@ export interface EspBoardProfile extends BoardProfileBase {
     displays: EspDisplay[];
     touch?: EspTouch;
     sd?: EspSdCard;
+    /** On-board light sensor, when the board has one. */
+    ldr?: EspLdr;
 }
 
 export type BoardProfile = RpBoardProfile | EspBoardProfile;

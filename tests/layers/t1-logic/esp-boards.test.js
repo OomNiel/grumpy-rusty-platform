@@ -143,6 +143,9 @@ test('the CYD board carries its touch and microSD wiring', () => {
     equal(board.touch.cs, 33, 'the chip select the controller actually answers on');
     equal(board.touch.irq, 36, 'and the line that idles high, which is what PENIRQ does');
     equal(board.touch.spiHz, 1_000_000, 'half the specified maximum: 2 MHz reads zeros on this board');
+    // The LDR, traced to module pin 6 = GPIO34 = ADC1 channel 6. Recorded before it can be read: the pin is
+    // the thing that decides which ADC channel it is, and no template drives it yet.
+    equal(board.ldr.pin, '34', 'the light sensor is on an ADC-capable, input-only pin');
     equal(board.sd.cs, 5);
     equal(board.sd.spi.sclk, 18);
     // CMD is the card's data *in* and DAT0 its data out, so in SPI mode MOSI is CMD (23) and MISO is
