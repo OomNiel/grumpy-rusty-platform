@@ -279,6 +279,13 @@ export const BOARDS: BoardProfile[] = [
         // The clock is 1 MHz rather than the controller's 2 MHz maximum: at 2 MHz this board's shared
         // MISO line returns zeros for every frame, and the same reads are clean at half the rate.
         touch: { controller: 'XPT2046', cs: 33, irq: 36, spiHz: 1_000_000 },
+        // Module pin 6, traced by hand: GPIO34, which is ADC1 channel 6. GPIO34-39 are input-only and have
+        // no internal pull-ups, so the LDR must be one half of a divider (against 3.3V or GND) rather than
+        // relying on a pull -- which is how these boards wire it. Reading it needs the ADC, not a GPIO.
+        ldr: {
+            pin: '34',
+            note: 'the LDR is half of a divider on ADC1 channel 6; brighter light, lower resistance',
+        },
         // Only three TF nets exist on the schematic (CS/CLK/MOSI) and the card shares the
         // panel's MISO, which is what the board definition implies as well.
         // TF card, from the ESP32-035 hardware notes: CD/DAT3 = CS, CLK = 18, CMD = 23 and DAT0 = 19. The

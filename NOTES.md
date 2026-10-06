@@ -2778,3 +2778,22 @@ same class of mistake as the generator's backtick trap — a generated template 
 so its own types must not be called after them.
 
 Suite: **616 passed, 0 skipped**.
+
+---
+
+## 62. The LDR is on GPIO34 (2026-10-06)
+
+*"LDR routed to pin 6 of the esp module."* Module pin 6 is **GPIO34**, which is ADC1 channel 6 — and GPIO34-39
+are input-only with **no internal pull-ups**, which is exactly what a light-dependent resistor wants: it has to
+be one half of a divider (against 3.3V or GND) rather than read as a digital input with a pull.
+
+So the pin is recorded now, as `ldr: { pin: '34' }` on the board, together with the reason it is worth a type of
+its own rather than a bare number: the pin decides *which ADC channel* the reading comes from, and whether it can
+be read at all. **Reading it is not done**: it needs the ADC API rather than a GPIO, and I did not have the
+remaining budget to pin down where esp-hal 1.2 exposes it (`esp_hal::adc` is not in the module list I could
+grep, so it may be behind the `unstable` feature or named differently in this release). That verification is the
+first step of the template that uses it, not something to guess at from memory.
+
+That leaves **one** pin on the user's feature list still unidentified: the **speaker connector's** data pin.
+
+Suite: **616 passed, 0 skipped**.
