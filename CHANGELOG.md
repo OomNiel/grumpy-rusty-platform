@@ -11,6 +11,34 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.29] - 2026-10-06
+
+### Added
+
+- **A `Board test (everything)` template for the ESP32-035** — the board as one project rather than one project
+  per peripheral, which is how the user wants to select features:
+  - the panel, with the graphics test screen once calibration is done;
+  - **touch**, with the four-corner calibration screen;
+  - the **RGB LED as a status light** — red while uncalibrated, green while a finger is down, blue when idle
+    and calibrated, so it is a diagnostic rather than decoration;
+  - the **light sensor** read once a second and logged with its polarity ("brighter light reads lower");
+  - a **beep on the speaker** every time a calibration corner is recorded, which demonstrates the amplifier as
+    part of the calibration rather than as a separate demo.
+
+  It is the touch template plus the rest of the board's hardware — `espTouchBody` takes an `includeHardware`
+  flag and emits the LED, ADC and DAC code from the board data — so there is no second copy of the touch half
+  to keep in step. A test asserts the touch template stays touch-only.
+
+  **Compiles for the board**: `cargo build --release`, no warnings.
+
+### Notes
+
+- The **TF card** is not in it yet: its template is still to write, and the board template will gain it then.
+- Still open: Wi-Fi/Bluetooth for ESP, and moving the touch calibration from RAM to flash (an interrupt-safe
+  `esp-storage` write, which needs its own bench round). `NOTES.md` §64.
+- Test suite: **618 passed, 0 skipped**.
+
+
 ## [0.0.28] - 2026-10-06
 
 ### Added
