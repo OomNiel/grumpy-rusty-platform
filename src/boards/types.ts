@@ -63,6 +63,11 @@ export interface BoardMemory {
 export type BoardLed =
     | { kind: 'gpio'; pin: string; external?: boolean }
     | { kind: 'cyw43'; index: number }
+    /**
+     * A three-pin LED. Common cathode or common anode is not modelled: the pins are driven active high,
+     * which is what the boards seen so far do.
+     */
+    | { kind: 'rgb'; red: string; green: string; blue: string }
     | { kind: 'none' };
 
 /** Which wireless silicon, if any, the board carries. */

@@ -24,6 +24,9 @@ export function ledText(led: BoardLed): string {
         case 'cyw43':
             return `On-board LED hangs off the CYW43 wireless chip (index ${led.index}) — it is driven through ` +
                 'the cyw43 driver, NOT a GPIO pin. Do not use a PIN_25-style constant for it.';
+        case 'rgb':
+            return `On-board RGB LED: red on GPIO ${led.red}, green on GPIO ${led.green}, blue on GPIO ${led.blue}. ` +
+                'Three separate pins, driven high for on.';
         case 'none':
             return 'This board has no LED.';
     }
