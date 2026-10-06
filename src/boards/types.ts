@@ -147,6 +147,23 @@ export interface EspDisplay {
 }
 
 /**
+ * An on-board audio amplifier with a speaker connector.
+ *
+ * The pin matters as much as the amplifier: on an ESP32 the boards put the amplifier on one of the two DAC
+ * channels (GPIO25/26), so what comes out is an analogue waveform rather than something that needs a PWM
+ * filter -- which changes the template completely. The series resistor is the coupling between the chip and
+ * the amp's input, as traced rather than assumed.
+ */
+export interface EspAudio {
+    pin: string;
+    /** The amplifier part number printed on the board. */
+    amplifier: string;
+    /** The resistor between the ESP pin and the amplifier input. */
+    seriesOhms?: number;
+    note?: string;
+}
+
+/**
  * An on-board light sensor.
  *
  * Its own type rather than a bare pin because an LDR is a divider into an ADC, and the *pin* is what decides
@@ -241,6 +258,8 @@ export interface EspBoardProfile extends BoardProfileBase {
     sd?: EspSdCard;
     /** On-board light sensor, when the board has one. */
     ldr?: EspLdr;
+    /** Speaker output, when the board has an amplifier and a connector. */
+    audio?: EspAudio;
 }
 
 export type BoardProfile = RpBoardProfile | EspBoardProfile;

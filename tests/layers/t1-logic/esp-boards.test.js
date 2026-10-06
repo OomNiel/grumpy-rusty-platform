@@ -151,6 +151,12 @@ test('the CYD board carries its touch and microSD wiring', () => {
     // like a dead sensor on a bright day.
     equal(board.ldr.seriesOhms, 5_000);
     equal(board.ldr.toGround, true, 'the LDR faces ground, so the reading falls as the light rises');
+    // Module pin 11 = GPIO26 = DAC channel 2, into an LTK8002D through a 4k7 resistor. The pin being a DAC
+    // is the fact that decides how the template makes sound, so it is pinned here.
+    equal(board.audio.pin, '26');
+    equal(board.audio.amplifier, 'LTK8002D');
+    equal(board.audio.seriesOhms, 4_700);
+    ok(['25', '26'].includes(board.audio.pin), 'the amplifier has to hang off one of the two DAC pins');
     equal(board.sd.cs, 5);
     equal(board.sd.spi.sclk, 18);
     // CMD is the card's data *in* and DAT0 its data out, so in SPI mode MOSI is CMD (23) and MISO is

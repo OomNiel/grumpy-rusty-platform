@@ -2797,3 +2797,45 @@ first step of the template that uses it, not something to guess at from memory.
 That leaves **one** pin on the user's feature list still unidentified: the **speaker connector's** data pin.
 
 Suite: **616 passed, 0 skipped**.
+
+---
+
+## 63. The speaker is on GPIO26, which is a DAC (2026-10-06)
+
+*"Speaker connects to a chip LTK8002D pins 5 and 8. Chip connects to esp module pin 11 via 4k7 res."*
+
+Module pin 11 is **GPIO26** — and that is the fact that matters, because on an ESP32 GPIO25 and GPIO26 are the
+two **DAC** channels. So this board's sound is an analogue waveform straight out of the DAC, not a PWM pin that
+needs an RC filter: the template that drives it is a different shape from the usual "tone() on a digital pin"
+recipe, and the difference is recorded rather than left for whoever writes it to discover.
+
+The rest of the chain, as traced:
+
+```
+ESP32 GPIO26 ── 4k7 ── LTK8002D input
+                        LTK8002D pins 5, 8 ── speaker connector
+```
+
+The **LTK8002D** is an LM4871-family 3 W bridge amplifier: pins 5 and 8 are its two *bridged* outputs, so
+neither speaker terminal is ground — which is why a speaker across them must not be grounded on one side. No
+shutdown pin was traced, so the amplifier is assumed to be enabled whenever the board has power.
+
+**That completes the wiring for every feature on the user's list.** All seven now have their pins in the board
+data, so what remains is templates and code rather than measurements:
+
+| | feature | wiring | template |
+|---|---|---|---|
+| a | LCD | ST7796, SPI2 15/2/14/13/12, backlight 27 | **done, verified** |
+| b | touch | XPT2046 CS 33 / PENIRQ 36 / 12/13/14, BUSY unwired | **done, verified, with calibration** |
+| c | TF card | CS 5, CLK 18, MOSI 23, MISO 19 | to write |
+| d | Wi-Fi + BT | on-chip radio | to write (ESP has no `wifi` template at all yet) |
+| e | RGB LED | red 4, green 17, blue 16 | **done** (blinky) |
+| f | LDR | GPIO34 (ADC1 ch6), 5k to 3.3V, lower leg | to write |
+| g | speaker | GPIO26 (DAC2) through 4k7 into an LTK8002D | to write |
+
+Two API questions remain, both of which I refused to guess at: where esp-hal 1.2 exposes the **ADC** (for the
+LDR) and the **DAC** (for the speaker) — neither module was where I expected it in the source I could read, and
+both may sit behind the `unstable` feature. Confirming those two is the first step of the sensor/sound
+templates, not the last.
+
+Suite: **616 passed, 0 skipped**.

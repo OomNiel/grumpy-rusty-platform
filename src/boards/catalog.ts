@@ -282,6 +282,18 @@ export const BOARDS: BoardProfile[] = [
         // Module pin 6, traced by hand: GPIO34, which is ADC1 channel 6. GPIO34-39 are input-only and have
         // no internal pull-ups, so the LDR must be one half of a divider (against 3.3V or GND) rather than
         // relying on a pull -- which is how these boards wire it. Reading it needs the ADC, not a GPIO.
+        // Module pin 11 is GPIO26, which on an ESP32 is DAC channel 2 -- so this is an analogue output, not
+        // a PWM pin that needs a filter. The chip is an LTK8002D (an LM4871-family 3W bridge amplifier):
+        // pins 5 and 8 are its bridged speaker outputs, and its input arrives from the ESP through a 4k7
+        // coupling resistor, as traced by hand (2026-10-06). No shutdown pin was traced, so the amplifier is
+        // assumed to be enabled whenever the board is powered.
+        audio: {
+            pin: '26',
+            amplifier: 'LTK8002D',
+            seriesOhms: 4_700,
+            note: 'ESP32 DAC channel 2 (GPIO26) through a 4k7 coupling resistor into an LTK8002D, whose '
+                + 'bridged outputs (pins 5 and 8) go to the speaker connector',
+        },
         ldr: {
             pin: '34',
             // 3.3V -> 5k -> GPIO34 -> LDR -> GND, as traced by hand. Two consequences worth recording
