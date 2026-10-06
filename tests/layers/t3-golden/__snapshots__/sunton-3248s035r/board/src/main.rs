@@ -75,7 +75,7 @@ async fn main(_spawner: Spawner) -> ! {
         }
     }
 
-    let sd_mounted = {
+    let _sd_mounted = {
         // The card's own SPI bus. These are the TF socket's pins, not the panel's.
         let card_spi = Spi::new(
             peripherals.SPI3,

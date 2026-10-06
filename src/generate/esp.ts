@@ -642,7 +642,7 @@ function espRgbLedBody(red: string, green: string, blue: string): string {
  * `iterate_dir` wants a `RawDirectory`, and this way the same handle is used for the open, the listing and the
  * close instead of converting between the ergonomic wrapper and the raw form.
  */
-function espSdMountCode(board: EspBoardProfile, peripheral = 'SPI2'): string {
+function espSdMountCode(board: EspBoardProfile, peripheral = 'SPI2', binding = 'sd_mounted'): string {
     const sd = board.sd;
     if (sd === undefined) {
         return '    let sd_mounted = false;';
@@ -665,7 +665,7 @@ function espSdMountCode(board: EspBoardProfile, peripheral = 'SPI2'): string {
         }
     }
 
-    let sd_mounted = {
+    let ${binding} = {
         // The card's own SPI bus. These are the TF socket's pins, not the panel's.
         let card_spi = Spi::new(
             peripherals.${peripheral},
@@ -872,7 +872,9 @@ function espTouchBody(
     // SPI3, not SPI2: the panel takes SPI2 in the same firmware, and a driver owns its peripheral for good
     // once it has been handed over -- so the card cannot borrow the panel's bus here. On an ESP32 there are
     // two, which is why the socket was wired to pins that can reach the second one.
-    const sdSetup = includeHardware && board.sd !== undefined ? espSdMountCode(board, 'SPI3') : '';
+    const sdSetup = includeHardware && board.sd !== undefined
+        ? espSdMountCode(board, 'SPI3', '_sd_mounted')
+        : '';
 
     const hardwareSetup = [
         led === undefined

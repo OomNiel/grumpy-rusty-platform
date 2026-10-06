@@ -11,6 +11,34 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.31] - 2026-10-06
+
+### Added
+
+- **A TF card template**, built on `embedded-sdmmc` rather than a hand-rolled SD SPI sequence — the init
+  handshake is easy to get subtly wrong, and even done right it leaves raw sectors rather than a filesystem.
+  It brings up the socket's own SPI bus at 400 kHz (the clock a card is specified to initialise at), reports the
+  capacity, opens volume 0, and **lists the root directory** with each entry's name and size.
+  **Verified on the board with a 16 GB FAT32 card**: `card reports 15640559616 bytes (14916 MiB)` → `volume 0
+  opened` → `root directory opened` → `SPARE (0 bytes)`, `SYSTEM~1 (0 bytes)`, `root directory listed`. Those two
+  entries are the volume label and the SD association's folder, which is what a healthy FAT32 root holds with no
+  user files in it.
+- **The card is part of the `Board test (everything)` template**, sharing one mount function with the card
+  template so the two cannot drift. The board template runs the card on **SPI3**: a HAL driver owns its
+  peripheral once handed over, so the card cannot borrow the panel's bus in the same firmware.
+
+### Notes
+
+- Two crate facts were read rather than recalled, and both are commented where they are used: `Timestamp` is
+  `year_since_1970`/`zero_indexed_month`/`zero_indexed_day`, and the directory callback returns unit in 0.8.
+- Both generated projects compile with **zero warnings**.
+- The **LDR is parked**: this board wires the divider resistor and the LDR's far ends both to ground, so the node
+  cannot move with the light (the firmware reported a constant, exact 0 — see §67-§69), and a third resistor on
+  the node is still to be traced. Pin, channel, attenuation and polarity are all confirmed correct.
+- Still to write: **Wi-Fi/Bluetooth** for ESP boards.
+- Test suite: **619 passed, 0 skipped**. `NOTES.md` §70-§71.
+
+
 ## [0.0.30] - 2026-10-06
 
 ### Added
