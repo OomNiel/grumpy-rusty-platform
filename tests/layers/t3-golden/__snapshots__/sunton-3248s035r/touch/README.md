@@ -53,8 +53,8 @@ from the Pico's.
 | 14 | panel SPI clock |
 | 13 | panel SPI data out |
 | 12 | panel SPI data in |
-| 33 | XPT2046 touch chip select |
-| 36 | XPT2046 touch interrupt (active low) |
+| 25 | XPT2046 touch chip select |
+| 39 | XPT2046 touch interrupt (active low) |
 
 These come from the board's own schematic or board definition rather than from a
 guess; if you change one, change it in `src/main.rs` as well.

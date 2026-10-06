@@ -137,8 +137,12 @@ test('the CYD panel matches the board schematic', () => {
 test('the CYD board carries its touch and microSD wiring', () => {
     const board = espBoard('sunton-3248s035r');
     equal(board.touch.controller, 'XPT2046');
-    equal(board.touch.cs, 33);
-    equal(board.touch.irq, 36);
+    // Traced by hand from the chip to the module (2026-10-05). The published pinouts -- the community
+    // board definition and two independent configurations for this family -- all say CS 33 / IRQ 36, and
+    // with CS 33 the controller was never selected: the firmware read a floating MISO line and saw the
+    // same mid-scale values whether the glass was touched or not (NOTES 57/58).
+    equal(board.touch.cs, 25, 'the chip select the board actually wires');
+    equal(board.touch.irq, 39, 'PENIRQ, on an input-only pin');
     equal(board.sd.cs, 5);
     equal(board.sd.spi.sclk, 18);
     equal(board.sd.spi.mosi, 19);
@@ -566,11 +570,11 @@ test('the touch template shares the panel bus and speaks the XPT2046 protocol', 
 test('a touch is the axes moving, never the interrupt line on its own', () => {
     const main = filesFor(espBoard('sunton-3248s035r'), 'touch').get('src/main.rs');
 
-    // Measured: GPIO36 reads low with nothing near the glass, and every phantom tap arrived with both axes
-    // still on their idle values -- it walked the calibration through all four corners by itself.
-    contains(main, 'let touched = moved;');
-    notContains(main, 'let touched = irq || moved;');
-    contains(main, 'let moved = (i32::from(raw_a) - idle_a).abs() > TOUCH_MOVE');
+    // Measured: the interrupt line reads low with nothing near the glass, and every phantom tap arrived
+    // with both axes still on their idle values -- it walked the calibration through all four corners by
+    // itself. A touch is the axes moving, and the interrupt is logged next to it rather than OR-ed in.
+    contains(main, 'pressed = (raw_a - idle_a).abs() > TOUCH_MOVE || (raw_b - idle_b).abs() > TOUCH_MOVE;');
+    notContains(main, 'irq ||');
     contains(main, '"touch test alive: a={} b={} idle a={} b={} pen={}",',
         'the interrupt is still logged, just not trusted');
 });
@@ -579,8 +583,13 @@ test('the touch template asks for the four corners and says what it measured', (
     const main = filesFor(espBoard('sunton-3248s035r'), 'touch').get('src/main.rs');
 
     contains(main, 'let corners = ["top-left", "top-right", "bottom-right", "bottom-left"];');
-    contains(main, 'Touch the red square');
-    contains(main, 'Touch anywhere: the crosshair follows');
+    contains(main, 'Touch the red square:');
+    contains(main, 'Touch anywhere. The numbers below follow');
+    // And the live readout the panel shows while a finger is down.
+    contains(main, 'raw a={} b={}', 'the raw pair');
+    contains(main, 'x={} y={}', 'the mapped pair');
+    contains(main, 'BOX_X: i32 =', 'the readout sits in the middle of the panel');
+    contains(main, 'TOUCH_REPAINT', 'and only repaints when the numbers move');
     contains(main, '"calibration: raw axis{} {}..{} and axis{} {}..{} over {}x{}"',
         'the numbers a user can report back');
     contains(main, 'frames a=[{:04X} {:04X} {:04X}] b=[{:04X} {:04X} {:04X}]',

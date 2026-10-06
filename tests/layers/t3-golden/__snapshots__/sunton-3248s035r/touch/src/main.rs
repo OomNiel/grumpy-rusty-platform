@@ -6,12 +6,13 @@
 #![no_main]
 
 use core::cell::RefCell;
+use core::fmt::Write as _;
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Timer};
-use embedded_graphics::mono_font::{ascii::FONT_6X10, MonoTextStyle};
+use embedded_graphics::mono_font::{ascii::{FONT_6X10, FONT_10X20}, MonoTextStyle};
 use embedded_graphics::pixelcolor::Rgb565;
 use embedded_graphics::prelude::*;
-use embedded_graphics::primitives::{Line, PrimitiveStyle, Rectangle};
+use embedded_graphics::primitives::{PrimitiveStyle, Rectangle};
 use embedded_graphics::text::Text;
 use embedded_hal::spi::SpiDevice;
 use embedded_hal_bus::spi::RefCellDevice;
@@ -97,24 +98,55 @@ async fn main(_spawner: Spawner) -> ! {
     // The touch controller's own clock: the panel's is restored around every burst.
     let touch_clock = || SpiConfig::default().with_frequency(Rate::from_khz(2000));
 
-    // The same bus, a second chip select. PENIRQ is open drain, hence the pull-up: low means pressed.
-    let touch_cs = Output::new(peripherals.GPIO33, Level::Low, OutputConfig::default());
+    // The same bus, a second chip select. PENIRQ is open drain: low means pressed, and the line is only
+    // logged because it is not reliable here -- GPIO34-39 have no internal pull-ups either, so what the
+    // pin reads with nothing touching it says more about the board than about the glass.
+    let touch_cs = Output::new(peripherals.GPIO25, Level::Low, OutputConfig::default());
     let mut touch = RefCellDevice::new(&bus, touch_cs, Delay::new()).expect("touch chip select");
-    let touch_irq = Input::new(peripherals.GPIO36, InputConfig::default().with_pull(Pull::Up));
+    let touch_irq = Input::new(peripherals.GPIO39, InputConfig::default().with_pull(Pull::Up));
 
     // Control bytes from the XPT2046 datasheet: S=1 | channel | 12-bit | single-ended | power-down bits.
-    // 0xD1 reads one panel axis, 0x91 the other, and 0xD0 is the same axis read with PD=00: powered down
+    // 0xD1 reads one panel axis, 0x91 the other, and 0xD0 is an axis read with PD=00: powered down
     // between conversions, which is the only setting that re-enables PENIRQ.
     const TOUCH_AXIS_A: u8 = 0xD1;
     const TOUCH_AXIS_B: u8 = 0x91;
     const TOUCH_POWER_DOWN: u8 = 0xD0;
-    // How far an axis has to move from its idle baseline to count as a touch, and how many samples a
-    // calibration reading averages.
+    // How far an axis has to move from its idle baseline to count as a touch, how many samples a reading
+    // averages, and how far the numbers have to move before the readout is repainted.
     const TOUCH_MOVE: i32 = 200;
     const TOUCH_SAMPLES: u32 = 3;
+    const TOUCH_REPAINT: i32 = 4;
+
+    // Numbers have to become text for the panel, and there is no allocator here: a fixed buffer that
+    // implements core::fmt::Write is the usual no_std answer.
+    struct Line {
+        bytes: [u8; 32],
+        len: usize,
+    }
+
+    impl Line {
+        fn new() -> Self {
+            Self { bytes: [0; 32], len: 0 }
+        }
+
+        fn as_str(&self) -> &str {
+            core::str::from_utf8(&self.bytes[..self.len]).unwrap_or("?")
+        }
+    }
+
+    impl core::fmt::Write for Line {
+        fn write_str(&mut self, text: &str) -> core::fmt::Result {
+            if text.len() > self.bytes.len() - self.len {
+                return Err(core::fmt::Error);
+            }
+            self.bytes[self.len..self.len + text.len()].copy_from_slice(text.as_bytes());
+            self.len += text.len();
+            Ok(())
+        }
+    }
 
     // One command, and the two bytes that come back with it. The bytes are returned as they arrived
-    // because which bit of which byte holds what is the one thing worth seeing on a first bring-up.
+    // because which bit of which byte holds what is the one thing worth seeing on a bring-up.
     fn touch_frame<D: SpiDevice>(device: &mut D, command: u8) -> u16 {
         let mut frame = [command, 0x00];
         if device.transfer_in_place(&mut frame).is_err() {
@@ -124,8 +156,7 @@ async fn main(_spawner: Spawner) -> ! {
     }
 
     // The 12 bits of the *previous* command's conversion: high byte, then the low nibble in the top half
-    // of the second byte. Shifting right by three, as the common Arduino driver does, is eight times too
-    // small for this panel.
+    // of the second byte.
     fn touch_value(frame: u16) -> u16 {
         ((((frame >> 8) & 0x00FF) << 4) | ((frame & 0x00FF) >> 4)) & 0x0FFF
     }
@@ -143,13 +174,13 @@ async fn main(_spawner: Spawner) -> ! {
     }
 
     // Leave the controller powered down *with the interrupt enabled*, which is what makes PENIRQ usable
-    // between bursts. Without it the line stays high whatever the glass does.
+    // between bursts.
     fn touch_idle<D: SpiDevice>(device: &mut D) {
         let _ = touch_frame(device, TOUCH_POWER_DOWN);
     }
 
     log::info!(
-        "touch: XPT2046 on GPIO33 (cs), GPIO36 (irq), pen level now {}",
+        "touch: XPT2046 on GPIO25 (cs), GPIO39 (irq), pen level now {}",
         touch_irq.is_low()
     );
 
@@ -167,6 +198,10 @@ async fn main(_spawner: Spawner) -> ! {
     const MARGIN: i32 = 24;
     const WIDTH: i32 = 320;
     const HEIGHT: i32 = 480;
+    const BOX_X: i32 = 20;
+    const BOX_Y: i32 = 188;
+    const BOX_W: i32 = 280;
+    const BOX_H: i32 = 104;
     let targets = [
         (MARGIN, MARGIN),
         (WIDTH - MARGIN, MARGIN),
@@ -182,28 +217,32 @@ async fn main(_spawner: Spawner) -> ! {
     let mut y_from: i32 = 0;
     let mut y_to: i32 = 0;
     let mut point = (WIDTH / 2, HEIGHT / 2);
+    let mut raw_a: i32 = idle_a;
+    let mut raw_b: i32 = idle_b;
+    let mut shown_a: i32 = idle_a - TOUCH_REPAINT - 1;
+    let mut shown_b: i32 = idle_b - TOUCH_REPAINT - 1;
+    let mut pressed = false;
     let mut was_touched = false;
-    let mut redraw = true;
+    let mut redraw_screen = true;
+    let mut redraw_box = true;
     let mut ticks: u32 = 0;
-    let mut last_a: u16 = 0;
-    let mut last_b: u16 = 0;
 
     loop {
-        if redraw {
+        if redraw_screen {
             display.clear(Rgb565::BLACK).expect("panel write failed");
             let style = MonoTextStyle::new(&FONT_6X10, Rgb565::WHITE);
             if corner < 4 {
-                Text::new("Touch the red square", Point::new(8, 10), style)
+                Text::new("Touch the red square:", Point::new(8, 10), style)
                     .draw(&mut display)
                     .expect("panel write failed");
                 Text::new(corners[corner], Point::new(8, 24), style)
                     .draw(&mut display)
                     .expect("panel write failed");
             } else {
-                Text::new("Touch anywhere: the crosshair follows", Point::new(8, 10), style)
+                Text::new("Touch anywhere. The numbers below follow", Point::new(8, 10), style)
                     .draw(&mut display)
                     .expect("panel write failed");
-                Text::new("raw and mapped values go to the log", Point::new(8, 24), style)
+                Text::new("your finger; everything also goes to the log.", Point::new(8, 24), style)
                     .draw(&mut display)
                     .expect("panel write failed");
             }
@@ -216,19 +255,57 @@ async fn main(_spawner: Spawner) -> ! {
                     .draw(&mut display)
                     .expect("panel write failed");
             }
-            if corner >= 4 {
-                // The crosshair sits where the firmware *thinks* the finger is. Under the finger means the
-                // mapping is right; beside it, or off the edge, is what a wrong calibration looks like.
-                Line::new(Point::new(point.0 - 16, point.1), Point::new(point.0 + 16, point.1))
-                    .into_styled(PrimitiveStyle::with_stroke(Rgb565::YELLOW, 2))
-                    .draw(&mut display)
-                    .expect("panel write failed");
-                Line::new(Point::new(point.0, point.1 - 16), Point::new(point.0, point.1 + 16))
-                    .into_styled(PrimitiveStyle::with_stroke(Rgb565::YELLOW, 2))
-                    .draw(&mut display)
-                    .expect("panel write failed");
+            redraw_screen = false;
+            redraw_box = true;
+        }
+
+        // Only the readout box is repainted while a finger is down: a full clear costs about 200 ms of
+        // SPI, and the numbers are supposed to keep up with the finger.
+        if redraw_box {
+            Rectangle::new(Point::new(BOX_X, BOX_Y), Size::new(BOX_W as u32, BOX_H as u32))
+                .into_styled(PrimitiveStyle::with_stroke(Rgb565::new(8, 24, 8), 2))
+                .draw(&mut display)
+                .expect("panel write failed");
+            let small = MonoTextStyle::new(&FONT_6X10, Rgb565::WHITE);
+            let big = MonoTextStyle::new(&FONT_10X20, Rgb565::YELLOW);
+
+            let mut line = Line::new();
+            if corner < 4 {
+                let _ = write!(&mut line, "corner {} of 4 - {}", corner + 1, corners[corner]);
+            } else if pressed {
+                let _ = write!(&mut line, "TOUCH");
+            } else {
+                let _ = write!(&mut line, "idle");
             }
-            redraw = false;
+            Text::new(line.as_str(), Point::new(BOX_X + 8, BOX_Y + 8), small)
+                .draw(&mut display)
+                .expect("panel write failed");
+
+            let mut line = Line::new();
+            let _ = write!(&mut line, "raw a={} b={}", raw_a, raw_b);
+            Text::new(line.as_str(), Point::new(BOX_X + 8, BOX_Y + 26), small)
+                .draw(&mut display)
+                .expect("panel write failed");
+
+            let mut line = Line::new();
+            if corner >= 4 {
+                let _ = write!(&mut line, "x={} y={}", point.0, point.1);
+            } else {
+                let _ = write!(&mut line, "x=? y=?");
+            }
+            Text::new(line.as_str(), Point::new(BOX_X + 8, BOX_Y + 44), big)
+                .draw(&mut display)
+                .expect("panel write failed");
+
+            let mut line = Line::new();
+            let _ = write!(&mut line, "pen={} idle a={} b={}", touch_irq.is_low(), idle_a, idle_b);
+            Text::new(line.as_str(), Point::new(BOX_X + 8, BOX_Y + 78), small)
+                .draw(&mut display)
+                .expect("panel write failed");
+
+            shown_a = raw_a;
+            shown_b = raw_b;
+            redraw_box = false;
         }
 
         // Every third tick is about 60 ms; a burst is a few bytes at 2 MHz, so the panel's clock is only
@@ -236,31 +313,24 @@ async fn main(_spawner: Spawner) -> ! {
         ticks = ticks.wrapping_add(1);
         if ticks % 3 == 0 {
             bus.borrow_mut().apply_config(&touch_clock()).expect("touch clock");
-            let (raw_a, frames_a) = touch_axis(&mut touch, TOUCH_AXIS_A);
-            let (raw_b, frames_b) = touch_axis(&mut touch, TOUCH_AXIS_B);
+            let (a, frames_a) = touch_axis(&mut touch, TOUCH_AXIS_A);
+            let (b, frames_b) = touch_axis(&mut touch, TOUCH_AXIS_B);
             touch_idle(&mut touch);
             bus.borrow_mut().apply_config(&panel_clock()).expect("panel clock");
-            last_a = raw_a;
-            last_b = raw_b;
+            raw_a = i32::from(a);
+            raw_b = i32::from(b);
 
-            // A touch is the axes *moving*, and deliberately not the interrupt line on its own.
-            //
-            // Measured on this panel: GPIO36 reads pen=true in heartbeats with nothing anywhere near the
-            // glass, and every phantom "tap" arrived with both axes still sitting exactly on their idle
-            // values (a=2048 b=2054, frame for frame). The line is not a usable touch signal here, so it is
-            // logged rather than trusted -- an interrupt that fires on its own is worse than none, because
-            // it walks the calibration through all four corners while nobody is touching anything.
+            // A touch is the axes *moving*, never the interrupt line on its own: an interrupt that fires
+            // by itself walks the calibration through all four corners while nobody touches anything.
             let irq = touch_irq.is_low();
-            let moved = (i32::from(raw_a) - idle_a).abs() > TOUCH_MOVE
-                || (i32::from(raw_b) - idle_b).abs() > TOUCH_MOVE;
-            let touched = moved;
+            pressed = (raw_a - idle_a).abs() > TOUCH_MOVE || (raw_b - idle_b).abs() > TOUCH_MOVE;
 
-            if touched && !was_touched {
+            if pressed && !was_touched {
                 log::info!(
-                    "touch: {} a={} b={} frames a=[{:04X} {:04X} {:04X}] b=[{:04X} {:04X} {:04X}]",
-                    if irq { "axes moved (irq also low)" } else { "axes moved" },
+                    "touch: a={} b={} pen={} frames a=[{:04X} {:04X} {:04X}] b=[{:04X} {:04X} {:04X}]",
                     raw_a,
                     raw_b,
+                    irq,
                     frames_a[0],
                     frames_a[1],
                     frames_a[2],
@@ -269,7 +339,7 @@ async fn main(_spawner: Spawner) -> ! {
                     frames_b[2]
                 );
                 if corner < 4 {
-                    measured[corner] = [raw_a, raw_b];
+                    measured[corner] = [a, b];
                     log::info!("touch: corner {} {} recorded", corner + 1, corners[corner]);
                     corner += 1;
                     if corner == 4 {
@@ -288,42 +358,46 @@ async fn main(_spawner: Spawner) -> ! {
                             raw_x_axis, x_from, x_to, raw_y_axis, y_from, y_to, WIDTH, HEIGHT
                         );
                     }
-                    redraw = true;
-                } else {
-                    let axis_x = if raw_x_axis == 0 { raw_a } else { raw_b };
-                    let axis_y = if raw_x_axis == 0 { raw_b } else { raw_a };
-                    let px = if x_to == x_from {
-                        WIDTH / 2
-                    } else {
-                        MARGIN + (i32::from(axis_x) - x_from) * (WIDTH - 2 * MARGIN) / (x_to - x_from)
-                    }
-                    .clamp(0, WIDTH - 1);
-                    let py = if y_to == y_from {
-                        HEIGHT / 2
-                    } else {
-                        MARGIN + (i32::from(axis_y) - y_from) * (HEIGHT - 2 * MARGIN) / (y_to - y_from)
-                    }
-                    .clamp(0, HEIGHT - 1);
-                    point = (px, py);
-                    log::info!("touch: a={} b={} -> pixel ({}, {})", raw_a, raw_b, px, py);
-                    redraw = true;
+                    redraw_screen = true;
                 }
             }
-            was_touched = touched;
+
+            // The mapped position follows the finger for as long as it is down, and the readout is
+            // repainted when it has moved enough to be worth the pixels.
+            if corner >= 4 && (pressed || was_touched) {
+                let axis_x = if raw_x_axis == 0 { a } else { b };
+                let axis_y = if raw_x_axis == 0 { b } else { a };
+                let px = if x_to == x_from {
+                    WIDTH / 2
+                } else {
+                    MARGIN + (i32::from(axis_x) - x_from) * (WIDTH - 2 * MARGIN) / (x_to - x_from)
+                }
+                .clamp(0, WIDTH - 1);
+                let py = if y_to == y_from {
+                    HEIGHT / 2
+                } else {
+                    MARGIN + (i32::from(axis_y) - y_from) * (HEIGHT - 2 * MARGIN) / (y_to - y_from)
+                }
+                .clamp(0, HEIGHT - 1);
+                point = (px, py);
+                if pressed && !was_touched {
+                    log::info!("touch: a={} b={} -> pixel ({}, {})", raw_a, raw_b, px, py);
+                }
+                if (raw_a - shown_a).abs() > TOUCH_REPAINT || (raw_b - shown_b).abs() > TOUCH_REPAINT {
+                    redraw_box = true;
+                }
+            }
+            if !pressed && was_touched && corner >= 4 {
+                log::info!("touch: released");
+                redraw_box = true;
+            }
+            was_touched = pressed;
         }
 
         if ticks % 100 == 0 {
-            // A heartbeat with the numbers that matter: the last readings, whether the interrupt line is
-            // doing anything at all, and whether the axes are moving. "The log is quiet" then cannot be
-            // mistaken for "the app is not running".
-            log::info!(
-                "touch test alive: a={} b={} idle a={} b={} pen={}",
-                last_a,
-                last_b,
-                idle_a,
-                idle_b,
-                touch_irq.is_low()
-            );
+            // A heartbeat with the numbers that matter, so "the log is quiet" cannot be mistaken for
+            // "the app is not running".
+            log::info!("touch test alive: a={} b={} idle a={} b={} pen={}", raw_a, raw_b, idle_a, idle_b, touch_irq.is_low());
         }
         Timer::after(Duration::from_millis(20)).await;
     }
