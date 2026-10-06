@@ -11,6 +11,46 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.30] - 2026-10-06
+
+### Added
+
+- **The touch calibration is kept in flash**, so a calibrated panel boots straight into the graphics test screen
+  instead of asking for the four corners again. The record lives in the last 4 KB sector of the application
+  partition — ours, and pointedly not the NVS partition the bootloader reads — and is magic + axis + the four
+  ranges + a checksum, so an erased sector (which reads as 0xFF) cannot be mistaken for a calibration. Written
+  only after the fourth corner, never a partial set.
+  **Verified on the board**: `calibration: stored in flash`, then after a reset
+  `calibration: loaded from flash - axis0 1806..286 1884..213` — the same numbers.
+
+### Fixed
+
+- **The LDR read panicked the whole firmware.** `Adc::read_oneshot` is non-blocking and reports `WouldBlock`
+  while a conversion is in flight — including the very first read after boot — and an `.expect()` there killed the
+  app. The symptom was *"touch not responding"*, because the touch loop simply stopped when the CPU halted. Both
+  templates now retry a bounded fifty times and warn if the ADC never becomes ready. This fixes 0.0.28 and 0.0.29,
+  which both ship the panicking path.
+- **The live touch readout drew over its own old values.** The numbers change length as a finger moves
+  (`raw a=0 b=0` is shorter than `raw a=1806 b=286`), so each reading was drawn across the tail of the previous
+  one. The box now fills its interior and *then* strokes its border — that order keeps the border whole, where
+  the reverse would eat half its width — with no full-screen clear.
+- **The speaker never beeped.** The beep lived only inside the corner-recording branch, and since the calibration
+  persists in flash a calibrated board never records a corner again, so the amplifier was never asked to make a
+  sound. (The click at reset and a faint hiss were the amplifier telling the truth: powered, enabled, nothing to
+  amplify.) One shared definition of a beep — a macro, since it borrows the DAC and awaits — now answers **every
+  touch** in 40 ms and confirms a recorded corner in 200 ms, which is what makes the speaker testable without a
+  calibration run. Confirmed on the board.
+
+### Notes
+
+- The **light sensor reads 0 of 4095 constantly**, which a working divider cannot do in a lit room, so either
+  GPIO34 is not its midpoint on this unit or the 5k/3.3V side is not connected. Under investigation; the same
+  shape of question as the touch pins.
+- Still to write: the **TF card** template (pins known), Wi-Fi/Bluetooth for ESP, and folding the card into the
+  board template.
+- Test suite: **618 passed, 0 skipped**. `NOTES.md` §64-§66.
+
+
 ## [0.0.29] - 2026-10-06
 
 ### Added
