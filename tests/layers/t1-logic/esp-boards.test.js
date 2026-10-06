@@ -711,10 +711,14 @@ test('the TF card template mounts the card on the socket the board wires', () =>
     contains(main, 'SdCard::new(card, Delay::new())');
     contains(main, 'card.num_bytes()');
     contains(main, 'VolumeManager::new(card, FixedClock)');
-    contains(main, 'volumes.open_volume(VolumeIdx(0))');
-    contains(main, 'volume.open_root_dir()');
+    // The raw API throughout: one handle for the open, the listing and the close.
+    contains(main, 'volumes.open_raw_volume(VolumeIdx(0))');
+    contains(main, 'volumes.open_root_dir(volume)');
+    contains(main, 'volumes.iterate_dir(directory, |entry|');
+    contains(main, 'entry.name, entry.size');
+    contains(main, 'volumes.close_dir(directory)');
     // The crate counts years from 1970 and indexes months and days from zero.
     contains(main, 'year_since_1970: 56');
     contains(main, 'zero_indexed_month: 0');
-    notContains(main, 'iterate_dir', 'the directory listing waits for the raw-handle API to be checked');
+    contains(main, 'impl TimeSource for FixedClock', 'the clock the filesystem wants, defined where it is used');
 });

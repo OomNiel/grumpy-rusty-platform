@@ -224,8 +224,10 @@ panel-gc9a01 = []
         );
     }
     if (template === 'sdcard') {
-        // esp-hal's Spi is a bus; the card needs a device, which is that bus plus its own chip select.
+        // The board template already declares this for its panel; declaring it twice is a duplicate key.
         dependencies.push(`embedded-hal-bus = "${ESP_CRATE_VERSIONS.embeddedHalBus}"`);
+    }
+    if (template === 'sdcard' || template === 'board') {
         // The correct way to talk to a card: the ecosystem's own SD/SPI plus FAT implementation rather than
         // a hand-rolled CMD0/CMD8/ACMD41 sequence. It is the maintained crate that filesystems are tested
         // against, and getting the SD init handshake subtly wrong is a classic way to lose a day.
@@ -445,6 +447,10 @@ function espImports(board: EspBoardProfile, template: AppTemplate): string {
             ? [
                 'use esp_hal::analog::adc::{Adc, AdcConfig, Attenuation};',
                 'use esp_hal::analog::dac::Dac;',
+                // The board template mounts the card as well, so it needs the crate, the raw API, and the
+                // bus-to-device adapter (its panel uses the RefCell one, not this).
+                'use embedded_hal_bus::spi::ExclusiveDevice;',
+                'use embedded_sdmmc::{SdCard, TimeSource, Timestamp, VolumeIdx, VolumeManager};',
             ]
             : [];
         return [
@@ -628,14 +634,21 @@ function espRgbLedBody(red: string, green: string, blue: string): string {
  * 2. **The clock is fixed.** The filesystem records timestamps when it writes; this template only reads, so a
  *    fixed one is honest rather than a fake time. It is also what the crate's own example does.
  */
-function espSdcardBody(board: EspBoardProfile): string {
+/**
+ * Mounting the card, as one block expression that leaves `sd_mounted` behind.
+ *
+ * Shared by the card template and the board template rather than copied between them: a mount sequence is
+ * exactly the kind of thing that drifts when there are two of it. The crate's raw API is used deliberately --
+ * `iterate_dir` wants a `RawDirectory`, and this way the same handle is used for the open, the listing and the
+ * close instead of converting between the ergonomic wrapper and the raw form.
+ */
+function espSdMountCode(board: EspBoardProfile, peripheral = 'SPI2'): string {
     const sd = board.sd;
     if (sd === undefined) {
-        return '';
+        return '    let sd_mounted = false;';
     }
-    return `
-    // A fixed timestamp: the filesystem records one when it *writes*, and this template only reads, so a fixed
-    // value is honest rather than a pretended clock. It is also what the crate's own example does.
+    return `    // A fixed timestamp: the filesystem records one when it *writes*, and these templates only read, so a
+    // fixed value is honest rather than a pretended clock. It is also what the crate's own example does.
     struct FixedClock;
 
     impl TimeSource for FixedClock {
@@ -652,58 +665,78 @@ function espSdcardBody(board: EspBoardProfile): string {
         }
     }
 
-    // The card's own SPI bus. It is not the panel's: these pins are the TF socket's, and no template drives
-    // both at once (the board template does not include the card yet).
-    let card_spi = Spi::new(
-        peripherals.SPI2,
-        // 400 kHz: the clock a card is specified to initialise at, and what it is read at here.
-        SpiConfig::default().with_frequency(Rate::from_khz(400)),
-    )
-    .expect("SPI configuration")
-        .with_sck(peripherals.GPIO${sd.spi.sclk})
-        .with_mosi(peripherals.GPIO${sd.spi.mosi})
-        .with_miso(peripherals.GPIO${sd.spi.miso});
+    let sd_mounted = {
+        // The card's own SPI bus. These are the TF socket's pins, not the panel's.
+        let card_spi = Spi::new(
+            peripherals.${peripheral},
+            // 400 kHz: the clock a card is specified to initialise at, and what it is read at here.
+            SpiConfig::default().with_frequency(Rate::from_khz(400)),
+        )
+        .expect("SPI configuration")
+            .with_sck(peripherals.GPIO${sd.spi.sclk})
+            .with_mosi(peripherals.GPIO${sd.spi.mosi})
+            .with_miso(peripherals.GPIO${sd.spi.miso});
 
-    let card_cs = Output::new(peripherals.GPIO${sd.cs}, Level::Low, OutputConfig::default());
-    let card = ExclusiveDevice::new(card_spi, card_cs, Delay::new()).expect("card chip select");
+        let card_cs = Output::new(peripherals.GPIO${sd.cs}, Level::Low, OutputConfig::default());
+        let card = ExclusiveDevice::new(card_spi, card_cs, Delay::new()).expect("card chip select");
 
-    log::info!("sd: mounting (cs GPIO${sd.cs}, sclk GPIO${sd.spi.sclk}, mosi GPIO${sd.spi.mosi}, miso GPIO${sd.spi.miso})");
+        log::info!(
+            "sd: mounting (cs GPIO${sd.cs}, sclk GPIO${sd.spi.sclk}, mosi GPIO${sd.spi.mosi}, miso GPIO${sd.spi.miso})"
+        );
 
-    let card = SdCard::new(card, Delay::new());
-    match card.num_bytes() {
-        Ok(bytes) => log::info!("sd: card reports {} bytes ({} MiB)", bytes, bytes / (1024 * 1024)),
-        Err(error) => log::error!("sd: the card did not answer ({:?})", error),
-    }
-
-    let mut volumes = VolumeManager::new(card, FixedClock);
-    // Remembered so the closing line can tell the truth: a card that never answered must not be reported as
-    // "mounted and readable".
-    let mut mounted = false;
-
-    match volumes.open_volume(VolumeIdx(0)) {
-        Ok(mut volume) => {
-            log::info!("sd: volume 0 opened");
-            match volume.open_root_dir() {
-                Ok(root) => {
-                    // Opening it walks the FAT: a card with a damaged filesystem fails here rather than
-                    // silently reporting a size. Listing the entries is the next step -- the crate's
-                    // directory iterator takes a raw handle, and that conversion is worth doing against its
-                    // source rather than by guessing (2026-10-06).
-                    log::info!("sd: root directory opened - the filesystem is readable");
-                    mounted = true;
-                    drop(root);
-                }
-                Err(error) => log::error!("sd: no root directory ({:?})", error),
-            }
+        let card = SdCard::new(card, Delay::new());
+        match card.num_bytes() {
+            Ok(bytes) => log::info!("sd: card reports {} bytes ({} MiB)", bytes, bytes / (1024 * 1024)),
+            Err(error) => log::error!("sd: the card did not answer ({:?})", error),
         }
-        Err(error) => log::error!("sd: no volume 0 - is the card inserted and FAT formatted? ({:?})", error),
-    }
+
+        let mut volumes = VolumeManager::new(card, FixedClock);
+        let mut mounted = false;
+
+        match volumes.open_raw_volume(VolumeIdx(0)) {
+            Ok(volume) => {
+                log::info!("sd: volume 0 opened");
+                match volumes.open_root_dir(volume) {
+                    Ok(directory) => {
+                        // Walking the directory walks the FAT, so this fails on a damaged filesystem rather
+                        // than quietly reporting a size.
+                        log::info!("sd: root directory opened - the filesystem is readable");
+                        // The callback returns unit in this version of the crate, not a Result: it is
+                        // called for its side effect and the iterator's own error is what comes back.
+                        match volumes.iterate_dir(directory, |entry| {
+                            log::info!("sd:   {} ({} bytes)", entry.name, entry.size);
+                        }) {
+                            Ok(()) => log::info!("sd: root directory listed"),
+                            Err(error) => log::error!("sd: listing failed ({:?})", error),
+                        }
+                        let _ = volumes.close_dir(directory);
+                        mounted = true;
+                    }
+                    Err(error) => log::error!("sd: no root directory ({:?})", error),
+                }
+            }
+            Err(error) => log::error!(
+                "sd: no volume 0 - is the card inserted and FAT formatted? ({:?})",
+                error
+            ),
+        }
+
+        mounted
+    };`;
+}
+
+/**
+ * The TF card template on its own: mount it, list it, and say whether it worked.
+ */
+function espSdcardBody(board: EspBoardProfile): string {
+    return `
+${espSdMountCode(board)}
 
     loop {
         log::info!(
             "sd: {}",
-            if mounted {
-                "mounted and readable; the card can be removed now"
+            if sd_mounted {
+                "mounted and readable"
             } else {
                 "not mounted - insert a FAT-formatted card in the TF socket and reset"
             }
@@ -713,6 +746,7 @@ function espSdcardBody(board: EspBoardProfile): string {
 }
 
 /**
+ * The board's sensors and its speaker/**
  * The board's sensors and its speaker: an LDR into an ADC channel, and a tone out of a DAC.
  *
  * Both halves are here because both are the *point of the wiring* rather than a generic demo. The LDR is the
@@ -833,6 +867,12 @@ function espTouchBody(
     const led = includeHardware && board.led.kind === 'rgb' ? board.led : undefined;
     const ldr = includeHardware ? board.ldr : undefined;
     const audio = includeHardware ? board.audio : undefined;
+    // The card is mounted before the panel comes up: it needs no display, and its result belongs in the log
+    // next to the rest of the board's hardware rather than in the middle of the touch loop.
+    // SPI3, not SPI2: the panel takes SPI2 in the same firmware, and a driver owns its peripheral for good
+    // once it has been handed over -- so the card cannot borrow the panel's bus here. On an ESP32 there are
+    // two, which is why the socket was wired to pins that can reach the second one.
+    const sdSetup = includeHardware && board.sd !== undefined ? espSdMountCode(board, 'SPI3') : '';
 
     const hardwareSetup = [
         led === undefined
@@ -927,7 +967,7 @@ function espTouchBody(
     const boxX = Math.floor((display.width - boxWidth) / 2);
     const boxY = Math.floor(display.height / 2) - Math.floor(boxHeight / 2);
 
-    return `${espPanelSetup(display, true)}
+    return `${sdSetup}${espPanelSetup(display, true)}
     // The touch controller's own clock: the panel's is restored around every burst.
     let touch_clock = || SpiConfig::default().with_frequency(Rate::from_khz(${Math.round(touch.spiHz / 1000)}));
 
