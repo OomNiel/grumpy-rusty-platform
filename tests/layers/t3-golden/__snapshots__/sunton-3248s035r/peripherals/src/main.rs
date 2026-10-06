@@ -52,7 +52,16 @@ async fn main(_spawner: Spawner) -> ! {
 
     loop {
 
-        let light_raw: u16 = adc.read_oneshot(&mut light).expect("adc read");
+        // Non-blocking: retry rather than expect, because the first read after boot reports WouldBlock.
+        let mut light_raw: Option<u16> = None;
+        for _ in 0..50 {
+            if let Ok(value) = adc.read_oneshot(&mut light) {
+                light_raw = Some(value);
+                break;
+            }
+            Timer::after(Duration::from_micros(200)).await;
+        }
+        let light_raw = light_raw.unwrap_or(4095);
         // The polarity is a property of the wiring, not of the ADC: the LDR faces ground, so a *brighter*
         // room reads *lower*. Print both so nobody has to guess which way round it is.
         log::info!(

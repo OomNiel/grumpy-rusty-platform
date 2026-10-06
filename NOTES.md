@@ -2839,3 +2839,43 @@ both may sit behind the `unstable` feature. Confirming those two is the first st
 templates, not the last.
 
 Suite: **616 passed, 0 skipped**.
+
+---
+
+## 64. The calibration survives a power cycle, and the ADC panic that hid behind it (2026-10-06)
+
+**The persistence test, on the board, in one capture:**
+
+```
+calibration: none stored                                        <- a fresh sector
+touch: corner 1 top-left recorded   ... corner 4 bottom-left    <- the four touches
+calibration: raw axis0 1806..286 and axis1 1884..213 over 320x480
+calibration: stored in flash                                    <- written
+   (reset)
+calibration: loaded from flash - axis0 1806..286 1884..213      <- read back, same numbers
+```
+
+So the record written to `0xF3F000` comes back byte for byte after a reset, and a calibrated panel boots straight
+into the graphics test screen instead of asking for the corners again.
+
+**But the first run of the board template died, and the symptom was "touch not responding".** The real cause was
+a panic two lines further in:
+
+```
+panicked at src/main.rs:591: adc read: WouldBlock
+```
+
+`Adc::read_oneshot` is non-blocking: it reports `WouldBlock` while a conversion is in flight, and it does so on
+the *first* read after boot. An `.expect()` there killed the whole firmware — including the touch loop, which had
+nothing to do with the ADC. Both templates now retry a bounded fifty times and log a warning if the ADC never
+becomes ready, rather than taking the app down.
+
+That is the second time in this board's work that a single wrong assumption about a peripheral's *readiness* cost
+a whole debugging round (the first was the touch controller's conversion time). The lesson is the same both
+times: a peripheral is not ready when it is created, and "not ready yet" is a state to handle rather than an
+error to assert on.
+
+**One thing the log also shows and does not yet explain: the light sensor reads 0 of 4095, constantly.** With
+3.3V - 5k - GPIO34 - LDR - GND, a working divider cannot sit at exactly zero in a lit room, so either GPIO34 is
+not the divider's midpoint on this unit, or the 5k/3.3V side is not connected. That is the next measurement, and
+it is the same shape as the touch pins: a traced pin that the data then has to agree with.
