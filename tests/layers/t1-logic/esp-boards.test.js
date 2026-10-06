@@ -620,6 +620,10 @@ test('the touch template asks for the four corners and says what it measured', (
     contains(main, 'x={} y={}', 'the mapped pair');
     contains(main, 'BOX_X: i32 =', 'the readout sits in the middle of the panel');
     contains(main, 'TOUCH_REPAINT', 'and only repaints when the numbers move');
+    // The readout is cleared before it is drawn: the numbers change length, and a fill followed by the border
+    // is the order that neither leaves the old reading behind nor eats half the border.
+    contains(main, 'PrimitiveStyle::with_fill(Rgb565::BLACK)');
+    contains(main, 'the other order erases half its width');
     contains(main, '"calibration: raw axis{} {}..{} and axis{} {}..{} over {}x{}"',
         'the numbers a user can report back');
     contains(main, 'frames a=[{:04X} {:04X} {:04X}] b=[{:04X} {:04X} {:04X}]',
