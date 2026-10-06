@@ -81,6 +81,17 @@ export function templatesForEsp(board: EspBoardProfile): AppTemplateInfo[] {
                 + 'a centred cross, a greeting and a blinking square — timed, and logging how long the paint took.',
         });
     }
+    if (board.ldr !== undefined || board.audio !== undefined) {
+        templates.push({
+            id: 'peripherals',
+            label: 'Sensors + sound',
+            description:
+                'Reads the on-board light sensor and plays a tone on the speaker connector: '
+                + (board.ldr === undefined ? '' : `LDR on GPIO${board.ldr.pin} (ADC), `)
+                + (board.audio === undefined ? '' : `speaker on GPIO${board.audio.pin} (DAC2 through a ${board.audio.seriesOhms ?? '?'} ohm resistor into an ${board.audio.amplifier})`)
+                + '. Both values go to the log.',
+        });
+    }
     if (board.touch !== undefined) {
         templates.push({
             id: 'touch',
@@ -154,8 +165,14 @@ panel-gc9a01 = []
 `;
     const espRtosFeatures = ['embassy', board.espChip];
 
+    // The ADC and DAC live behind esp-hal's `unstable` feature (confirmed in its source: the analog modules
+    // are cfg-gated), so a project that reads the LDR or drives the speaker has to ask for it.
+    const espHalFeatures = [`"${board.espChip}"`, '"log-04"'];
+    if (template === 'peripherals') {
+        espHalFeatures.push('"unstable"');
+    }
     const dependencies = [
-        `esp-hal = { version = "${ESP_CRATE_VERSIONS.espHal}", features = ["${board.espChip}", "log-04"] }`,
+        `esp-hal = { version = "${ESP_CRATE_VERSIONS.espHal}", features = [${espHalFeatures.join(', ')}] }`,
         `esp-rtos = { version = "${ESP_CRATE_VERSIONS.espRtos}", features = [${espRtosFeatures.map((f) => `"${f}"`).join(', ')}] }`,
         `esp-bootloader-esp-idf = { version = "${ESP_CRATE_VERSIONS.espBootloader}", features = ["${board.espChip}", "log-04"] }`,
         `esp-println = { version = "${ESP_CRATE_VERSIONS.espPrintln}", features = ["${board.espChip}", "log-04"] }`,
@@ -353,6 +370,19 @@ function espBootBlock(board: EspBoardProfile): string {
 }
 
 function espImports(board: EspBoardProfile, template: AppTemplate): string {
+    if (template === 'peripherals') {
+        return [
+            'use embassy_executor::Spawner;',
+            'use embassy_time::{Duration, Timer};',
+            // The analog peripherals live in esp_hal::analog and need the chip's `unstable` feature, which
+            // this template asks for in Cargo.toml.
+            'use esp_hal::analog::adc::{Adc, AdcConfig, Attenuation};',
+            'use esp_hal::analog::dac::Dac;',
+            'use esp_hal::clock::CpuClock;',
+            'use esp_hal::timer::timg::TimerGroup;',
+            'use esp_println as _;',
+        ].join('\n');
+    }
     if (template === 'touch') {
         return [
             // The bus is shared by two chips, so it lives in a RefCell.
@@ -431,7 +461,9 @@ function espMainRs(board: EspBoardProfile, template: AppTemplate, choices: Board
     const touch = template === 'touch' ? board.touch : undefined;
     const led = board.led;
 
-    const body = display !== undefined && touch !== undefined
+    const body = template === 'peripherals'
+        ? espPeripheralsBody(board)
+        : display !== undefined && touch !== undefined
         ? espTouchBody(display, touch)
         : display !== undefined
             ? espDisplayBody(display, board)
@@ -508,6 +540,81 @@ function espRgbLedBody(red: string, green: string, blue: string): string {
         green.set_low();
         blue.set_low();
         Timer::after(Duration::from_millis(400)).await;
+    }`;
+}
+
+/**
+ * The board's sensors and its speaker: an LDR into an ADC channel, and a tone out of a DAC.
+ *
+ * Both halves are here because both are the *point of the wiring* rather than a generic demo. The LDR is the
+ * lower leg of a divider (3.3V - 5k - pin - LDR - GND), so the number falls as the light rises -- the template
+ * says so in the log instead of leaving the user to work out whether their sensor is upside down. The speaker
+ * hangs off a DAC channel through a coupling resistor into a bridge amplifier, so a square wave written to the
+ * DAC *is* the sound: there is no PWM, no filter and no timer to configure.
+ */
+function espPeripheralsBody(board: EspBoardProfile): string {
+    const ldr = board.ldr;
+    const audio = board.audio;
+    const ldrSetup = ldr === undefined
+        ? ''
+        : `
+    // The light sensor: 3.3V through a resistor into this pin, with the LDR to ground. 11 dB attenuation so
+    // the full swing is readable rather than clipping at the top.
+    let mut adc_config = AdcConfig::new();
+    let mut light = adc_config.enable_pin(peripherals.GPIO${ldr.pin}, Attenuation::_11dB);
+    let mut adc = Adc::new(peripherals.ADC1, adc_config);
+`;
+    const audioSetup = audio === undefined
+        ? ''
+        : `
+    // The speaker: this pin is DAC channel 2, so what it outputs is the waveform itself.
+    let mut speaker = Dac::new(peripherals.DAC2, peripherals.GPIO${audio.pin});
+`;
+    const ldrLoop = ldr === undefined
+        ? ''
+        : `
+        let light_raw: u16 = adc.read_oneshot(&mut light).expect("adc read");
+        // The polarity is a property of the wiring, not of the ADC: the LDR faces ground, so a *brighter*
+        // room reads *lower*. Print both so nobody has to guess which way round it is.
+        log::info!(
+            "ldr: {} of 4095 ({} - brighter light reads lower on this board)",
+            light_raw,
+            if light_raw > 3000 {
+                "dark"
+            } else if light_raw > 1500 {
+                "dim"
+            } else if light_raw > 500 {
+                "lit"
+            } else {
+                "bright"
+            }
+        );
+`;
+    const audioLoop = audio === undefined
+        ? ''
+        : `
+        // A square wave, which a small speaker reproduces loudest: half a millisecond each way is about a
+        // kilohertz. Written straight to the DAC, so the loop *is* the sample clock.
+        for _ in 0..200 {
+            speaker.write(200);
+            Timer::after(Duration::from_micros(500)).await;
+            speaker.write(56);
+            Timer::after(Duration::from_micros(500)).await;
+        }
+        // Back to the middle, so the amplifier is not left against a rail between tones.
+        speaker.write(128);
+`;
+    const peripherals = [
+        ldr === undefined ? undefined : `LDR on GPIO${ldr.pin} (ADC1)`,
+        audio === undefined ? undefined : `speaker on GPIO${audio.pin} (DAC2 into an ${audio.amplifier})`,
+    ].filter((line): line is string => line !== undefined).join(', ');
+
+    return `
+    log::info!("peripherals: ${peripherals}");
+${ldrSetup}${audioSetup}
+    loop {
+${ldrLoop}${audioLoop}
+        Timer::after(Duration::from_millis(1000)).await;
     }`;
 }
 

@@ -190,7 +190,8 @@ test('an ESP board offers only templates that are implemented', () => {
     // The CYD is the only board with a touch controller, so it is the only one offered the touch test.
     equal(
         templatesFor(espBoard('sunton-3248s035r')).map((info) => info.id),
-        ['blinky', 'display', 'touch'],
+        ['blinky', 'display', 'peripherals', 'touch'],
+        'the sensors + sound template comes before touch, because it is the quieter one to start with',
     );
     for (const id of ['lilygo-tqt', 'sunton-3248s035r']) {
         equal(defaultTemplateFor(espBoard(id)), 'display', 'a panel board is bought for its panel');
@@ -621,4 +622,23 @@ test('the touch template asks for the four corners and says what it measured', (
     // The axis choice is worked out from the corners, not assumed.
     contains(main, 'raw_x_axis = if delta_a >= delta_b { 0 } else { 1 };');
     contains(main, 'TOUCH_MOVE: i32 = 200');
+});
+
+// The sensors and sound template. Both halves exist because of *this board's* wiring rather than a generic
+// demo: an LDR that is the lower leg of a divider, and a speaker on a DAC channel with no PWM in sight.
+test('the peripherals template reads the LDR and drives the DAC the board actually wires', () => {
+    const files = filesFor(espBoard('sunton-3248s035r'), 'peripherals');
+    const main = files.get('src/main.rs');
+    const cargo = files.get('Cargo.toml');
+
+    contains(main, 'use esp_hal::analog::adc::{Adc, AdcConfig, Attenuation};');
+    contains(main, 'enable_pin(peripherals.GPIO34, Attenuation::_11dB)', 'the LDR pin, at full range');
+    contains(main, 'adc.read_oneshot(&mut light)', 'an ADC read, not a digital one');
+    contains(main, 'use esp_hal::analog::dac::Dac;');
+    contains(main, 'Dac::new(peripherals.DAC2, peripherals.GPIO26)', 'the speaker is DAC channel 2');
+    // The polarity is the thing that looks like a broken sensor if it is assumed backwards.
+    contains(main, 'brighter light reads lower on this board');
+    // And the feature that makes the analog modules visible at all.
+    contains(cargo, '"unstable"', 'the ADC and DAC are behind esp-hal\'s unstable feature');
+    contains(cargo, '"esp32"', 'alongside the chip feature it has always had');
 });
