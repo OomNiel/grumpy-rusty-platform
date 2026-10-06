@@ -14,7 +14,7 @@ use embedded_graphics::pixelcolor::Rgb565;
 use embedded_graphics::prelude::*;
 use embedded_graphics::primitives::{PrimitiveStyle, Rectangle};
 use embedded_graphics::text::Text;
-use embedded_hal::spi::SpiDevice;
+use embedded_hal::spi::{Operation, SpiDevice};
 use embedded_hal_bus::spi::RefCellDevice;
 use esp_hal::clock::CpuClock;
 use esp_hal::delay::Delay;
@@ -96,14 +96,14 @@ async fn main(_spawner: Spawner) -> ! {
     log::info!("panel ready: 3.5\" ST7796 320x480");
 
     // The touch controller's own clock: the panel's is restored around every burst.
-    let touch_clock = || SpiConfig::default().with_frequency(Rate::from_khz(2000));
+    let touch_clock = || SpiConfig::default().with_frequency(Rate::from_khz(1000));
 
     // The same bus, a second chip select. PENIRQ is open drain: low means pressed, and the line is only
     // logged because it is not reliable here -- GPIO34-39 have no internal pull-ups either, so what the
     // pin reads with nothing touching it says more about the board than about the glass.
-    let touch_cs = Output::new(peripherals.GPIO25, Level::Low, OutputConfig::default());
+    let touch_cs = Output::new(peripherals.GPIO33, Level::Low, OutputConfig::default());
     let mut touch = RefCellDevice::new(&bus, touch_cs, Delay::new()).expect("touch chip select");
-    let touch_irq = Input::new(peripherals.GPIO39, InputConfig::default().with_pull(Pull::Up));
+    let touch_irq = Input::new(peripherals.GPIO36, InputConfig::default().with_pull(Pull::Up));
 
     // Control bytes from the XPT2046 datasheet: S=1 | channel | 12-bit | single-ended | power-down bits.
     // 0xD1 reads one panel axis, 0x91 the other, and 0xD0 is an axis read with PD=00: powered down
@@ -115,6 +115,9 @@ async fn main(_spawner: Spawner) -> ! {
     // averages, and how far the numbers have to move before the readout is repainted.
     const TOUCH_MOVE: i32 = 200;
     const TOUCH_SAMPLES: u32 = 3;
+    // The controller's conversion time, and then some: too short and the first sample after a channel
+    // change comes back as zero, which is what a 2 us delay still did on this board.
+    const TOUCH_SETTLE_NS: u32 = 20_000;
     const TOUCH_REPAINT: i32 = 4;
 
     // Numbers have to become text for the panel, and there is no allocator here: a fixed buffer that
@@ -145,11 +148,23 @@ async fn main(_spawner: Spawner) -> ! {
         }
     }
 
-    // One command, and the two bytes that come back with it. The bytes are returned as they arrived
-    // because which bit of which byte holds what is the one thing worth seeing on a bring-up.
+    // One command, and the two bytes that come back with it.
+    //
+    // The command byte and the data bytes are separated by the controller's conversion time instead of
+    // being clocked back to back. A plain two-byte transfer reads mid-scale and never
+    // moves for a touch on this board; the same pins, read with gaps between the bytes, answer with real
+    // values (0xF87F idle, 0x6031 under a finger). An Operation::DelayNs keeps CS asserted across the
+    // gap, which is what the conversion needs.
     fn touch_frame<D: SpiDevice>(device: &mut D, command: u8) -> u16 {
-        let mut frame = [command, 0x00];
-        if device.transfer_in_place(&mut frame).is_err() {
+        let mut frame = [0u8; 2];
+        if device
+            .transaction(&mut [
+                Operation::Write(&[command]),
+                Operation::DelayNs(TOUCH_SETTLE_NS),
+                Operation::Read(&mut frame),
+            ])
+            .is_err()
+        {
             return 0;
         }
         ((frame[0] as u16) << 8) | frame[1] as u16
@@ -164,6 +179,10 @@ async fn main(_spawner: Spawner) -> ! {
     // One axis, averaged over a few conversions. The first read is the value that arrived with a command
     // for the *previous* channel, so it is dropped.
     fn touch_axis<D: SpiDevice>(device: &mut D, command: u8) -> (u16, [u16; TOUCH_SAMPLES as usize]) {
+        // Two frames are consumed before the samples are taken: the first is whatever the previous
+        // channel left behind, and the second is the same channel's previous conversion. Averaging from
+        // the third on gives settled values -- without this the average is dragged towards zero.
+        let _ = touch_frame(device, command);
         let _ = touch_frame(device, command);
         let mut frames = [0u16; TOUCH_SAMPLES as usize];
         for frame in frames.iter_mut() {
@@ -180,7 +199,7 @@ async fn main(_spawner: Spawner) -> ! {
     }
 
     log::info!(
-        "touch: XPT2046 on GPIO25 (cs), GPIO39 (irq), pen level now {}",
+        "touch: XPT2046 on GPIO33 (cs), GPIO36 (irq), pen level now {}",
         touch_irq.is_low()
     );
 

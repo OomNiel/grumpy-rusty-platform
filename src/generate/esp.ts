@@ -367,7 +367,7 @@ function espImports(board: EspBoardProfile, template: AppTemplate): string {
             'use embedded_graphics::primitives::{PrimitiveStyle, Rectangle};',
             'use embedded_graphics::text::Text;',
             // Named directly: the XPT2046 read helper is generic over `SpiDevice`.
-            'use embedded_hal::spi::SpiDevice;',
+            'use embedded_hal::spi::{Operation, SpiDevice};',
             // Two devices on one bus: the adapter for that is `RefCellDevice`, not `ExclusiveDevice`.
             'use embedded_hal_bus::spi::RefCellDevice;',
             'use esp_hal::clock::CpuClock;',
@@ -530,6 +530,9 @@ function espTouchBody(display: EspDisplay, touch: EspTouch): string {
     // averages, and how far the numbers have to move before the readout is repainted.
     const TOUCH_MOVE: i32 = 200;
     const TOUCH_SAMPLES: u32 = 3;
+    // The controller's conversion time, and then some: too short and the first sample after a channel
+    // change comes back as zero, which is what a 2 us delay still did on this board.
+    const TOUCH_SETTLE_NS: u32 = 20_000;
     const TOUCH_REPAINT: i32 = 4;
 
     // Numbers have to become text for the panel, and there is no allocator here: a fixed buffer that
@@ -560,11 +563,23 @@ function espTouchBody(display: EspDisplay, touch: EspTouch): string {
         }
     }
 
-    // One command, and the two bytes that come back with it. The bytes are returned as they arrived
-    // because which bit of which byte holds what is the one thing worth seeing on a bring-up.
+    // One command, and the two bytes that come back with it.
+    //
+    // The command byte and the data bytes are separated by the controller's conversion time instead of
+    // being clocked back to back. A plain two-byte transfer reads mid-scale and never
+    // moves for a touch on this board; the same pins, read with gaps between the bytes, answer with real
+    // values (0xF87F idle, 0x6031 under a finger). An Operation::DelayNs keeps CS asserted across the
+    // gap, which is what the conversion needs.
     fn touch_frame<D: SpiDevice>(device: &mut D, command: u8) -> u16 {
-        let mut frame = [command, 0x00];
-        if device.transfer_in_place(&mut frame).is_err() {
+        let mut frame = [0u8; 2];
+        if device
+            .transaction(&mut [
+                Operation::Write(&[command]),
+                Operation::DelayNs(TOUCH_SETTLE_NS),
+                Operation::Read(&mut frame),
+            ])
+            .is_err()
+        {
             return 0;
         }
         ((frame[0] as u16) << 8) | frame[1] as u16
@@ -579,6 +594,10 @@ function espTouchBody(display: EspDisplay, touch: EspTouch): string {
     // One axis, averaged over a few conversions. The first read is the value that arrived with a command
     // for the *previous* channel, so it is dropped.
     fn touch_axis<D: SpiDevice>(device: &mut D, command: u8) -> (u16, [u16; TOUCH_SAMPLES as usize]) {
+        // Two frames are consumed before the samples are taken: the first is whatever the previous
+        // channel left behind, and the second is the same channel's previous conversion. Averaging from
+        // the third on gives settled values -- without this the average is dragged towards zero.
+        let _ = touch_frame(device, command);
         let _ = touch_frame(device, command);
         let mut frames = [0u16; TOUCH_SAMPLES as usize];
         for frame in frames.iter_mut() {
