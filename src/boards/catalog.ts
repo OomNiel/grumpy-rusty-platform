@@ -246,7 +246,9 @@ export const BOARDS: BoardProfile[] = [
         espChip: 'esp32',
         flashSize: '4 MB',
         psram: false,
-        led: { kind: 'none' },
+        // Blue 16, red 4, green 17 (ESP32-035 hardware notes). It was 'none' until the pins were known,
+        // which is why this board's blinky template used to log a heartbeat instead of lighting anything.
+        led: { kind: 'rgb', red: '4', green: '17', blue: '16' },
         displays: [
             {
                 controller: 'ST7796',

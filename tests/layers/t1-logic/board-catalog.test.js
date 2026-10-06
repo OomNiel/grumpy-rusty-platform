@@ -118,6 +118,16 @@ test('every board describes its LED and where the LED lives', () => {
             );
         } else if (board.led.kind === 'cyw43') {
             ok(Number.isInteger(board.led.index) && board.led.index >= 0, `${board.id} needs a CYW43 LED index`);
+        } else if (board.led.kind === 'rgb') {
+            // Three pins, all plain GPIO numbers on an ESP board, and all different from each other.
+            for (const [name, pin] of [['red', board.led.red], ['green', board.led.green], ['blue', board.led.blue]]) {
+                matches(pin, /^\d+$/, `${board.id} has an invalid ${name} LED pin`);
+            }
+            equal(
+                new Set([board.led.red, board.led.green, board.led.blue]).size,
+                3,
+                `${board.id} must not reuse a pin for two LED channels`,
+            );
         } else {
             // Some boards genuinely have no user LED (the ESP32-DevKitC V4 has only a power
             // LED), and saying so is better than pointing at a pin that is not wired.

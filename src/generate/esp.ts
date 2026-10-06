@@ -419,7 +419,7 @@ function espImports(board: EspBoardProfile, template: AppTemplate): string {
         'use esp_hal::timer::timg::TimerGroup;',
         'use esp_println as _;',
     ];
-    if (board.led.kind === 'gpio') {
+    if (board.led.kind === 'gpio' || board.led.kind === 'rgb') {
         lines.push('use esp_hal::gpio::{Level, Output, OutputConfig};');
     }
     return lines.join('\n');
@@ -437,7 +437,9 @@ function espMainRs(board: EspBoardProfile, template: AppTemplate, choices: Board
             ? espDisplayBody(display, board)
             : led.kind === 'gpio'
                 ? espLedBody(led.pin, led.external === true)
-                : espHeartbeatBody();
+                : led.kind === 'rgb'
+                    ? espRgbLedBody(led.red, led.green, led.blue)
+                    : espHeartbeatBody();
 
     return `${espMainHeader(board, template)}
 #![no_std]
@@ -475,6 +477,38 @@ function orientation(display: EspDisplay): string {
         : '';
     return `${note}
         .orientation(Orientation::new()${flips})`;
+}
+
+/**
+ * The RGB LED on a board that has one: three pins, cycled through red, green and blue.
+ *
+ * Kept as its own body rather than a branch inside the single-LED one because it is a different thing to
+ * demonstrate: a three-pin LED shows that three GPIOs work *and* that the pins are the ones the board data
+ * claims, which a single blink cannot.
+ */
+function espRgbLedBody(red: string, green: string, blue: string): string {
+    return `
+    // Blue, red and green, in that order, are what this board's own hardware notes give. The three pins are
+    // driven one at a time so a swapped channel is visible as the wrong colour rather than as nothing.
+    let mut red = Output::new(peripherals.GPIO${red}, Level::Low, OutputConfig::default());
+    let mut green = Output::new(peripherals.GPIO${green}, Level::Low, OutputConfig::default());
+    let mut blue = Output::new(peripherals.GPIO${blue}, Level::Low, OutputConfig::default());
+
+    log::info!("RGB LED on GPIO${red} (red), GPIO${green} (green), GPIO${blue} (blue)");
+
+    loop {
+        for (name, colour) in [("red", 0usize), ("green", 1), ("blue", 2)] {
+            log::info!("led: {}", name);
+            red.set_level(Level::from(colour == 0));
+            green.set_level(Level::from(colour == 1));
+            blue.set_level(Level::from(colour == 2));
+            Timer::after(Duration::from_millis(400)).await;
+        }
+        red.set_low();
+        green.set_low();
+        blue.set_low();
+        Timer::after(Duration::from_millis(400)).await;
+    }`;
 }
 
 /**

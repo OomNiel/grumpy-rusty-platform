@@ -10,6 +10,7 @@ use embassy_time::{Duration, Timer};
 use esp_hal::clock::CpuClock;
 use esp_hal::timer::timg::TimerGroup;
 use esp_println as _;
+use esp_hal::gpio::{Level, Output, OutputConfig};
 use esp_backtrace as _;
 
 // The ESP-IDF bootloader expects an application descriptor in the image. Without it the
@@ -37,12 +38,25 @@ async fn main(_spawner: Spawner) -> ! {
     log::info!("board: ESP32-035 LCD Panel (ESP32), 4 MB flash");
 
 
-    // No LED to blink on this board, so the heartbeat goes to the log instead. The panel
-    // template is the interesting one here.
-    let mut tick: u32 = 0;
+    // Blue, red and green, in that order, are what this board's own hardware notes give. The three pins are
+    // driven one at a time so a swapped channel is visible as the wrong colour rather than as nothing.
+    let mut red = Output::new(peripherals.GPIO4, Level::Low, OutputConfig::default());
+    let mut green = Output::new(peripherals.GPIO17, Level::Low, OutputConfig::default());
+    let mut blue = Output::new(peripherals.GPIO16, Level::Low, OutputConfig::default());
+
+    log::info!("RGB LED on GPIO4 (red), GPIO17 (green), GPIO16 (blue)");
+
     loop {
-        tick += 1;
-        log::info!("alive (tick {})", tick);
-        Timer::after(Duration::from_secs(1)).await;
+        for (name, colour) in [("red", 0usize), ("green", 1), ("blue", 2)] {
+            log::info!("led: {}", name);
+            red.set_level(Level::from(colour == 0));
+            green.set_level(Level::from(colour == 1));
+            blue.set_level(Level::from(colour == 2));
+            Timer::after(Duration::from_millis(400)).await;
+        }
+        red.set_low();
+        green.set_low();
+        blue.set_low();
+        Timer::after(Duration::from_millis(400)).await;
     }
 }
