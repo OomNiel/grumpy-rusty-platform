@@ -81,6 +81,18 @@ export function templatesForEsp(board: EspBoardProfile): AppTemplateInfo[] {
                 + 'a centred cross, a greeting and a blinking square — timed, and logging how long the paint took.',
         });
     }
+    if (board.displays.length > 0 && board.touch !== undefined) {
+        // The board template: everything this board has, in one project. It is the touch template plus the
+        // rest of the hardware, because that is literally what it is (see espTouchBody's `includeHardware`).
+        templates.push({
+            id: 'board',
+            label: 'Board test (everything)',
+            description:
+                'Everything this board carries in one firmware: the panel with the graphics test screen, touch '
+                + 'with its calibration, the RGB LED as a status light, the light sensor in the log, and a beep '
+                + 'on the speaker each time a corner is recorded.',
+        });
+    }
     if (board.ldr !== undefined || board.audio !== undefined) {
         templates.push({
             id: 'peripherals',
@@ -150,7 +162,9 @@ function espCargoToml(
     choices: BoardChoices,
 ): string {
     // The touch template drives the same panel, so everything the panel needs is needed there too.
-    const display = template === 'display' || template === 'touch' ? displayFor(board, choices) : undefined;
+    const display = template === 'display' || template === 'touch' || template === 'board'
+        ? displayFor(board, choices)
+        : undefined;
     const panelChoice = display?.panelChoice;
     const features =
         panelChoice === undefined
@@ -168,7 +182,7 @@ panel-gc9a01 = []
     // The ADC and DAC live behind esp-hal's `unstable` feature (confirmed in its source: the analog modules
     // are cfg-gated), so a project that reads the LDR or drives the speaker has to ask for it.
     const espHalFeatures = [`"${board.espChip}"`, '"log-04"'];
-    if (template === 'peripherals') {
+    if (template === 'peripherals' || template === 'board') {
         espHalFeatures.push('"unstable"');
     }
     const dependencies = [
@@ -196,7 +210,7 @@ panel-gc9a01 = []
             `embedded-hal-bus = "${ESP_CRATE_VERSIONS.embeddedHalBus}"`,
         );
     }
-    if (template === 'touch') {
+    if (template === 'touch' || template === 'board') {
         // The touch template reads the controller through a function generic over `SpiDevice`, so the
         // trait has to be nameable: `embedded-hal-bus` brings the trait's *implementations* but not the
         // crate name itself. Same 1.0 line mipidsi and embedded-hal-bus already resolve to.
@@ -383,7 +397,15 @@ function espImports(board: EspBoardProfile, template: AppTemplate): string {
             'use esp_println as _;',
         ].join('\n');
     }
-    if (template === 'touch') {
+    if (template === 'touch' || template === 'board') {
+        // Only the board template drives the LDR and the speaker, and an unused import is a warning, so the
+        // analog imports are added where the hardware actually is.
+        const hardwareImports = template === 'board'
+            ? [
+                'use esp_hal::analog::adc::{Adc, AdcConfig, Attenuation};',
+                'use esp_hal::analog::dac::Dac;',
+            ]
+            : [];
         return [
             // The bus is shared by two chips, so it lives in a RefCell.
             'use core::cell::RefCell;',
@@ -404,6 +426,7 @@ function espImports(board: EspBoardProfile, template: AppTemplate): string {
             'use esp_hal::delay::Delay;',
             // `Input`/`Pull` are the touch controller's PENIRQ line: low means pressed.
             'use esp_hal::gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull};',
+            ...hardwareImports,
             'use esp_hal::spi::master::{Config as SpiConfig, Spi};',
             'use esp_hal::time::Rate;',
             'use esp_hal::timer::timg::TimerGroup;',
@@ -456,15 +479,15 @@ function espImports(board: EspBoardProfile, template: AppTemplate): string {
 }
 
 function espMainRs(board: EspBoardProfile, template: AppTemplate, choices: BoardChoices): string {
-    const usesPanel = template === 'display' || template === 'touch';
+    const usesPanel = template === 'display' || template === 'touch' || template === 'board';
     const display = usesPanel ? displayFor(board, choices) : undefined;
-    const touch = template === 'touch' ? board.touch : undefined;
+    const touch = template === 'touch' || template === 'board' ? board.touch : undefined;
     const led = board.led;
 
     const body = template === 'peripherals'
         ? espPeripheralsBody(board)
         : display !== undefined && touch !== undefined
-        ? espTouchBody(display, touch)
+        ? espTouchBody(display, board, touch, template === 'board')
         : display !== undefined
             ? espDisplayBody(display, board)
             : led.kind === 'gpio'
@@ -642,7 +665,77 @@ ${ldrLoop}${audioLoop}
  * mapping out from what it read, and the mapped position is shown as numbers in the middle of the panel —
  * live, refreshed as the finger moves, without repainting the whole screen each time.
  */
-function espTouchBody(display: EspDisplay, touch: EspTouch): string {
+function espTouchBody(
+    display: EspDisplay,
+    board: EspBoardProfile,
+    touch: EspTouch,
+    includeHardware: boolean,
+): string {
+    // The board template is this template plus whatever else the board carries: the RGB LED as a status
+    // light, the light sensor in the log, and a beep on the speaker when a corner is recorded. One function
+    // rather than two templates' worth of copied code, because the touch half is the long half and a second
+    // copy of it is a second place for the next fix to be forgotten.
+    const led = includeHardware && board.led.kind === 'rgb' ? board.led : undefined;
+    const ldr = includeHardware ? board.ldr : undefined;
+    const audio = includeHardware ? board.audio : undefined;
+
+    const hardwareSetup = [
+        led === undefined
+            ? ''
+            : `
+    // The RGB LED as a status light: red while uncalibrated, green while a finger is down, blue when idle
+    // and calibrated. Wiring it to the state makes it a diagnostic rather than decoration.
+    let mut led_red = Output::new(peripherals.GPIO${led.red}, Level::Low, OutputConfig::default());
+    let mut led_green = Output::new(peripherals.GPIO${led.green}, Level::Low, OutputConfig::default());
+    let mut led_blue = Output::new(peripherals.GPIO${led.blue}, Level::Low, OutputConfig::default());`,
+        ldr === undefined
+            ? ''
+            : `
+    // The light sensor: the lower leg of a divider, so a brighter room reads lower.
+    let mut adc_config = AdcConfig::new();
+    let mut light = adc_config.enable_pin(peripherals.GPIO${ldr.pin}, Attenuation::_11dB);
+    let mut adc = Adc::new(peripherals.ADC1, adc_config);`,
+        audio === undefined
+            ? ''
+            : `
+    // The speaker hangs off a DAC channel: what is written is the waveform.
+    let mut speaker = Dac::new(peripherals.DAC2, peripherals.GPIO${audio.pin});`,
+    ].join('');
+
+    const hardwareLoop = [
+        led === undefined
+            ? ''
+            : `
+        led_red.set_level(Level::from(!calibrated));
+        led_green.set_level(Level::from(calibrated && pressed));
+        led_blue.set_level(Level::from(calibrated && !pressed));`,
+        ldr === undefined
+            ? ''
+            : `
+        if ticks % 50 == 0 {
+            let light_raw: u16 = adc.read_oneshot(&mut light).expect("adc read");
+            log::info!("ldr: {} of 4095 (brighter light reads lower on this board)", light_raw);
+        }`,
+    ].join('');
+
+    const beep = audio === undefined
+        ? ''
+        : `
+                        // A short beep, so the speaker is demonstrated by the calibration itself.
+                        for _ in 0..60 {
+                            speaker.write(200);
+                            Timer::after(Duration::from_micros(400)).await;
+                            speaker.write(56);
+                            Timer::after(Duration::from_micros(400)).await;
+                        }
+                        speaker.write(128);`;
+
+    const hardwareLog = [
+        led === undefined ? undefined : 'RGB LED',
+        ldr === undefined ? undefined : `LDR on GPIO${ldr.pin}`,
+        audio === undefined ? undefined : `speaker on GPIO${audio.pin}`,
+    ].filter((line): line is string => line !== undefined);
+
     // The live readout box: middle of the panel, big enough for three lines and wide enough for the
     // longest line ("raw a=4095 b=4095").
     const boxWidth = Math.min(display.width - 20, 280);
@@ -759,6 +852,8 @@ function espTouchBody(display: EspDisplay, touch: EspTouch): string {
         "touch: ${touch.controller} on GPIO${touch.cs} (cs), GPIO${touch.irq} (irq), pen level now {}",
         touch_irq.is_low()
     );
+${hardwareSetup}
+${hardwareLog.length > 0 ? `    log::info!("board hardware: ${hardwareLog.join(', ')}");` : ''}
 
     // The idle baseline, taken before anything is drawn: this is what the axes read with nothing on the
     // glass, and a touch is judged by how far they move from it.
@@ -971,7 +1066,7 @@ function espTouchBody(display: EspDisplay, touch: EspTouch): string {
                     frames_b[2]
                 );
                 if !calibrated {
-                    measured[corner] = [a, b];
+                    measured[corner] = [a, b];${beep}
                     log::info!("touch: corner {} {} recorded", corner + 1, corners[corner]);
                     corner += 1;
                     if corner == 4 {
@@ -1032,6 +1127,7 @@ function espTouchBody(display: EspDisplay, touch: EspTouch): string {
             // "the app is not running".
             log::info!("touch test alive: a={} b={} idle a={} b={} pen={}", raw_a, raw_b, idle_a, idle_b, touch_irq.is_low());
         }
+${hardwareLoop}
         Timer::after(Duration::from_millis(20)).await;
     }`;
 }
@@ -1415,9 +1511,9 @@ function espReadme(
 ): string {
     // Only the pins the generated firmware actually drives are listed: the SD socket is still
     // described in the notes rather than claimed, because no template touches it yet.
-    const usesPanel = template === 'display' || template === 'touch';
+    const usesPanel = template === 'display' || template === 'touch' || template === 'board';
     const display = usesPanel ? displayFor(board, choices) : undefined;
-    const touch = template === 'touch' ? board.touch : undefined;
+    const touch = template === 'touch' || template === 'board' ? board.touch : undefined;
     const pinRows: string[] = [];
     if (display) {
         pinRows.push(`| ${display.cs} | panel chip select |`);

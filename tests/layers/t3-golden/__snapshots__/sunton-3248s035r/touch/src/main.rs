@@ -204,6 +204,8 @@ async fn main(_spawner: Spawner) -> ! {
         touch_irq.is_low()
     );
 
+
+
     // The idle baseline, taken before anything is drawn: this is what the axes read with nothing on the
     // glass, and a touch is judged by how far they move from it.
     bus.borrow_mut().apply_config(&touch_clock()).expect("touch clock");
@@ -476,6 +478,7 @@ async fn main(_spawner: Spawner) -> ! {
             // "the app is not running".
             log::info!("touch test alive: a={} b={} idle a={} b={} pen={}", raw_a, raw_b, idle_a, idle_b, touch_irq.is_low());
         }
+
         Timer::after(Duration::from_millis(20)).await;
     }
 }

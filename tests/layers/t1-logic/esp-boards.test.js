@@ -190,8 +190,8 @@ test('an ESP board offers only templates that are implemented', () => {
     // The CYD is the only board with a touch controller, so it is the only one offered the touch test.
     equal(
         templatesFor(espBoard('sunton-3248s035r')).map((info) => info.id),
-        ['blinky', 'display', 'peripherals', 'touch'],
-        'the sensors + sound template comes before touch, because it is the quieter one to start with',
+        ['blinky', 'display', 'board', 'peripherals', 'touch'],
+        'the board template sits with the panel templates it is built from',
     );
     for (const id of ['lilygo-tqt', 'sunton-3248s035r']) {
         equal(defaultTemplateFor(espBoard(id)), 'display', 'a panel board is bought for its panel');
@@ -641,4 +641,37 @@ test('the peripherals template reads the LDR and drives the DAC the board actual
     // And the feature that makes the analog modules visible at all.
     contains(cargo, '"unstable"', 'the ADC and DAC are behind esp-hal\'s unstable feature');
     contains(cargo, '"esp32"', 'alongside the chip feature it has always had');
+});
+
+// The board template is the touch template plus the rest of the board's hardware, in one firmware. It exists
+// because that is how the user wants to select features -- one project per board, not one project per
+// peripheral -- so what matters is that all of it is actually in there and that nothing is duplicated.
+test('the board template has the panel, touch, the LED, the sensor and the speaker', () => {
+    const files = filesFor(espBoard('sunton-3248s035r'), 'board');
+    const main = files.get('src/main.rs');
+    const cargo = files.get('Cargo.toml');
+
+    // The panel and touch half, same as the touch template.
+    contains(main, 'Builder::new(models::ST7796');
+    contains(main, 'XPT2046 on GPIO33 (cs), GPIO36 (irq)');
+    contains(main, 'Touch the crosshair in the bright block');
+    contains(main, 'Touch: numbers below, and the log');
+    // And the rest of the board.
+    contains(main, 'LED::Low'.replace('LED::', 'Level::'), 'the RGB LED is driven');
+    contains(main, 'let mut led_red = Output::new(peripherals.GPIO4');
+    contains(main, 'let mut led_green = Output::new(peripherals.GPIO17');
+    contains(main, 'let mut led_blue = Output::new(peripherals.GPIO16');
+    contains(main, 'adc.read_oneshot(&mut light)', 'the light sensor is read');
+    contains(main, 'Dac::new(peripherals.DAC2, peripherals.GPIO26)', 'and the speaker is driven');
+    contains(main, 'board hardware: RGB LED, LDR on GPIO34, speaker on GPIO26');
+    // The dependencies the analog half needs.
+    contains(cargo, '"unstable"');
+    contains(cargo, 'embedded-hal = "1.0.0"');
+    contains(cargo, 'mipidsi');
+
+    // The touch template must not have grown the board hardware: the two are separate choices.
+    const touch = filesFor(espBoard('sunton-3248s035r'), 'touch').get('src/main.rs');
+    notContains(touch, 'led_red', 'the touch template stays touch-only');
+    notContains(touch, 'read_oneshot');
+    notContains(touch, 'Dac::new');
 });
