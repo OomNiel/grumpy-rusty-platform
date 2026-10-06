@@ -2963,3 +2963,42 @@ reads noise, and this read was exactly zero.
 Worth keeping as a diagnostic lesson, next to §64's "a peripheral is not ready when it is created": **an exact
 value is evidence**. `0` and `4095` are not measurements of an input, they are statements about the wiring, and
 the useful move is to believe them rather than to go looking in the code.
+
+---
+
+## 68. The board's own LDR example, found online (2026-10-06)
+
+*"Scan the internet for any reference to this issue."*
+
+The reference repository for this board carries **`examples/Basics/5-LDRTest/5-LDRTest.ino`**, and it settles two
+things that were assumptions until now:
+
+```c
+#define LDR_PIN 34
+...
+// Sensor reading values:
+// 0 is full brightness, higher values == darker
+analogSetAttenuation(ADC_0db);
+```
+
+1. **The pin is GPIO34** — the same pin the catalog has had since the user traced it, now confirmed by the board's
+   own example.
+2. **The polarity is "0 is full brightness, higher values are darker"** — exactly what our log says ("brighter
+   light reads lower on this board") and what the code documents. An independent confirmation of the sense of the
+   divider: the LDR is the lower leg.
+
+**A difference worth noting rather than copying:** the example uses `ADC_0db` (roughly a 1.1V full scale) where our
+template uses 11 dB (3.3V). 0 dB gives finer resolution at the bright end but clips as soon as the node passes
+~1.1V — that is, in dim light — and the example's own comment admits *"I find this does not work that reliably"*.
+For a template that should show the whole range, 11 dB is the right default; if the readings turn out to be coarse
+in normal room light once the divider is fixed, the middle setting (6 dB) is the next thing to try rather than
+clipping the top of the range.
+
+**No reference anywhere to the fault on this unit.** Nothing in the board's repository, its hardware notes
+(which have no LDR row at all — the divider is undocumented, which is why it had to be traced), the Arduino
+forum's CYD LDR thread, or any other search hit describes a board whose divider is grounded at both ends. The
+nearest data points are the opposite: the official example exists because the sensor works on the board it was
+written for, and a
+[CYD LDR thread](https://forum.arduino.cc/t/cheap-yellow-display-ldr-sensor/1347942/5) has a user finding dark
+gives the *higher* number — the same sense we documented. So this is this unit, or an unreported slip in a batch,
+not a known characteristic of the design.
