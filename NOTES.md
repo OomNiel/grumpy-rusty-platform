@@ -2909,3 +2909,31 @@ calibration is measured on the panel rather than assumed from a datasheet; the b
 template *plus* the hardware rather than a copy of it; and the readout above clears its interior rather than
 redrawing a screen it did not need to. Where "correct" costs more than "easy", it is the one to take, and where
 it is genuinely not affordable yet the honest answer is to say so and leave it open rather than to fake it.
+
+---
+
+## 66. The beep that could never happen (2026-10-06)
+
+*"I can hear a sharp click when the system reset and then a very faint white noise hiss. No Beeps."*
+
+The click and the hiss were the amplifier telling the truth: it was powered, enabled, and amplifying — there was
+simply nothing to amplify. **The beep lived only inside the corner-recording branch, and the calibration now
+lives in flash**, so after the first successful calibration the corners are never recorded again and the speaker
+was never asked to make a sound. A feature on a path that stops running cannot be tested by using the thing it
+belongs to, and it had been "verified" by nothing but the compiler.
+
+The fix is one shared definition of what a beep is, used twice:
+
+- **any touch** → a short 40 ms reply, which is what makes the speaker testable without a calibration run;
+- **a recorded corner** → a longer 200 ms confirmation, unchanged in intent.
+
+It is a macro rather than a function because it borrows the DAC — whose type is not worth naming — and because it
+awaits; and it is one definition because two copies of a waveform is how the two ends up sounding different.
+
+**Confirmed on the board**: touching the screen beeps.
+
+Three small facts from the same message that were right and are now written down: the click at reset is the DAC's
+DC step into the amplifier, the hiss is the amplifier with nothing to amplify, and both are what a *working*
+analogue path sounds like when its input is idle.
+
+Suite: **618 passed, 0 skipped**.
