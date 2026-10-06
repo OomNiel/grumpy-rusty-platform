@@ -2937,3 +2937,29 @@ DC step into the amplifier, the hiss is the amplifier with nothing to amplify, a
 analogue path sounds like when its input is idle.
 
 Suite: **618 passed, 0 skipped**.
+
+---
+
+## 67. The LDR's divider is not a divider on this board (2026-10-06)
+
+*"It looks like the board have a design fault — both the divider resistor and the LDR have their other ends wired
+to Gnd. Leave your code for the time being — I will dig deeper. The pin assignment is correct."*
+
+The intended circuit is `3.3V — 5k — node — LDR — GND`, where the node is the ADC pin. If the 5k's far end is
+*also* on ground, then the node hangs off `5k ∥ LDR` to ground and cannot rise above 0 V whatever the light does.
+That is exactly what the firmware reported: **a constant, exact `0 of 4095`** — not a small noisy figure hovering
+near the bottom of the range, which is what a live but badly-scaled divider looks like.
+
+So the measurement was right and the firmware was right; the board is not. This is a **hardware finding, not a
+code one**, and no code is changed for it: the LDR half of the `peripherals` and `board` templates stays exactly
+as written, because it is the correct code for the circuit the board is supposed to have — pin, channel,
+attenuation and polarity all confirmed. When the divider is fixed (or the fault turns out to be a solder bridge
+rather than the layout) the same firmware should read a real value with no change.
+
+**Also recorded: the pin assignment is confirmed correct** — module pin 6 = GPIO34 = ADC1 channel 6 — which the
+user checked by hand. The constant zero was never a wrong-pin symptom: a wrong pin on a floating input-only line
+reads noise, and this read was exactly zero.
+
+Worth keeping as a diagnostic lesson, next to §64's "a peripheral is not ready when it is created": **an exact
+value is evidence**. `0` and `4095` are not measurements of an input, they are statements about the wiring, and
+the useful move is to believe them rather than to go looking in the code.
