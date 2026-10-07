@@ -95,17 +95,14 @@ async fn main(_spawner: Spawner) -> ! {
     // indistinguishable from a rotation that was applied and simply not noticed.
     log::info!("panel rotation setting: {}", option_env!("LCD_ROTATION").unwrap_or("0"));
 
-    // The drawing area follows the rotation, not just the image inside it. Rotating through MADCTL swaps the
-    // controller's row and column addressing, so at 90 and 270 degrees the addressable area is the panel's
-    // dimensions the other way round. Telling mipidsi the portrait size while the controller is addressing
-    // landscape is what made the landscape modes not fit: the content was clipped and misplaced rather than
-    // turned (noticed on the CYD, 2026-10-07).
+    // The drawing area stays the panel's native size, whatever the rotation. Handing mipidsi the *rotated*
+    // size instead looks like the obvious way to get a landscape layout, and it is not: mipidsi's
+    // set_address_window computes its clipping offset as FRAMEBUFFER_SIZE - display_size, which underflows
+    // once the display size is larger than the panel's framebuffer on either axis. With a mirrored
+    // orientation - which this panel needs - that produces a garbage address window and the screen stays
+    // white. See NOTES.md 81/82.
+    let (width, height) = (320u16, 480u16);
     let rotated = matches!(rotation, Rotation::Deg90 | Rotation::Deg270);
-    let (width, height) = if rotated {
-        (480u16, 320u16)
-    } else {
-        (320u16, 480u16)
-    };
     let mut display = Builder::new(models::ST7796, di)
         .display_size(width, height)
         // 3.5" ST7796 320x480: X is mirrored relative to the controller's default.

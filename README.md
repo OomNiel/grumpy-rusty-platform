@@ -290,16 +290,20 @@ the same folder again and confirm the overwrite), so adding your own code to it 
 workflow. The rotation therefore lives in a config file, and the firmware logs the value it was built
 with (`panel rotation setting: 1`) so a build can be checked from the serial log.
 
-The rotation turns the whole interface, not just the image: at 90° or 270° the drawing area becomes the
-panel's dimensions the other way round (320×480 becomes 480×320), the panel is told that is the shape it is
-addressing, and the generated screen lays itself out for it — frame, bars, corners, status lines and all.
+The rotation turns the interface: the drawing, the calibration targets, the raw-to-screen mapping and the
+status text are all expressed relative to the panel, so the whole screen turns together.
 
-That last part is a correction. The first version of this feature rotated only the image and kept the drawing
-area at the panel's native size; the first flash of a landscape build showed the graphics clipped and
-misplaced, because rotating the controller swaps its row and column addressing. The layout solver now runs for
-both orientations and the firmware picks the one the rotation produces. The touch calibration is versioned by
-rotation for the same reason: a calibration measured in portrait is discarded in landscape rather than used
-to map every touch somewhere plausible and wrong.
+**The drawing area stays the panel's native size, and that is a hard limit of the display driver rather than
+a choice.** mipidsi computes its clipping offset as `FRAMEBUFFER_SIZE - display_size`, so handing it a
+*rotated* size makes that subtraction underflow on whichever axis the rotation made larger. With the mirroring
+this panel needs, the result is a garbage address window and the screen simply stays white — found on hardware
+in 0.0.41, where the attempt to rotate the drawing area was reverted in 0.0.42. A landscape *layout* therefore
+needs the rotation applied as a coordinate transform in the generated drawing code, rather than through the
+panel's address window. That is not implemented yet, and the README of a generated panel project says so.
+
+The touch calibration is versioned by rotation: a record measured in one orientation is discarded when the
+rotation changes, with a log line saying which orientations disagree, instead of mapping every touch to a
+plausible, wrong place.
 
 ## Documentation
 

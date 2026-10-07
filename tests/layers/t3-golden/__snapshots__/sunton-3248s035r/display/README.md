@@ -22,12 +22,16 @@ the setting will still show the old value until you change it. Either way, rebui
 nothing to edit in `src/main.rs`, and no need to regenerate the project. 0 is no rotation, and 1/2/3 are
 90/180/270 degrees clockwise.
 
-The rotation turns the whole interface, not just the image. At 90 or 270 degrees the drawing area becomes the
-panel's dimensions the other way round, the panel is told that is the shape it is addressing - rotating the
-controller swaps its row and column addressing - and the generated screen lays itself out for the new shape:
-the frame, the bars, the corner markers and the status lines all follow it. So a landscape rotation gives you a
-landscape layout, rather than a portrait picture turned on its side.
-The touch calibration lives in the same coordinate space, so a calibration measured in one orientation is
+The rotation turns the interface: the frame, the bars, the corners, the status lines and the touch mapping
+are all expressed relative to the panel, so the whole screen turns together rather than the image sliding
+around inside a fixed one.
+
+The drawing area itself stays the panel's native size. That is a deliberate limit rather than an oversight:
+mipidsi derives its clipping offset from FRAMEBUFFER_SIZE minus display_size, so handing it a rotated size makes
+that subtraction underflow and the panel never receives a valid address window - the screen just stays white.
+A proper landscape *layout* therefore needs the rotation applied as a coordinate transform instead of through
+the panel's address window, which is not in this generated code yet.
+The touch calibration is versioned by rotation: a record measured in one orientation is
 discarded when the rotation changes and the four corners are asked for again.
 
 ## First-time setup

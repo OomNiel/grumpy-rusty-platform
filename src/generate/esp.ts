@@ -2130,17 +2130,14 @@ ${resetSetup}
         _ => 0,
     };` : ''}
 
-    // The drawing area follows the rotation, not just the image inside it. Rotating through MADCTL swaps the
-    // controller's row and column addressing, so at 90 and 270 degrees the addressable area is the panel's
-    // dimensions the other way round. Telling mipidsi the portrait size while the controller is addressing
-    // landscape is what made the landscape modes not fit: the content was clipped and misplaced rather than
-    // turned (noticed on the CYD, 2026-10-07).
-    let rotated = matches!(rotation, Rotation::Deg90 | Rotation::Deg270);
-    let (width, height) = if rotated {
-        (${display.height}u16, ${display.width}u16)
-    } else {
-        (${display.width}u16, ${display.height}u16)
-    };
+    // The drawing area stays the panel's native size, whatever the rotation. Handing mipidsi the *rotated*
+    // size instead looks like the obvious way to get a landscape layout, and it is not: mipidsi's
+    // set_address_window computes its clipping offset as FRAMEBUFFER_SIZE - display_size, which underflows
+    // once the display size is larger than the panel's framebuffer on either axis. With a mirrored
+    // orientation - which this panel needs - that produces a garbage address window and the screen stays
+    // white. See NOTES.md 81/82.
+    let (width, height) = (${display.width}u16, ${display.height}u16);${shared ? '' : `
+    let rotated = matches!(rotation, Rotation::Deg90 | Rotation::Deg270);`}
     let mut display = Builder::new(models::${display.controller}, di)
         .display_size(width, height)${reset}${orientation(display)}
         .color_order(ColorOrder::${display.colorOrder === 'bgr' ? 'Bgr' : 'Rgb'})
@@ -2203,17 +2200,14 @@ ${resetSetup}
         _ => 0,
     };` : ''}
 
-    // The drawing area follows the rotation, not just the image inside it. Rotating through MADCTL swaps the
-    // controller's row and column addressing, so at 90 and 270 degrees the addressable area is the panel's
-    // dimensions the other way round. Telling mipidsi the portrait size while the controller is addressing
-    // landscape is what made the landscape modes not fit: the content was clipped and misplaced rather than
-    // turned (noticed on the CYD, 2026-10-07).
-    let rotated = matches!(rotation, Rotation::Deg90 | Rotation::Deg270);
-    let (width, height) = if rotated {
-        (${display.height}u16, ${display.width}u16)
-    } else {
-        (${display.width}u16, ${display.height}u16)
-    };
+    // The drawing area stays the panel's native size, whatever the rotation. Handing mipidsi the *rotated*
+    // size instead looks like the obvious way to get a landscape layout, and it is not: mipidsi's
+    // set_address_window computes its clipping offset as FRAMEBUFFER_SIZE - display_size, which underflows
+    // once the display size is larger than the panel's framebuffer on either axis. With a mirrored
+    // orientation - which this panel needs - that produces a garbage address window and the screen stays
+    // white. See NOTES.md 81/82.
+    let (width, height) = (${display.width}u16, ${display.height}u16);${shared ? '' : `
+    let rotated = matches!(rotation, Rotation::Deg90 | Rotation::Deg270);`}
     let mut display = Builder::new(models::${display.controller}, di)
         .display_size(width, height)${reset}${orientation(display)}
         .color_order(ColorOrder::${display.colorOrder === 'bgr' ? 'Bgr' : 'Rgb'})
@@ -2354,7 +2348,10 @@ export function espDiagnosticLayout(
  */
 function espPanelSupport(display: EspDisplay, board: EspBoardProfile): string {
     const portrait = espDiagnosticLayout(display, board);
-    // Landscape swaps the panel's dimensions, because that is what the rotation does to the drawing area.
+    // Solving a landscape layout is the right thing to do, and it is deliberately *not* selected yet: the
+    // drawing area cannot exceed the panel's framebuffer (see the note in the panel setup), so a landscape
+    // layout drawn into it would simply be clipped. The landscape shape is kept here, unused, so that the
+    // mechanism is in place when rotation stops going through mipidsi's address window - see NOTES.md 82.
     const landscape = espDiagnosticLayout(display, board, { width: display.height, height: display.width });
 
     const constant = (name: string, layout: EspDiagnosticLayout): string => `const ${name}: DiagnosticLayout = DiagnosticLayout {
@@ -2680,12 +2677,16 @@ the setting will still show the old value until you change it. Either way, rebui
 nothing to edit in \`src/main.rs\`, and no need to regenerate the project. 0 is no rotation, and 1/2/3 are
 90/180/270 degrees clockwise.
 
-The rotation turns the whole interface, not just the image. At 90 or 270 degrees the drawing area becomes the
-panel's dimensions the other way round, the panel is told that is the shape it is addressing - rotating the
-controller swaps its row and column addressing - and the generated screen lays itself out for the new shape:
-the frame, the bars, the corner markers and the status lines all follow it. So a landscape rotation gives you a
-landscape layout, rather than a portrait picture turned on its side.${board.touch !== undefined ? `
-The touch calibration lives in the same coordinate space, so a calibration measured in one orientation is
+The rotation turns the interface: the frame, the bars, the corners, the status lines and the touch mapping
+are all expressed relative to the panel, so the whole screen turns together rather than the image sliding
+around inside a fixed one.
+
+The drawing area itself stays the panel's native size. That is a deliberate limit rather than an oversight:
+mipidsi derives its clipping offset from FRAMEBUFFER_SIZE minus display_size, so handing it a rotated size makes
+that subtraction underflow and the panel never receives a valid address window - the screen just stays white.
+A proper landscape *layout* therefore needs the rotation applied as a coordinate transform instead of through
+the panel's address window, which is not in this generated code yet.${board.touch !== undefined ? `
+The touch calibration is versioned by rotation: a record measured in one orientation is
 discarded when the rotation changes and the four corners are asked for again.` : ''}
 `
         : '';
