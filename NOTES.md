@@ -3113,3 +3113,21 @@ mount a card stay in step. Two consequences:
    it, and both projects now build with **zero warnings**.
 
 Suite: **619 passed, 0 skipped**. Both generated projects compile clean.
+
+---
+
+## 72. New Project was missing from the Controls section (2026-10-06)
+
+*"Create a 'New Project' Control in the Controls tab. The dialog should offer the user the list of available boards
+to select a board, and then follow the routine for creating the project."*
+
+The wizard already did exactly that — `pickBoard` puts the whole catalog in a quick pick with the default board
+first, then the template, then the name — but it was reachable only as an **icon in the Boards view's title bar**.
+That is a strange place to look for "make me a project" when the Controls section is where every other action
+lives, which is presumably why it was asked for twice.
+
+So this is a second **door**, not a second routine: a `New Project` row leading the section (the one control that
+makes the others possible), sidebar-only, since the status bar keeps its six for the actions used constantly. A
+test asserts both halves of that: the row is first in the section and *absent* from the status bar, and the
+command it runs reads `BOARDS` and shows a quick pick rather than offering a fixed list that could drift from the
+boards that exist.
