@@ -11,6 +11,26 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.41] - 2026-10-07
+
+### Fixed
+
+- **Landscape rotation now lays the screen out for landscape.** At 90° and 270° the drawing area becomes the
+  panel's dimensions the other way round, and the panel is told that is the shape it is addressing: rotating
+  the controller exchanges its row and column addressing, so the previous build clipped and misplaced the
+  drawing rather than turning it. The layout solver now runs for both orientations, the firmware picks the one
+  the rotation produces, and the touch geometry — calibration targets, raw-to-screen mapping, readout box and
+  the touch template's own screen — follows the rotated size.
+- **A touch calibration is only used in the orientation it was measured in.** The record stores the rotation,
+  and a mismatch asks for the calibration corners again with a log line saying so, instead of mapping every
+  touch to a plausible, wrong place.
+
+### Verified
+
+- The `display`, `board` and `touch` templates compile and link with a rotation set (0 warnings each), and a
+  test now walks both orientations of every panel in the catalog and asserts the layout fits.
+
+
 ## [0.0.40] - 2026-10-06
 
 ### Verified
