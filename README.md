@@ -16,7 +16,7 @@ Espressif boards, `espflash`.
 |---|---|
 | Project Wizard (board → working workspace) | ✅ 7 boards: Pico · Pico 2 · Pico W · Pico 2 W (RP2040/RP2350) and ESP32-DevKitC V4 · LilyGo T-QT · Sunton ESP32-3248S035R (ESP32/ESP32-S3) |
 | Generated workspace: `Cargo.toml`, `.cargo/config.toml`, `memory.x`, `build.rs`, `rust-toolchain.toml`, `src/main.rs`, `.vscode/{settings,launch}.json` | ✅ RP; ESP gets `esp-config.toml` instead of `memory.x`/`launch.json` |
-| Templates | ✅ RP: `blinky`, `wifi`, `wifi-bluetooth` (with a credentials prompt) · ESP: periodic task, panel diagnostic screen |
+| Templates | ✅ RP: `blinky`, `wifi`, `wifi-bluetooth` (with a credentials prompt) · ESP: periodic task, panel diagnostic screen, panel + touch, TF card, sensors + sound, the everything board test, and `wifi` / `bluetooth` |
 | Toolchain detection (cargo, rustup, targets, probe-rs, probe health) | ✅ plus espup / Xtensa toolchain / espflash for ESP; the health check asks only for what the open board actually uses (no debug probe for an ESP32) |
 | One-click installer (rustup, targets, prebuilt probe-rs with SHA-256 check, udev rules) | ✅ plus espup + espflash, only for the chips in use |
 | `Add Cargo to PATH…` for shells that never received `~/.cargo/bin` | ✅ |
@@ -235,9 +235,11 @@ deferred.
 | Sunton ESP32-3248S035R (3.5" CYD) | ESP32 | `xtensa-esp32-none-elf` | `esp32` | 4 MB | 320×480 ST7796, XPT2046 resistive touch, microSD socket |
 
 ESP projects are built with esp-hal and esp-rtos and flashed with `espflash`; they have no
-`memory.x`, no UF2 image and no CYW43. The touch controller and the SD socket are described in the
-board data and listed in the generated README, but no template drives them yet, and there is no
-Wi-Fi template for ESP either.
+`memory.x`, no UF2 image and no CYW43. The panel, the XPT2046 touch controller and the TF card each
+have a template that drives them. Wi-Fi is esp-radio with embassy-net on top: the radio joins the
+access point, and the network stack owns the address (DHCP, or a fixed one from `WIFI_STATIC_IP`).
+Bluetooth LE is esp-radio's controller driven by the `trouble-host` host stack, which is where
+advertising and GATT live — a controller alone only moves bytes.
 
 The ESP **panel diagnostic screen** is meant to be read off the display: a full-panel frame, four
 corner markers (red top-left, green top-right, blue bottom-left, white bottom-right), five colour bars
@@ -246,6 +248,11 @@ square that blinks while the loop runs. Cropping, a shifted active area, a swapp
 rotated image each look like success on a flat colour fill and are obvious here. Generated `display`
 projects have been built and flashed to the Sunton ESP32-3248S035R; the DevKitC and T-QT templates
 have not been flashed yet (see `NOTES.md` in the repository).
+
+The `wifi` and `bluetooth` projects have been compiled *and linked* for both the classic ESP32 and
+the ESP32-S3, and the generated ESP32 Bluetooth project carries a linker workaround for three ROM
+symbols missing from a published crate (see `NOTES.md`). Neither has been run on a board yet, so
+association, advertising and phone visibility are still unverified.
 
 ## Documentation
 

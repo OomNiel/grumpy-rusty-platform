@@ -186,6 +186,22 @@ export interface EspLdr {
     note?: string;
 }
 
+/**
+ * What the chip's radio silicon provides.
+ *
+ * Modelled rather than assumed, because Bluetooth is not uniform across the family: the ESP32-S2 has none at
+ * all, while classic ESP32 and the ESP32-S3 both have BLE (classic ESP32 additionally has BR/EDR, which the
+ * generated firmware does not use). Offering a Bluetooth template on a chip without the controller would fail
+ * at link time with a wall of undefined symbols from the radio blob, so the template list is derived from this
+ * rather than from the family name.
+ */
+export interface EspRadio {
+    /** True when the chip can join a Wi-Fi network. */
+    wifi: boolean;
+    /** What the generated firmware can use: BLE, or nothing on a chip with no Bluetooth. */
+    bluetooth: 'none' | 'ble';
+}
+
 /** Resistive touch controller sharing the panel's SPI bus. */
 export interface EspTouch {
     controller: 'XPT2046';
@@ -260,6 +276,11 @@ export interface EspBoardProfile extends BoardProfileBase {
     ldr?: EspLdr;
     /** Speaker output, when the board has an amplifier and a connector. */
     audio?: EspAudio;
+    /**
+     * The chip's radio silicon. Required rather than optional: every ESP32 variant has Wi-Fi, and leaving it
+     * out would let a board quietly offer no wireless templates because nobody filled the field in.
+     */
+    radio: EspRadio;
 }
 
 export type BoardProfile = RpBoardProfile | EspBoardProfile;

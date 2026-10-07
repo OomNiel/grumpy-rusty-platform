@@ -39,7 +39,20 @@ export const CRATE_VERSIONS = {
 
 // ------------------------------------------------------------------ templates
 
-export type AppTemplate = 'blinky' | 'wifi' | 'wifi-bluetooth' | 'display' | 'touch' | 'peripherals' | 'board' | 'sdcard';
+// 'wifi' means the family-appropriate implementation: CYW43 + embassy-net on the Pico W, esp-radio on an
+// ESP32. Both read the same WIFI_* environment contract, which is what lets one credentials prompt serve
+// both families (src/wifi/credentials.ts keys off option_env!("WIFI_SSID") in the generated main.rs).
+// 'bluetooth' is ESP-only for now: a Pico W BLE template would be a different stack (BTstack over CYW43).
+export type AppTemplate =
+    | 'blinky'
+    | 'wifi'
+    | 'bluetooth'
+    | 'wifi-bluetooth'
+    | 'display'
+    | 'touch'
+    | 'peripherals'
+    | 'board'
+    | 'sdcard';
 
 export interface AppTemplateInfo {
     id: AppTemplate;

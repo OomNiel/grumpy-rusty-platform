@@ -179,19 +179,19 @@ test('every panel names a controller that mipidsi actually ships', () => {
 test('an ESP board offers only templates that are implemented', () => {
     equal(
         templatesFor(espBoard('esp32-devkitc')).map((info) => info.id),
-        ['blinky'],
-        'the DevKitC has no panel, so a panel template would be meaningless',
+        ['blinky', 'wifi', 'bluetooth'],
+        'the DevKitC has no panel and no card, so it gets the two radio templates and nothing else',
     );
     equal(
         templatesFor(espBoard('lilygo-tqt')).map((info) => info.id),
-        ['blinky', 'display'],
-        'the T-QT has a panel and no touch controller',
+        ['blinky', 'display', 'wifi', 'bluetooth'],
+        'the T-QT has a panel, no touch controller, and the S3 radio',
     );
     // The CYD is the only board with a touch controller, so it is the only one offered the touch test.
     equal(
         templatesFor(espBoard('sunton-3248s035r')).map((info) => info.id),
-        ['blinky', 'display', 'sdcard', 'board', 'peripherals', 'touch'],
-        'the card sits with the panel templates; board is everything, so it comes last of the hardware',
+        ['blinky', 'display', 'sdcard', 'board', 'peripherals', 'touch', 'wifi', 'bluetooth'],
+        'the card sits with the panel templates, board is everything, and wireless comes after the hardware',
     );
     for (const id of ['lilygo-tqt', 'sunton-3248s035r']) {
         equal(defaultTemplateFor(espBoard(id)), 'display', 'a panel board is bought for its panel');
@@ -212,17 +212,49 @@ test('the touch template is only offered where a touch controller exists', () =>
     equal(defaultTemplateFor(cyd), 'display', 'touch is a test, not the default for a new project');
 });
 
-test('an unimplemented template is refused, not generated', () => {
+test('a template the board cannot run is refused, not generated', () => {
     let message = '';
     try {
-        generateProjectFiles({ board: espBoard('esp32-devkitc'), projectName: 'x', template: 'wifi' });
+        // The DevKitC has no touch controller at all, so this board/template pair can never work and the
+        // generator has to say so rather than emitting firmware that talks to a chip that is not there.
+        generateProjectFiles({ board: espBoard('esp32-devkitc'), projectName: 'x', template: 'touch' });
     } catch (error) {
         message = String(error && error.message ? error.message : error);
     }
     matches(
         message,
         /not available/,
-        'the Wi-Fi template does not exist yet, so asking for it has to fail loudly',
+        'a template the board does not support has to fail loudly',
+    );
+});
+
+test('the wireless templates follow the chip radio, not the family name', () => {
+    for (const board of BOARDS.filter(isEspBoard)) {
+        const ids = templatesFor(board).map((info) => info.id);
+        equal(ids.includes('wifi'), board.radio.wifi, `${board.id}: Wi-Fi follows radio.wifi`);
+        equal(
+            ids.includes('bluetooth'),
+            board.radio.bluetooth === 'ble',
+            `${board.id}: Bluetooth follows radio.bluetooth`,
+        );
+    }
+});
+
+test('a chip without Bluetooth is never offered the Bluetooth template', () => {
+    // The ESP32-S2 has no Bluetooth controller at all, so the field has to be able to say "none" and the
+    // template list has to obey it. A synthetic profile is the only way to exercise that: every chip in the
+    // catalog happens to have BLE, so a bug that ignored the field would be invisible against real boards.
+    const s2 = { ...espBoard('esp32-devkitc'), family: 'ESP32', radio: { wifi: true, bluetooth: 'none' } };
+    equal(
+        templatesFor(s2).map((info) => info.id),
+        ['blinky', 'wifi'],
+        'Wi-Fi stays, Bluetooth goes',
+    );
+    const deaf = { ...s2, radio: { wifi: false, bluetooth: 'none' } };
+    equal(
+        templatesFor(deaf).map((info) => info.id),
+        ['blinky'],
+        'a chip with no radio at all gets neither',
     );
 });
 

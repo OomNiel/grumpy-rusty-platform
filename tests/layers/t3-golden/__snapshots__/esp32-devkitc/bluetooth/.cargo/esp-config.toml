@@ -1,0 +1,5 @@
+# Runtime configuration for the ESP logging stack.
+[env]
+# log level for esp-println, read by esp_println::logger::init_logger_from_env() in main;
+# change to "debug" or "trace" when something is silent.
+ESP_LOG = "info"

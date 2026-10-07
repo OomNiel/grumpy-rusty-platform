@@ -148,6 +148,8 @@ export const BOARDS: BoardProfile[] = [
         espChip: 'esp32',
         flashSize: '4 MB',
         psram: false,
+        // Both catalogued ESP32 chips have the Wi-Fi radio; BLE is what the generated firmware uses.
+        radio: { wifi: true, bluetooth: 'ble' },
         // Espressif's own user guide lists a 5 V power LED and no user LED, so this is an
         // offer and not a claim: `external` makes the generator say "wire an LED here"
         // instead of pretending the board has one. GPIO4 is free of strapping duty --
@@ -187,6 +189,8 @@ export const BOARDS: BoardProfile[] = [
         espChip: 'esp32s3',
         flashSize: '4 MB',
         psram: false,
+        // Both catalogued ESP32 chips have the Wi-Fi radio; BLE is what the generated firmware uses.
+        radio: { wifi: true, bluetooth: 'ble' },
         // The T-QT has no user LED: the only LED on the board belongs to the charger.
         led: { kind: 'none' },
         displays: [
@@ -246,6 +250,8 @@ export const BOARDS: BoardProfile[] = [
         espChip: 'esp32',
         flashSize: '4 MB',
         psram: false,
+        // Both catalogued ESP32 chips have the Wi-Fi radio; BLE is what the generated firmware uses.
+        radio: { wifi: true, bluetooth: 'ble' },
         // Blue 16, red 4, green 17 (ESP32-035 hardware notes). It was 'none' until the pins were known,
         // which is why this board's blinky template used to log a heartbeat instead of lighting anything.
         led: { kind: 'rgb', red: '4', green: '17', blue: '16' },
