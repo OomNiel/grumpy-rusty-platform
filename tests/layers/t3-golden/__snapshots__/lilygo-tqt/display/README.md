@@ -22,15 +22,11 @@ the setting will still show the old value until you change it. Either way, rebui
 nothing to edit in `src/main.rs`, and no need to regenerate the project. 0 is no rotation, and 1/2/3 are
 90/180/270 degrees clockwise.
 
-The rotation turns the interface: the frame, the bars, the corners, the status lines and the touch mapping
-are all expressed relative to the panel, so the whole screen turns together rather than the image sliding
-around inside a fixed one.
-
-The drawing area itself stays the panel's native size. That is a deliberate limit rather than an oversight:
-mipidsi derives its clipping offset from FRAMEBUFFER_SIZE minus display_size, so handing it a rotated size makes
-that subtraction underflow and the panel never receives a valid address window - the screen just stays white.
-A proper landscape *layout* therefore needs the rotation applied as a coordinate transform instead of through
-the panel's address window, which is not in this generated code yet.
+The rotation turns the interface, and the drawing area turns with it. You hand the display driver the panel's
+native size and the driver swaps the area it draws into when the rotation is 90 or 270 degrees, so the generated
+screens are solved for the shape that is actually being addressed: a landscape rotation gets a landscape frame,
+bars, corner markers, status lines and touch targets, and a portrait rotation gets a portrait one. Verified at
+270 degrees on hardware with every edge, corner and bar visible.
 
 ## First-time setup
 

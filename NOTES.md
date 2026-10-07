@@ -3590,3 +3590,49 @@ drawn point (and every touch coordinate) through the rotation transform. That wa
 limited by the framebuffer at all, and no offset arithmetic is involved. It is a real change to the drawing
 code - every primitive and the touch mapping go through the transform - and it wants a board on the desk,
 which is what this session did not have for the graphics.
+
+---
+
+## 83. How the landscape layout really works, and the touch screens follow it (2026-10-07)
+
+Two corrections from the board, both against conclusions I had written down as fact.
+
+### The mechanism, finally right
+
+§82 concluded that a landscape layout needed "the rotation applied as a coordinate transform in our own drawing
+code", because the display driver cannot be told a rotated size. The board said otherwise: a fresh **display**
+project at rotation 3 renders a full landscape layout - every edge, corner marker and bar visible, nothing
+clipped - with the native display size. mipidsi 0.10's own accessor explains it (`options.rs:56-62`):
+
+    fn display_size(&self) -> (u16, u16) {
+        if self.orientation.rotation.is_horizontal() { self.display_size }
+        else { (self.display_size.1, self.display_size.0) }
+    }
+
+So the *drawing area* is swapped for a vertical rotation by mipidsi itself, while `set_address_window` reads the
+raw field (`lib.rs:306`) - which is why the native size is both the right thing to pass and what keeps the
+clipping offset from underflowing. v0.0.41 got both halves wrong at once: its swap double-swapped the drawing
+area and made the offset use the rotated size. One line of the crate, two opposite mistakes.
+
+The general lesson is the same one §74 and §81 already drew, and it keeps being worth the ink: reading a crate
+tells you what the crate does, and only the device tells you what the result is. Here the crate's accessor had
+the answer, and I had read `OriginDimensions::size()` and the offset formula without reading the accessor they
+both funnel through.
+
+### What changed for touch and board
+
+The touch template draws its own screen rather than the diagnostic layout, and its geometry came from the
+panel's native width and height - so on a rotated panel it drew a portrait interface into the landscape area.
+It now derives its content size the same way the driver does:
+
+    let width_i: i32 = if rotated { height as i32 } else { width as i32 };
+    let height_i: i32 = if rotated { width as i32 } else { height as i32 };
+
+which carries the calibration targets, the raw-to-screen mapping, the readout box, the bars and the frame with
+it. `rotated` is now emitted for every panel template rather than only the display one.
+
+### Verified, and what is not
+
+Compiled and linked for the `board` and `touch` templates at rotation 3 (0 warnings each), and the `display`
+template's landscape rendering is confirmed **on hardware** by the person who ran it. The touch/board
+*appearance* at 270 degrees - and touch landing where it is drawn - still wants a flash, which is the next test.
