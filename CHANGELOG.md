@@ -11,6 +11,23 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.36] - 2026-10-06
+
+### Fixed
+
+- **The Wi-Fi template's generated README no longer claims it cannot use an address.** It said the firmware
+  could not log an address or be given a fixed one, which stopped being true when addressing moved to
+  embassy-net; a generated project's README contradicted its own `src/main.rs`. The wizard's description of
+  the template said less than the truth in the same way, and now names the logged address and
+  `WIFI_STATIC_IP`.
+
+### Verified
+
+- The Wi-Fi template on hardware (CYD/ESP32-035): association, the DHCP lease and logged address, a fixed
+  address, recovery across a reset and an access-point power cycle, and the extension's credential prompt
+  storing and reusing the keyring entry. Bluetooth remains compile-and-link verified only.
+
+
 ## [0.0.35] - 2026-10-06
 
 ### Added
