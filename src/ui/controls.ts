@@ -42,6 +42,25 @@ export const HEALTH_CONTROL: ControlDescriptor = {
     tooltip: 'Check the Rust toolchain',
 };
 
+/**
+ * Starting a project, as a row in the Controls section.
+ *
+ * It was only ever an icon in the Boards view's title bar, which is a strange place to look for "make me a
+ * project" when the Controls section is where every other action lives. Sidebar only: the status bar has six
+ * rows and adding a seventh that most sessions use once would crowd the ones used constantly.
+ *
+ * The command itself is the wizard that has always been there -- board from the catalog, then template, then
+ * name -- so this is a second door onto one routine rather than a second routine.
+ */
+export const NEW_PROJECT_CONTROL: ControlDescriptor = {
+    command: 'rustyPlatform.newProject',
+    icon: 'new-folder',
+    label: 'New Project',
+    detail: 'pick a board, then a template',
+    tooltip: 'Asks which of the supported boards this is for (the whole catalog is listed, with your default '
+        + 'board first), then which template, then the project name, and writes the workspace.',
+};
+
 /** In status-bar order; the sidebar section renders the same list in the same order. */
 const ACTIONS: readonly ControlDescriptor[] = [
     {
@@ -214,7 +233,9 @@ export function visibleControls(
 ): ControlDescriptor[] {
     // The side panel shows everything the status bar shows, plus the profile overrides and the
     // packaging controls.
-    const controls = [...CONTROLS, ...FLASH_PROFILE_CONTROLS, ...PACKAGE_CONTROLS].filter(
+    // New Project leads the section: it is the one control that makes the others possible. It is deliberately
+    // not in CONTROLS, which is also the status-bar list.
+    const controls = [NEW_PROJECT_CONTROL, ...CONTROLS, ...FLASH_PROFILE_CONTROLS, ...PACKAGE_CONTROLS].filter(
         (control) => control.sessionOnly !== true || sessionRunning,
     );
     if (family !== 'esp') {

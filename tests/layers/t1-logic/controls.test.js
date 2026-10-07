@@ -14,6 +14,7 @@ const { compiled, repoRoot } = require('../../lib/harness');
 const {
     CONTROLS,
     FLASH_PROFILE_CONTROLS,
+    NEW_PROJECT_CONTROL,
     HEALTH_CONTROL,
     healthSummary,
     iconText,
@@ -239,4 +240,28 @@ test('the rows that name a route are worded for the board in front of the user',
     // And a project we could not identify keeps the wording every line was written for.
     equal(visibleControls(false, 'unknown').map((c) => c.tooltip).join('|'),
         rp.map((c) => c.tooltip).join('|'));
+});
+
+// The user asked for this in the Controls tab: the wizard existed but was only reachable from the Boards
+// view's title bar, which is not where the other actions live (2026-10-06).
+test('New Project is a control, and it opens the board list the wizard already had', () => {
+    const fs = require('fs');
+    const path = require('path');
+    const manifest = JSON.parse(fs.readFileSync(path.join(repoRoot(), 'package.json'), 'utf8'));
+    const declared = new Set(manifest.contributes.commands.map((entry) => entry.command));
+    const shown = visibleControls(false).map((control) => control.command);
+    const statusBar = CONTROLS.map((control) => control.command);
+
+    ok(declared.has('rustyPlatform.newProject'), 'the command has to be declared');
+    ok(shown.includes('rustyPlatform.newProject'), 'and reachable from the Controls section');
+    equal(shown[0], 'rustyPlatform.newProject', 'where it leads: it is the first row');
+    ok(!statusBar.includes('rustyPlatform.newProject'), 'but not in the status bar, which keeps its six');
+    contains(NEW_PROJECT_CONTROL.tooltip, 'boards', 'the tooltip says the dialog offers the boards');
+
+    // And the dialog really does: the command reads the catalog and shows a quick pick, rather than offering a
+    // fixed list that could drift from the boards that exist.
+    const source = fs.readFileSync(path.join(repoRoot(), 'src/commands/newProject.ts'), 'utf8');
+    contains(source, 'BOARDS', 'the wizard reads the board catalog');
+    contains(source, 'showQuickPick', 'and asks with a quick pick');
+    contains(source, 'templatesFor', 'then offers the templates that board actually has');
 });
