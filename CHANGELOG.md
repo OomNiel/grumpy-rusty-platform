@@ -11,6 +11,20 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.44] - 2026-10-07
+
+### Fixed
+
+- **A calibrated panel can be recalibrated again.** The generated touch firmware described a "touch within the
+  first two seconds" gesture in a comment but did not implement it, so once a panel had been calibrated the
+  stored record could only ever be *replaced* by completing a fresh calibration — never discarded. A panel
+  calibrated for the wrong orientation, or with a mapping that had drifted, had no way back to the corner
+  screen. A touch in the first ~2 s after a reset now discards the stored calibration, logs which rotation it
+  belonged to, sounds the confirmation tone and returns to the corner screen. The triggering touch is consumed
+  by the gesture rather than recorded as a corner, since the finger is wherever the user aimed at the middle of
+  the screen.
+
+
 ## [0.0.43] - 2026-10-07
 
 ### Fixed
