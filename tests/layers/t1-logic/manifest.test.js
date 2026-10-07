@@ -85,3 +85,18 @@ test('the New Project icon is in both section title bars', () => {
     // The Controls section shows it as a labelled row instead, so it must not also be an icon there.
     ok(!has('rustyPlatform.controls'), 'Controls has the row, not the icon');
 });
+
+test('the extension has an icon VS Code will accept', () => {
+    // The icon is the one thing about the gallery entry that fails silently: a wrong path or an undersized
+    // image just means the Extensions view shows a placeholder, and nothing else complains.
+    const manifest = readManifest();
+    ok(manifest.icon, 'without an icon the Extensions view shows a placeholder');
+    ok(manifest.icon.endsWith('.png'), `VS Code takes a PNG for the extension icon, not ${manifest.icon}`);
+    const file = path.join(repoRoot(), manifest.icon);
+    ok(fs.existsSync(file), `${manifest.icon} is declared but the file is missing`);
+    const bytes = fs.readFileSync(file);
+    equal(bytes.subarray(0, 8).toString('hex'), '89504e470d0a1a0a', 'the file really is a PNG');
+    const width = bytes.readUInt32BE(16);
+    const height = bytes.readUInt32BE(20);
+    ok(width >= 128 && height >= 128, `the icon is ${width}x${height}; VS Code requires at least 128x128`);
+});
