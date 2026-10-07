@@ -11,6 +11,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.45] - 2026-10-07
+
+### Documentation
+
+- The rotation feature is recorded as **verified on hardware**: at 270° the interface and the drawing area both
+  turn with every edge, corner and bar visible and nothing clipped; the `touch` and `board` screens are laid out
+  for the landscaped area with touch landing where it is pressed; and the calibration can be redone by hand.
+- The **recalibration gesture** is documented in the README and in `NOTES.md` §84, along with why it had to
+  exist: without it a stored calibration could only ever be replaced, never discarded.
+
+
 ## [0.0.44] - 2026-10-07
 
 ### Fixed
