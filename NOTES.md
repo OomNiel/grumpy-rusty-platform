@@ -3282,3 +3282,44 @@ why the rotation could not live there.
 Nothing has been flashed. The rotation's *visual* effect, and the settings-change path as the editor drives
 it (a `vscode` event, whose pure rewrite is t1-tested but whose wiring is not), await a test on the board. The
 firmware logs `panel rotation setting: n` at boot precisely so that takes one look.
+
+---
+
+## 76. The Wi-Fi template on hardware: every stage passes (2026-10-06)
+
+Tested on the CYD/ESP32-035 board (`/dev/ttyUSB0`, `espflash`, chip `esp32`), following the routine in the
+session: the whole Wi-Fi half passed, including the extension's own credential path.
+
+What that turns from "compiled" into "known":
+
+- **Association** with a WPA2 network, and the log naming the SSID, the channel and the association id.
+- **A DHCP lease**, with the address logged and then repeated by the heartbeat every 10 s.
+- **A fixed address** from `WIFI_STATIC_IP`/`WIFI_GATEWAY`, logged as `using the fixed address …, so DHCP is
+  skipped` with no lease wait - and it works as intended.
+- **Recovery across a reset and across an access-point power cycle.** This was the open question: the
+  template has no explicit re-association loop of its own, so the recovery is the driver's own retry plus
+  embassy-net re-acquiring the lease. It recovers. (Worth knowing *why* it works before changing anything in
+  that area.)
+- **The extension's prompt.** With the keyring entry cleared, Flash asks for the SSID, password and optional
+  fixed address, stores them, and the flashed board joins with those values - which is the cross-family
+  contract (`isWirelessFirmware` recognising the ESP template) working, not just the generated code.
+
+### A false claim in the shipped docs, found by the hardware
+
+The generated README still said, under *"What this firmware does not do"*: *"It does not log an address, and
+it cannot be given a fixed one."* That was the residue of the wrong turn recorded in §74 - I had read
+esp-radio's Wi-Fi module, found no address API, and written the conclusion into the documentation before
+discovering that embassy-net on top of esp-radio is what owns addressing. The code was corrected at the time;
+this text was not, so the project's own README contradicted the project's own `main.rs`.
+
+It is fixed here, along with the wizard's one-line description of the template, which had been understating
+it in the same way. The lesson is the one §74 already drew, in a sharper form: a conclusion written into
+documentation is as much a claim as one written into code, and it goes stale the same way - and only running
+it on the board was going to catch this, because both texts were internally consistent.
+
+### Still not verified
+
+**Bluetooth**, in full: advertising, the phone's scan list, connect/disconnect, the GATT service and the
+notify stream are all still compile-and-link only. The measured Wi-Fi timings (reset → joining → associated →
+address) and the verbatim log excerpts were not recorded in this entry; they belong here when someone has
+them to hand.
