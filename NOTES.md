@@ -3394,3 +3394,38 @@ am looking in the wrong place", and it has to be read first.
   into the attribute, so the two disagree. The README already calls the service a skeleton to replace, but
   making the read and the notify agree is the honest thing, and would need one re-test of the notify path.
   The counter also wraps at 255 ticks (~8.5 minutes), which is fine for a demonstration and worth knowing.
+
+---
+
+## 78. The Bluetooth read now agrees with the notify (2026-10-06)
+
+The rough edge §77 flagged is fixed. The generated `custom_task` notified the counter without ever storing it,
+so a central that *read* the battery-level characteristic got the value it was initialised with (`10`) while
+the notifications counted upwards - two answers to the same question, and the read is the one that looks like
+a stale value rather than a bug. It was found by reading the characteristic on a real phone instead of only
+watching the notify stream, which is the whole reason the read/write paths were worth testing separately.
+
+The fix is one call, found in trouble-host 0.7.0's own `GattConnection::set` (`gatt.rs:291`):
+
+    if conn.set(&level, &tick).is_err() {
+        warn!("[custom_task] could not store the level, so a read will not match the notifications");
+    }
+    info!("[custom_task] notifying connection of tick {}", tick);
+    if level.notify(conn, &tick, true).await.is_err() { ... }
+
+Stored first, then announced: the other order leaves a window in which the two disagree. A failed store is
+logged rather than ignored, because the entire point of the change is that the two cannot differ. The
+generated README now states that a read returns what the notifications carry, and mentions that the counter
+wraps at 255 ticks (about eight and a half minutes).
+
+Verified: the generated project **compiles and links** with the change (0 warnings), and a `t1` test pins the
+order (the store must appear before the notify) so the two cannot drift apart again.
+
+Also recorded here, from the same testing round: the GATT **read** and **write** event paths, and a second
+central against `CONNECTIONS_MAX = 1`, were exercised on the phone and behaved as intended. The exact log
+lines from that round were not captured, so this entry records the outcome rather than quoting it - the same
+distinction §76 drew about timings.
+
+**Still needs one thing:** a re-test on the phone of the notify path (connect, read the characteristic, watch
+a notification) to confirm the read now returns the counter. That is a behavioural claim which only the board
+can settle; the compile and the ordering test are not substitutes for it.

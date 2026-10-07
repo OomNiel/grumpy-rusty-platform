@@ -263,11 +263,13 @@ symbols missing from a published crate (see `NOTES.md`).
   connection held for ~3.4 minutes, the disconnect reason reported in the stack's own words, and the return
   to advertising afterwards.
 
-Two things remain unverified there, and are stated as such rather than glossed: the GATT **read** and
-**write** event paths were not exercised, and a second central was not tried, so `CONNECTIONS_MAX = 1`
-refusing it is still only a statement about the source. Note also that a *read* of the battery-level
-characteristic returns its stored value while the notifications carry the counter — the service is a
-skeleton to replace, as its generated README says.
+The GATT **read** and **write** paths, and a second central against `CONNECTIONS_MAX = 1`, have since been
+exercised on the phone and behaved as intended.
+
+One rough edge was found by that testing and has been fixed: a *read* of the battery-level characteristic
+used to return its stored value while the notifications carried the counter, so the two disagreed. The
+counter is now written into the characteristic before it is announced, and a failed write is logged rather
+than passed over.
 
 A practical warning from that testing: a **phone's Bluetooth settings screen is not a BLE scanner** (the
 advertisement is BLE-only, and those screens usually hide BLE peripherals), and the extension's Flash output
