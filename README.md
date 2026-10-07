@@ -292,8 +292,9 @@ with (`panel rotation setting: 1`) so a build can be checked from the serial log
 
 The rotation turns the interface **and the drawing area with it**: the generated screens are solved for the
 shape the display driver is actually addressing, so a landscape rotation gives a landscape layout — frame, bars,
-corner markers, status lines and touch targets — and a portrait rotation gives a portrait one. Verified on
-hardware at 270° with every edge, corner and bar visible, nothing clipped.
+corner markers, status lines and touch targets — and a portrait rotation gives a portrait one. **Verified on
+hardware at 270°**: every edge, corner and bar visible with nothing clipped, the `touch` and `board` screens
+laid out for the landscaped area with touch landing where it is pressed, and the recalibration gesture working.
 
 One subtlety is worth recording, because getting it wrong cost a release: the size handed to the driver is the
 panel's **native** size, and mipidsi swaps the area it draws into for 90°/270° itself. It also computes its
@@ -303,7 +304,12 @@ garbage address window and the panel stayed white (0.0.41, reverted in 0.0.42).
 
 The touch calibration is versioned by rotation: a record measured in one orientation is discarded when the
 rotation changes, with a log line saying which orientations disagree, instead of mapping every touch to a
-plausible, wrong place.
+plausible, wrong place. Changing the rotation therefore never needs anything erased.
+
+To recalibrate **by hand** — after moving the panel, or because the mapping has drifted — touch the glass within
+the first two seconds of a reset. The stored calibration is discarded, the confirmation tone sounds, the LED
+returns to red (which means uncalibrated) and the corner screen comes back. Without that gesture the record
+could only ever be replaced by completing a fresh calibration, never dropped.
 
 ## Documentation
 
