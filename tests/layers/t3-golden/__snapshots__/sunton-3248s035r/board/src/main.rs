@@ -195,6 +195,10 @@ async fn main(_spawner: Spawner) -> ! {
     // orientation - which this panel needs - that produces a garbage address window and the screen stays
     // white. See NOTES.md 81/82.
     let (width, height) = (320u16, 480u16);
+    // mipidsi swaps the *drawing area* itself for a vertical rotation (its own display_size does that),
+    // while the clipping offset is computed from the size passed in -- so the native size is both the right
+    // thing to pass and what the layouts below have to be solved against when the rotation is vertical.
+    let rotated = matches!(rotation, Rotation::Deg90 | Rotation::Deg270);
     let mut display = Builder::new(models::ST7796, di)
         .display_size(width, height)
         // 3.5" ST7796 320x480: X is mirrored relative to the controller's default.
@@ -454,8 +458,12 @@ async fn main(_spawner: Spawner) -> ! {
     // raw-to-screen mapping, the readout box and the graphics screen all follow from these two numbers, so
     // changing the rotation moves the whole interface rather than only the image inside it.
     const MARGIN: i32 = 24;
-    let width_i: i32 = width as i32;
-    let height_i: i32 = height as i32;
+    // The area the driver actually draws into: the panel's size the other way round when the rotation is
+    // vertical, because that is what mipidsi does to it. Everything below - the calibration targets, the
+    // raw-to-screen mapping, the readout box and this template's own graphics screen - is expressed in this
+    // space, so a rotated panel gets a landscape interface rather than a portrait one that runs off it.
+    let width_i: i32 = if rotated { height as i32 } else { width as i32 };
+    let height_i: i32 = if rotated { width as i32 } else { height as i32 };
     let box_w: i32 = (width_i - 20).min(280);
     let box_h: i32 = 104;
     let box_x: i32 = (width_i - box_w) / 2;

@@ -669,7 +669,11 @@ test('the touch template asks for the four corners and says what it measured', (
     contains(main, 'x={} y={}', 'the mapped pair');
     // The readout box, the calibration targets, the mapping and the graphics screen are all expressed in the
     // content coordinate space, which the rotation decides the size of.
-    contains(main, 'let width_i: i32 = width as i32;', 'the touch geometry follows the rotated width');
+    // mipidsi swaps the drawing area for a vertical rotation, so the touch geometry has to be expressed in
+    // the swapped space or a rotated panel gets a portrait interface running off the edge.
+    contains(main, 'let width_i: i32 = if rotated { height as i32 } else { width as i32 };', 'the touch geometry follows the drawn area');
+    contains(main, 'let height_i: i32 = if rotated { width as i32 } else { height as i32 };');
+    contains(main, 'let rotated = matches!(rotation, Rotation::Deg90 | Rotation::Deg270);');
     contains(main, 'let box_w: i32 = (width_i - 20).min(280);', 'the readout box is sized from it');
     contains(main, 'let box_x: i32 = (width_i - box_w) / 2;', 'and centred on it');
     notContains(main, 'const WIDTH: i32 =', 'nothing bakes the portrait width any more');
@@ -821,5 +825,5 @@ test('a calibration measured in one orientation is not used in another', () => {
     // The checksum has to cover the rotation byte, or a stale record could pass it after a change.
     contains(main, 'for (index, byte) in bytes.iter().enumerate()');
     // And the calibration's own targets are the rotated ones, since they are in the same space.
-    contains(main, 'let width_i: i32 = width as i32;');
+    contains(main, 'let width_i: i32 = if rotated { height as i32 } else { width as i32 };');
 });

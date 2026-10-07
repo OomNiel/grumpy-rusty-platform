@@ -102,6 +102,9 @@ async fn main(_spawner: Spawner) -> ! {
     // orientation - which this panel needs - that produces a garbage address window and the screen stays
     // white. See NOTES.md 81/82.
     let (width, height) = (320u16, 480u16);
+    // mipidsi swaps the *drawing area* itself for a vertical rotation (its own display_size does that),
+    // while the clipping offset is computed from the size passed in -- so the native size is both the right
+    // thing to pass and what the layouts below have to be solved against when the rotation is vertical.
     let rotated = matches!(rotation, Rotation::Deg90 | Rotation::Deg270);
     let mut display = Builder::new(models::ST7796, di)
         .display_size(width, height)

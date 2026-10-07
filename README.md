@@ -290,16 +290,16 @@ the same folder again and confirm the overwrite), so adding your own code to it 
 workflow. The rotation therefore lives in a config file, and the firmware logs the value it was built
 with (`panel rotation setting: 1`) so a build can be checked from the serial log.
 
-The rotation turns the interface: the drawing, the calibration targets, the raw-to-screen mapping and the
-status text are all expressed relative to the panel, so the whole screen turns together.
+The rotation turns the interface **and the drawing area with it**: the generated screens are solved for the
+shape the display driver is actually addressing, so a landscape rotation gives a landscape layout — frame, bars,
+corner markers, status lines and touch targets — and a portrait rotation gives a portrait one. Verified on
+hardware at 270° with every edge, corner and bar visible, nothing clipped.
 
-**The drawing area stays the panel's native size, and that is a hard limit of the display driver rather than
-a choice.** mipidsi computes its clipping offset as `FRAMEBUFFER_SIZE - display_size`, so handing it a
-*rotated* size makes that subtraction underflow on whichever axis the rotation made larger. With the mirroring
-this panel needs, the result is a garbage address window and the screen simply stays white — found on hardware
-in 0.0.41, where the attempt to rotate the drawing area was reverted in 0.0.42. A landscape *layout* therefore
-needs the rotation applied as a coordinate transform in the generated drawing code, rather than through the
-panel's address window. That is not implemented yet, and the README of a generated panel project says so.
+One subtlety is worth recording, because getting it wrong cost a release: the size handed to the driver is the
+panel's **native** size, and mipidsi swaps the area it draws into for 90°/270° itself. It also computes its
+clipping offset from that same passed-in size (`FRAMEBUFFER_SIZE - display_size`), so passing the *rotated* size
+makes that subtraction underflow on the enlarged axis — with the mirroring this panel needs, that produced a
+garbage address window and the panel stayed white (0.0.41, reverted in 0.0.42).
 
 The touch calibration is versioned by rotation: a record measured in one orientation is discarded when the
 rotation changes, with a log line saying which orientations disagree, instead of mapping every touch to a

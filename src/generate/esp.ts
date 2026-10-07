@@ -1763,8 +1763,12 @@ ${hardwareLog.length > 0 ? `    log::info!("board hardware: ${hardwareLog.join('
     // raw-to-screen mapping, the readout box and the graphics screen all follow from these two numbers, so
     // changing the rotation moves the whole interface rather than only the image inside it.
     const MARGIN: i32 = 24;
-    let width_i: i32 = width as i32;
-    let height_i: i32 = height as i32;
+    // The area the driver actually draws into: the panel's size the other way round when the rotation is
+    // vertical, because that is what mipidsi does to it. Everything below - the calibration targets, the
+    // raw-to-screen mapping, the readout box and this template's own graphics screen - is expressed in this
+    // space, so a rotated panel gets a landscape interface rather than a portrait one that runs off it.
+    let width_i: i32 = if rotated { height as i32 } else { width as i32 };
+    let height_i: i32 = if rotated { width as i32 } else { height as i32 };
     let box_w: i32 = (width_i - 20).min(280);
     let box_h: i32 = 104;
     let box_x: i32 = (width_i - box_w) / 2;
@@ -2136,8 +2140,11 @@ ${resetSetup}
     // once the display size is larger than the panel's framebuffer on either axis. With a mirrored
     // orientation - which this panel needs - that produces a garbage address window and the screen stays
     // white. See NOTES.md 81/82.
-    let (width, height) = (${display.width}u16, ${display.height}u16);${shared ? '' : `
-    let rotated = matches!(rotation, Rotation::Deg90 | Rotation::Deg270);`}
+    let (width, height) = (${display.width}u16, ${display.height}u16);
+    // mipidsi swaps the *drawing area* itself for a vertical rotation (its own display_size does that),
+    // while the clipping offset is computed from the size passed in -- so the native size is both the right
+    // thing to pass and what the layouts below have to be solved against when the rotation is vertical.
+    let rotated = matches!(rotation, Rotation::Deg90 | Rotation::Deg270);
     let mut display = Builder::new(models::${display.controller}, di)
         .display_size(width, height)${reset}${orientation(display)}
         .color_order(ColorOrder::${display.colorOrder === 'bgr' ? 'Bgr' : 'Rgb'})
@@ -2206,8 +2213,11 @@ ${resetSetup}
     // once the display size is larger than the panel's framebuffer on either axis. With a mirrored
     // orientation - which this panel needs - that produces a garbage address window and the screen stays
     // white. See NOTES.md 81/82.
-    let (width, height) = (${display.width}u16, ${display.height}u16);${shared ? '' : `
-    let rotated = matches!(rotation, Rotation::Deg90 | Rotation::Deg270);`}
+    let (width, height) = (${display.width}u16, ${display.height}u16);
+    // mipidsi swaps the *drawing area* itself for a vertical rotation (its own display_size does that),
+    // while the clipping offset is computed from the size passed in -- so the native size is both the right
+    // thing to pass and what the layouts below have to be solved against when the rotation is vertical.
+    let rotated = matches!(rotation, Rotation::Deg90 | Rotation::Deg270);
     let mut display = Builder::new(models::${display.controller}, di)
         .display_size(width, height)${reset}${orientation(display)}
         .color_order(ColorOrder::${display.colorOrder === 'bgr' ? 'Bgr' : 'Rgb'})
@@ -2677,15 +2687,11 @@ the setting will still show the old value until you change it. Either way, rebui
 nothing to edit in \`src/main.rs\`, and no need to regenerate the project. 0 is no rotation, and 1/2/3 are
 90/180/270 degrees clockwise.
 
-The rotation turns the interface: the frame, the bars, the corners, the status lines and the touch mapping
-are all expressed relative to the panel, so the whole screen turns together rather than the image sliding
-around inside a fixed one.
-
-The drawing area itself stays the panel's native size. That is a deliberate limit rather than an oversight:
-mipidsi derives its clipping offset from FRAMEBUFFER_SIZE minus display_size, so handing it a rotated size makes
-that subtraction underflow and the panel never receives a valid address window - the screen just stays white.
-A proper landscape *layout* therefore needs the rotation applied as a coordinate transform instead of through
-the panel's address window, which is not in this generated code yet.${board.touch !== undefined ? `
+The rotation turns the interface, and the drawing area turns with it. You hand the display driver the panel's
+native size and the driver swaps the area it draws into when the rotation is 90 or 270 degrees, so the generated
+screens are solved for the shape that is actually being addressed: a landscape rotation gets a landscape frame,
+bars, corner markers, status lines and touch targets, and a portrait rotation gets a portrait one. Verified at
+270 degrees on hardware with every edge, corner and bar visible.${board.touch !== undefined ? `
 The touch calibration is versioned by rotation: a record measured in one orientation is
 discarded when the rotation changes and the four corners are asked for again.` : ''}
 `

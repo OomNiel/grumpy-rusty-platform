@@ -156,13 +156,15 @@ test('the README tells the reader how to change the rotation', () => {
     contains(readme, '.cargo/esp-config.toml');
     contains(readme, 'rustyPlatform.lcdRotation');
     contains(readme, LCD_ROTATION_LABELS[3], 'the chosen rotation is named');
-    // What the rotation actually does to the layout, and the limit it runs into: mipidsi's address-window
-    // offset underflows when the display size exceeds the panel's framebuffer, so the drawing area cannot be
-    // rotated and a landscape layout needs a coordinate transform instead. The README has to say so rather
-    // than promise a landscape screen (which is what it did, briefly, and wrongly).
-    contains(readme, "stays the panel's native size");
-    contains(readme, 'underflow');
-    contains(readme, 'coordinate transform');
+    // What the rotation does to the layout, which took two hardware rounds to get right: the driver is handed
+    // the panel's native size and swaps the drawn area itself, so the screens are solved for the rotated shape
+    // and a landscape rotation produces a landscape interface. The README has to say that rather than promise
+    // a landscape screen without one (which it did, briefly, and wrongly), or claim one is impossible (also
+    // briefly, and wrongly).
+    contains(readme, "native size");
+    contains(readme, 'swaps the area it draws into');
+    contains(readme, 'landscape frame');
+    notContains(readme, 'coordinate transform');
 });
 
 test('the setting is declared with the four values and no rotation as the default', () => {
