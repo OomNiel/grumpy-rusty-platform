@@ -11,6 +11,24 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.38] - 2026-10-06
+
+### Fixed
+
+- **The Bluetooth template's battery-level characteristic now agrees with its notifications.** It notified the
+  counter without ever storing it, so a central that *read* the characteristic got the value it was
+  initialised with (`10`) while the notifications counted upwards. The counter is written into the
+  characteristic before it is announced — storing afterwards would leave a window where the two disagree —
+  and a failed write is logged rather than passed over.
+
+### Verified
+
+- The generated Bluetooth project compiles and links with the change (0 warnings), and a test pins the
+  ordering so the store cannot drift back after the notify.
+- The GATT **read** and **write** paths, and a second central against `CONNECTIONS_MAX = 1`, have been
+  exercised on a phone and behaved as intended.
+
+
 ## [0.0.37] - 2026-10-06
 
 ### Verified
