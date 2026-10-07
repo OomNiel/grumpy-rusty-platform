@@ -376,13 +376,13 @@ test('the panel template initialises the panel over its own pins', () => {
     // `_core` crate carried the shape but none of the drawing primitives (2026-10-05).
     contains(main, 'use embedded_graphics::prelude::*;', 'clear() and the colour traits come from the prelude');
     notOk(main.includes('embedded-graphics-core'), 'the split crate is not depended on any more');
-    contains(main, 'use mipidsi::options::{ColorOrder, Orientation};');
+    contains(main, 'use mipidsi::options::{ColorOrder, Orientation, Rotation};');
     contains(main, 'Builder::new(models::ST7796, di)');
     // The panel is wired with its X axis mirroring the controller's default. The board data said so from the
     // start (mirrorX: true, from the community board definition) and the template simply never emitted it, so
     // the first flash of this screen came out as a mirror -- text and all. The hardware settled the data's
     // claim; the pair below stops the emit from going missing again.
-    contains(main, '.orientation(Orientation::new().flip_horizontal())');
+    contains(main, '.orientation(Orientation::new().flip_horizontal().rotate(rotation))');
     contains(main, '.display_size(320, 480)');
     contains(main, '.color_order(ColorOrder::Bgr)');
     contains(main, `.init(&mut delay)`);
@@ -446,10 +446,14 @@ test('the panel orientation comes from the board data, for every panel', () => {
     for (const board of BOARDS.filter(isEspBoard)) {
         for (const panel of board.displays) {
             const main = filesFor(board, 'display', { panel: panel.panelChoice }).get('src/main.rs');
+            // The board's own axis mirroring, then the rotation the project was generated for: the
+            // mirroring is a property of the glass, the rotation is the user's choice, and the generated
+            // line has to carry both.
             const expected = `.orientation(Orientation::new()`
-                + `${panel.mirrorX ? '.flip_horizontal()' : ''}${panel.mirrorY ? '.flip_vertical()' : ''})`;
+                + `${panel.mirrorX ? '.flip_horizontal()' : ''}${panel.mirrorY ? '.flip_vertical()' : ''}`
+                + '.rotate(rotation))';
             contains(main, expected, `${board.id} ${panel.label}`);
-            contains(main, 'use mipidsi::options::{ColorOrder, Orientation};');
+            contains(main, 'use mipidsi::options::{ColorOrder, Orientation, Rotation};');
         }
     }
     // and the data itself still says what the hardware showed: the CYD's X axis is mirrored.

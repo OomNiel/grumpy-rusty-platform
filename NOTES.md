@@ -3231,3 +3231,54 @@ real advertising, phone visibility and connect/disconnect are all **compile-and-
 distinction is the same one §52 and later entries make; it is not a formality. ESP32-classic BLE also leaves
 roughly 128 KiB of DRAM claimed with the 72 KiB heap, so treat that number as a tuning point rather than a
 guarantee the moment Wi-Fi is added to the same image.
+
+---
+
+## 75. The panel rotation, and why it is not a line in main.rs (2026-10-06)
+
+*"A feature where the user can set the rotation of the lcd - settings are 0(default, no rotation), 1(90 deg
+CW), 2(180 deg CW), 3(270 deg CW)"*, with the constraint that `src/main.rs` must not be regenerated after the
+wizard, because that is where the user's own code goes.
+
+### The constraint, checked rather than assumed
+
+`generateProjectFiles` has exactly **one** caller — `src/commands/newProject.ts:146` — and nothing in build,
+flash, debug, packaging or refresh touches it. `rustyPlatform.refresh` only refreshes views
+(`extension.ts:68`). The sole guard is `ensureWritableTarget`, which asks with a modal warning naming the
+folder and a single *"Overwrite generated files"* button; dismissing it writes nothing at all. The Wi-Fi flow
+*reads* `src/main.rs` (to detect `option_env!("WIFI_SSID")`) and never writes it. So a generated `main.rs` is
+written once, and re-running the wizard into the same folder is the only way to replace it — which is exactly
+why the rotation could not live there.
+
+### The design
+
+- `rustyPlatform.lcdRotation` (number, enum 0-3, default 0, `scope: resource`) is the handle the user turns,
+  and it is written into the generated `.vscode/settings.json` so the choice travels with the project.
+- `.cargo/esp-config.toml` carries `LCD_ROTATION = "n"` under `[env]`, and the generated `src/main.rs` reads
+  it with `option_env!` and maps it to `Rotation::Deg0/90/180/270`.
+- The wizard asks for panel templates only (`display`, `touch`, `board`), with the four values spelled out in
+  degrees rather than as numbers.
+- Changing the setting later rewrites that one line (`src/display/rotationSync.ts`), line-wise, so `[env]`
+  entries the user has added are kept. A folder with no `.cargo/esp-config.toml` is left alone.
+- A nonsense value falls back to no rotation instead of failing: the value is editable by hand in
+  `settings.json`, and a cosmetic choice must not be able to stop a project from building.
+
+### Verified
+
+- The generated project **compiles and links** with the rotation present (0 warnings), and a nonsense value
+  (`9`) still builds.
+- That the value really reaches the compiler was **proved both ways** with a temporary `env!` probe in the
+  generated project: with the line present it compiled; with the line deleted the build stopped with
+  `error: environment variable LCD_ROTATION not defined at compile time`. (The first attempt at this probe
+  used `assert!(matches!(...))` in a `const`, which needs an unstable feature and so proved nothing — the
+  probe has to be `env!`, which errors when the variable is absent.)
+- `mipidsi` keeps the drawing area at the panel's native size regardless of rotation
+  (`OriginDimensions::size()` returns `display_size`, `graphics.rs:127-131`), so the layout baked into the
+  generated screen stays valid at every rotation — it is rotated, not clipped. (An earlier answer here
+  guessed the opposite; the crate source settled it.)
+
+### Not verified
+
+Nothing has been flashed. The rotation's *visual* effect, and the settings-change path as the editor drives
+it (a `vscode` event, whose pure rewrite is t1-tested but whose wiring is not), await a test on the board. The
+firmware logs `panel rotation setting: n` at boot precisely so that takes one look.

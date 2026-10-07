@@ -8,6 +8,24 @@ for VS Code.
 - Template: `display`
 - Flashed with: `espflash` over USB serial — **no debug probe**
 
+## Panel rotation
+
+This project is generated for **No rotation (default)**. The choice lives in two places:
+
+- `LCD_ROTATION` in `.cargo/esp-config.toml` - what the firmware actually reads, at **compile time**;
+- `rustyPlatform.lcdRotation` in `.vscode/settings.json` - the same choice as a **setting scoped to this
+  project**, which is the convenient way to change it: change the setting and Grumpy's Rusty Platform
+  rewrites the line above for you.
+
+Editing the line in `.cargo/esp-config.toml` by hand works too, since that is the file the compiler reads;
+the setting will still show the old value until you change it. Either way, rebuild to apply it. There is
+nothing to edit in `src/main.rs`, and no need to regenerate the project. 0 is no rotation, and 1/2/3 are
+90/180/270 degrees clockwise.
+
+The rotation turns the whole drawn image. It does not change the drawing area, which stays the panel's
+native 128x128: at 90 or 270 degrees your content appears rotated on the glass rather than re-laid out for a
+wide screen, so a landscape user interface means drawing in the rotated frame yourself.
+
 ## First-time setup
 
 The Xtensa targets are not in released Rust, so one extra toolchain is needed:

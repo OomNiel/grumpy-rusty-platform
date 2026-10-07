@@ -151,6 +151,8 @@ export interface GenerateOptions {
     template?: AppTemplate;
     /** Wizard answers for the board's options (panel revisions). */
     choices?: Record<string, string>;
+    /** How to turn the panel: 0 = none, 1 = 90, 2 = 180, 3 = 270 degrees clockwise. */
+    rotation?: number;
 }
 
 // The naming helpers (crateNameFrom, binaryNameFrom, isAcceptableProjectName) now live in
@@ -169,6 +171,7 @@ export function generateProjectFiles(options: GenerateOptions): GeneratedFile[] 
             projectName,
             template,
             choices: options.choices,
+            rotation: options.rotation,
         });
     }
 

@@ -15,6 +15,7 @@ import type { AppTemplate, AppTemplateInfo, GeneratedFile } from './files';
 import { crateNameFrom } from './naming';
 import { BoardChoices, displayFor } from '../boards/esp';
 import { EspBoardProfile, EspDisplay, EspTouch } from '../boards/types';
+import { LCD_ROTATION_LABELS, LcdRotation, asLcdRotation, templateUsesPanel } from '../display/rotation';
 
 /** Pinned ESP crate versions. See NOTES.md for where each one comes from. */
 export const ESP_CRATE_VERSIONS = {
@@ -58,6 +59,11 @@ export interface EspGenerateOptions {
     template: AppTemplate;
     /** Wizard answers for the board's `options` (panel revisions). */
     choices?: BoardChoices;
+    /**
+     * How the panel should be rotated. Baked into `.cargo/esp-config.toml` as an environment variable
+     * rather than into `src/main.rs`, so it stays changeable after the project has been generated.
+     */
+    rotation?: number;
 }
 
 /**
@@ -168,6 +174,9 @@ export function generateEspProjectFiles(options: EspGenerateOptions): GeneratedF
     const { board, template } = options;
     const choices = options.choices ?? {};
     const crateName = crateNameFrom(options.projectName);
+    // Anything unexpected (a hand-edited setting, a caller that does not care) is no rotation.
+    const rotation: LcdRotation = asLcdRotation(options.rotation);
+    const usesPanel = templateUsesPanel(template);
 
     if (!isTemplateValidForEsp(board, template)) {
         throw new Error(
@@ -181,13 +190,13 @@ export function generateEspProjectFiles(options: EspGenerateOptions): GeneratedF
     return [
         { path: 'Cargo.toml', content: espCargoToml(board, crateName, template, choices) },
         { path: '.cargo/config.toml', content: espCargoConfigToml(board, template) },
-        { path: '.cargo/esp-config.toml', content: espConfigToml() },
+        { path: '.cargo/esp-config.toml', content: espConfigToml(rotation, usesPanel) },
         { path: 'rust-toolchain.toml', content: espRustToolchainToml() },
         { path: 'build.rs', content: espBuildRs() },
         { path: 'src/main.rs', content: espMainRs(board, template, choices) },
-        { path: '.vscode/settings.json', content: espVscodeSettings(board) },
+        { path: '.vscode/settings.json', content: espVscodeSettings(board, rotation, usesPanel) },
         { path: '.gitignore', content: '/target\n/dist\n' },
-        { path: 'README.md', content: espReadme(board, crateName, template, choices) },
+        { path: 'README.md', content: espReadme(board, crateName, template, choices, rotation) },
     ];
 }
 
@@ -387,13 +396,24 @@ build-std = [${needsAlloc ? '"alloc", ' : ''}"core"]
 `;
 }
 
-function espConfigToml(): string {
+function espConfigToml(rotation: LcdRotation, usesPanel: boolean): string {
+    // An environment table is what makes the rotation reachable at compile time: cargo applies `[env]` to
+    // the rustc invocations, so `option_env!` in main.rs sees it without the extension having to inject
+    // anything at build time -- which is also why `cargo run` in a plain terminal honours it.
+    const rotationEntry = usesPanel
+        ? `
+# Panel rotation, read at compile time by src/main.rs. 0 = none, 1 = 90, 2 = 180, 3 = 270 degrees
+# clockwise. The rustyPlatform.lcdRotation setting writes this line; editing it here works just as well
+# (the compiler reads this file), and neither ever touches src/main.rs.
+LCD_ROTATION = "${rotation}"
+`
+        : '';
     return `# Runtime configuration for the ESP logging stack.
 [env]
 # log level for esp-println, read by esp_println::logger::init_logger_from_env() in main;
 # change to "debug" or "trace" when something is silent.
 ESP_LOG = "info"
-`;
+${rotationEntry}`;
 }
 
 function espRustToolchainToml(): string {
@@ -630,7 +650,7 @@ function espImports(board: EspBoardProfile, template: AppTemplate): string {
             'use esp_hal::time::Rate;',
             'use esp_hal::timer::timg::TimerGroup;',
             'use esp_println as _;',
-            'use mipidsi::options::{ColorOrder, Orientation};',
+            'use mipidsi::options::{ColorOrder, Orientation, Rotation};',
             'use mipidsi::{models, Builder};',
             'use mipidsi::interface::SpiInterface as SPIInterface;',
         ].join('\n');
@@ -654,7 +674,7 @@ function espImports(board: EspBoardProfile, template: AppTemplate): string {
             'use esp_hal::time::Rate;',
             'use esp_hal::timer::timg::TimerGroup;',
             'use esp_println as _;',
-            'use mipidsi::options::{ColorOrder, Orientation};',
+            'use mipidsi::options::{ColorOrder, Orientation, Rotation};',
             'use mipidsi::{models, Builder};',
             // The **buffered** interface, and it must be this one: the call below passes a batching buffer
             // (`SPIInterface::new(spi, dc, &mut buffer)`), which is mipidsi's own three-argument type.
@@ -736,7 +756,7 @@ function orientation(display: EspDisplay): string {
         // ${display.label}: ${display.mirrorX ? 'X is mirrored' : 'Y is mirrored'} relative to the controller's default.`
         : '';
     return `${note}
-        .orientation(Orientation::new()${flips})`;
+        .orientation(Orientation::new()${flips}.rotate(rotation))`;
 }
 
 /**
@@ -2052,6 +2072,20 @@ ${resetSetup}
 
     // Delay is a unit struct in esp-hal 1.x, not a value: it is built with new().
     let mut delay = Delay::new();
+
+    // The rotation is read at *compile* time from LCD_ROTATION, which lives in this project's
+    // .cargo/esp-config.toml. That is deliberate: it means the panel can be turned by changing a setting or
+    // a config line, and this file -- which is where your own code goes -- never has to be edited again.
+    // 0 = none, 1 = 90, 2 = 180, 3 = 270 degrees clockwise; anything else is no rotation.
+    let rotation = match option_env!("LCD_ROTATION") {
+        Some("1") => Rotation::Deg90,
+        Some("2") => Rotation::Deg180,
+        Some("3") => Rotation::Deg270,
+        _ => Rotation::Deg0,
+    };
+    // Logged because the value comes from outside this file: a silent fall back to no rotation would be
+    // indistinguishable from a rotation that was applied and simply not noticed.
+    log::info!("panel rotation setting: {}", option_env!("LCD_ROTATION").unwrap_or("0"));
     let mut display = Builder::new(models::${display.controller}, di)
         .display_size(${display.width}, ${display.height})${reset}${orientation(display)}
         .color_order(ColorOrder::${display.colorOrder === 'bgr' ? 'Bgr' : 'Rgb'})
@@ -2091,6 +2125,20 @@ ${resetSetup}
 
     // Delay is a unit struct in esp-hal 1.x, not a value: it is built with new().
     let mut delay = Delay::new();
+
+    // The rotation is read at *compile* time from LCD_ROTATION, which lives in this project's
+    // .cargo/esp-config.toml. That is deliberate: it means the panel can be turned by changing a setting or
+    // a config line, and this file -- which is where your own code goes -- never has to be edited again.
+    // 0 = none, 1 = 90, 2 = 180, 3 = 270 degrees clockwise; anything else is no rotation.
+    let rotation = match option_env!("LCD_ROTATION") {
+        Some("1") => Rotation::Deg90,
+        Some("2") => Rotation::Deg180,
+        Some("3") => Rotation::Deg270,
+        _ => Rotation::Deg0,
+    };
+    // Logged because the value comes from outside this file: a silent fall back to no rotation would be
+    // indistinguishable from a rotation that was applied and simply not noticed.
+    log::info!("panel rotation setting: {}", option_env!("LCD_ROTATION").unwrap_or("0"));
     let mut display = Builder::new(models::${display.controller}, di)
         .display_size(${display.width}, ${display.height})${reset}${orientation(display)}
         .color_order(ColorOrder::${display.colorOrder === 'bgr' ? 'Bgr' : 'Rgb'})
@@ -2357,16 +2405,18 @@ function espHeartbeatBody(): string {
 
 // --------------------------------------------------------------- small files
 
-function espVscodeSettings(board: EspBoardProfile): string {
-    return `${JSON.stringify(
-        {
-            'rust-analyzer.cargo.target': board.target,
-            'rust-analyzer.check.allTargets': false,
-            'rust-analyzer.linkedProjects': ['Cargo.toml'],
-        },
-        null,
-        2,
-    )}\n`;
+function espVscodeSettings(board: EspBoardProfile, rotation: LcdRotation, usesPanel: boolean): string {
+    // Written workspace-scoped so the value travels with the project: the extension reads it back to keep
+    // .cargo/esp-config.toml in step, so changing the setting here is all it takes.
+    const settings: Record<string, unknown> = {
+        'rust-analyzer.cargo.target': board.target,
+        'rust-analyzer.check.allTargets': false,
+        'rust-analyzer.linkedProjects': ['Cargo.toml'],
+    };
+    if (usesPanel) {
+        settings['rustyPlatform.lcdRotation'] = rotation;
+    }
+    return `${JSON.stringify(settings, null, 2)}\n`;
 }
 
 function espReadme(
@@ -2374,6 +2424,7 @@ function espReadme(
     crateName: string,
     template: AppTemplate,
     choices: BoardChoices,
+    rotation: LcdRotation,
 ): string {
     // Only the pins the generated firmware actually drives are listed: the SD socket is still
     // described in the notes rather than claimed, because no template touches it yet.
@@ -2442,6 +2493,27 @@ upstream example's battery-service skeleton - its level is a counter that ticks 
 not a battery reading, so replace it with something true for your project before you ship it.
 `
         : '';
+    const rotationSection = templateUsesPanel(template)
+        ? `
+## Panel rotation
+
+This project is generated for **${LCD_ROTATION_LABELS[rotation]}**. The choice lives in two places:
+
+- \`LCD_ROTATION\` in \`.cargo/esp-config.toml\` - what the firmware actually reads, at **compile time**;
+- \`rustyPlatform.lcdRotation\` in \`.vscode/settings.json\` - the same choice as a **setting scoped to this
+  project**, which is the convenient way to change it: change the setting and Grumpy's Rusty Platform
+  rewrites the line above for you.
+
+Editing the line in \`.cargo/esp-config.toml\` by hand works too, since that is the file the compiler reads;
+the setting will still show the old value until you change it. Either way, rebuild to apply it. There is
+nothing to edit in \`src/main.rs\`, and no need to regenerate the project. 0 is no rotation, and 1/2/3 are
+90/180/270 degrees clockwise.
+
+The rotation turns the whole drawn image. It does not change the drawing area, which stays the panel's
+native ${board.displays.length > 0 ? `${displayFor(board, choices)?.width ?? 0}x${displayFor(board, choices)?.height ?? 0}` : 'size'}: at 90 or 270 degrees your content appears rotated on the glass rather than re-laid out for a
+wide screen, so a landscape user interface means drawing in the rotated frame yourself.
+`
+        : '';
     const pinSection =
         pinRows.length === 0
             ? ''
@@ -2465,7 +2537,7 @@ for VS Code.
 - Chip: \`${board.espChip}\` (${board.flashSize} flash)
 - Template: \`${template}\`
 - Flashed with: \`espflash\` over USB serial — **no debug probe**
-${wifiNote}${bluetoothNote}
+${wifiNote}${bluetoothNote}${rotationSection}
 ## First-time setup
 
 The Xtensa targets are not in released Rust, so one extra toolchain is needed:
