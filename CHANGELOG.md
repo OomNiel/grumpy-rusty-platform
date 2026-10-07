@@ -11,6 +11,21 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.39] - 2026-10-06
+
+### Added
+
+- **The Grumpy icon.** The Extensions view and the gallery were showing a placeholder because the manifest had
+  no `icon`. It is now the same 128x128 PNG the sibling Grumpy extension uses — copied in byte-identical, so
+  the branding matches rather than being reinvented. A test pins its existence, type, PNG signature and
+  minimum size, since a broken icon fails silently.
+
+### Fixed
+
+- The marketplace `description` still advertised RP2040/RP2350 only, which stopped being true when the ESP32
+  and ESP32-S3 boards arrived.
+
+
 ## [0.0.38] - 2026-10-06
 
 ### Fixed
