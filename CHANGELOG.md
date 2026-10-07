@@ -11,6 +11,22 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.35] - 2026-10-06
+
+### Added
+
+- **LCD rotation for panel projects.** The wizard asks how the panel is mounted — 0 = none, 1 = 90°, 2 =
+  180°, 3 = 270° clockwise — when the template drives a display, and `rustyPlatform.lcdRotation` changes it
+  afterwards. The value is written to the project's `.vscode/settings.json` and to `LCD_ROTATION` in its
+  `.cargo/esp-config.toml`, which the firmware reads at compile time, so changing the rotation never means
+  editing — or regenerating — `src/main.rs`. Every panel project also logs the rotation it was built with.
+
+### Changed
+
+- **New Project** asks one more question, and only for templates that drive a panel: board → template →
+  rotation → name → folder.
+
+
 ## [0.0.34] - 2026-10-06
 
 ### Added
