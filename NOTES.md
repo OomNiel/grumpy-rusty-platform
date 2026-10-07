@@ -3428,7 +3428,7 @@ distinction §76 drew about timings.
 
 **Still needs one thing:** a re-test on the phone of the notify path (connect, read the characteristic, watch
 a notification) to confirm the read now returns the counter. That is a behavioural claim which only the board
-can settle; the compile and the ordering test are not substitutes for it.
+can settle; the compile and the ordering test are not substitutes for it. **Confirmed in §80.**
 
 ---
 
@@ -3453,6 +3453,35 @@ Two honest limits:
 
 - **I cannot view images with this model**, so everything above is about the file's properties (dimensions,
   colour type, signature, byte-identity) and not about its appearance. `GrumpyWhite.png` (also 128x128) sits
-  beside it in the sibling extension if the colour variant turns out to be the wrong one.
+  beside it in the sibling extension if the colour variant turns out to be the wrong one. (Confirmed by eye
+  once it appeared in the Extensions view - see §80.)
 - The `description` in the manifest was stale in the same area and is fixed here: it advertised RP2040/RP2350
   only, which stopped being true when the ESP32 and ESP32-S3 boards arrived.
+
+---
+
+## 80. Closing the loop: the two confirmations only the board and an eye could give (2026-10-06)
+
+Both caveats left open by the previous two entries are now closed, and one older one is not - recorded here so
+the ledger is accurate rather than tidy.
+
+**The Bluetooth read now agrees with the notify, confirmed on hardware.** §78 fixed the generated
+`custom_task` so the counter is stored in the characteristic before it is announced, and said plainly that the
+compile and the ordering test were not substitutes for reading it on a phone. Reading it on a phone returns
+the counter. Every part of the Bluetooth template this session set out to verify is therefore verified:
+advertising, discovery by a real BLE scanner, connection, the notification stream, RSSI, disconnect and the
+return to advertising, the GATT read and write paths, a second central against `CONNECTIONS_MAX = 1`, and now
+the read agreeing with the notify.
+
+**The icon was confirmed by eye.** §79 could verify the file's properties but not its appearance, because this
+model cannot view images. It appears in the Extensions view, which is the only check that mattered.
+
+**What is still not verified anywhere in this feature set: the panel rotation's visual effect.** §75 verified
+the *mechanism* - the value is written to `.cargo/esp-config.toml`, `option_env!` sees it (proved both ways
+with an `env!` probe), a nonsense value falls back to no rotation, and the generated project compiles - but
+nobody has yet flashed a *panel* project with a rotation set and looked at the glass. The Wi-Fi and Bluetooth
+templates were the ones exercised on hardware, and neither drives a panel, so the rotation could not have
+shown up in that testing even by accident. It needs a `display`, `touch` or `board` project with
+`LCD_ROTATION` set to 1, 2 or 3, and then a look at the screen. The firmware logs the value it was built with
+(`panel rotation setting: n`), which distinguishes "the setting did not reach the build" from "it reached the
+build and the image did not turn" - the two failures that would otherwise look identical from the outside.
