@@ -111,7 +111,7 @@ Wired boards are never asked: the prompt only appears for a project whose `src/m
 
 | Command | What it does |
 |---|---|
-| New Project | The first row of the **Controls** section: the wizard asks which board (the whole catalog, your default first), then the template, then the name, and writes the workspace. Also an icon in the Boards view's title bar |
+| New Project | The first row of the **Controls** section: the wizard asks which board (the whole catalog, your default first), then the template, then **how the panel is mounted** when the template drives one, then the name, and writes the workspace. Also an icon in the Boards and Project views' title bars |
 | Build for Debug / Build for Release | `cargo build` and `cargo build --release` in a terminal. The Debug *row* was replaced by these two; the **Rusty Platform: Debug** command is still in the palette, and on an ESP board it flashes and follows the log in one terminal |
 | Clean | `cargo clean` |
 | Publish .deb | Builds for release and packs the firmware artifacts plus a `<package>-flash` helper into `<name>_<version>_<arch>.deb` **in the project root** |
@@ -253,6 +253,24 @@ The `wifi` and `bluetooth` projects have been compiled *and linked* for both the
 the ESP32-S3, and the generated ESP32 Bluetooth project carries a linker workaround for three ROM
 symbols missing from a published crate (see `NOTES.md`). Neither has been run on a board yet, so
 association, advertising and phone visibility are still unverified.
+
+### Turning the panel
+
+Every panel project is generated with a rotation: **0** (no rotation, the default), **1** (90°
+clockwise), **2** (180°) or **3** (270°). It is asked when the project is created and can be changed
+afterwards with the `rustyPlatform.lcdRotation` setting, which is written into the project's
+`.vscode/settings.json` and kept in step with `LCD_ROTATION` in `.cargo/esp-config.toml` — the line the
+firmware actually reads, at **compile time**.
+
+That indirection is the point: **`src/main.rs` is yours from the moment it is generated.** It is
+written once by the wizard and never regenerated (the only way to lose it is to run *New Project* into
+the same folder again and confirm the overwrite), so adding your own code to it is the expected
+workflow. The rotation therefore lives in a config file, and the firmware logs the value it was built
+with (`panel rotation setting: 1`) so a build can be checked from the serial log.
+
+The rotation turns the whole drawn image; it does not change the drawing area, which keeps the panel's
+native size. So at 90° or 270° the content appears rotated on the glass rather than re-laid out for a
+wide screen.
 
 ## Documentation
 

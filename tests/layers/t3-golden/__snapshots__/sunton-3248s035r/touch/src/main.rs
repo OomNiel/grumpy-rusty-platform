@@ -24,7 +24,7 @@ use esp_hal::spi::master::{Config as SpiConfig, Spi};
 use esp_hal::time::Rate;
 use esp_hal::timer::timg::TimerGroup;
 use esp_println as _;
-use mipidsi::options::{ColorOrder, Orientation};
+use mipidsi::options::{ColorOrder, Orientation, Rotation};
 use mipidsi::{models, Builder};
 use mipidsi::interface::SpiInterface as SPIInterface;
 use esp_backtrace as _;
@@ -86,10 +86,24 @@ async fn main(_spawner: Spawner) -> ! {
 
     // Delay is a unit struct in esp-hal 1.x, not a value: it is built with new().
     let mut delay = Delay::new();
+
+    // The rotation is read at *compile* time from LCD_ROTATION, which lives in this project's
+    // .cargo/esp-config.toml. That is deliberate: it means the panel can be turned by changing a setting or
+    // a config line, and this file -- which is where your own code goes -- never has to be edited again.
+    // 0 = none, 1 = 90, 2 = 180, 3 = 270 degrees clockwise; anything else is no rotation.
+    let rotation = match option_env!("LCD_ROTATION") {
+        Some("1") => Rotation::Deg90,
+        Some("2") => Rotation::Deg180,
+        Some("3") => Rotation::Deg270,
+        _ => Rotation::Deg0,
+    };
+    // Logged because the value comes from outside this file: a silent fall back to no rotation would be
+    // indistinguishable from a rotation that was applied and simply not noticed.
+    log::info!("panel rotation setting: {}", option_env!("LCD_ROTATION").unwrap_or("0"));
     let mut display = Builder::new(models::ST7796, di)
         .display_size(320, 480)
         // 3.5" ST7796 320x480: X is mirrored relative to the controller's default.
-        .orientation(Orientation::new().flip_horizontal())
+        .orientation(Orientation::new().flip_horizontal().rotate(rotation))
         .color_order(ColorOrder::Bgr)
         .init(&mut delay)
         .expect("panel initialisation");

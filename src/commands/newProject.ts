@@ -10,6 +10,12 @@ import {
     requiredFirmware,
     templatesFor,
 } from '../generate/files';
+import {
+    LCD_ROTATION_CHOICES,
+    LCD_ROTATION_LABELS,
+    LcdRotation,
+    templateUsesPanel,
+} from '../display/rotation';
 import { installFirmwareIntoProject } from '../toolchain/cyw43FirmwareRunner';
 import { ensureEspToolchain } from './espToolchainCommands';
 import { runInTerminal } from './terminal';
@@ -51,6 +57,31 @@ async function pickTemplate(board: BoardProfile): Promise<AppTemplate | undefine
         },
     );
     return picked?.template;
+}
+
+/**
+ * How far to turn the panel.
+ *
+ * Only asked when the template actually drives one, and asked with the four values spelled out rather than
+ * as 0-3: the number is what the firmware reads, but nobody thinks in it. The answer is written into the
+ * project's config and settings, never into `src/main.rs`.
+ */
+async function pickRotation(board: BoardProfile, template: AppTemplate): Promise<LcdRotation | undefined> {
+    if (!templateUsesPanel(template)) {
+        return 0;
+    }
+    const picked = await vscode.window.showQuickPick(
+        LCD_ROTATION_CHOICES.map((rotation) => ({
+            label: LCD_ROTATION_LABELS[rotation],
+            description: rotation === 0 ? 'recommended' : `${rotation}`,
+            rotation,
+        })),
+        {
+            title: `${board.name} — how is the panel mounted?`,
+            placeHolder: 'LCD rotation',
+        },
+    );
+    return picked?.rotation;
 }
 
 async function pickParentFolder(): Promise<vscode.Uri | undefined> {
@@ -120,6 +151,11 @@ export function registerNewProjectCommand(output: vscode.OutputChannel): vscode.
             return;
         }
 
+        const rotation = await pickRotation(board, template);
+        if (rotation === undefined) {
+            return;
+        }
+
         const projectName = await vscode.window.showInputBox({
             title: `${board.name} — project name`,
             prompt: 'Folder name and crate name for the new project',
@@ -143,7 +179,7 @@ export function registerNewProjectCommand(output: vscode.OutputChannel): vscode.
             return;
         }
 
-        const files = generateProjectFiles({ board, projectName, template });
+        const files = generateProjectFiles({ board, projectName, template, rotation });
         for (const file of files) {
             const segments = file.path.split('/');
             const directory = vscode.Uri.joinPath(target, ...segments.slice(0, -1));

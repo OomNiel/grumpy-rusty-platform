@@ -441,7 +441,25 @@
                     "default": "",
                     "markdownDescription": "Explicit path to `espflash`. Leave empty to auto-detect (`~/.cargo/bin`, then `PATH`)."
                 },
-                "rustyPlatform.flashProfile": {
+                "rustyPlatform.lcdRotation": {
+                "type": "number",
+                "enum": [
+                    0,
+                    1,
+                    2,
+                    3
+                ],
+                "enumDescriptions": [
+                    "No rotation. What the panel does when it is not told otherwise.",
+                    "90 degrees clockwise.",
+                    "180 degrees clockwise.",
+                    "270 degrees clockwise."
+                ],
+                "default": 0,
+                "scope": "resource",
+                "markdownDescription": "How far to turn the LCD in this project. Written into the project's `.cargo/esp-config.toml` as `LCD_ROTATION` and read by the generated firmware at **compile time**, so changing it never means editing `src/main.rs`. The rotation turns the whole image; the drawing area keeps the panel's native size."
+            },
+            "rustyPlatform.flashProfile": {
                     "type": "string",
                     "enum": [
                         "auto",
