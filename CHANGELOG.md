@@ -11,6 +11,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.33] - 2026-10-06
+
+### Added
+
+- **The `New Project` icon on the Project section's title bar**, matching the Boards section, which has always
+  had it. The Project section is the other place a user looks when nothing is open, and the Controls section
+  carries the labelled row rather than a second icon.
+
+
 ## [0.0.32] - 2026-10-06
 
 ### Added
