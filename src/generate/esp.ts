@@ -40,6 +40,9 @@ export const ESP_CRATE_VERSIONS = {
     /** SD cards over SPI, with a FAT filesystem on top. */
     embeddedSdmmc: '0.8.2',
     embeddedGraphics: '0.8',
+    /** The Bluetooth host stack on top of esp-radio's HCI controller (advertising + GATT). */
+    troubleHost: '0.7.0',
+    staticCell: '2.1.1',
 } as const;
 
 /** The Xtensa toolchain espup installs under this rustup channel name. */
@@ -127,6 +130,28 @@ export function templatesForEsp(board: EspBoardProfile): AppTemplateInfo[] {
                 + 'mapped coordinates go to the log.',
         });
     }
+    // Wireless last: it is what people reach for after the panel works, and it is the only pair of templates
+    // that depends on the chip's silicon rather than on wiring a board carries.
+    if (board.radio.wifi) {
+        templates.push({
+            id: 'wifi',
+            label: 'Wi-Fi station',
+            description:
+                'Joins your access point as a station and logs the access point it associated with, then '
+                + 'reports a heartbeat. Set WIFI_SSID and WIFI_PASSWORD in the environment when you build; '
+                + 'without them the firmware substitutes placeholders and says so in the log.',
+        });
+    }
+    if (board.radio.bluetooth === 'ble') {
+        templates.push({
+            id: 'bluetooth',
+            label: 'Bluetooth LE peripheral',
+            description:
+                'Starts the chip\'s Bluetooth controller and advertises as a named peripheral, logging when a '
+                + 'central connects and disconnects. Nothing to pair with yet -- it exists to prove the radio '
+                + 'and the firmware stack come up on this board.',
+        });
+    }
     return templates;
 }
 
@@ -192,11 +217,23 @@ panel-gc9a01 = []
 `;
     const espRtosFeatures = ['embassy', board.espChip];
 
+    // The radio templates: Wi-Fi on `wifi`, the Bluetooth LE controller on `bluetooth`.
+    const radio = template === 'wifi' || template === 'bluetooth';
+
     // The ADC and DAC live behind esp-hal's `unstable` feature (confirmed in its source: the analog modules
-    // are cfg-gated), so a project that reads the LDR or drives the speaker has to ask for it.
+    // are cfg-gated), so a project that reads the LDR or drives the speaker has to ask for it. The radio API
+    // is in the same position -- esp-radio marks it unstable, and esp-radio's own documentation states that
+    // turning its `unstable` feature on obliges the final binary to turn esp-hal's on too.
     const espHalFeatures = [`"${board.espChip}"`, '"log-04"'];
-    if (template === 'peripherals' || template === 'board') {
+    if (template === 'peripherals' || template === 'board' || radio) {
         espHalFeatures.push('"unstable"');
+    }
+
+    if (radio) {
+        // The radio's own glue for the scheduler is a separate esp-rtos feature. Read out of esp-rtos
+        // 0.4.0's manifest: `esp-radio = ["dep:esp-radio-rtos-driver"]`. Without it the driver has no
+        // scheduler to run on and the first call into the radio stalls instead of failing.
+        espRtosFeatures.push('esp-radio');
     }
     const dependencies = [
         `esp-hal = { version = "${ESP_CRATE_VERSIONS.espHal}", features = [${espHalFeatures.join(', ')}] }`,
@@ -244,6 +281,40 @@ panel-gc9a01 = []
         // crate name itself. Same 1.0 line mipidsi and embedded-hal-bus already resolve to.
         dependencies.push(`embedded-hal = "${ESP_CRATE_VERSIONS.embeddedHal}"`);
     }
+    if (radio) {
+        // esp-radio pulls in the vendor binary blobs and, for a real connection, a host stack. It needs a
+        // heap at runtime, so esp-alloc comes with it; esp-radio reaches its own allocations through that
+        // crate by default, which is why the dependency is left on its default features.
+        const radioFeatures = [
+            `"${board.espChip}"`,
+            template === 'wifi' ? '"wifi"' : '"ble"',
+            '"log-04"',
+            '"unstable"',
+        ];
+        dependencies.push(
+            `esp-radio = { version = "${ESP_CRATE_VERSIONS.espRadio}", features = [${radioFeatures.join(', ')}] }`,
+            `esp-alloc = { version = "${ESP_CRATE_VERSIONS.espAlloc}", features = ["${board.espChip}"] }`,
+        );
+        if (template === 'wifi') {
+            // The addressing lives here, not in the radio driver: DHCP, a fixed address, and the stack that
+            // makes the interface usable at all.
+            dependencies.push(
+                `embassy-net = { version = "${ESP_CRATE_VERSIONS.embassyNet}", features = ["dhcpv4", "medium-ethernet", "tcp", "dns"] }`,
+                `static_cell = "${ESP_CRATE_VERSIONS.staticCell}"`,
+            );
+        }
+        if (template === 'bluetooth') {
+            // A Bluetooth controller is only an HCI transport: advertising, connections and the GATT
+            // server live in a *host* stack on top of it. This is the host esp-radio's own BLE example
+            // uses, so the generated project follows the vendor's shape rather than a hand-rolled one.
+            dependencies.push(
+                `trouble-host = { version = "${ESP_CRATE_VERSIONS.troubleHost}", features = ["default-packet-pool-mtu-255", "derive"] }`,
+                'embassy-sync = "0.8"',
+                'embassy-futures = "0.1"',
+                `static_cell = "${ESP_CRATE_VERSIONS.staticCell}"`,
+            );
+        }
+    }
 
     return `# Generated by Grumpy's Rusty Platform for VS Code.
 # Board: ${board.name} (${board.family}, ${board.flashSize} flash)
@@ -270,7 +341,27 @@ debug = true
 }
 
 function espCargoConfigToml(board: EspBoardProfile, template: AppTemplate): string {
-    const needsAlloc = template === 'wifi';
+    // Both radio templates allocate: the Wi-Fi and Bluetooth stacks are not static-buffer-only, so the
+    // generated manifest rebuilds core *and* alloc from source (the espup toolchain ships rust-src for this).
+    const needsAlloc = template === 'wifi' || template === 'bluetooth';
+    // Bluetooth on the classic ESP32 cannot link against the published crates as they stand, and the
+    // three symbols below are the whole of the problem. crates.io's esp-rom-sys 0.1.5 -- which esp-radio
+    // 1.0.0-beta.1 pins with `=0.1.5` -- is missing three ROM `PROVIDE` lines that the upstream repository
+    // has at the same tag, and esp-wifi-sys-esp32 0.3.0's libbtdm_app.a (the BLE controller blob) refers to
+    // all three. The result is a link error, not a warning:
+    //     undefined reference to `ld_iscan_evt_start_cbk'
+    // It was found by building a generated project for a real board, which is the only way it shows up.
+    // The addresses are the stable ESP32 ROM addresses from esp-rom-sys's own esp32.rom.ld at that tag.
+    // They are defined only for the classic ESP32: the S3 has a different blob and different addresses, and
+    // defining ESP32 addresses there would be meaningless. Remove these three lines once esp-rom-sys ships
+    // the PROVIDEs; `--defsym` on an already-provided symbol is harmless, so leaving them is safe.
+    const bleRomSymbols = template === 'bluetooth' && board.espChip === 'esp32'
+        ? `
+  # Workaround for esp-rom-sys 0.1.5 (the version esp-radio pins): see the comment in this file's source.
+  "-C", "link-arg=-Wl,--defsym=ld_iscan_evt_start_cbk=0x4003b58c",
+  "-C", "link-arg=-Wl,--defsym=ld_page_evt_start_cbk=0x4003cf40",
+  "-C", "link-arg=-Wl,--defsym=ld_pscan_evt_start_cbk=0x4003e924",`
+        : '';
     return `# Generated by Grumpy's Rusty Platform for VS Code.
 #
 # Compilation settings live here, runtime settings in esp-config.toml -- that split is
@@ -286,7 +377,7 @@ runner = "espflash flash --monitor --chip ${board.espChip}"
 target = "${board.target}"
 rustflags = [
   # Xtensa images are linked without the C runtime startup files.
-  "-C", "link-arg=-nostartfiles",
+  "-C", "link-arg=-nostartfiles",${bleRomSymbols}
 ]
 
 [unstable]
@@ -390,10 +481,32 @@ function rustString(text: string): string {
 }
 
 /** The common prologue: HAL init, the esp-rtos scheduler, and a boot marker. */
-function espBootBlock(board: EspBoardProfile): string {
+function espBootBlock(board: EspBoardProfile, template: AppTemplate): string {
+    // The radio stacks allocate at runtime, and esp-radio's own quick start installs the heap between
+    // `esp_hal::init` and the scheduler start. The order is not cosmetic: the first block is memory the
+    // bootloader has finished with (`reclaimed`), so it can only be taken once the HAL has initialised,
+    // and the radio cannot be created until both are in place.
+    // The sizes are the ones esp-radio's own examples use, per stack rather than one number for both:
+    // Wi-Fi takes two blocks (the first is memory the second-stage bootloader is finished with, the second
+    // is reserved from SRAM), Bluetooth takes one. On the classic ESP32 the heap lands in .bss, so it is
+    // counted against the 128 KiB the DRAM linker segment allows -- the two figures are not interchangeable.
+    const heap = template === 'wifi'
+        ? `
+    // Wi-Fi is not static-buffer-only, so it needs a heap. The first block is memory the second-stage
+    // bootloader used and is done with by now; the second is reserved from SRAM.
+    esp_alloc::heap_allocator!(#[ram(reclaimed)] size: 64 * 1024);
+    esp_alloc::heap_allocator!(size: 36 * 1024);
+`
+        : template === 'bluetooth'
+        ? `
+    // The Bluetooth controller and the host stack both allocate. 72 KiB is what esp-radio's own BLE
+    // example asks for; raising it is a tuning decision, and it comes out of the same DRAM as the stack.
+    esp_alloc::heap_allocator!(size: 72 * 1024);
+`
+        : '';
     return `    let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
-
+${heap}
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     esp_rtos::start(timg0.timer0, peripherals.FROM_CPU_INTR0);
 
@@ -412,6 +525,43 @@ function espBootBlock(board: EspBoardProfile): string {
 }
 
 function espImports(board: EspBoardProfile, template: AppTemplate): string {
+    if (template === 'wifi') {
+        return [
+            'use core::net::Ipv4Addr;',
+            'use core::str::FromStr;',
+            'use embassy_executor::Spawner;',
+            // embassy-net does the addressing on top of the radio driver: the radio moves frames, the stack
+            // owns DHCP, a fixed address, and everything above it.
+            'use embassy_net::{Config as NetConfig, Ipv4Cidr, Runner, StackResources, StaticConfigV4};',
+            'use embassy_time::{Duration, Timer};',
+            'use esp_hal::clock::CpuClock;',
+            // The heap's reclaimed region is declared with this attribute macro, and an attribute macro has
+            // to be in scope to be named: #[ram(reclaimed)] alone is an unresolved attribute.
+            'use esp_hal::ram;',
+            'use esp_hal::rng::Rng;',
+            'use esp_hal::timer::timg::TimerGroup;',
+            'use esp_println as _;',
+            // The station's configuration is which network and how it is authenticated; the address is the
+            // stack's business, not the radio's.
+            'use esp_radio::wifi::sta::StationConfig;',
+            'use esp_radio::wifi::{AuthenticationMethodConfig, Config as WifiConfig, ControllerConfig, Interface, WifiController};',
+        ].join('\n');
+    }
+    if (template === 'bluetooth') {
+        return [
+            'use embassy_executor::Spawner;',
+            // The advertising loop races the host-stack runner, which is what these two express.
+            'use embassy_futures::{join::join, select::select};',
+            'use embassy_time::{Duration, Timer};',
+            'use esp_hal::clock::CpuClock;',
+            'use esp_hal::timer::timg::TimerGroup;',
+            'use esp_println as _;',
+            // The controller is only an HCI transport; the host stack above it owns advertising and GATT.
+            'use esp_radio::ble::controller::BleConnector;',
+            'use log::{info, warn};',
+            'use trouble_host::prelude::*;',
+        ].join('\n');
+    }
     if (template === 'peripherals') {
         return [
             'use embassy_executor::Spawner;',
@@ -533,7 +683,11 @@ function espMainRs(board: EspBoardProfile, template: AppTemplate, choices: Board
     const touch = template === 'touch' || template === 'board' ? board.touch : undefined;
     const led = board.led;
 
-    const body = template === 'sdcard'
+    const body = template === 'wifi'
+        ? espWifiBody()
+        : template === 'bluetooth'
+        ? espBluetoothBody()
+        : template === 'sdcard'
         ? espSdcardBody(board)
         : template === 'peripherals'
         ? espPeripheralsBody(board)
@@ -559,11 +713,11 @@ use esp_backtrace as _;
 esp_bootloader_esp_idf::esp_app_desc!();
 
 #[esp_rtos::main]
-async fn main(_spawner: Spawner) -> ! {
-${espBootBlock(board)}
+async fn main(${template === 'wifi' ? 'spawner' : '_spawner'}: Spawner) -> ! {
+${espBootBlock(board, template)}
 ${body}
 }
-`;
+${template === 'bluetooth' ? espBluetoothSupport() : template === 'wifi' ? espWifiSupport() : ''}`;
 }
 
 /**
@@ -728,6 +882,400 @@ function espSdMountCode(board: EspBoardProfile, peripheral = 'SPI2', binding = '
 /**
  * The TF card template on its own: mount it, list it, and say whether it worked.
  */
+/**
+ * The Wi-Fi station body.
+ *
+ * esp-radio's own quick start, plus the two things a first-time user needs: the credentials come from the
+ * environment (the same four keys the Pico template reads, so the extension's prompt serves both), and a
+ * failed association is retried with a factual message instead of leaving the board silent.
+ *
+ * What this driver does *not* offer is an address: esp-radio 1.0.0-beta.1 has no DHCP, netif or IPv4 API
+ * anywhere in its Wi-Fi module, so the firmware cannot log the address it was given. The log says so in as
+ * many words rather than printing a plausible-looking number, because the association is real either way --
+ * the router's own client list is where the address can be seen (checked by reading the crate's source).
+ */
+function espWifiBody(): string {
+    return `
+
+    // Credentials are read at *compile* time, so they never end up in your source tree.
+    //
+    // In VS Code, press Flash or Debug: the extension asks for the network name and password the first
+    // time and remembers them. Building from a terminal instead, pass them on the command line:
+    //
+    //   WIFI_SSID="my-ssid" WIFI_PASSWORD="secret" cargo run --release
+    //
+    // A fixed address is the escape hatch for a network whose DHCP server never answers:
+    //
+    //   WIFI_STATIC_IP="192.168.1.50/24" WIFI_GATEWAY="192.168.1.1" cargo run --release
+    //
+    // Leave those two unset to use DHCP, which is the default. An empty password joins an open network.
+    const WIFI_SSID: &str = match option_env!("WIFI_SSID") {
+        Some(value) => value,
+        None => "YOUR_WIFI_SSID",
+    };
+    const WIFI_PASSWORD: &str = match option_env!("WIFI_PASSWORD") {
+        Some(value) => value,
+        None => "YOUR_WIFI_PASSWORD",
+    };
+    const WIFI_STATIC_IP: Option<&str> = option_env!("WIFI_STATIC_IP");
+    const WIFI_GATEWAY: Option<&str> = option_env!("WIFI_GATEWAY");
+
+    // Open and protected networks are configured differently, and the difference is not cosmetic: WPA2
+    // with an empty key never associates, and an open network rejects a key that was supplied.
+    let authentication = if WIFI_PASSWORD.is_empty() {
+        log::info!("no WIFI_PASSWORD set, joining as an open network");
+        AuthenticationMethodConfig::Open
+    } else {
+        // WPA *and* WPA2, so an access point offering only the older one is not a bare failure. WPA3/SAE
+        // does not appear in this driver's configuration at all.
+        AuthenticationMethodConfig::WpaWpa2Personal(
+            WIFI_PASSWORD.try_into().expect("the password is longer than 64 bytes"),
+        )
+    };
+    let station_config = WifiConfig::Station(
+        StationConfig::default()
+            .with_ssid(WIFI_SSID.try_into().expect("the network name is longer than 32 bytes"))
+            .with_authentication(authentication),
+    );
+
+    // The interface is the network stack's driver and it is a singleton, so it is taken before the
+    // controller is built. The controller then has to stay alive for the life of the program: dropping it
+    // deinitialises Wi-Fi and takes the interface down with it, which looks exactly like a dead network.
+    let wifi_interface = Interface::station();
+    let mut controller = WifiController::new(
+        peripherals.WIFI,
+        ControllerConfig::default().with_initial_config(station_config),
+    )
+    .expect("Wi-Fi refuses to start on this board");
+
+    // Association is retried rather than attempted once: a router that is still booting, or a first
+    // attempt that races the radio coming up, would otherwise leave the board sitting there silently.
+    let mut attempt: u32 = 0;
+    loop {
+        attempt += 1;
+        log::info!("joining {} (attempt {})", WIFI_SSID, attempt);
+        match controller.connect_async().await {
+            Ok(info) => {
+                log::info!(
+                    "associated with {:?} on channel {} (association id {})",
+                    info.ssid,
+                    info.channel,
+                    info.aid
+                );
+                break;
+            }
+            Err(error) => {
+                log::warn!("association failed: {:?}", error);
+                log::warn!("check WIFI_SSID/WIFI_PASSWORD, and that the access point has a 2.4 GHz radio");
+                Timer::after(Duration::from_secs(5)).await;
+            }
+        }
+    }
+
+    // A malformed WIFI_STATIC_IP falls back to DHCP rather than panicking: a typo in a build variable
+    // should not leave the board in a boot loop whose only message is a panic.
+    let net_config = match WIFI_STATIC_IP.and_then(|ip| static_ipv4_config(ip, WIFI_GATEWAY)) {
+        Some(config) => {
+            log::info!("using the fixed address from WIFI_STATIC_IP, so DHCP is skipped");
+            config
+        }
+        None => {
+            log::info!("using DHCP");
+            NetConfig::dhcpv4(Default::default())
+        }
+    };
+
+    // The stack wants a seed for its own randomness, and the chip's generator is the honest source.
+    let rng = Rng::new();
+    let seed = (rng.random() as u64) << 32 | rng.random() as u64;
+    // The stack's buffer pool has to outlive this function, so it lives in a static. (This is written out
+    // rather than hidden behind a macro: a macro_rules definition is scoped textually, so one defined in
+    // the items emitted *after* main would not be visible here -- which is how the first version failed.)
+    static STACK_RESOURCES: static_cell::StaticCell<StackResources<3>> = static_cell::StaticCell::new();
+    let (stack, runner) = embassy_net::new(
+        wifi_interface,
+        net_config,
+        STACK_RESOURCES.uninit().write(StackResources::<3>::new()),
+        seed,
+    );
+
+    // Without this task running, not one packet is processed and the wait below never resolves.
+    spawner.spawn(net_task(runner).expect("the network task is spawned exactly once"));
+
+    stack.wait_config_up().await;
+    match stack.config_v4() {
+        Some(config) => log::info!("address: {}", config.address),
+        None => log::warn!("the stack came up without an IPv4 address"),
+    }
+
+    // Then keep reporting, so a lease that is lost later is visible instead of the log simply stopping.
+    let mut heartbeat: u32 = 0;
+    loop {
+        Timer::after(Duration::from_secs(10)).await;
+        heartbeat = heartbeat.wrapping_add(1);
+        match stack.config_v4() {
+            Some(config) => log::info!("heartbeat {} at {}", heartbeat, config.address),
+            None => log::warn!("heartbeat {} with no address", heartbeat),
+        }
+    }`;
+}
+
+/**
+ * The file-scope items the Wi-Fi template needs: the address parser and the task that drives the stack.
+ * Emitted after `main`: functions are hoisted, so their position does not matter.
+ */
+function espWifiSupport(): string {
+    return `
+
+/// Parses WIFI_STATIC_IP ("a.b.c.d/prefix") with an optional WIFI_GATEWAY ("a.b.c.d").
+///
+/// Returns None when the address is absent or malformed, which is what puts the stack back on DHCP. A
+/// prefix longer than 32 is treated as a mistake rather than silently narrowed: it cannot mean anything.
+fn static_ipv4_config(ip: &str, gateway: Option<&str>) -> Option<NetConfig> {
+    let (address, prefix) = ip.split_once('/')?;
+    let address = Ipv4Addr::from_str(address.trim()).ok()?;
+    let prefix: u8 = prefix.trim().parse().ok()?;
+    if prefix > 32 {
+        return None;
+    }
+    let gateway = match gateway {
+        Some(value) if !value.trim().is_empty() => Some(Ipv4Addr::from_str(value.trim()).ok()?),
+        _ => None,
+    };
+    Some(NetConfig::ipv4_static(StaticConfigV4 {
+        address: Ipv4Cidr::new(address, prefix),
+        gateway,
+        dns_servers: Default::default(),
+    }))
+}
+
+/// Drives the network stack. It runs for the life of the program: no packet moves while it is not being
+/// polled, and the wait in main would simply wait forever.
+#[embassy_executor::task]
+async fn net_task(mut runner: Runner<'static, Interface>) {
+    runner.run().await;
+}
+`;
+}
+
+/**
+ * The Bluetooth LE body: the statements that bring the controller up and hand it to the host stack.
+ *
+ * A Bluetooth controller is only an HCI transport -- it moves bytes and knows nothing about advertising,
+ * connections or GATT. Those live in a host stack, and the one esp-radio's own BLE example uses is
+ * `trouble-host` (see espBluetoothSupport below). The device advertises under a fixed name so that a
+ * phone's Bluetooth scan lists it, and the log says when a central connects and disconnects, because
+ * that is the whole point of the template: proving the radio and the stack come up on this board.
+ */
+function espBluetoothBody(): string {
+    return `
+    let connector = BleConnector::new(peripherals.BT, Default::default())
+        .expect("the Bluetooth controller refuses to start on this board");
+    let controller: ExternalController<_, 1> = ExternalController::new(connector);
+
+    // This runs the advertising and GATT loops; it only returns if the stack gives up.
+    ble_peripheral_run(controller).await;
+
+    // Belt and braces: main has to diverge, and the stack loop's divergence is not visible from here.
+    loop {
+        Timer::after(Duration::from_secs(3600)).await;
+    }`;
+}
+
+/**
+ * The file-scope items the Bluetooth template needs: the host stack, the GATT server and its tasks.
+ *
+ * These are emitted after `main` rather than nested inside it -- a `#[gatt_server]` expansion is far more
+ * at home at file scope, and nothing here needs to see main's locals. The shape follows esp-radio's own
+ * BLE example (a battery service that also streams its level to a connected central), so the code is the
+ * vendor's arrangement rather than something invented here.
+ */
+function espBluetoothSupport(): string {
+    return `
+/// The name a phone's Bluetooth scan will show. Change this to whatever you like, but keep it short:
+/// the advertisement payload is 31 bytes and the name shares it with the flags and the service UUID
+/// below, so a long name makes AdStructure::encode_slice fail at runtime, not at compile time.
+const DEVICE_NAME: &str = "Rusty-Platform";
+
+/// Max number of connections
+const CONNECTIONS_MAX: usize = 1;
+/// Max number of L2CAP channels.
+const L2CAP_CHANNELS_MAX: usize = 2; // Signal + att
+
+// GATT Server definition (bonus: makes the peripheral actually usable, not just visible).
+#[gatt_server]
+struct Server {
+    battery_service: BatteryService,
+}
+
+/// Battery service
+#[gatt_service(uuid = service::BATTERY)]
+struct BatteryService {
+    /// Battery Level
+    #[descriptor(uuid = descriptors::VALID_RANGE, read, value = [0, 100])]
+    #[descriptor(uuid = descriptors::MEASUREMENT_DESCRIPTION, name = "hello", read, value = "Battery Level", type = &'static str)]
+    #[characteristic(uuid = characteristic::BATTERY_LEVEL, read, notify, value = 10)]
+    level: u8,
+    #[characteristic(uuid = "408813df-5dd4-1f87-ec11-cdb001100000", write, read, notify)]
+    status: bool,
+}
+
+/// Run the BLE stack.
+async fn ble_peripheral_run<C>(controller: C)
+where
+    C: Controller,
+{
+    let address: Address = Address::random([0xff, 0x8f, 0x1a, 0x05, 0xe4, 0xff]);
+    info!("Our address = {:?}", address);
+
+    let mut resources: HostResources<_, DefaultPacketPool, CONNECTIONS_MAX, L2CAP_CHANNELS_MAX> =
+        HostResources::new();
+    let stack = trouble_host::new(controller, &mut resources)
+        .set_random_address(address)
+        .build();
+    let runner = stack.runner();
+    let mut peripheral = stack.peripheral();
+
+    info!("Starting advertising and GATT service");
+    let server = Server::new_with_config(GapConfig::Peripheral(PeripheralConfig {
+        name: DEVICE_NAME,
+        appearance: &appearance::power_device::GENERIC_POWER_DEVICE,
+    }))
+    .unwrap();
+
+    let _ = join(ble_task(runner), async {
+        loop {
+            match advertise(DEVICE_NAME, &mut peripheral, &server).await {
+                Ok(conn) => {
+                    // set up tasks when the connection is established to a central, so they don't
+                    // run when no one is connected.
+                    let a = gatt_events_task(&server, &conn);
+                    let b = custom_task(&server, &conn, &stack);
+                    // run until any task ends (usually because the connection has been closed),
+                    // then return to advertising state.
+                    select(a, b).await;
+                }
+                Err(e) => {
+                    panic!("[adv] error: {:?}", e);
+                }
+            }
+        }
+    })
+    .await;
+}
+
+/// This is a background task that is required to run forever alongside any other BLE tasks.
+async fn ble_task<C: Controller, P: PacketPool>(mut runner: Runner<'_, C, P>) {
+    loop {
+        if let Err(e) = runner.run().await {
+            panic!("[ble_task] error: {:?}", e);
+        }
+    }
+}
+
+/// Stream Events until the connection closes.
+///
+/// This function will handle the GATT events and process them.
+async fn gatt_events_task<P: PacketPool>(
+    server: &Server<'_>,
+    conn: &GattConnection<'_, '_, P>,
+) -> Result<(), Error> {
+    let level = server.battery_service.level;
+    let reason = loop {
+        match conn.next().await {
+            GattConnectionEvent::Disconnected { reason } => break reason,
+            GattConnectionEvent::Gatt { event } => {
+                match &event {
+                    GattEvent::Read(event) => {
+                        if event.handle() == level.handle {
+                            let value = server.get(&level);
+                            info!("[gatt] Read Event to Level Characteristic: {:?}", value);
+                        }
+                    }
+                    GattEvent::Write(event) => {
+                        event.with_data(|offset, data| {
+                            info!(
+                                "[gatt] Write Event to Level Characteristic at {}: {:?}",
+                                offset, data
+                            )
+                        });
+                    }
+                    _ => {}
+                };
+                // This step is also performed at drop(), but writing it explicitly is necessary
+                // in order to ensure reply is sent.
+                match event.accept() {
+                    Ok(reply) => reply.send().await,
+                    Err(e) => warn!("[gatt] error sending response: {:?}", e),
+                };
+            }
+            _ => {} // ignore other Gatt Connection Events
+        }
+    };
+    info!("[gatt] disconnected: {:?}", reason);
+    Ok(())
+}
+
+/// Create an advertiser to use to connect to a BLE Central, and wait for it to connect.
+async fn advertise<'values, 'server, C: Controller>(
+    name: &'values str,
+    peripheral: &mut Peripheral<'values, C, DefaultPacketPool>,
+    server: &'server Server<'values>,
+) -> Result<GattConnection<'values, 'server, DefaultPacketPool>, BleHostError<C::Error>> {
+    let mut advertiser_data = [0; 31];
+    let len = AdStructure::encode_slice(
+        &[
+            AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
+            AdStructure::IncompleteServiceUuids16(&[[0x0f, 0x18]]),
+            AdStructure::CompleteLocalName(name.as_bytes()),
+        ],
+        &mut advertiser_data[..],
+    )?;
+    let advertiser = peripheral
+        .advertise(
+            &Default::default(),
+            Advertisement::ConnectableScannableUndirected {
+                adv_data: &advertiser_data[..len],
+                scan_data: &[],
+            },
+        )
+        .await?;
+    info!("[adv] advertising as {}", name);
+    let conn = advertiser.accept().await?.with_attribute_server(server)?;
+    info!("[adv] connection established (central connected)");
+    Ok(conn)
+}
+
+/// Example task to use the BLE notifier interface.
+/// This task will notify the connected central of a counter value every 2 seconds.
+/// and will stop when the connection is closed by the central or an error occurs.
+async fn custom_task<C: Controller, P: PacketPool>(
+    server: &Server<'_>,
+    conn: &GattConnection<'_, '_, P>,
+    stack: &Stack<'_, C, P>,
+) {
+    let mut tick: u8 = 0;
+    let level = server.battery_service.level;
+    loop {
+        tick = tick.wrapping_add(1);
+        info!("[custom_task] notifying connection of tick {}", tick);
+        if level.notify(conn, &tick, true).await.is_err() {
+            info!("[custom_task] error notifying connection");
+            break;
+        };
+        // read RSSI (Received Signal Strength Indicator) of the connection.
+        if let Ok(rssi) = conn.raw().rssi(stack).await {
+            info!("[custom_task] RSSI: {:?}", rssi);
+        } else {
+            info!("[custom_task] error getting RSSI");
+            break;
+        };
+        Timer::after(Duration::from_secs(2)).await;
+    }
+}
+`;
+}
+
 function espSdcardBody(board: EspBoardProfile): string {
     return `
 ${espSdMountCode(board)}
@@ -1851,6 +2399,49 @@ function espReadme(
         pinRows.push(`| ${touch.irq} | ${touch.controller} touch interrupt (active low) |`);
     }
 
+    // The Wi-Fi template shares the Pico's credentials contract, so the same prompt serves it. What it
+    // cannot do is report an address, and the README says so in as many words: esp-radio 1.0.0-beta.1 has
+    // no address API, and a README that implied DHCP would be the first place a user looks and the last
+    // place the truth appears.
+    const wifiNote = template === 'wifi'
+        ? `
+## Wi-Fi credentials
+
+Credentials are read at *compile* time, so they never end up in your source tree.
+
+The easy way: press **Flash** or **Debug** - Grumpy's Rusty Platform asks for the network name
+and password the first time and remembers them (in VS Code's keyring, not in this project).
+
+From a plain terminal, pass them yourself:
+
+\`\`\`sh
+WIFI_SSID="my-ssid" WIFI_PASSWORD="secret" cargo run --release
+\`\`\`
+
+An empty password joins an open network.
+
+### What this firmware does not do
+
+It does not log an address, and it cannot be given a fixed one. esp-radio 1.0.0-beta.1 has no DHCP,
+netif or address API at all, so the driver joins the network and reports the access point it
+associated with, while addressing happens in the vendor stack underneath and is not visible from
+Rust. Your router's client list is where the board's address can be seen. WPA3/SAE is not supported
+either: the driver offers open, WEP, WPA and WPA2 personal only.
+`
+        : '';
+    const bluetoothNote = template === 'bluetooth'
+        ? `
+## Bluetooth
+
+The board advertises as **Rusty-Platform**; change \`DEVICE_NAME\` in \`src/main.rs\` to rename it,
+and keep the replacement short - the advertisement payload is 31 bytes and the name shares it with
+the flags and the service UUID, so a long one fails at runtime.
+
+Scan for it with a phone. The log reports the connection, and the GATT service it carries is the
+upstream example's battery-service skeleton - its level is a counter that ticks every two seconds,
+not a battery reading, so replace it with something true for your project before you ship it.
+`
+        : '';
     const pinSection =
         pinRows.length === 0
             ? ''
@@ -1874,7 +2465,7 @@ for VS Code.
 - Chip: \`${board.espChip}\` (${board.flashSize} flash)
 - Template: \`${template}\`
 - Flashed with: \`espflash\` over USB serial — **no debug probe**
-
+${wifiNote}${bluetoothNote}
 ## First-time setup
 
 The Xtensa targets are not in released Rust, so one extra toolchain is needed:

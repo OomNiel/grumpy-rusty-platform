@@ -3140,3 +3140,94 @@ boards that exist.
 already have)"* — one manifest entry, and a test that pins the whole arrangement rather than just the new line:
 the Boards section offers the icon, the **Project** section now does too, and the **Controls** section offers it as
 a labelled row instead of an icon, so it does not appear twice in the same place.
+
+---
+
+## 74. Wi-Fi and Bluetooth LE templates for the ESP32 boards (2026-10-06)
+
+*"do the wifi and Bluetooth next"*. Two templates, offered from the chip's own silicon rather than from its
+family name, and both **compiled and linked** for a real board before they were committed — nothing here has
+been flashed, because no board was attached while it was written.
+
+### What was added
+
+- `EspBoardProfile.radio` is now **required**: `{ wifi: boolean, bluetooth: 'none' | 'ble' }`. Modelled
+  explicitly because Bluetooth is not uniform across the family (the ESP32-S2 has none at all), and a
+  template for silicon that is not there would fail at link time with a wall of undefined symbols from the
+  blob. The template list is derived from this field, and `t1` pins the gating with a synthetic no-Bluetooth
+  chip, since every catalogued board happens to have BLE.
+- Templates `wifi` (Wi-Fi station) and `bluetooth` (BLE peripheral). `wifi` already existed for the Pico W,
+  so the id now means "the family-appropriate implementation behind the same credentials contract".
+- Both need a heap, so `.cargo/config.toml` rebuilds `alloc` as well as `core`, and the boot block installs
+  it between `esp_hal::init` and `esp_rtos::start`. Both need `esp-rtos`'s `esp-radio` feature (read out of
+  its manifest: `esp-radio = ["dep:esp-radio-rtos-driver"]`).
+- The scheduler **must** start before the radio — esp-radio's own documentation shouts this, and the
+  generated source is asserted to keep that order (`t1`), because getting it backwards compiles and then
+  stalls at runtime.
+
+### The address: a wrong turn worth recording
+
+My first reading of esp-radio 1.0.0-beta.1 found **no** DHCP, netif or IPv4 API anywhere in its Wi-Fi module
+(`StationConfig` has ssid/bssid/auth/channel/protocols/listen-interval/beacon-timeout/retries/scan-method and
+no address field). I concluded the template could not report an address and began gating the credentials
+prompt so it would stop offering a fixed one.
+
+That conclusion was wrong, and the correction is the interesting part: esp-radio's `Interface` implements
+**embassy-net's driver trait**. The radio joins the access point; *embassy-net* owns addressing. So the
+address is logged (`stack.config_v4()`), `WIFI_STATIC_IP`/`WIFI_GATEWAY` are honoured through
+`embassy_net::StaticConfigV4`, and the prompt was telling the truth all along. The gate was reverted rather
+than left in as harmless plumbing. Lesson: "the crate has no API for X" is only true of the crate, not of
+the stack the crate is designed to be used with.
+
+### The ESP32-classic Bluetooth link failure
+
+The published `esp-rom-sys` 0.1.5 — which esp-radio 1.0.0-beta.1 pins with `=0.1.5` — is **missing three ROM
+`PROVIDE` lines** that the upstream repository has at the same tag (`ld_iscan_evt_start_cbk`,
+`ld_page_evt_start_cbk`, `ld_pscan_evt_start_cbk`; published sha256 `88fdbcaf…` vs repo `faa391a2…`). The
+classic ESP32's Bluetooth blob (`esp-wifi-sys-esp32` 0.3.0's `libbtdm_app.a`) refers to all three, so BLE
+does not link from crates.io at all:
+
+    ld: libbtdm_app.a(ea.o): in function `ld_iscan_evt_start_cbk_hack':
+        undefined reference to `ld_iscan_evt_start_cbk'
+
+The generated `.cargo/config.toml` therefore defines them (`--defsym`, addresses from esp-rom-sys's own
+`esp32.rom.ld`), **classic ESP32 only**. Verified both ways: the ESP32 BLE project links *with* them, and the
+ESP32-S3 BLE project links *without* them, so the chip gate is not decoration. They can go when esp-rom-sys
+ships the PROVIDEs; a `--defsym` on an already-provided symbol is harmless.
+
+### Other things that cost time
+
+- `macro_rules!` is **textually** scoped. The first Wi-Fi build failed because the macro was defined in the
+  items emitted *after* `main`. The static is now written out in `main` instead; items (functions) are
+  hoisted, macros are not.
+- **Escapes inside TypeScript template literals are consumed.** `info!("advertising as \"{}\"")` in the
+  generator's source became `info!("advertising as "{}"")` in the generated Rust — a syntax error. The
+  quotes are gone. This is the same family of mistake as the backtick hazard (which bit again, in a generated
+  Rust comment, and was caught by `tsc`). The reliable guard for both is compiling the *generated* project,
+  which is what the sizes below are measured from.
+- A BLE controller is only an HCI transport. Advertising, connections and GATT live in a host stack, so the
+  template carries `trouble-host` (the crate esp-radio's own example uses). The phone-visible name has to be
+  in the advertisement payload (`AdStructure::CompleteLocalName`), not just in the GAP config, and it shares
+  31 bytes with the flags and the service UUID — a test keeps the shipped name inside that budget, because
+  the failure is a *runtime* error, not a compile error.
+- Heaps are the figures esp-radio's examples use, per stack: Wi-Fi `64 * 1024` reclaimed + `36 * 1024`,
+  Bluetooth `72 * 1024`. The heap lands in `.bss` on the classic ESP32, so it counts against DRAM.
+
+### Evidence (measured, generated projects compiled from scratch)
+
+| Project | chip | release `.elf` | `espflash` app image | of 4 MB partition |
+|---|---|---|---|---|
+| `wifi` | esp32 | 5 825 516 B | **574 400 B** | 13.9 % |
+| `bluetooth` | esp32 | 5 801 932 B | **340 144 B** | 8.2 % |
+| `bluetooth` | esp32s3 | 5 489 476 B | **346 864 B** | 8.4 % |
+
+The `.elf` figures include DWARF (the generated profile keeps `debug = true`); the app image is the number
+that matters for flash. All three: `cargo build --release` finished with **0 warnings**.
+
+### Not verified
+
+Nothing was flashed: the board was not attached. Association, the DHCP/static binding, the logged address,
+real advertising, phone visibility and connect/disconnect are all **compile-and-link** verified only. That
+distinction is the same one §52 and later entries make; it is not a formality. ESP32-classic BLE also leaves
+roughly 128 KiB of DRAM claimed with the 72 KiB heap, so treat that number as a tuning point rather than a
+guarantee the moment Wi-Fi is added to the same image.
