@@ -269,7 +269,7 @@ exercised on the phone and behaved as intended.
 One rough edge was found by that testing and has been fixed: a *read* of the battery-level characteristic
 used to return its stored value while the notifications carried the counter, so the two disagreed. The
 counter is now written into the characteristic before it is announced, and a failed write is logged rather
-than passed over.
+than passed over. Confirmed on hardware: a read now returns the counter the notifications carry.
 
 A practical warning from that testing: a **phone's Bluetooth settings screen is not a BLE scanner** (the
 advertisement is BLE-only, and those screens usually hide BLE peripherals), and the extension's Flash output
@@ -293,6 +293,10 @@ with (`panel rotation setting: 1`) so a build can be checked from the serial log
 The rotation turns the whole drawn image; it does not change the drawing area, which keeps the panel's
 native size. So at 90° or 270° the content appears rotated on the glass rather than re-laid out for a
 wide screen.
+
+What is verified so far is the **mechanism**: the value reaches the compiler (proved both ways), a nonsense
+value falls back to no rotation, and a generated project compiles with a rotation set. The rotation's
+**visual** effect on the glass has not been observed yet — no panel project has been flashed with one.
 
 ## Documentation
 
