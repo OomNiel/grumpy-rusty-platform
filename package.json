@@ -360,6 +360,11 @@
                     "group": "navigation@1"
                 },
                 {
+                    "command": "rustyPlatform.newProject",
+                    "when": "view == rustyPlatform.project",
+                    "group": "navigation@1"
+                },
+                {
                     "command": "rustyPlatform.addDependency",
                     "when": "view == rustyPlatform.project",
                     "group": "navigation@1"

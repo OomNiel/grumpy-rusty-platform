@@ -70,3 +70,18 @@ test('the manifest points at files that exist', () => {
     const main = path.join(repoRoot(), manifest.main);
     ok(fs.existsSync(main), `missing extension entry point: ${manifest.main}`);
 });
+
+// New Project belongs where a project starts: the Boards section's title bar always had it, and the Project
+// section's is the other place a user looks when they have nothing open (2026-10-06).
+test('the New Project icon is in both section title bars', () => {
+    const manifest = readManifest();
+    const titleMenus = manifest.contributes.menus['view/title'];
+    const has = (view) => titleMenus.some(
+        (entry) => entry.command === 'rustyPlatform.newProject' && (entry.when ?? '').includes(view),
+    );
+
+    ok(has('rustyPlatform.boards'), 'the Boards section offers it');
+    ok(has('rustyPlatform.project'), 'and so does the Project section');
+    // The Controls section shows it as a labelled row instead, so it must not also be an icon there.
+    ok(!has('rustyPlatform.controls'), 'Controls has the row, not the icon');
+});
