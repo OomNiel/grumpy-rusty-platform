@@ -156,8 +156,11 @@ test('the README tells the reader how to change the rotation', () => {
     contains(readme, '.cargo/esp-config.toml');
     contains(readme, 'rustyPlatform.lcdRotation');
     contains(readme, LCD_ROTATION_LABELS[3], 'the chosen rotation is named');
-    // The consequence of a rotation: the image turns, the drawing area does not.
-    contains(readme, 'does not change the drawing area');
+    // What the rotation does to the *layout*, which is the part the first version got wrong: the drawing
+    // area becomes the panel's dimensions the other way round and the screen is laid out for it.
+    contains(readme, 'drawing area becomes the');
+    contains(readme, 'lays itself out for the new shape');
+    notContains(readme, 'does not change the drawing area');
 });
 
 test('the setting is declared with the four values and no rotation as the default', () => {

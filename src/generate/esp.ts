@@ -715,7 +715,7 @@ function espMainRs(board: EspBoardProfile, template: AppTemplate, choices: Board
         : display !== undefined && touch !== undefined
         ? espTouchBody(display, board, touch, template === 'board')
         : display !== undefined
-            ? espDisplayBody(display, board)
+            ? espDisplayBody(display)
             : led.kind === 'gpio'
                 ? espLedBody(led.pin, led.external === true)
                 : led.kind === 'rgb'
@@ -738,7 +738,7 @@ async fn main(${template === 'wifi' ? 'spawner' : '_spawner'}: Spawner) -> ! {
 ${espBootBlock(board, template)}
 ${body}
 }
-${template === 'bluetooth' ? espBluetoothSupport() : template === 'wifi' ? espWifiSupport() : ''}`;
+${template === 'bluetooth' ? espBluetoothSupport() : template === 'wifi' ? espWifiSupport() : template === 'display' && display !== undefined ? espPanelSupport(display, board) : ''}`;
 }
 
 /**
@@ -1538,12 +1538,6 @@ function espTouchBody(
         audio === undefined ? undefined : `speaker on GPIO${audio.pin}`,
     ].filter((line): line is string => line !== undefined);
 
-    // The live readout box: middle of the panel, big enough for three lines and wide enough for the
-    // longest line ("raw a=4095 b=4095").
-    const boxWidth = Math.min(display.width - 20, 280);
-    const boxHeight = 104;
-    const boxX = Math.floor((display.width - boxWidth) / 2);
-    const boxY = Math.floor(display.height / 2) - Math.floor(boxHeight / 2);
 
     return `${sdSetup}${espPanelSetup(display, true)}
     // The touch controller's own clock: the panel's is restored around every burst.
@@ -1665,6 +1659,7 @@ ${hardwareLog.length > 0 ? `    log::info!("board hardware: ${hardwareLog.join('
     const CALIBRATION_MAGIC: u32 = 0x5443_5831;
 
     fn calibration_bytes(
+        rotation: u8,
         axis: usize,
         x_from: i32,
         x_to: i32,
@@ -1678,10 +1673,16 @@ ${hardwareLog.length > 0 ? `    log::info!("board hardware: ${hardwareLog.join('
         bytes[9..13].copy_from_slice(&x_to.to_le_bytes());
         bytes[13..17].copy_from_slice(&y_from.to_le_bytes());
         bytes[17..21].copy_from_slice(&y_to.to_le_bytes());
-        // A plain sum, so a half-written or erased sector is not mistaken for a calibration.
+        // Which orientation the numbers were measured in: the same corners on a turned panel are a
+        // different mapping, so a record without this cannot be trusted after a rotation change.
+        bytes[22] = rotation;
+        // A plain sum over everything but the checksum byte, so a half-written or erased sector is not
+        // mistaken for a calibration.
         let mut sum = 0u8;
-        for byte in &bytes[0..21] {
-            sum = sum.wrapping_add(*byte);
+        for (index, byte) in bytes.iter().enumerate() {
+            if index != 21 {
+                sum = sum.wrapping_add(*byte);
+            }
         }
         bytes[21] = sum;
         bytes
@@ -1689,15 +1690,17 @@ ${hardwareLog.length > 0 ? `    log::info!("board hardware: ${hardwareLog.join('
 
     // Returns the stored calibration, or nothing when the sector has never been written (an erased sector
     // reads as 0xFF, which fails both the magic and the checksum).
-    fn calibration_load(flash: &mut FlashStorage<'_>) -> Option<(usize, i32, i32, i32, i32)> {
+    fn calibration_load(flash: &mut FlashStorage<'_>) -> Option<(u8, usize, i32, i32, i32, i32)> {
         let mut bytes = [0u8; 24];
         flash.read(CALIBRATION_OFFSET, &mut bytes).ok()?;
         if u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) != CALIBRATION_MAGIC {
             return None;
         }
         let mut sum = 0u8;
-        for byte in &bytes[0..21] {
-            sum = sum.wrapping_add(*byte);
+        for (index, byte) in bytes.iter().enumerate() {
+            if index != 21 {
+                sum = sum.wrapping_add(*byte);
+            }
         }
         if sum != bytes[21] {
             return None;
@@ -1705,7 +1708,7 @@ ${hardwareLog.length > 0 ? `    log::info!("board hardware: ${hardwareLog.join('
         let word = |at: usize| -> i32 {
             i32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
         };
-        Some((usize::from(bytes[4]), word(5), word(9), word(13), word(17)))
+        Some((bytes[22], usize::from(bytes[4]), word(5), word(9), word(13), word(17)))
     }
 
     // esp_storage's Flash is the FLASH peripheral itself, so it is handed over rather than constructed.
@@ -1723,11 +1726,26 @@ ${hardwareLog.length > 0 ? `    log::info!("board hardware: ${hardwareLog.join('
 
     // A stored calibration is used straight away; touching the glass during the first two seconds throws it
     // away and asks for the corners again, which is the only recalibration gesture this firmware offers.
-    let stored = calibration_load(&mut flash);
+    // A calibration is only valid for the orientation it was measured in: the mapping is a linear fit in the
+    // content coordinate space, and that space is a different shape after a rotation. A record from another
+    // orientation is discarded and the corners are asked for again -- otherwise every touch would land
+    // somewhere plausible and wrong, which is the worst way for it to fail.
+    let stored = match calibration_load(&mut flash) {
+        Some(found) if found.0 == rotation_code => Some(found),
+        Some(found) => {
+            log::warn!(
+                "calibration: stored for rotation {} but this build is rotation {} - recalibrating",
+                found.0,
+                rotation_code
+            );
+            None
+        }
+        None => None,
+    };
     // Two arms rather than a format_args! inside one: the numbers are printed so they can be read back
     // without a debugger, and the temporary the one-argument form would need does not outlive the log call.
     match stored {
-        Some((axis, x_from, x_to, y_from, y_to)) => log::info!(
+        Some((_, axis, x_from, x_to, y_from, y_to)) => log::info!(
             "calibration: loaded from flash - axis{} {}..{} {}..{}",
             axis,
             x_from,
@@ -1739,30 +1757,35 @@ ${hardwareLog.length > 0 ? `    log::info!("board hardware: ${hardwareLog.join('
     }
 
     // The four corners the screen asks for, in the order it asks.
+    //
+    // Everything below lives in the *content* coordinate space, which is the panel's size the other way
+    // round when the rotation is vertical (see the panel setup above). The calibration targets, the
+    // raw-to-screen mapping, the readout box and the graphics screen all follow from these two numbers, so
+    // changing the rotation moves the whole interface rather than only the image inside it.
     const MARGIN: i32 = 24;
-    const WIDTH: i32 = ${display.width};
-    const HEIGHT: i32 = ${display.height};
-    const BOX_X: i32 = ${boxX};
-    const BOX_Y: i32 = ${boxY};
-    const BOX_W: i32 = ${boxWidth};
-    const BOX_H: i32 = ${boxHeight};
+    let width_i: i32 = width as i32;
+    let height_i: i32 = height as i32;
+    let box_w: i32 = (width_i - 20).min(280);
+    let box_h: i32 = 104;
+    let box_x: i32 = (width_i - box_w) / 2;
+    let box_y: i32 = height_i / 2 - box_h / 2;
     let targets = [
         (MARGIN, MARGIN),
-        (WIDTH - MARGIN, MARGIN),
-        (WIDTH - MARGIN, HEIGHT - MARGIN),
-        (MARGIN, HEIGHT - MARGIN),
+        (width_i - MARGIN, MARGIN),
+        (width_i - MARGIN, height_i - MARGIN),
+        (MARGIN, height_i - MARGIN),
     ];
     let corners = ["top-left", "top-right", "bottom-right", "bottom-left"];
     let mut measured = [[0u16; 2]; 4];
     let mut corner: usize = 0;
     // Initialised from the stored calibration when there is one, so a calibrated panel boots straight into
     // the graphics test screen and never shows the calibration screen again.
-    let mut raw_x_axis: usize = stored.map(|(axis, _, _, _, _)| axis).unwrap_or(0);
-    let mut x_from: i32 = stored.map(|(_, x_from, _, _, _)| x_from).unwrap_or(0);
-    let mut x_to: i32 = stored.map(|(_, _, x_to, _, _)| x_to).unwrap_or(0);
-    let mut y_from: i32 = stored.map(|(_, _, _, y_from, _)| y_from).unwrap_or(0);
-    let mut y_to: i32 = stored.map(|(_, _, _, _, y_to)| y_to).unwrap_or(0);
-    let mut point = (WIDTH / 2, HEIGHT / 2);
+    let mut raw_x_axis: usize = stored.map(|(_, axis, _, _, _, _)| axis).unwrap_or(0);
+    let mut x_from: i32 = stored.map(|(_, _, x_from, _, _, _)| x_from).unwrap_or(0);
+    let mut x_to: i32 = stored.map(|(_, _, _, x_to, _, _)| x_to).unwrap_or(0);
+    let mut y_from: i32 = stored.map(|(_, _, _, _, y_from, _)| y_from).unwrap_or(0);
+    let mut y_to: i32 = stored.map(|(_, _, _, _, _, y_to)| y_to).unwrap_or(0);
+    let mut point = (width_i / 2, height_i / 2);
     let mut raw_a: i32 = idle_a;
     let mut raw_b: i32 = idle_b;
     let mut shown_a: i32 = idle_a - TOUCH_REPAINT - 1;
@@ -1819,7 +1842,7 @@ ${hardwareLog.length > 0 ? `    log::info!("board hardware: ${hardwareLog.join('
                 Text::new("Touch: numbers below, and the log", Point::new(8, 10), style)
                     .draw(&mut display)
                     .expect("panel write failed");
-                Rectangle::new(Point::new(1, 1), Size::new(WIDTH as u32 - 2, HEIGHT as u32 - 2))
+                Rectangle::new(Point::new(1, 1), Size::new(width_i as u32 - 2, height_i as u32 - 2))
                     .into_styled(PrimitiveStyle::with_stroke(Rgb565::WHITE, 2))
                     .draw(&mut display)
                     .expect("panel write failed");
@@ -1836,23 +1859,27 @@ ${hardwareLog.length > 0 ? `    log::info!("board hardware: ${hardwareLog.join('
                         .draw(&mut display)
                         .expect("panel write failed");
                 }
+                // The five bars share the width, so they read the same in portrait and landscape instead of
+                // huddling on the left of a turned panel.
+                let bar_gap: i32 = (width_i / 64).max(2);
+                let bar_width: i32 = ((width_i - 2 * MARGIN - 4 * bar_gap) / 5).max(4);
                 for (index, colour) in [Rgb565::RED, Rgb565::GREEN, Rgb565::BLUE, Rgb565::BLACK, Rgb565::WHITE]
                     .iter()
                     .enumerate()
                 {
                     Rectangle::new(
-                        Point::new(16 + (index as i32) * 58, 40),
-                        Size::new(53, 40),
+                        Point::new(MARGIN + (index as i32) * (bar_width + bar_gap), 40),
+                        Size::new(bar_width as u32, 40),
                     )
                         .into_styled(PrimitiveStyle::with_fill(*colour))
                         .draw(&mut display)
                         .expect("panel write failed");
                 }
-                Line::new(Point::new(WIDTH / 2, 96), Point::new(WIDTH / 2, HEIGHT - 96))
+                Line::new(Point::new(width_i / 2, 96), Point::new(width_i / 2, height_i - 96))
                     .into_styled(PrimitiveStyle::with_stroke(Rgb565::new(16, 40, 16), 1))
                     .draw(&mut display)
                     .expect("panel write failed");
-                Line::new(Point::new(8, HEIGHT / 2), Point::new(WIDTH - 8, HEIGHT / 2))
+                Line::new(Point::new(8, height_i / 2), Point::new(width_i - 8, height_i / 2))
                     .into_styled(PrimitiveStyle::with_stroke(Rgb565::new(16, 40, 16), 1))
                     .draw(&mut display)
                     .expect("panel write failed");
@@ -1868,11 +1895,11 @@ ${hardwareLog.length > 0 ? `    log::info!("board hardware: ${hardwareLog.join('
             // moves -- "raw a=0 b=0" is shorter than "raw a=1806 b=286" -- so without clearing, each reading
             // is drawn over the tail of the one before it. Filling and then stroking is what keeps the border
             // whole: the other order erases half its width.
-            Rectangle::new(Point::new(BOX_X, BOX_Y), Size::new(BOX_W as u32, BOX_H as u32))
+            Rectangle::new(Point::new(box_x, box_y), Size::new(box_w as u32, box_h as u32))
                 .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
                 .draw(&mut display)
                 .expect("panel write failed");
-            Rectangle::new(Point::new(BOX_X, BOX_Y), Size::new(BOX_W as u32, BOX_H as u32))
+            Rectangle::new(Point::new(box_x, box_y), Size::new(box_w as u32, box_h as u32))
                 .into_styled(PrimitiveStyle::with_stroke(Rgb565::new(8, 24, 8), 2))
                 .draw(&mut display)
                 .expect("panel write failed");
@@ -1887,13 +1914,13 @@ ${hardwareLog.length > 0 ? `    log::info!("board hardware: ${hardwareLog.join('
             } else {
                 let _ = write!(&mut line, "idle");
             }
-            Text::new(line.as_str(), Point::new(BOX_X + 8, BOX_Y + 8), small)
+            Text::new(line.as_str(), Point::new(box_x + 8, box_y + 8), small)
                 .draw(&mut display)
                 .expect("panel write failed");
 
             let mut line = Numbers::new();
             let _ = write!(&mut line, "raw a={} b={}", raw_a, raw_b);
-            Text::new(line.as_str(), Point::new(BOX_X + 8, BOX_Y + 26), small)
+            Text::new(line.as_str(), Point::new(box_x + 8, box_y + 26), small)
                 .draw(&mut display)
                 .expect("panel write failed");
 
@@ -1903,13 +1930,13 @@ ${hardwareLog.length > 0 ? `    log::info!("board hardware: ${hardwareLog.join('
             } else {
                 let _ = write!(&mut line, "x=? y=?");
             }
-            Text::new(line.as_str(), Point::new(BOX_X + 8, BOX_Y + 44), big)
+            Text::new(line.as_str(), Point::new(box_x + 8, box_y + 44), big)
                 .draw(&mut display)
                 .expect("panel write failed");
 
             let mut line = Numbers::new();
             let _ = write!(&mut line, "pen={} idle a={} b={}", touch_irq.is_low(), idle_a, idle_b);
-            Text::new(line.as_str(), Point::new(BOX_X + 8, BOX_Y + 78), small)
+            Text::new(line.as_str(), Point::new(box_x + 8, box_y + 78), small)
                 .draw(&mut display)
                 .expect("panel write failed");
 
@@ -1967,11 +1994,11 @@ ${hardwareLog.length > 0 ? `    log::info!("board hardware: ${hardwareLog.join('
                         y_to = i32::from(measured[3][raw_y_axis]);
                         log::info!(
                             "calibration: raw axis{} {}..{} and axis{} {}..{} over {}x{}",
-                            raw_x_axis, x_from, x_to, raw_y_axis, y_from, y_to, WIDTH, HEIGHT
+                            raw_x_axis, x_from, x_to, raw_y_axis, y_from, y_to, width_i, height_i
                         );
                         // Written once, and only after a whole set of corners: a half-set is not a
                         // calibration, so nothing is stored until the fourth one lands.
-                        let bytes = calibration_bytes(raw_x_axis, x_from, x_to, y_from, y_to);
+                        let bytes = calibration_bytes(rotation_code, raw_x_axis, x_from, x_to, y_from, y_to);
                         log::info!(
                             "calibration: {}",
                             match flash.write(CALIBRATION_OFFSET, &bytes) {
@@ -1990,17 +2017,17 @@ ${hardwareLog.length > 0 ? `    log::info!("board hardware: ${hardwareLog.join('
                 let axis_x = if raw_x_axis == 0 { a } else { b };
                 let axis_y = if raw_x_axis == 0 { b } else { a };
                 let px = if x_to == x_from {
-                    WIDTH / 2
+                    width_i / 2
                 } else {
-                    MARGIN + (i32::from(axis_x) - x_from) * (WIDTH - 2 * MARGIN) / (x_to - x_from)
+                    MARGIN + (i32::from(axis_x) - x_from) * (width_i - 2 * MARGIN) / (x_to - x_from)
                 }
-                .clamp(0, WIDTH - 1);
+                .clamp(0, width_i - 1);
                 let py = if y_to == y_from {
-                    HEIGHT / 2
+                    height_i / 2
                 } else {
-                    MARGIN + (i32::from(axis_y) - y_from) * (HEIGHT - 2 * MARGIN) / (y_to - y_from)
+                    MARGIN + (i32::from(axis_y) - y_from) * (height_i - 2 * MARGIN) / (y_to - y_from)
                 }
-                .clamp(0, HEIGHT - 1);
+                .clamp(0, height_i - 1);
                 point = (px, py);
                 if pressed && !was_touched {
                     log::info!("touch: a={} b={} -> pixel ({}, {})", raw_a, raw_b, px, py);
@@ -2093,9 +2120,29 @@ ${resetSetup}
     };
     // Logged because the value comes from outside this file: a silent fall back to no rotation would be
     // indistinguishable from a rotation that was applied and simply not noticed.
-    log::info!("panel rotation setting: {}", option_env!("LCD_ROTATION").unwrap_or("0"));
+    log::info!("panel rotation setting: {}", option_env!("LCD_ROTATION").unwrap_or("0"));${shared ? `
+    // The rotation as a number, because the touch calibration is only valid for the orientation it was
+    // measured in and the record has to say which that was.
+    let rotation_code: u8 = match rotation {
+        Rotation::Deg90 => 1,
+        Rotation::Deg180 => 2,
+        Rotation::Deg270 => 3,
+        _ => 0,
+    };` : ''}
+
+    // The drawing area follows the rotation, not just the image inside it. Rotating through MADCTL swaps the
+    // controller's row and column addressing, so at 90 and 270 degrees the addressable area is the panel's
+    // dimensions the other way round. Telling mipidsi the portrait size while the controller is addressing
+    // landscape is what made the landscape modes not fit: the content was clipped and misplaced rather than
+    // turned (noticed on the CYD, 2026-10-07).
+    let rotated = matches!(rotation, Rotation::Deg90 | Rotation::Deg270);
+    let (width, height) = if rotated {
+        (${display.height}u16, ${display.width}u16)
+    } else {
+        (${display.width}u16, ${display.height}u16)
+    };
     let mut display = Builder::new(models::${display.controller}, di)
-        .display_size(${display.width}, ${display.height})${reset}${orientation(display)}
+        .display_size(width, height)${reset}${orientation(display)}
         .color_order(ColorOrder::${display.colorOrder === 'bgr' ? 'Bgr' : 'Rgb'})
         .init(&mut delay)
         .expect("panel initialisation");
@@ -2146,9 +2193,29 @@ ${resetSetup}
     };
     // Logged because the value comes from outside this file: a silent fall back to no rotation would be
     // indistinguishable from a rotation that was applied and simply not noticed.
-    log::info!("panel rotation setting: {}", option_env!("LCD_ROTATION").unwrap_or("0"));
+    log::info!("panel rotation setting: {}", option_env!("LCD_ROTATION").unwrap_or("0"));${shared ? `
+    // The rotation as a number, because the touch calibration is only valid for the orientation it was
+    // measured in and the record has to say which that was.
+    let rotation_code: u8 = match rotation {
+        Rotation::Deg90 => 1,
+        Rotation::Deg180 => 2,
+        Rotation::Deg270 => 3,
+        _ => 0,
+    };` : ''}
+
+    // The drawing area follows the rotation, not just the image inside it. Rotating through MADCTL swaps the
+    // controller's row and column addressing, so at 90 and 270 degrees the addressable area is the panel's
+    // dimensions the other way round. Telling mipidsi the portrait size while the controller is addressing
+    // landscape is what made the landscape modes not fit: the content was clipped and misplaced rather than
+    // turned (noticed on the CYD, 2026-10-07).
+    let rotated = matches!(rotation, Rotation::Deg90 | Rotation::Deg270);
+    let (width, height) = if rotated {
+        (${display.height}u16, ${display.width}u16)
+    } else {
+        (${display.width}u16, ${display.height}u16)
+    };
     let mut display = Builder::new(models::${display.controller}, di)
-        .display_size(${display.width}, ${display.height})${reset}${orientation(display)}
+        .display_size(width, height)${reset}${orientation(display)}
         .color_order(ColorOrder::${display.colorOrder === 'bgr' ? 'Bgr' : 'Rgb'})
         .init(&mut delay)
         .expect("panel initialisation");
@@ -2189,9 +2256,13 @@ const FONT_METRICS = {
     FONT_10X20: { advance: 10, height: 20 },
 } as const;
 
-export function espDiagnosticLayout(display: EspDisplay, board: EspBoardProfile): EspDiagnosticLayout {
-    const width = display.width;
-    const height = display.height;
+export function espDiagnosticLayout(
+    display: EspDisplay,
+    board: EspBoardProfile,
+    size: { width: number; height: number } = { width: display.width, height: display.height },
+): EspDiagnosticLayout {
+    const width = size.width;
+    const height = size.height;
     const margin = Math.max(8, Math.round(width * 0.05));
     // Big enough to see at a glance, small enough to leave the drawing room: a 24 px marker is a fifth of a
     // 128 px panel, so small panels get smaller markers rather than no drawing area.
@@ -2274,9 +2345,73 @@ export function espDiagnosticLayout(display: EspDisplay, board: EspBoardProfile)
  * area is cropped, the colour order is swapped or the image is rotated, while a frame, four coloured
  * corners, named bars and a line of text each answer one of those questions from a photograph.
  */
-function espDisplayBody(display: EspDisplay, board: EspBoardProfile): string {
-    const layout = espDiagnosticLayout(display, board);
+/**
+ * The diagnostic layout as a Rust type, plus one constant per orientation.
+ *
+ * The layout follows the drawing area, and the drawing area follows the rotation, so both are emitted and
+ * the firmware picks at runtime. The maths stays here, where the tests can check it against every panel in
+ * the catalog: a layout that would not fit is a failing test rather than a screen nobody can read.
+ */
+function espPanelSupport(display: EspDisplay, board: EspBoardProfile): string {
+    const portrait = espDiagnosticLayout(display, board);
+    // Landscape swaps the panel's dimensions, because that is what the rotation does to the drawing area.
+    const landscape = espDiagnosticLayout(display, board, { width: display.height, height: display.width });
 
+    const constant = (name: string, layout: EspDiagnosticLayout): string => `const ${name}: DiagnosticLayout = DiagnosticLayout {
+    width: ${layout.width},
+    height: ${layout.height},
+    margin: ${layout.margin},
+    corner_size: ${layout.cornerSize},
+    bar_gap: ${layout.barGap},
+    bar_width: ${layout.barWidth},
+    bar_height: ${layout.barHeight},
+    bar_y: ${layout.barY},
+    greeting_big: ${layout.greetingFont === 'FONT_10X20' ? 'true' : 'false'},
+    greeting_x: ${layout.greetingX},
+    greeting_y: ${layout.greetingY},
+    status_x: ${layout.statusX},
+    status_y: ${layout.statusY},
+    status_step: ${layout.statusStep},
+    status_lines: &[${layout.statusLines.map((line) => JSON.stringify(line)).join(', ')}],
+    blink_size: ${layout.blinkSize},
+    blink_x: ${layout.blinkX},
+    blink_y: ${layout.blinkY},
+};`;
+
+    return `
+/// Where the diagnostic screen puts everything, solved for one orientation.
+///
+/// Two are generated - portrait and landscape - and the firmware picks the one matching the rotation,
+/// because the drawing area (and so every position inside it) follows the rotation. A square panel gets two
+/// identical constants, which is harmless and keeps the selection uniform.
+struct DiagnosticLayout {
+    width: i32,
+    height: i32,
+    margin: i32,
+    corner_size: i32,
+    bar_gap: i32,
+    bar_width: i32,
+    bar_height: i32,
+    bar_y: i32,
+    greeting_big: bool,
+    greeting_x: i32,
+    greeting_y: i32,
+    status_x: i32,
+    status_y: i32,
+    status_step: i32,
+    status_lines: &'static [&'static str],
+    blink_size: i32,
+    blink_x: i32,
+    blink_y: i32,
+}
+
+${constant('PORTRAIT_DIAGNOSTICS', portrait)}
+
+${constant('LANDSCAPE_DIAGNOSTICS', landscape)}
+`;
+}
+
+function espDisplayBody(display: EspDisplay): string {
     return `${espPanelSetup(display, false)}
 
     // A diagnostic screen rather than a flat fill, because a flat fill hides the three things that go wrong
@@ -2296,18 +2431,22 @@ function espDisplayBody(display: EspDisplay, board: EspBoardProfile): string {
     let drawn_at = Instant::now();
     display.clear(Rgb565::BLACK).expect("panel write failed");
 
+    // Which geometry to draw with. The two were solved for the panel's two orientations, and only one of
+    // them is the shape the glass is currently in.
+    let layout = if rotated { &LANDSCAPE_DIAGNOSTICS } else { &PORTRAIT_DIAGNOSTICS };
+
     // A full-size frame, two pixels wide: every side visible means the whole area is addressable.
-    Rectangle::new(Point::new(1, 1), Size::new(${layout.width} - 2, ${layout.height} - 2))
+    Rectangle::new(Point::new(1, 1), Size::new(layout.width as u32 - 2, layout.height as u32 - 2))
         .into_styled(PrimitiveStyle::with_stroke(Rgb565::WHITE, 2))
         .draw(&mut display)
         .expect("panel write failed");
 
     // The centre cross, drawn before the bars and the text so neither is covered by it.
-    Line::new(Point::new(${layout.width} / 2, 0), Point::new(${layout.width} / 2, ${layout.height}))
+    Line::new(Point::new(layout.width / 2, 0), Point::new(layout.width / 2, layout.height))
         .into_styled(PrimitiveStyle::with_stroke(Rgb565::YELLOW, 1))
         .draw(&mut display)
         .expect("panel write failed");
-    Line::new(Point::new(0, ${layout.height} / 2), Point::new(${layout.width}, ${layout.height} / 2))
+    Line::new(Point::new(0, layout.height / 2), Point::new(layout.width, layout.height / 2))
         .into_styled(PrimitiveStyle::with_stroke(Rgb565::YELLOW, 1))
         .draw(&mut display)
         .expect("panel write failed");
@@ -2319,8 +2458,8 @@ function espDisplayBody(display: EspDisplay, board: EspBoardProfile): string {
         .enumerate()
     {
         Rectangle::new(
-            Point::new(${layout.margin} + (index as i32) * ${layout.barWidth + layout.barGap}, ${layout.barY}),
-            Size::new(${layout.barWidth}, ${layout.barHeight}),
+            Point::new(layout.margin + (index as i32) * (layout.bar_width + layout.bar_gap), layout.bar_y),
+            Size::new(layout.bar_width as u32, layout.bar_height as u32),
         )
             .into_styled(PrimitiveStyle::with_fill(*colour))
             .draw(&mut display)
@@ -2331,33 +2470,37 @@ function espDisplayBody(display: EspDisplay, board: EspBoardProfile): string {
     // bottom-right. A red square that is not in the corner, or one cut in half, is the answer.
     for (x, y, colour) in [
         (0, 0, Rgb565::RED),
-        (${layout.width} - ${layout.cornerSize}, 0, Rgb565::GREEN),
-        (0, ${layout.height} - ${layout.cornerSize}, Rgb565::BLUE),
-        (${layout.width} - ${layout.cornerSize}, ${layout.height} - ${layout.cornerSize}, Rgb565::WHITE),
+        (layout.width - layout.corner_size, 0, Rgb565::GREEN),
+        (0, layout.height - layout.corner_size, Rgb565::BLUE),
+        (layout.width - layout.corner_size, layout.height - layout.corner_size, Rgb565::WHITE),
     ] {
-        Rectangle::new(Point::new(x, y), Size::new(${layout.cornerSize}, ${layout.cornerSize}))
+        Rectangle::new(Point::new(x, y), Size::new(layout.corner_size as u32, layout.corner_size as u32))
             .into_styled(PrimitiveStyle::with_fill(colour))
             .draw(&mut display)
             .expect("panel write failed");
     }
 
-    Text::new("Hello Grumpy!", Point::new(${layout.greetingX}, ${layout.greetingY}), MonoTextStyle::new(&${layout.greetingFont}, Rgb565::YELLOW))
+    // The greeting font is chosen per orientation: a line that fits a 128 px panel would have to shrink on
+    // a 480 px one, and the layout already worked out which.
+    let greeting_style = MonoTextStyle::new(
+        if layout.greeting_big { &FONT_10X20 } else { &FONT_6X10 },
+        Rgb565::YELLOW,
+    );
+    Text::new("Hello Grumpy!", Point::new(layout.greeting_x, layout.greeting_y), greeting_style)
         .draw(&mut display)
         .expect("panel write failed");
 
-${layout.statusLines.length === 0 ? '' : `    // What this screen is supposed to look like, in the panel's own words. Each line is only emitted if it
-    // fits: a status line drawn off the edge is worse than no status line.
+    // What this screen is supposed to look like, in the panel's own words. Each orientation carries its own
+    // list, already filtered to the lines that fit it: a status line drawn off the edge is worse than no
+    // status line, and a line that fits a 480 px panel does not necessarily fit a 320 px one.
     let small = MonoTextStyle::new(&FONT_6X10, Rgb565::WHITE);
-    let mut line = ${layout.statusY};
-    for text in [
-${layout.statusLines.map((line) => `        ${JSON.stringify(line)},`).join('\n')}
-    ] {
-        Text::new(text, Point::new(${layout.statusX}, line), small)
+    let mut line = layout.status_y;
+    for &text in layout.status_lines {
+        Text::new(text, Point::new(layout.status_x, line), small)
             .draw(&mut display)
             .expect("panel write failed");
-        line += ${layout.statusStep};
+        line += layout.status_step;
     }
-`}
     log::info!(
         "diagnostics drawn in {} ms: frame, corners, 5 bars, cross and text",
         drawn_at.elapsed().as_millis()
@@ -2367,7 +2510,7 @@ ${layout.statusLines.map((line) => `        ${JSON.stringify(line)},`).join('\n'
         // One small square, blinking: proof the loop is alive, placed clear of every diagnostic so it cannot
         // be mistaken for one.
         let colour = if tick % 2 == 0 { Rgb565::WHITE } else { Rgb565::BLACK };
-        Rectangle::new(Point::new(${layout.blinkX}, ${layout.blinkY}), Size::new(${layout.blinkSize}, ${layout.blinkSize}))
+        Rectangle::new(Point::new(layout.blink_x, layout.blink_y), Size::new(layout.blink_size as u32, layout.blink_size as u32))
             .into_styled(PrimitiveStyle::with_fill(colour))
             .draw(&mut display)
             .expect("panel write failed");
@@ -2537,9 +2680,13 @@ the setting will still show the old value until you change it. Either way, rebui
 nothing to edit in \`src/main.rs\`, and no need to regenerate the project. 0 is no rotation, and 1/2/3 are
 90/180/270 degrees clockwise.
 
-The rotation turns the whole drawn image. It does not change the drawing area, which stays the panel's
-native ${board.displays.length > 0 ? `${displayFor(board, choices)?.width ?? 0}x${displayFor(board, choices)?.height ?? 0}` : 'size'}: at 90 or 270 degrees your content appears rotated on the glass rather than re-laid out for a
-wide screen, so a landscape user interface means drawing in the rotated frame yourself.
+The rotation turns the whole interface, not just the image. At 90 or 270 degrees the drawing area becomes the
+panel's dimensions the other way round, the panel is told that is the shape it is addressing - rotating the
+controller swaps its row and column addressing - and the generated screen lays itself out for the new shape:
+the frame, the bars, the corner markers and the status lines all follow it. So a landscape rotation gives you a
+landscape layout, rather than a portrait picture turned on its side.${board.touch !== undefined ? `
+The touch calibration lives in the same coordinate space, so a calibration measured in one orientation is
+discarded when the rotation changes and the four corners are asked for again.` : ''}
 `
         : '';
     const pinSection =

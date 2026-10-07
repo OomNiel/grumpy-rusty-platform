@@ -94,8 +94,20 @@ async fn main(_spawner: Spawner) -> ! {
     // Logged because the value comes from outside this file: a silent fall back to no rotation would be
     // indistinguishable from a rotation that was applied and simply not noticed.
     log::info!("panel rotation setting: {}", option_env!("LCD_ROTATION").unwrap_or("0"));
+
+    // The drawing area follows the rotation, not just the image inside it. Rotating through MADCTL swaps the
+    // controller's row and column addressing, so at 90 and 270 degrees the addressable area is the panel's
+    // dimensions the other way round. Telling mipidsi the portrait size while the controller is addressing
+    // landscape is what made the landscape modes not fit: the content was clipped and misplaced rather than
+    // turned (noticed on the CYD, 2026-10-07).
+    let rotated = matches!(rotation, Rotation::Deg90 | Rotation::Deg270);
+    let (width, height) = if rotated {
+        (480u16, 320u16)
+    } else {
+        (320u16, 480u16)
+    };
     let mut display = Builder::new(models::ST7796, di)
-        .display_size(320, 480)
+        .display_size(width, height)
         // 3.5" ST7796 320x480: X is mirrored relative to the controller's default.
         .orientation(Orientation::new().flip_horizontal().rotate(rotation))
         .color_order(ColorOrder::Bgr)
@@ -122,18 +134,22 @@ async fn main(_spawner: Spawner) -> ! {
     let drawn_at = Instant::now();
     display.clear(Rgb565::BLACK).expect("panel write failed");
 
+    // Which geometry to draw with. The two were solved for the panel's two orientations, and only one of
+    // them is the shape the glass is currently in.
+    let layout = if rotated { &LANDSCAPE_DIAGNOSTICS } else { &PORTRAIT_DIAGNOSTICS };
+
     // A full-size frame, two pixels wide: every side visible means the whole area is addressable.
-    Rectangle::new(Point::new(1, 1), Size::new(320 - 2, 480 - 2))
+    Rectangle::new(Point::new(1, 1), Size::new(layout.width as u32 - 2, layout.height as u32 - 2))
         .into_styled(PrimitiveStyle::with_stroke(Rgb565::WHITE, 2))
         .draw(&mut display)
         .expect("panel write failed");
 
     // The centre cross, drawn before the bars and the text so neither is covered by it.
-    Line::new(Point::new(320 / 2, 0), Point::new(320 / 2, 480))
+    Line::new(Point::new(layout.width / 2, 0), Point::new(layout.width / 2, layout.height))
         .into_styled(PrimitiveStyle::with_stroke(Rgb565::YELLOW, 1))
         .draw(&mut display)
         .expect("panel write failed");
-    Line::new(Point::new(0, 480 / 2), Point::new(320, 480 / 2))
+    Line::new(Point::new(0, layout.height / 2), Point::new(layout.width, layout.height / 2))
         .into_styled(PrimitiveStyle::with_stroke(Rgb565::YELLOW, 1))
         .draw(&mut display)
         .expect("panel write failed");
@@ -145,8 +161,8 @@ async fn main(_spawner: Spawner) -> ! {
         .enumerate()
     {
         Rectangle::new(
-            Point::new(16 + (index as i32) * 58, 30),
-            Size::new(53, 60),
+            Point::new(layout.margin + (index as i32) * (layout.bar_width + layout.bar_gap), layout.bar_y),
+            Size::new(layout.bar_width as u32, layout.bar_height as u32),
         )
             .into_styled(PrimitiveStyle::with_fill(*colour))
             .draw(&mut display)
@@ -157,38 +173,37 @@ async fn main(_spawner: Spawner) -> ! {
     // bottom-right. A red square that is not in the corner, or one cut in half, is the answer.
     for (x, y, colour) in [
         (0, 0, Rgb565::RED),
-        (320 - 24, 0, Rgb565::GREEN),
-        (0, 480 - 24, Rgb565::BLUE),
-        (320 - 24, 480 - 24, Rgb565::WHITE),
+        (layout.width - layout.corner_size, 0, Rgb565::GREEN),
+        (0, layout.height - layout.corner_size, Rgb565::BLUE),
+        (layout.width - layout.corner_size, layout.height - layout.corner_size, Rgb565::WHITE),
     ] {
-        Rectangle::new(Point::new(x, y), Size::new(24, 24))
+        Rectangle::new(Point::new(x, y), Size::new(layout.corner_size as u32, layout.corner_size as u32))
             .into_styled(PrimitiveStyle::with_fill(colour))
             .draw(&mut display)
             .expect("panel write failed");
     }
 
-    Text::new("Hello Grumpy!", Point::new(95, 96), MonoTextStyle::new(&FONT_10X20, Rgb565::YELLOW))
+    // The greeting font is chosen per orientation: a line that fits a 128 px panel would have to shrink on
+    // a 480 px one, and the layout already worked out which.
+    let greeting_style = MonoTextStyle::new(
+        if layout.greeting_big { &FONT_10X20 } else { &FONT_6X10 },
+        Rgb565::YELLOW,
+    );
+    Text::new("Hello Grumpy!", Point::new(layout.greeting_x, layout.greeting_y), greeting_style)
         .draw(&mut display)
         .expect("panel write failed");
 
-    // What this screen is supposed to look like, in the panel's own words. Each line is only emitted if it
-    // fits: a status line drawn off the edge is worse than no status line.
+    // What this screen is supposed to look like, in the panel's own words. Each orientation carries its own
+    // list, already filtered to the lines that fit it: a status line drawn off the edge is worse than no
+    // status line, and a line that fits a 480 px panel does not necessarily fit a 320 px one.
     let small = MonoTextStyle::new(&FONT_6X10, Rgb565::WHITE);
-    let mut line = 122;
-    for text in [
-        "ESP32-035 LCD Panel",
-        "esp32 · 320x480 · ST7796",
-        "frame complete? corners: red TL, green TR",
-        "blue BL, white BR",
-        "bars L to R: red green blue black white",
-        "text upright? colours right? square blinking?",
-    ] {
-        Text::new(text, Point::new(6, line), small)
+    let mut line = layout.status_y;
+    for &text in layout.status_lines {
+        Text::new(text, Point::new(layout.status_x, line), small)
             .draw(&mut display)
             .expect("panel write failed");
-        line += 12;
+        line += layout.status_step;
     }
-
     log::info!(
         "diagnostics drawn in {} ms: frame, corners, 5 bars, cross and text",
         drawn_at.elapsed().as_millis()
@@ -198,7 +213,7 @@ async fn main(_spawner: Spawner) -> ! {
         // One small square, blinking: proof the loop is alive, placed clear of every diagnostic so it cannot
         // be mistaken for one.
         let colour = if tick % 2 == 0 { Rgb565::WHITE } else { Rgb565::BLACK };
-        Rectangle::new(Point::new(280, 426), Size::new(24, 24))
+        Rectangle::new(Point::new(layout.blink_x, layout.blink_y), Size::new(layout.blink_size as u32, layout.blink_size as u32))
             .into_styled(PrimitiveStyle::with_fill(colour))
             .draw(&mut display)
             .expect("panel write failed");
@@ -209,3 +224,71 @@ async fn main(_spawner: Spawner) -> ! {
         Timer::after(Duration::from_millis(700)).await;
     }
 }
+
+/// Where the diagnostic screen puts everything, solved for one orientation.
+///
+/// Two are generated - portrait and landscape - and the firmware picks the one matching the rotation,
+/// because the drawing area (and so every position inside it) follows the rotation. A square panel gets two
+/// identical constants, which is harmless and keeps the selection uniform.
+struct DiagnosticLayout {
+    width: i32,
+    height: i32,
+    margin: i32,
+    corner_size: i32,
+    bar_gap: i32,
+    bar_width: i32,
+    bar_height: i32,
+    bar_y: i32,
+    greeting_big: bool,
+    greeting_x: i32,
+    greeting_y: i32,
+    status_x: i32,
+    status_y: i32,
+    status_step: i32,
+    status_lines: &'static [&'static str],
+    blink_size: i32,
+    blink_x: i32,
+    blink_y: i32,
+}
+
+const PORTRAIT_DIAGNOSTICS: DiagnosticLayout = DiagnosticLayout {
+    width: 320,
+    height: 480,
+    margin: 16,
+    corner_size: 24,
+    bar_gap: 5,
+    bar_width: 53,
+    bar_height: 60,
+    bar_y: 30,
+    greeting_big: true,
+    greeting_x: 95,
+    greeting_y: 96,
+    status_x: 6,
+    status_y: 122,
+    status_step: 12,
+    status_lines: &["ESP32-035 LCD Panel", "esp32 · 320x480 · ST7796", "frame complete? corners: red TL, green TR", "blue BL, white BR", "bars L to R: red green blue black white", "text upright? colours right? square blinking?"],
+    blink_size: 24,
+    blink_x: 280,
+    blink_y: 426,
+};
+
+const LANDSCAPE_DIAGNOSTICS: DiagnosticLayout = DiagnosticLayout {
+    width: 480,
+    height: 320,
+    margin: 24,
+    corner_size: 24,
+    bar_gap: 8,
+    bar_width: 80,
+    bar_height: 45,
+    bar_y: 30,
+    greeting_big: true,
+    greeting_x: 175,
+    greeting_y: 81,
+    status_x: 6,
+    status_y: 107,
+    status_step: 12,
+    status_lines: &["ESP32-035 LCD Panel", "esp32 · 480x320 · ST7796", "frame complete? corners: red TL, green TR", "blue BL, white BR", "bars L to R: red green blue black white", "text upright? colours right? square blinking?"],
+    blink_size: 24,
+    blink_x: 432,
+    blink_y: 266,
+};

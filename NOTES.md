@@ -3485,3 +3485,52 @@ shown up in that testing even by accident. It needs a `display`, `touch` or `boa
 `LCD_ROTATION` set to 1, 2 or 3, and then a look at the screen. The firmware logs the value it was built with
 (`panel rotation setting: n`), which distinguishes "the setting did not reach the build" from "it reached the
 build and the image did not turn" - the two failures that would otherwise look identical from the outside.
+
+---
+
+## 81. Landscape rotation: the drawing area has to turn too (2026-10-07)
+
+Rotation 0/1/2/3 worked, and then the report came back: **the graphics do not fit in either landscape mode**.
+They did not, and the reason is worth recording carefully, because my own earlier reasoning said the opposite.
+
+### What I had claimed, and why it was wrong
+
+§75 stated, from reading mipidsi's source, that rotation could not clip anything: `OriginDimensions::size()`
+returns `display_size` unchanged (`graphics.rs:127-131`), so the drawing area stays 320x480 and the content is
+merely turned. That is a correct description of *mipidsi's* model. It is not a description of the panel.
+Rotating through MADCTL exchanges the **controller's** row and column addressing, so the addressable area
+becomes 480x320 while the driver was still telling the panel it had 320x480 - and the drawing was clipped and
+misplaced rather than turned. mipidsi's idea of the drawing area and the controller's idea of its own frame
+memory are two different things, and only the second one decides what lands where.
+
+This is the same shape of mistake as §74 (esp-radio "has no address API", so no address can be logged - until
+embassy-net on top of it was considered): reading a crate tells you what the crate does, not what the system
+built around it does. §80 had already flagged the rotation as never observed on the glass; it took one flash
+to replace the inference with the fact.
+
+### The fix
+
+- **The panel is told the rotated size.** The boot code computes `rotated` from the rotation and swaps:
+  `display_size(width, height)`. 180 degrees deliberately does *not* swap, because a half turn flips both axes
+  without exchanging rows and columns.
+- **Both layouts are solved, and the firmware picks one.** The layout solver now takes the size it is solving
+  for; the generator emits a `DiagnosticLayout` struct with `PORTRAIT_DIAGNOSTICS` and
+  `LANDSCAPE_DIAGNOSTICS`, and main selects by `rotated`. The maths stays in TypeScript, where the tests can
+  check it - including a new test that walks **both orientations of every panel in the catalog** and asserts
+  each one fits (inside the frame, bands in order, no status line wider than the glass). That test is the
+  guard that would have caught this: the old one only ever solved the portrait shape.
+- **The whole touch interface is expressed in the content space.** The calibration targets, the raw-to-screen
+  mapping, the readout box and the touch template's own graphics screen all derive from the rotated width and
+  height instead of the portrait constants they were baked with.
+- **The calibration records the orientation it was measured in.** The record gained a rotation byte (covered by
+  its checksum), and a record from a different orientation is discarded with a log line
+  (`stored for rotation 0 but this build is rotation 1 - recalibrating`) instead of being used. Without that, a
+  landscape build with a stored portrait calibration maps every touch to somewhere plausible and wrong.
+
+### Verified, and not
+
+Compiled and linked with 0 warnings: `display` (rotation 1), `board` (rotation 1) and `touch` (rotation 3).
+**Not verified: how any of it looks or responds on the glass.** Both landscape modes and the touch mapping
+after a rotation change need a board, and that is the next thing to test. Note too that a project generated
+before this change cannot pick it up by flashing again - `src/main.rs` is the user's from the moment it is
+generated, so a panel project has to be regenerated to get the landscape layout.
