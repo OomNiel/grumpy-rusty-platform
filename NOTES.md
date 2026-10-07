@@ -3323,3 +3323,74 @@ it on the board was going to catch this, because both texts were internally cons
 notify stream are all still compile-and-link only. The measured Wi-Fi timings (reset → joining → associated →
 address) and the verbatim log excerpts were not recorded in this entry; they belong here when someone has
 them to hand.
+
+---
+
+## 77. The Bluetooth template on hardware: advertising, notify, and the return (2026-10-06)
+
+Same board, same session as §76. The Bluetooth half of the feature is now verified on hardware as far as it
+was tested, and the one real obstacle was an observation mistake on our side, not a fault in the firmware.
+
+### What the board actually printed
+
+    INFO - Our address = Address { kind: AddrKind(1), addr: BdAddr([255, 143, 26, 5, 228, 255]) }
+    INFO - Starting advertising and GATT service
+    INFO - [adv] advertising as Rusty-Platform
+    INFO - [adv] connection established (central connected)
+    INFO - [custom_task] notifying connection of tick 1
+    INFO - [custom_task] RSSI: 0
+    INFO - [custom_task] notifying connection of tick 2
+    INFO - [custom_task] RSSI: -51
+    ... (tick 3: -55, tick 4: -49) ...
+    INFO - [custom_task] notifying connection of tick 102
+    INFO - [custom_task] RSSI: -63
+    INFO - [gatt] disconnected: Remote User Terminated Connection
+    INFO - [adv] advertising as Rusty-Platform
+
+### What that proves
+
+- **The name is in the advertisement payload.** `Rusty-Platform` appeared in the scanner's list, which is the
+  thing that could have failed silently: `PeripheralConfig { name }` alone does not put a name on the air,
+  `AdStructure::CompleteLocalName` does.
+- **A connection completes**, and the notify stream runs at the designed ~2 s cadence.
+- **RSSI reports plausible numbers** (-49 to -63 dBm at close range). The `0` on the first tick is the first
+  read racing the connection settling, not a fault.
+- **The connection is stable**: tick 102 is about 3.4 minutes without a drop.
+- **The disconnect reason is the host stack's own words** (`Remote User Terminated Connection`) rather than a
+  bare error.
+- **It returns to advertising after the central disconnects** - the criterion that separates a working
+  peripheral from one that advertises once and then looks dead.
+
+Also confirmed in passing: flashing the Bluetooth project never prompts for Wi-Fi credentials, so
+`isWirelessFirmware` correctly says no for a project with no `WIFI_SSID` in it.
+
+### The detour, recorded because it will happen again
+
+The report was "device not in bt list on phone". The firmware had been advertising correctly the whole time.
+Two things made that hard to see, and both are about *observing*, not about the code:
+
+1. **The phone's Bluetooth settings screen is not a BLE scanner.** The advertisement sets
+   `LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED` - it is BLE-only - and Android's settings list routinely
+   shows classic devices and known pairings, not BLE peripherals that no app has asked about. nRF Connect
+   found it immediately.
+2. **The extension's Flash output is not the board's log.** `espflash flash` writes the image and exits; the
+   firmware's `log::info!` output only appears on the serial monitor. And the Bluetooth template is *silent
+   while advertising* - nothing at all is printed between `[adv] advertising as …` and the next connection -
+   so a monitor attached after flashing shows a blank screen and invites exactly the wrong conclusion. The
+   monitor has to be open **before** the reset for the boot lines to be there at all.
+
+Both are now written down here and in the README's testing note. The general lesson is the same one §76 drew
+from the other direction: the firmware's own log is the cheapest discriminator between "it is broken" and "I
+am looking in the wrong place", and it has to be read first.
+
+### Not verified (and one rough edge)
+
+- The **GATT read and write** event paths were not exercised: the run showed notifications and a disconnect,
+  not a `[gatt] Read Event` or `[gatt] Write Event` line.
+- A **second central** was not tried, so `CONNECTIONS_MAX = 1` refusing the second connection is still only a
+  statement about the source.
+- **Rough edge found while testing:** a *read* of the battery-level characteristic returns its stored value
+  (`10`), while the *notifications* carry the ticking counter - the template never writes the counter back
+  into the attribute, so the two disagree. The README already calls the service a skeleton to replace, but
+  making the read and the notify agree is the honest thing, and would need one re-test of the notify path.
+  The counter also wraps at 255 ticks (~8.5 minutes), which is fine for a demonstration and worth knowing.

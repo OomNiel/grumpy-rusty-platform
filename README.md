@@ -253,10 +253,26 @@ The `wifi` and `bluetooth` projects have been compiled *and linked* for both the
 the ESP32-S3, and the generated ESP32 Bluetooth project carries a linker workaround for three ROM
 symbols missing from a published crate (see `NOTES.md`).
 
-**The Wi-Fi template is verified on hardware** (CYD/ESP32-035, 2026-10-06): association, the DHCP lease
-and the logged address, a fixed address from `WIFI_STATIC_IP`, recovery across a reset and an access-point
-power cycle, and the extension's credential prompt writing and reusing the keyring entry. **Bluetooth has
-not been flashed yet**, so advertising and phone visibility remain unverified.
+**Both templates are verified on hardware** (CYD/ESP32-035, 2026-10-06).
+
+- *Wi-Fi*: association, the DHCP lease and the logged address, a fixed address from `WIFI_STATIC_IP`,
+  recovery across a reset and an access-point power cycle, and the extension's credential prompt writing and
+  reusing the keyring entry.
+- *Bluetooth*: advertising as `Rusty-Platform` (the name really is in the advertisement payload, since a BLE
+  scanner lists it), a completed connection, the GATT notification stream at ~2 s with plausible RSSI, a
+  connection held for ~3.4 minutes, the disconnect reason reported in the stack's own words, and the return
+  to advertising afterwards.
+
+Two things remain unverified there, and are stated as such rather than glossed: the GATT **read** and
+**write** event paths were not exercised, and a second central was not tried, so `CONNECTIONS_MAX = 1`
+refusing it is still only a statement about the source. Note also that a *read* of the battery-level
+characteristic returns its stored value while the notifications carry the counter — the service is a
+skeleton to replace, as its generated README says.
+
+A practical warning from that testing: a **phone's Bluetooth settings screen is not a BLE scanner** (the
+advertisement is BLE-only, and those screens usually hide BLE peripherals), and the extension's Flash output
+is not the board's log — the firmware only prints while the serial monitor is attached, and the Bluetooth
+template is silent while advertising unless something connects.
 
 ### Turning the panel
 
