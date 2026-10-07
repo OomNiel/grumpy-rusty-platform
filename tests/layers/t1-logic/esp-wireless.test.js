@@ -204,3 +204,18 @@ test('the advertised name fits in the advertisement payload', () => {
     );
 });
 
+
+test('the Bluetooth service stores its value before announcing it', () => {
+    // Notifying without storing the value leaves the characteristic at whatever it was initialised to, so a
+    // central that *reads* it gets one answer while the notifications carry another. The read then looks
+    // like a stale value rather than a bug, which is exactly how it was found -- by reading the
+    // characteristic on a real phone instead of only watching the notify stream.
+    const main = mainRs(CYD, 'bluetooth');
+    const storedAt = main.indexOf('conn.set(&level, &tick)');
+    const notifiedAt = main.indexOf('level.notify(conn, &tick, true)');
+    ok(storedAt !== -1, 'the counter has to be written into the characteristic');
+    ok(notifiedAt !== -1, 'and still be notified');
+    ok(storedAt < notifiedAt, 'stored first, then announced -- the other order leaves a window where they disagree');
+    // A failure to store must be visible rather than silent, since the whole point is that the two agree.
+    ok(/could not store the level/.test(main), 'a failed store is reported');
+});

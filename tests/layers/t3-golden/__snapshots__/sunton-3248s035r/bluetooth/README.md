@@ -16,7 +16,9 @@ the flags and the service UUID, so a long one fails at runtime.
 
 Scan for it with a phone. The log reports the connection, and the GATT service it carries is the
 upstream example's battery-service skeleton - its level is a counter that ticks every two seconds,
-not a battery reading, so replace it with something true for your project before you ship it.
+not a battery reading, so replace it with something true for your project before you ship it. The
+counter is stored in the characteristic before it is announced, so **a read returns the same value the
+notifications carry**; the two cannot disagree. It wraps at 255 ticks (about eight and a half minutes).
 
 ## First-time setup
 

@@ -1279,6 +1279,13 @@ async fn custom_task<C: Controller, P: PacketPool>(
     let level = server.battery_service.level;
     loop {
         tick = tick.wrapping_add(1);
+        // The attribute is stored *before* it is announced. Notifying without storing leaves the
+        // characteristic at its initial value, so a central that reads it gets one answer while the
+        // notifications carry another - and the read looks like a stale value rather than a bug. Found by
+        // reading the characteristic on a real phone instead of only watching the notify stream (NOTES 78).
+        if conn.set(&level, &tick).is_err() {
+            warn!("[custom_task] could not store the level, so a read will not match the notifications");
+        }
         info!("[custom_task] notifying connection of tick {}", tick);
         if level.notify(conn, &tick, true).await.is_err() {
             info!("[custom_task] error notifying connection");
@@ -2509,7 +2516,9 @@ the flags and the service UUID, so a long one fails at runtime.
 
 Scan for it with a phone. The log reports the connection, and the GATT service it carries is the
 upstream example's battery-service skeleton - its level is a counter that ticks every two seconds,
-not a battery reading, so replace it with something true for your project before you ship it.
+not a battery reading, so replace it with something true for your project before you ship it. The
+counter is stored in the characteristic before it is announced, so **a read returns the same value the
+notifications carry**; the two cannot disagree. It wraps at 255 ticks (about eight and a half minutes).
 `
         : '';
     const rotationSection = templateUsesPanel(template)
