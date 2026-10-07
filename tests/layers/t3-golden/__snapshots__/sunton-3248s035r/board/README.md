@@ -22,9 +22,13 @@ the setting will still show the old value until you change it. Either way, rebui
 nothing to edit in `src/main.rs`, and no need to regenerate the project. 0 is no rotation, and 1/2/3 are
 90/180/270 degrees clockwise.
 
-The rotation turns the whole drawn image. It does not change the drawing area, which stays the panel's
-native 320x480: at 90 or 270 degrees your content appears rotated on the glass rather than re-laid out for a
-wide screen, so a landscape user interface means drawing in the rotated frame yourself.
+The rotation turns the whole interface, not just the image. At 90 or 270 degrees the drawing area becomes the
+panel's dimensions the other way round, the panel is told that is the shape it is addressing - rotating the
+controller swaps its row and column addressing - and the generated screen lays itself out for the new shape:
+the frame, the bars, the corner markers and the status lines all follow it. So a landscape rotation gives you a
+landscape layout, rather than a portrait picture turned on its side.
+The touch calibration lives in the same coordinate space, so a calibration measured in one orientation is
+discarded when the rotation changes and the four corners are asked for again.
 
 ## First-time setup
 

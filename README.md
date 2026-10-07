@@ -290,13 +290,16 @@ the same folder again and confirm the overwrite), so adding your own code to it 
 workflow. The rotation therefore lives in a config file, and the firmware logs the value it was built
 with (`panel rotation setting: 1`) so a build can be checked from the serial log.
 
-The rotation turns the whole drawn image; it does not change the drawing area, which keeps the panel's
-native size. So at 90° or 270° the content appears rotated on the glass rather than re-laid out for a
-wide screen.
+The rotation turns the whole interface, not just the image: at 90° or 270° the drawing area becomes the
+panel's dimensions the other way round (320×480 becomes 480×320), the panel is told that is the shape it is
+addressing, and the generated screen lays itself out for it — frame, bars, corners, status lines and all.
 
-What is verified so far is the **mechanism**: the value reaches the compiler (proved both ways), a nonsense
-value falls back to no rotation, and a generated project compiles with a rotation set. The rotation's
-**visual** effect on the glass has not been observed yet — no panel project has been flashed with one.
+That last part is a correction. The first version of this feature rotated only the image and kept the drawing
+area at the panel's native size; the first flash of a landscape build showed the graphics clipped and
+misplaced, because rotating the controller swaps its row and column addressing. The layout solver now runs for
+both orientations and the firmware picks the one the rotation produces. The touch calibration is versioned by
+rotation for the same reason: a calibration measured in portrait is discarded in landscape rather than used
+to map every touch somewhere plausible and wrong.
 
 ## Documentation
 

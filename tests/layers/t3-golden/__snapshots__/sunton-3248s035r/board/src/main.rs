@@ -179,8 +179,28 @@ async fn main(_spawner: Spawner) -> ! {
     // Logged because the value comes from outside this file: a silent fall back to no rotation would be
     // indistinguishable from a rotation that was applied and simply not noticed.
     log::info!("panel rotation setting: {}", option_env!("LCD_ROTATION").unwrap_or("0"));
+    // The rotation as a number, because the touch calibration is only valid for the orientation it was
+    // measured in and the record has to say which that was.
+    let rotation_code: u8 = match rotation {
+        Rotation::Deg90 => 1,
+        Rotation::Deg180 => 2,
+        Rotation::Deg270 => 3,
+        _ => 0,
+    };
+
+    // The drawing area follows the rotation, not just the image inside it. Rotating through MADCTL swaps the
+    // controller's row and column addressing, so at 90 and 270 degrees the addressable area is the panel's
+    // dimensions the other way round. Telling mipidsi the portrait size while the controller is addressing
+    // landscape is what made the landscape modes not fit: the content was clipped and misplaced rather than
+    // turned (noticed on the CYD, 2026-10-07).
+    let rotated = matches!(rotation, Rotation::Deg90 | Rotation::Deg270);
+    let (width, height) = if rotated {
+        (480u16, 320u16)
+    } else {
+        (320u16, 480u16)
+    };
     let mut display = Builder::new(models::ST7796, di)
-        .display_size(320, 480)
+        .display_size(width, height)
         // 3.5" ST7796 320x480: X is mirrored relative to the controller's default.
         .orientation(Orientation::new().flip_horizontal().rotate(rotation))
         .color_order(ColorOrder::Bgr)
@@ -334,6 +354,7 @@ async fn main(_spawner: Spawner) -> ! {
     const CALIBRATION_MAGIC: u32 = 0x5443_5831;
 
     fn calibration_bytes(
+        rotation: u8,
         axis: usize,
         x_from: i32,
         x_to: i32,
@@ -347,10 +368,16 @@ async fn main(_spawner: Spawner) -> ! {
         bytes[9..13].copy_from_slice(&x_to.to_le_bytes());
         bytes[13..17].copy_from_slice(&y_from.to_le_bytes());
         bytes[17..21].copy_from_slice(&y_to.to_le_bytes());
-        // A plain sum, so a half-written or erased sector is not mistaken for a calibration.
+        // Which orientation the numbers were measured in: the same corners on a turned panel are a
+        // different mapping, so a record without this cannot be trusted after a rotation change.
+        bytes[22] = rotation;
+        // A plain sum over everything but the checksum byte, so a half-written or erased sector is not
+        // mistaken for a calibration.
         let mut sum = 0u8;
-        for byte in &bytes[0..21] {
-            sum = sum.wrapping_add(*byte);
+        for (index, byte) in bytes.iter().enumerate() {
+            if index != 21 {
+                sum = sum.wrapping_add(*byte);
+            }
         }
         bytes[21] = sum;
         bytes
@@ -358,15 +385,17 @@ async fn main(_spawner: Spawner) -> ! {
 
     // Returns the stored calibration, or nothing when the sector has never been written (an erased sector
     // reads as 0xFF, which fails both the magic and the checksum).
-    fn calibration_load(flash: &mut FlashStorage<'_>) -> Option<(usize, i32, i32, i32, i32)> {
+    fn calibration_load(flash: &mut FlashStorage<'_>) -> Option<(u8, usize, i32, i32, i32, i32)> {
         let mut bytes = [0u8; 24];
         flash.read(CALIBRATION_OFFSET, &mut bytes).ok()?;
         if u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) != CALIBRATION_MAGIC {
             return None;
         }
         let mut sum = 0u8;
-        for byte in &bytes[0..21] {
-            sum = sum.wrapping_add(*byte);
+        for (index, byte) in bytes.iter().enumerate() {
+            if index != 21 {
+                sum = sum.wrapping_add(*byte);
+            }
         }
         if sum != bytes[21] {
             return None;
@@ -374,7 +403,7 @@ async fn main(_spawner: Spawner) -> ! {
         let word = |at: usize| -> i32 {
             i32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
         };
-        Some((usize::from(bytes[4]), word(5), word(9), word(13), word(17)))
+        Some((bytes[22], usize::from(bytes[4]), word(5), word(9), word(13), word(17)))
     }
 
     // esp_storage's Flash is the FLASH peripheral itself, so it is handed over rather than constructed.
@@ -392,11 +421,26 @@ async fn main(_spawner: Spawner) -> ! {
 
     // A stored calibration is used straight away; touching the glass during the first two seconds throws it
     // away and asks for the corners again, which is the only recalibration gesture this firmware offers.
-    let stored = calibration_load(&mut flash);
+    // A calibration is only valid for the orientation it was measured in: the mapping is a linear fit in the
+    // content coordinate space, and that space is a different shape after a rotation. A record from another
+    // orientation is discarded and the corners are asked for again -- otherwise every touch would land
+    // somewhere plausible and wrong, which is the worst way for it to fail.
+    let stored = match calibration_load(&mut flash) {
+        Some(found) if found.0 == rotation_code => Some(found),
+        Some(found) => {
+            log::warn!(
+                "calibration: stored for rotation {} but this build is rotation {} - recalibrating",
+                found.0,
+                rotation_code
+            );
+            None
+        }
+        None => None,
+    };
     // Two arms rather than a format_args! inside one: the numbers are printed so they can be read back
     // without a debugger, and the temporary the one-argument form would need does not outlive the log call.
     match stored {
-        Some((axis, x_from, x_to, y_from, y_to)) => log::info!(
+        Some((_, axis, x_from, x_to, y_from, y_to)) => log::info!(
             "calibration: loaded from flash - axis{} {}..{} {}..{}",
             axis,
             x_from,
@@ -408,30 +452,35 @@ async fn main(_spawner: Spawner) -> ! {
     }
 
     // The four corners the screen asks for, in the order it asks.
+    //
+    // Everything below lives in the *content* coordinate space, which is the panel's size the other way
+    // round when the rotation is vertical (see the panel setup above). The calibration targets, the
+    // raw-to-screen mapping, the readout box and the graphics screen all follow from these two numbers, so
+    // changing the rotation moves the whole interface rather than only the image inside it.
     const MARGIN: i32 = 24;
-    const WIDTH: i32 = 320;
-    const HEIGHT: i32 = 480;
-    const BOX_X: i32 = 20;
-    const BOX_Y: i32 = 188;
-    const BOX_W: i32 = 280;
-    const BOX_H: i32 = 104;
+    let width_i: i32 = width as i32;
+    let height_i: i32 = height as i32;
+    let box_w: i32 = (width_i - 20).min(280);
+    let box_h: i32 = 104;
+    let box_x: i32 = (width_i - box_w) / 2;
+    let box_y: i32 = height_i / 2 - box_h / 2;
     let targets = [
         (MARGIN, MARGIN),
-        (WIDTH - MARGIN, MARGIN),
-        (WIDTH - MARGIN, HEIGHT - MARGIN),
-        (MARGIN, HEIGHT - MARGIN),
+        (width_i - MARGIN, MARGIN),
+        (width_i - MARGIN, height_i - MARGIN),
+        (MARGIN, height_i - MARGIN),
     ];
     let corners = ["top-left", "top-right", "bottom-right", "bottom-left"];
     let mut measured = [[0u16; 2]; 4];
     let mut corner: usize = 0;
     // Initialised from the stored calibration when there is one, so a calibrated panel boots straight into
     // the graphics test screen and never shows the calibration screen again.
-    let mut raw_x_axis: usize = stored.map(|(axis, _, _, _, _)| axis).unwrap_or(0);
-    let mut x_from: i32 = stored.map(|(_, x_from, _, _, _)| x_from).unwrap_or(0);
-    let mut x_to: i32 = stored.map(|(_, _, x_to, _, _)| x_to).unwrap_or(0);
-    let mut y_from: i32 = stored.map(|(_, _, _, y_from, _)| y_from).unwrap_or(0);
-    let mut y_to: i32 = stored.map(|(_, _, _, _, y_to)| y_to).unwrap_or(0);
-    let mut point = (WIDTH / 2, HEIGHT / 2);
+    let mut raw_x_axis: usize = stored.map(|(_, axis, _, _, _, _)| axis).unwrap_or(0);
+    let mut x_from: i32 = stored.map(|(_, _, x_from, _, _, _)| x_from).unwrap_or(0);
+    let mut x_to: i32 = stored.map(|(_, _, _, x_to, _, _)| x_to).unwrap_or(0);
+    let mut y_from: i32 = stored.map(|(_, _, _, _, y_from, _)| y_from).unwrap_or(0);
+    let mut y_to: i32 = stored.map(|(_, _, _, _, _, y_to)| y_to).unwrap_or(0);
+    let mut point = (width_i / 2, height_i / 2);
     let mut raw_a: i32 = idle_a;
     let mut raw_b: i32 = idle_b;
     let mut shown_a: i32 = idle_a - TOUCH_REPAINT - 1;
@@ -488,7 +537,7 @@ async fn main(_spawner: Spawner) -> ! {
                 Text::new("Touch: numbers below, and the log", Point::new(8, 10), style)
                     .draw(&mut display)
                     .expect("panel write failed");
-                Rectangle::new(Point::new(1, 1), Size::new(WIDTH as u32 - 2, HEIGHT as u32 - 2))
+                Rectangle::new(Point::new(1, 1), Size::new(width_i as u32 - 2, height_i as u32 - 2))
                     .into_styled(PrimitiveStyle::with_stroke(Rgb565::WHITE, 2))
                     .draw(&mut display)
                     .expect("panel write failed");
@@ -505,23 +554,27 @@ async fn main(_spawner: Spawner) -> ! {
                         .draw(&mut display)
                         .expect("panel write failed");
                 }
+                // The five bars share the width, so they read the same in portrait and landscape instead of
+                // huddling on the left of a turned panel.
+                let bar_gap: i32 = (width_i / 64).max(2);
+                let bar_width: i32 = ((width_i - 2 * MARGIN - 4 * bar_gap) / 5).max(4);
                 for (index, colour) in [Rgb565::RED, Rgb565::GREEN, Rgb565::BLUE, Rgb565::BLACK, Rgb565::WHITE]
                     .iter()
                     .enumerate()
                 {
                     Rectangle::new(
-                        Point::new(16 + (index as i32) * 58, 40),
-                        Size::new(53, 40),
+                        Point::new(MARGIN + (index as i32) * (bar_width + bar_gap), 40),
+                        Size::new(bar_width as u32, 40),
                     )
                         .into_styled(PrimitiveStyle::with_fill(*colour))
                         .draw(&mut display)
                         .expect("panel write failed");
                 }
-                Line::new(Point::new(WIDTH / 2, 96), Point::new(WIDTH / 2, HEIGHT - 96))
+                Line::new(Point::new(width_i / 2, 96), Point::new(width_i / 2, height_i - 96))
                     .into_styled(PrimitiveStyle::with_stroke(Rgb565::new(16, 40, 16), 1))
                     .draw(&mut display)
                     .expect("panel write failed");
-                Line::new(Point::new(8, HEIGHT / 2), Point::new(WIDTH - 8, HEIGHT / 2))
+                Line::new(Point::new(8, height_i / 2), Point::new(width_i - 8, height_i / 2))
                     .into_styled(PrimitiveStyle::with_stroke(Rgb565::new(16, 40, 16), 1))
                     .draw(&mut display)
                     .expect("panel write failed");
@@ -537,11 +590,11 @@ async fn main(_spawner: Spawner) -> ! {
             // moves -- "raw a=0 b=0" is shorter than "raw a=1806 b=286" -- so without clearing, each reading
             // is drawn over the tail of the one before it. Filling and then stroking is what keeps the border
             // whole: the other order erases half its width.
-            Rectangle::new(Point::new(BOX_X, BOX_Y), Size::new(BOX_W as u32, BOX_H as u32))
+            Rectangle::new(Point::new(box_x, box_y), Size::new(box_w as u32, box_h as u32))
                 .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
                 .draw(&mut display)
                 .expect("panel write failed");
-            Rectangle::new(Point::new(BOX_X, BOX_Y), Size::new(BOX_W as u32, BOX_H as u32))
+            Rectangle::new(Point::new(box_x, box_y), Size::new(box_w as u32, box_h as u32))
                 .into_styled(PrimitiveStyle::with_stroke(Rgb565::new(8, 24, 8), 2))
                 .draw(&mut display)
                 .expect("panel write failed");
@@ -556,13 +609,13 @@ async fn main(_spawner: Spawner) -> ! {
             } else {
                 let _ = write!(&mut line, "idle");
             }
-            Text::new(line.as_str(), Point::new(BOX_X + 8, BOX_Y + 8), small)
+            Text::new(line.as_str(), Point::new(box_x + 8, box_y + 8), small)
                 .draw(&mut display)
                 .expect("panel write failed");
 
             let mut line = Numbers::new();
             let _ = write!(&mut line, "raw a={} b={}", raw_a, raw_b);
-            Text::new(line.as_str(), Point::new(BOX_X + 8, BOX_Y + 26), small)
+            Text::new(line.as_str(), Point::new(box_x + 8, box_y + 26), small)
                 .draw(&mut display)
                 .expect("panel write failed");
 
@@ -572,13 +625,13 @@ async fn main(_spawner: Spawner) -> ! {
             } else {
                 let _ = write!(&mut line, "x=? y=?");
             }
-            Text::new(line.as_str(), Point::new(BOX_X + 8, BOX_Y + 44), big)
+            Text::new(line.as_str(), Point::new(box_x + 8, box_y + 44), big)
                 .draw(&mut display)
                 .expect("panel write failed");
 
             let mut line = Numbers::new();
             let _ = write!(&mut line, "pen={} idle a={} b={}", touch_irq.is_low(), idle_a, idle_b);
-            Text::new(line.as_str(), Point::new(BOX_X + 8, BOX_Y + 78), small)
+            Text::new(line.as_str(), Point::new(box_x + 8, box_y + 78), small)
                 .draw(&mut display)
                 .expect("panel write failed");
 
@@ -637,11 +690,11 @@ async fn main(_spawner: Spawner) -> ! {
                         y_to = i32::from(measured[3][raw_y_axis]);
                         log::info!(
                             "calibration: raw axis{} {}..{} and axis{} {}..{} over {}x{}",
-                            raw_x_axis, x_from, x_to, raw_y_axis, y_from, y_to, WIDTH, HEIGHT
+                            raw_x_axis, x_from, x_to, raw_y_axis, y_from, y_to, width_i, height_i
                         );
                         // Written once, and only after a whole set of corners: a half-set is not a
                         // calibration, so nothing is stored until the fourth one lands.
-                        let bytes = calibration_bytes(raw_x_axis, x_from, x_to, y_from, y_to);
+                        let bytes = calibration_bytes(rotation_code, raw_x_axis, x_from, x_to, y_from, y_to);
                         log::info!(
                             "calibration: {}",
                             match flash.write(CALIBRATION_OFFSET, &bytes) {
@@ -660,17 +713,17 @@ async fn main(_spawner: Spawner) -> ! {
                 let axis_x = if raw_x_axis == 0 { a } else { b };
                 let axis_y = if raw_x_axis == 0 { b } else { a };
                 let px = if x_to == x_from {
-                    WIDTH / 2
+                    width_i / 2
                 } else {
-                    MARGIN + (i32::from(axis_x) - x_from) * (WIDTH - 2 * MARGIN) / (x_to - x_from)
+                    MARGIN + (i32::from(axis_x) - x_from) * (width_i - 2 * MARGIN) / (x_to - x_from)
                 }
-                .clamp(0, WIDTH - 1);
+                .clamp(0, width_i - 1);
                 let py = if y_to == y_from {
-                    HEIGHT / 2
+                    height_i / 2
                 } else {
-                    MARGIN + (i32::from(axis_y) - y_from) * (HEIGHT - 2 * MARGIN) / (y_to - y_from)
+                    MARGIN + (i32::from(axis_y) - y_from) * (height_i - 2 * MARGIN) / (y_to - y_from)
                 }
-                .clamp(0, HEIGHT - 1);
+                .clamp(0, height_i - 1);
                 point = (px, py);
                 if pressed && !was_touched {
                     log::info!("touch: a={} b={} -> pixel ({}, {})", raw_a, raw_b, px, py);

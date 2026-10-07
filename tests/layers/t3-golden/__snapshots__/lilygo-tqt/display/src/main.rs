@@ -95,8 +95,20 @@ async fn main(_spawner: Spawner) -> ! {
     // Logged because the value comes from outside this file: a silent fall back to no rotation would be
     // indistinguishable from a rotation that was applied and simply not noticed.
     log::info!("panel rotation setting: {}", option_env!("LCD_ROTATION").unwrap_or("0"));
+
+    // The drawing area follows the rotation, not just the image inside it. Rotating through MADCTL swaps the
+    // controller's row and column addressing, so at 90 and 270 degrees the addressable area is the panel's
+    // dimensions the other way round. Telling mipidsi the portrait size while the controller is addressing
+    // landscape is what made the landscape modes not fit: the content was clipped and misplaced rather than
+    // turned (noticed on the CYD, 2026-10-07).
+    let rotated = matches!(rotation, Rotation::Deg90 | Rotation::Deg270);
+    let (width, height) = if rotated {
+        (128u16, 128u16)
+    } else {
+        (128u16, 128u16)
+    };
     let mut display = Builder::new(models::GC9107, di)
-        .display_size(128, 128)
+        .display_size(width, height)
         .reset_pin(rst)
         .orientation(Orientation::new().rotate(rotation))
         .color_order(ColorOrder::Rgb)
@@ -123,18 +135,22 @@ async fn main(_spawner: Spawner) -> ! {
     let drawn_at = Instant::now();
     display.clear(Rgb565::BLACK).expect("panel write failed");
 
+    // Which geometry to draw with. The two were solved for the panel's two orientations, and only one of
+    // them is the shape the glass is currently in.
+    let layout = if rotated { &LANDSCAPE_DIAGNOSTICS } else { &PORTRAIT_DIAGNOSTICS };
+
     // A full-size frame, two pixels wide: every side visible means the whole area is addressable.
-    Rectangle::new(Point::new(1, 1), Size::new(128 - 2, 128 - 2))
+    Rectangle::new(Point::new(1, 1), Size::new(layout.width as u32 - 2, layout.height as u32 - 2))
         .into_styled(PrimitiveStyle::with_stroke(Rgb565::WHITE, 2))
         .draw(&mut display)
         .expect("panel write failed");
 
     // The centre cross, drawn before the bars and the text so neither is covered by it.
-    Line::new(Point::new(128 / 2, 0), Point::new(128 / 2, 128))
+    Line::new(Point::new(layout.width / 2, 0), Point::new(layout.width / 2, layout.height))
         .into_styled(PrimitiveStyle::with_stroke(Rgb565::YELLOW, 1))
         .draw(&mut display)
         .expect("panel write failed");
-    Line::new(Point::new(0, 128 / 2), Point::new(128, 128 / 2))
+    Line::new(Point::new(0, layout.height / 2), Point::new(layout.width, layout.height / 2))
         .into_styled(PrimitiveStyle::with_stroke(Rgb565::YELLOW, 1))
         .draw(&mut display)
         .expect("panel write failed");
@@ -146,8 +162,8 @@ async fn main(_spawner: Spawner) -> ! {
         .enumerate()
     {
         Rectangle::new(
-            Point::new(8 + (index as i32) * 22, 22),
-            Size::new(20, 18),
+            Point::new(layout.margin + (index as i32) * (layout.bar_width + layout.bar_gap), layout.bar_y),
+            Size::new(layout.bar_width as u32, layout.bar_height as u32),
         )
             .into_styled(PrimitiveStyle::with_fill(*colour))
             .draw(&mut display)
@@ -158,33 +174,37 @@ async fn main(_spawner: Spawner) -> ! {
     // bottom-right. A red square that is not in the corner, or one cut in half, is the answer.
     for (x, y, colour) in [
         (0, 0, Rgb565::RED),
-        (128 - 16, 0, Rgb565::GREEN),
-        (0, 128 - 16, Rgb565::BLUE),
-        (128 - 16, 128 - 16, Rgb565::WHITE),
+        (layout.width - layout.corner_size, 0, Rgb565::GREEN),
+        (0, layout.height - layout.corner_size, Rgb565::BLUE),
+        (layout.width - layout.corner_size, layout.height - layout.corner_size, Rgb565::WHITE),
     ] {
-        Rectangle::new(Point::new(x, y), Size::new(16, 16))
+        Rectangle::new(Point::new(x, y), Size::new(layout.corner_size as u32, layout.corner_size as u32))
             .into_styled(PrimitiveStyle::with_fill(colour))
             .draw(&mut display)
             .expect("panel write failed");
     }
 
-    Text::new("Hello Grumpy!", Point::new(25, 46), MonoTextStyle::new(&FONT_6X10, Rgb565::YELLOW))
+    // The greeting font is chosen per orientation: a line that fits a 128 px panel would have to shrink on
+    // a 480 px one, and the layout already worked out which.
+    let greeting_style = MonoTextStyle::new(
+        if layout.greeting_big { &FONT_10X20 } else { &FONT_6X10 },
+        Rgb565::YELLOW,
+    );
+    Text::new("Hello Grumpy!", Point::new(layout.greeting_x, layout.greeting_y), greeting_style)
         .draw(&mut display)
         .expect("panel write failed");
 
-    // What this screen is supposed to look like, in the panel's own words. Each line is only emitted if it
-    // fits: a status line drawn off the edge is worse than no status line.
+    // What this screen is supposed to look like, in the panel's own words. Each orientation carries its own
+    // list, already filtered to the lines that fit it: a status line drawn off the edge is worse than no
+    // status line, and a line that fits a 480 px panel does not necessarily fit a 320 px one.
     let small = MonoTextStyle::new(&FONT_6X10, Rgb565::WHITE);
-    let mut line = 62;
-    for text in [
-        "esp32s3 128x128",
-    ] {
-        Text::new(text, Point::new(6, line), small)
+    let mut line = layout.status_y;
+    for &text in layout.status_lines {
+        Text::new(text, Point::new(layout.status_x, line), small)
             .draw(&mut display)
             .expect("panel write failed");
-        line += 12;
+        line += layout.status_step;
     }
-
     log::info!(
         "diagnostics drawn in {} ms: frame, corners, 5 bars, cross and text",
         drawn_at.elapsed().as_millis()
@@ -194,7 +214,7 @@ async fn main(_spawner: Spawner) -> ! {
         // One small square, blinking: proof the loop is alive, placed clear of every diagnostic so it cannot
         // be mistaken for one.
         let colour = if tick % 2 == 0 { Rgb565::WHITE } else { Rgb565::BLACK };
-        Rectangle::new(Point::new(99, 85), Size::new(21, 21))
+        Rectangle::new(Point::new(layout.blink_x, layout.blink_y), Size::new(layout.blink_size as u32, layout.blink_size as u32))
             .into_styled(PrimitiveStyle::with_fill(colour))
             .draw(&mut display)
             .expect("panel write failed");
@@ -205,3 +225,71 @@ async fn main(_spawner: Spawner) -> ! {
         Timer::after(Duration::from_millis(700)).await;
     }
 }
+
+/// Where the diagnostic screen puts everything, solved for one orientation.
+///
+/// Two are generated - portrait and landscape - and the firmware picks the one matching the rotation,
+/// because the drawing area (and so every position inside it) follows the rotation. A square panel gets two
+/// identical constants, which is harmless and keeps the selection uniform.
+struct DiagnosticLayout {
+    width: i32,
+    height: i32,
+    margin: i32,
+    corner_size: i32,
+    bar_gap: i32,
+    bar_width: i32,
+    bar_height: i32,
+    bar_y: i32,
+    greeting_big: bool,
+    greeting_x: i32,
+    greeting_y: i32,
+    status_x: i32,
+    status_y: i32,
+    status_step: i32,
+    status_lines: &'static [&'static str],
+    blink_size: i32,
+    blink_x: i32,
+    blink_y: i32,
+}
+
+const PORTRAIT_DIAGNOSTICS: DiagnosticLayout = DiagnosticLayout {
+    width: 128,
+    height: 128,
+    margin: 8,
+    corner_size: 16,
+    bar_gap: 2,
+    bar_width: 20,
+    bar_height: 18,
+    bar_y: 22,
+    greeting_big: false,
+    greeting_x: 25,
+    greeting_y: 46,
+    status_x: 6,
+    status_y: 62,
+    status_step: 12,
+    status_lines: &["esp32s3 128x128"],
+    blink_size: 21,
+    blink_x: 99,
+    blink_y: 85,
+};
+
+const LANDSCAPE_DIAGNOSTICS: DiagnosticLayout = DiagnosticLayout {
+    width: 128,
+    height: 128,
+    margin: 8,
+    corner_size: 16,
+    bar_gap: 2,
+    bar_width: 20,
+    bar_height: 18,
+    bar_y: 22,
+    greeting_big: false,
+    greeting_x: 25,
+    greeting_y: 46,
+    status_x: 6,
+    status_y: 62,
+    status_step: 12,
+    status_lines: &["esp32s3 128x128"],
+    blink_size: 21,
+    blink_x: 99,
+    blink_y: 85,
+};

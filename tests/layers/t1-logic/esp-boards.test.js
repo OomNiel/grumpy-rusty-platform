@@ -383,7 +383,16 @@ test('the panel template initialises the panel over its own pins', () => {
     // the first flash of this screen came out as a mirror -- text and all. The hardware settled the data's
     // claim; the pair below stops the emit from going missing again.
     contains(main, '.orientation(Orientation::new().flip_horizontal().rotate(rotation))');
-    contains(main, '.display_size(320, 480)');
+    // The drawing area follows the rotation. Rotating through MADCTL swaps the controller's row and column
+    // addressing, so the panel is told the swapped size in the vertical rotations; telling it the portrait
+    // size while it addresses landscape is what clipped the landscape modes (found on the CYD, 2026-10-07).
+    contains(main, '.display_size(width, height)');
+    contains(main, 'let rotated = matches!(rotation, Rotation::Deg90 | Rotation::Deg270)');
+    const landscapeAt = main.indexOf('(480u16, 320u16)');
+    const portraitAt = main.indexOf('(320u16, 480u16)');
+    ok(landscapeAt !== -1, 'the rotated branch sizes the panel landscape');
+    ok(portraitAt !== -1, 'and the unrotated one sizes it portrait');
+    ok(landscapeAt < portraitAt, 'the landscape size belongs to the rotated branch');
     contains(main, '.color_order(ColorOrder::Bgr)');
     contains(main, `.init(&mut delay)`);
     contains(main, `with_sck(peripherals.GPIO${panel.spi.sclk})`);
@@ -415,7 +424,12 @@ test('the panel template draws a diagnostic screen, not a flat fill', () => {
     notOk(/PrimitiveStyle::with_fill\(Rgb565::BLACK\)\)\s*\.draw\(&mut display\)/.test(main),
         'a black fill hides everything that matters');
 
-    contains(main, 'Rectangle::new(Point::new(1, 1), Size::new(320 - 2, 480 - 2))', 'the frame is the panel, minus its stroke');
+    contains(main, 'Rectangle::new(Point::new(1, 1), Size::new(layout.width as u32 - 2, layout.height as u32 - 2))', 'the frame is the panel, minus its stroke');
+    // Both orientations are solved and the firmware picks one, so no number can be portrait-baked again.
+    contains(main, 'struct DiagnosticLayout');
+    contains(main, 'const PORTRAIT_DIAGNOSTICS: DiagnosticLayout');
+    contains(main, 'const LANDSCAPE_DIAGNOSTICS: DiagnosticLayout');
+    contains(main, 'let layout = if rotated { &LANDSCAPE_DIAGNOSTICS } else { &PORTRAIT_DIAGNOSTICS };');
     // The corners, by colour: each one names what a shifted panel looks like in that spot.
     for (const corner of ['Rgb565::RED', 'Rgb565::GREEN', 'Rgb565::BLUE', 'Rgb565::WHITE']) {
         contains(main, corner);
@@ -423,8 +437,9 @@ test('the panel template draws a diagnostic screen, not a flat fill', () => {
     contains(main, 'for (x, y, colour) in [');
     // The bars are named in the comment in the order they are drawn, so a swap is diagnosable from the read.
     contains(main, 'bars L to R: red green blue black white');
-    contains(main, 'Line::new(Point::new(320 / 2, 0)', 'the cross has to be centred by the panel size, not a number');
-    contains(main, 'Line::new(Point::new(0, 480 / 2)');
+    contains(main, 'Line::new(Point::new(layout.width / 2, 0)', 'the cross has to be centred by the layout size, not a number');
+    contains(main, 'Line::new(Point::new(0, layout.height / 2)');
+    contains(main, 'for &text in layout.status_lines');
     contains(main, 'Hello Grumpy!');
     // The blink is the only moving pixel: it proves the loop runs without covering a diagnostic.
     contains(main, 'let colour = if tick % 2 == 0 { Rgb565::WHITE } else { Rgb565::BLACK };');
@@ -654,7 +669,12 @@ test('the touch template asks for the four corners and says what it measured', (
     // And the live readout the panel shows while a finger is down.
     contains(main, 'raw a={} b={}', 'the raw pair');
     contains(main, 'x={} y={}', 'the mapped pair');
-    contains(main, 'BOX_X: i32 =', 'the readout sits in the middle of the panel');
+    // The readout box, the calibration targets, the mapping and the graphics screen are all expressed in the
+    // content coordinate space, which the rotation decides the size of.
+    contains(main, 'let width_i: i32 = width as i32;', 'the touch geometry follows the rotated width');
+    contains(main, 'let box_w: i32 = (width_i - 20).min(280);', 'the readout box is sized from it');
+    contains(main, 'let box_x: i32 = (width_i - box_w) / 2;', 'and centred on it');
+    notContains(main, 'const WIDTH: i32 =', 'nothing bakes the portrait width any more');
     contains(main, 'TOUCH_REPAINT', 'and only repaints when the numbers move');
     // The readout is cleared before it is drawn: the numbers change length, and a fill followed by the border
     // is the order that neither leaves the old reading behind nor eats half the border.
@@ -757,4 +777,51 @@ test('the TF card template mounts the card on the socket the board wires', () =>
     contains(main, 'year_since_1970: 56');
     contains(main, 'zero_indexed_month: 0');
     contains(main, 'impl TimeSource for FixedClock', 'the clock the filesystem wants, defined where it is used');
+});
+
+test('the diagnostic layout fits both orientations of every panel', () => {
+    // The layout solver is the only place the screen's geometry is decided, and it is solved for whichever
+    // drawing area the rotation produces. Checking only the portrait shape left the landscape modes to be
+    // discovered on the glass - which is exactly what happened.
+    for (const board of BOARDS.filter(isEspBoard)) {
+        for (const panel of board.displays) {
+            const orientations = [
+                ['portrait', { width: panel.width, height: panel.height }],
+                ['landscape', { width: panel.height, height: panel.width }],
+            ];
+            for (const [name, size] of orientations) {
+                const layout = espDiagnosticLayout(panel, board, size);
+                const where = `${board.id} ${name}`;
+                equal(layout.width, size.width, `${where}: the layout is as wide as the glass`);
+                equal(layout.height, size.height, `${where}: and as tall`);
+                ok(layout.blinkX + layout.blinkSize <= layout.width, `${where}: the blinking square is inside the width`);
+                ok(layout.blinkY + layout.blinkSize <= layout.height, `${where}: and inside the height`);
+                ok(layout.barY + layout.barHeight <= layout.blinkY, `${where}: the bars stay clear of the square`);
+                ok(layout.greetingX >= 0, `${where}: the greeting starts on the glass`);
+                for (const line of layout.statusLines) {
+                    ok(
+                        line.length * 6 <= layout.width - 2 * layout.statusX,
+                        `${where}: "${line}" is too wide for the status area`,
+                    );
+                }
+            }
+        }
+    }
+});
+
+test('a calibration measured in one orientation is not used in another', () => {
+    // The raw-to-screen mapping is a linear fit in the content coordinate space, and that space is a
+    // different shape once the panel is turned. A record from the other orientation therefore maps every
+    // touch somewhere plausible and wrong, which is the worst way for it to fail -- so the record says which
+    // orientation it belongs to, and a mismatch asks for the corners again.
+    const main = filesFor(espBoard('sunton-3248s035r'), 'touch').get('src/main.rs');
+    contains(main, 'rotation: u8,', 'the record is written with a rotation');
+    contains(main, 'bytes[22] = rotation;', 'and stores it');
+    contains(main, 'calibration_bytes(rotation_code, raw_x_axis, x_from, x_to, y_from, y_to);');
+    contains(main, 'Some(found) if found.0 == rotation_code => Some(found)');
+    contains(main, 'recalibrating', 'a record from another orientation is reported, not used silently');
+    // The checksum has to cover the rotation byte, or a stale record could pass it after a change.
+    contains(main, 'for (index, byte) in bytes.iter().enumerate()');
+    // And the calibration's own targets are the rotated ones, since they are in the same space.
+    contains(main, 'let width_i: i32 = width as i32;');
 });
