@@ -11,6 +11,23 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.42] - 2026-10-07
+
+### Fixed
+
+- **A landscape rotation no longer gives a white screen.** 0.0.41 handed mipidsi the *rotated* display size to
+  lay out a landscape interface, which makes its clipping offset underflow (`FRAMEBUFFER_SIZE - display_size`,
+  i.e. 320 - 480). With the mirroring this panel needs, that produced a garbage address window for every draw
+  and left the panel uninitialised white — reported from a real board at rotation 3. The drawing area is the
+  panel's native size again at every rotation, which fits the glass exactly through MADCTL.
+
+### Known limitation
+
+- A **landscape layout** is not available yet, and the generated README says so rather than promising one. It
+  needs the rotation applied as a coordinate transform in the drawing code, because the display driver cannot be
+  told the rotated size. The landscape layout is still solved and kept for that work.
+
+
 ## [0.0.41] - 2026-10-07
 
 ### Fixed
