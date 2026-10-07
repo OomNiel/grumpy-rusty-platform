@@ -3131,3 +3131,12 @@ makes the others possible), sidebar-only, since the status bar keeps its six for
 test asserts both halves of that: the row is first in the section and *absent* from the status bar, and the
 command it runs reads `BOARDS` and shows a quick pick rather than offering a fixed list that could drift from the
 boards that exist.
+
+---
+
+## 73. New Project also sits on the Project section's title bar (2026-10-06)
+
+*"Also put the new project icon button on the Project section in the side bar (similar to what Boards section
+already have)"* — one manifest entry, and a test that pins the whole arrangement rather than just the new line:
+the Boards section offers the icon, the **Project** section now does too, and the **Controls** section offers it as
+a labelled row instead of an icon, so it does not appear twice in the same place.
