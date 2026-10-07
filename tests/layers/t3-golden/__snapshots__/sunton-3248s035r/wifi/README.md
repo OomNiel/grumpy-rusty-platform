@@ -23,13 +23,31 @@ WIFI_SSID="my-ssid" WIFI_PASSWORD="secret" cargo run --release
 
 An empty password joins an open network.
 
+### Getting an address
+
+The radio driver moves frames; **embassy-net** sits on top of it and owns the address. So the log tells
+you what the board got:
+
+    associated with "MyNetwork" on channel 6 (association id 32769)
+    using DHCP
+    address: 192.168.1.74/24
+    heartbeat 1 at 192.168.1.74/24
+
+If your network's DHCP server never answers, give the board a fixed address instead - the credential
+prompt has fields for it, or pass them when building:
+
+```sh
+WIFI_STATIC_IP="192.168.1.50/24" WIFI_GATEWAY="192.168.1.1" cargo run --release
+```
+
+Leave them unset for DHCP, which is the default. A malformed address falls back to DHCP rather than
+stopping the build, so a typo is survivable.
+
 ### What this firmware does not do
 
-It does not log an address, and it cannot be given a fixed one. esp-radio 1.0.0-beta.1 has no DHCP,
-netif or address API at all, so the driver joins the network and reports the access point it
-associated with, while addressing happens in the vendor stack underneath and is not visible from
-Rust. Your router's client list is where the board's address can be seen. WPA3/SAE is not supported
-either: the driver offers open, WEP, WPA and WPA2 personal only.
+**WPA3/SAE is not supported** - the driver offers open, WEP, WPA and WPA2 personal only - and the radio
+is 2.4 GHz, so a 5 GHz-only network will never be joined. A failed association is retried every five
+seconds and each failure is logged with the driver's own reason rather than being swallowed.
 
 ## First-time setup
 

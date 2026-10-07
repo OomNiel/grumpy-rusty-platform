@@ -251,8 +251,12 @@ have not been flashed yet (see `NOTES.md` in the repository).
 
 The `wifi` and `bluetooth` projects have been compiled *and linked* for both the classic ESP32 and
 the ESP32-S3, and the generated ESP32 Bluetooth project carries a linker workaround for three ROM
-symbols missing from a published crate (see `NOTES.md`). Neither has been run on a board yet, so
-association, advertising and phone visibility are still unverified.
+symbols missing from a published crate (see `NOTES.md`).
+
+**The Wi-Fi template is verified on hardware** (CYD/ESP32-035, 2026-10-06): association, the DHCP lease
+and the logged address, a fixed address from `WIFI_STATIC_IP`, recovery across a reset and an access-point
+power cycle, and the extension's credential prompt writing and reusing the keyring entry. **Bluetooth has
+not been flashed yet**, so advertising and phone visibility remain unverified.
 
 ### Turning the panel
 
