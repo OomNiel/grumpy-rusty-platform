@@ -3534,3 +3534,59 @@ Compiled and linked with 0 warnings: `display` (rotation 1), `board` (rotation 1
 after a rotation change need a board, and that is the next thing to test. Note too that a project generated
 before this change cannot pick it up by flashing again - `src/main.rs` is the user's from the moment it is
 generated, so a panel project has to be regenerated to get the landscape layout.
+
+---
+
+## 82. The white screen: why the drawing area cannot be rotated (2026-10-07)
+
+`TestRotation` (the `board` template, rotation 3) was built and flashed and gave a **white screen**. The cause
+was the change in §81 - handing mipidsi the rotated display size - and the arithmetic is worth writing down,
+because the idea is the obvious one and it cannot work.
+
+### The arithmetic
+
+For this panel the orientation is `flip_horizontal().rotate(rotation)`, and `Orientation::rotate` keeps the
+mirror flag while summing the rotation (`orientation.rs:119-124`), so rotation 3 is
+`{ rotation: Deg270, mirrored: true }`. `MemoryMapping::from_orientation` turns that into:
+
+    rotation Deg270      -> reverse_rows = true,  reverse_columns = false
+    reverse_columns     ^= mirrored(true)        -> reverse_columns = true
+    swap_rows_and_columns = rotation.is_vertical() -> true
+
+Then `Display::set_address_window` (`lib.rs:299-317`), with `FRAMEBUFFER_SIZE = (320, 480)` for the ST7796 and
+`display_offset = (0, 0)`:
+
+    offset.0 = FRAMEBUFFER_SIZE.0 - (display_size.0 + offset.0)   // 320 - 480  -> u16 underflow
+
+With the rotated `display_size` of §81 that is `320u16 - 480`, which wraps (the release profile does not check
+overflow). The offset then goes through `swap_rows_and_columns` and is added to every window, so the panel
+received a garbage address window for every draw and never wrote a valid pixel - it stayed in its uninitialised
+white state. Nothing the firmware logged would look wrong: the panel initialised, the drawing code ran, and
+`expect("panel write failed")` never fired, because the driver's writes all "succeeded".
+
+Rotation 1 survived the same change by luck: `{Deg90, mirrored:true}` leaves `reverse_columns` false, so only
+the harmless axis was offset. Rotation 3 hit the one that underflows. That asymmetry is exactly the kind of
+thing that makes a change look tested when it is not - and it is why the report named one rotation, not both.
+
+### What was reverted, and what remains
+
+- **The drawing area is the panel's native size again** (`.display_size(width, height)` with the panel's own
+  dimensions). Rotation still turns the whole interface through MADCTL, which fits the glass exactly: the
+  native 320x480 logical area maps onto the rotated 480x320 frame with nothing clipped. What it does *not* do
+  is produce a landscape-shaped layout, and that is the honest state.
+- **The landscape layout is solved but not selected.** `espPanelSupport` still computes
+  `LANDSCAPE_DIAGNOSTICS`, and nothing uses it. It is kept because it is correct and will be needed the moment
+  the rotation stops going through the address window; the comment in the generated code says as much.
+- **The touch calibration versioning stays** (§81). It is independent of the display-size question and is still
+  right: a calibration measured in one orientation must not be used in another.
+- **A test now pins the native size**, with the underflow named in the comment, so the rotated display size
+  cannot come back by accident.
+
+### What a landscape layout actually needs
+
+The rotation has to be applied as a **coordinate transform in our own drawing code**, not through the panel's
+address window: keep `display_size` native, keep only the board's mirroring in the orientation, and map every
+drawn point (and every touch coordinate) through the rotation transform. That way the landscape layout is not
+limited by the framebuffer at all, and no offset arithmetic is involved. It is a real change to the drawing
+code - every primitive and the touch mapping go through the transform - and it wants a board on the desk,
+which is what this session did not have for the graphics.

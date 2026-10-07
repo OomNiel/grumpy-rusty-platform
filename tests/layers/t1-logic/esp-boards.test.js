@@ -383,16 +383,14 @@ test('the panel template initialises the panel over its own pins', () => {
     // the first flash of this screen came out as a mirror -- text and all. The hardware settled the data's
     // claim; the pair below stops the emit from going missing again.
     contains(main, '.orientation(Orientation::new().flip_horizontal().rotate(rotation))');
-    // The drawing area follows the rotation. Rotating through MADCTL swaps the controller's row and column
-    // addressing, so the panel is told the swapped size in the vertical rotations; telling it the portrait
-    // size while it addresses landscape is what clipped the landscape modes (found on the CYD, 2026-10-07).
+    // The drawing area stays the panel's *native* size at every rotation, and that is not a cosmetic choice:
+    // mipidsi computes its clipping offset as FRAMEBUFFER_SIZE - display_size, so handing it a rotated size
+    // makes that subtraction underflow. With the mirroring this panel needs, the result was a garbage address
+    // window and a white screen (found on a real board, 2026-10-07 -- NOTES 82). This is the guard.
     contains(main, '.display_size(width, height)');
+    contains(main, 'let (width, height) = (320u16, 480u16);');
+    notContains(main, '480u16, 320u16', 'the rotated size must never be handed to mipidsi');
     contains(main, 'let rotated = matches!(rotation, Rotation::Deg90 | Rotation::Deg270)');
-    const landscapeAt = main.indexOf('(480u16, 320u16)');
-    const portraitAt = main.indexOf('(320u16, 480u16)');
-    ok(landscapeAt !== -1, 'the rotated branch sizes the panel landscape');
-    ok(portraitAt !== -1, 'and the unrotated one sizes it portrait');
-    ok(landscapeAt < portraitAt, 'the landscape size belongs to the rotated branch');
     contains(main, '.color_order(ColorOrder::Bgr)');
     contains(main, `.init(&mut delay)`);
     contains(main, `with_sck(peripherals.GPIO${panel.spi.sclk})`);
