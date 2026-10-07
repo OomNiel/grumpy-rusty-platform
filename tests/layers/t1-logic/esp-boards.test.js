@@ -827,3 +827,19 @@ test('a calibration measured in one orientation is not used in another', () => {
     // And the calibration's own targets are the rotated ones, since they are in the same space.
     contains(main, 'let width_i: i32 = if rotated { height as i32 } else { width as i32 };');
 });
+
+test('a calibrated panel can be recalibrated from the firmware', () => {
+    // The record could only ever be replaced by completing a fresh calibration, never discarded, so a panel
+    // calibrated for the wrong orientation (or with a drifted mapping) had no way back to the corner screen.
+    // A touch in the first couple of seconds now means "recalibrate".
+    const main = filesFor(espBoard('sunton-3248s035r'), 'touch').get('src/main.rs');
+    contains(main, 'const RECALIBRATE_TICKS: u32 = 100;', 'the window is about two seconds of 20 ms ticks');
+    contains(main, 'if calibrated && ticks < RECALIBRATE_TICKS {');
+    contains(main, 'discarded by a touch in the first');
+    // The triggering touch must be consumed by the gesture rather than recorded as a corner.
+    contains(main, '} else if !calibrated {');
+    contains(main, 'corner = 0;');
+    contains(main, 'redraw_screen = true;');
+    // And the README has to tell the reader, since it is the only way to recalibrate by hand.
+    contains(filesFor(espBoard('sunton-3248s035r'), 'touch').get('README.md'), 'first two seconds');
+});

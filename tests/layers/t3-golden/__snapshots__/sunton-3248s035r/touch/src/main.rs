@@ -154,6 +154,11 @@ async fn main(_spawner: Spawner) -> ! {
     // change comes back as zero, which is what a 2 us delay still did on this board.
     const TOUCH_SETTLE_NS: u32 = 20_000;
     const TOUCH_REPAINT: i32 = 4;
+    // A touch this soon after boot means "I want to recalibrate" rather than "use the stored calibration".
+    // The loop below sleeps 20 ms, so 100 ticks is about two seconds. Without this the stored record could
+    // only ever be *replaced* by completing a new calibration, never discarded - so a panel calibrated for
+    // the wrong orientation, or with a mapping that has drifted, had no way back to the corner screen.
+    const RECALIBRATE_TICKS: u32 = 100;
 
     // Numbers have to become text for the panel, and there is no allocator here: a fixed buffer that
     // implements core::fmt::Write is the usual no_std answer. It is deliberately not named after the
@@ -314,8 +319,9 @@ async fn main(_spawner: Spawner) -> ! {
     let (idle_a, idle_b) = (i32::from(idle_a), i32::from(idle_b));
     log::info!("touch: idle baseline a={} b={}", idle_a, idle_b);
 
-    // A stored calibration is used straight away; touching the glass during the first two seconds throws it
-    // away and asks for the corners again, which is the only recalibration gesture this firmware offers.
+    // A stored calibration is used straight away; a touch within RECALIBRATE_TICKS of boot throws it away
+    // and asks for the corners again (see the press edge in the loop below). That gesture is the only way back
+    // to the calibration screen once a panel has been calibrated.
     // A calibration is only valid for the orientation it was measured in: the mapping is a linear fit in the
     // content coordinate space, and that space is a different shape after a rotation. A record from another
     // orientation is discarded and the corners are asked for again -- otherwise every touch would land
@@ -570,7 +576,19 @@ async fn main(_spawner: Spawner) -> ! {
                     frames_b[1],
                     frames_b[2]
                 );
-                if !calibrated {
+                if calibrated && ticks < RECALIBRATE_TICKS {
+                    // The touch that triggers the gesture is *consumed* by it, not recorded as a corner: the
+                    // finger is wherever the user aimed at the middle of the screen, and calibrating from that
+                    // would be worse than not calibrating at all.
+                    calibrated = false;
+                    corner = 0;
+                    redraw_screen = true;
+                    redraw_box = true;
+                    log::info!(
+                        "calibration: discarded by a touch in the first {} ticks - measure the four corners again",
+                        RECALIBRATE_TICKS
+                    );
+                } else if !calibrated {
                     measured[corner] = [a, b];
                     log::info!("touch: corner {} {} recorded", corner + 1, corners[corner]);
                     corner += 1;
