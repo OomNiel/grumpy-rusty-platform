@@ -11,6 +11,25 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.34] - 2026-10-06
+
+### Added
+
+- **Wi-Fi and Bluetooth LE templates for the ESP32 boards.** The Wi-Fi template joins your access point
+  and logs the address the network stack gives it; it reads the same four `WIFI_*` variables as the Pico
+  template, so the existing credentials prompt (and its keyring entry) serves both, including a fixed
+  address. The Bluetooth template advertises the board as a named peripheral and logs connections and
+  disconnections, using esp-radio's controller with the `trouble-host` host stack.
+- The board model records what the chip's radio actually provides (`radio: { wifi, bluetooth }`), and the
+  template list follows that field rather than the family name — the ESP32-S2 has no Bluetooth at all.
+
+### Fixed
+
+- The generated ESP32 Bluetooth project links: the published `esp-rom-sys` 0.1.5 that esp-radio pins is
+  missing three ROM symbols the classic-ESP32 Bluetooth blob refers to, so the generated
+  `.cargo/config.toml` defines them (classic ESP32 only — the ESP32-S3 does not need them).
+
+
 ## [0.0.33] - 2026-10-06
 
 ### Added
