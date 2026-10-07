@@ -11,6 +11,23 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.40] - 2026-10-06
+
+### Verified
+
+- **The Bluetooth read agrees with the notify, confirmed on hardware.** A read of the battery-level
+  characteristic now returns the counter the notifications carry, so the fix in 0.0.38 is verified
+  behaviourally — not only by compiling, and not only by the ordering test. The Grumpy icon was also confirmed
+  visible in the Extensions view.
+
+### Documentation
+
+- States what has **not** been observed: the panel rotation's *visual* effect. Its mechanism is verified — the
+  value reaches the compiler, a nonsense value falls back to no rotation, a generated project compiles with
+  one set — but no panel project has been flashed with a rotation, and the templates exercised on hardware
+  drive no panel.
+
+
 ## [0.0.39] - 2026-10-06
 
 ### Added
