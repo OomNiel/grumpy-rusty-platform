@@ -11,6 +11,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.32] - 2026-10-06
+
+### Added
+
+- **A `New Project` control in the Controls section**, leading it. The wizard was already there - it offers the
+  whole board catalog in a quick pick with your default board first, then the template that board actually has,
+  then the project name - but it was reachable only as an icon in the Boards view's title bar, which is not where
+  the other actions live. Sidebar only: the status bar keeps its six for the actions used constantly.
+
+
 ## [0.0.31] - 2026-10-06
 
 ### Added
