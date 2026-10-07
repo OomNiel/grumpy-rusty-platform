@@ -3429,3 +3429,30 @@ distinction §76 drew about timings.
 **Still needs one thing:** a re-test on the phone of the notify path (connect, read the characteristic, watch
 a notification) to confirm the read now returns the counter. That is a behavioural claim which only the board
 can settle; the compile and the ordering test are not substitutes for it.
+
+---
+
+## 79. The Grumpy icon, and why the extension had none (2026-10-06)
+
+The Extensions view showed a placeholder because `package.json` had no `icon`. The repository *did* have
+`resources/icon.svg`, but that is not a candidate: it is a 24x24 themed line drawing used as the **view
+container** icon (`package.json:311`) and as the AI panel's `iconPath` (`src/ui/chat`), which is what
+`currentColor` and a 24-unit `viewBox` are for. An extension icon has to be a **PNG of at least 128x128**,
+and VS Code wants it to read at a glance in a list.
+
+The mascot already existed: `Grumpy.png`, 128x128 RGBA, shipped as the icon of the sibling extension
+`grumpy.avalonia-designer` 0.14.0. It is copied in **byte-identical** (sha256 `9b05369840f3b8b8…`,
+27 673 bytes) to `resources/grumpy.png`, so the branding is the one already in use rather than something
+reinvented, and `"icon": "resources/grumpy.png"` now points at it. `.vscodeignore` does not exclude
+`resources/`, so it is packaged - verified in the built `.vsix` and in the installed extension.
+
+A test pins the whole thing, because a broken icon is the kind of defect that fails *silently*: the field must
+exist, end in `.png`, the file must exist, carry the PNG signature, and be at least 128x128.
+
+Two honest limits:
+
+- **I cannot view images with this model**, so everything above is about the file's properties (dimensions,
+  colour type, signature, byte-identity) and not about its appearance. `GrumpyWhite.png` (also 128x128) sits
+  beside it in the sibling extension if the colour variant turns out to be the wrong one.
+- The `description` in the manifest was stale in the same area and is fixed here: it advertised RP2040/RP2350
+  only, which stopped being true when the ESP32 and ESP32-S3 boards arrived.
