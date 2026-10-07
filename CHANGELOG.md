@@ -11,6 +11,25 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.37] - 2026-10-06
+
+### Verified
+
+- **The Bluetooth template on hardware** (CYD/ESP32-035): advertising as `Rusty-Platform` — so the name really
+  is in the advertisement payload, since a BLE scanner lists it — a completed connection, the GATT
+  notification stream at ~2 s with plausible RSSI, a connection held for ~3.4 minutes, the disconnect reason
+  reported in the stack's own words, and the return to advertising afterwards. Both ESP templates are now
+  verified on hardware.
+
+### Documentation
+
+- Says plainly what was *not* tested: the GATT read and write event paths, and a second central
+  (`CONNECTIONS_MAX = 1`). Flags a rough edge found while testing — a read of the battery-level characteristic
+  returns its stored value while the notifications carry the counter — and records the observation trap that
+  cost the most time: a phone's Bluetooth settings screen is not a BLE scanner, and the extension's Flash
+  output is not the board's log.
+
+
 ## [0.0.36] - 2026-10-06
 
 ### Fixed
