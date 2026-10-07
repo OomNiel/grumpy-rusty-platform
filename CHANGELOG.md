@@ -11,6 +11,23 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.43] - 2026-10-07
+
+### Fixed
+
+- **The `touch` and `board` templates lay out for the rotation as well.** Their screens were drawn from the
+  panel's native width and height, so on a rotated panel they drew a portrait interface into a landscape area.
+  They now derive their content size the way the display driver does, which carries the calibration targets, the
+  raw-to-screen mapping, the readout box, the bars and the frame with it.
+
+### Documentation
+
+- Corrects what 0.0.42 said about landscape: **a landscape layout is delivered, not impossible.** The driver is
+  handed the panel's *native* size and swaps the area it draws into for 90°/270° itself — which is also why
+  passing the *rotated* size underflowed and gave 0.0.41's white screen. Verified on hardware at 270°: every
+  edge, corner marker and bar visible, nothing clipped.
+
+
 ## [0.0.42] - 2026-10-07
 
 ### Fixed
