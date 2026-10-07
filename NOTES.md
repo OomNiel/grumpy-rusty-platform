@@ -3636,3 +3636,42 @@ it. `rotated` is now emitted for every panel template rather than only the displ
 Compiled and linked for the `board` and `touch` templates at rotation 3 (0 warnings each), and the `display`
 template's landscape rendering is confirmed **on hardware** by the person who ran it. The touch/board
 *appearance* at 270 degrees - and touch landing where it is drawn - still wants a flash, which is the next test.
+
+---
+
+## 84. The recalibration gesture, and the rotation feature signed off (2026-10-07)
+
+### The gesture that was only a comment
+
+Asking whether a rotation change needed the stored calibration erased turned up something else: the touch
+firmware's comment promised *"touching the glass during the first two seconds throws it away and asks for the
+corners again, which is the only recalibration gesture this firmware offers"* - and nothing implemented it.
+`calibrated` was only ever set true. So the record could be *replaced* by completing a fresh calibration, but
+never discarded, and a panel calibrated for the wrong orientation or with a drifted mapping had no way back to
+the corner screen short of erasing the flash sector.
+
+Now implemented (0.0.44): a touch within `RECALIBRATE_TICKS` (100 ticks of the loop's 20 ms, so about two
+seconds) of a reset discards the stored calibration, logs which rotation it belonged to, sounds the confirmation
+tone, returns to the corner screen, and puts the LED back to red - which already means uncalibrated. The
+triggering touch is **consumed** by the gesture rather than recorded as a corner: the finger is wherever the
+user aimed at the middle of the screen, so calibrating from it would be worse than not calibrating at all.
+
+The rotation question itself needed no answer of this kind: the record carries the rotation it was measured in
+and a mismatch is refused with a log line, so changing rotation never needs anything erased.
+
+### The feature, signed off on hardware
+
+Confirmed by the person who has the board, on the CYD/ESP32-035:
+
+- **270 degrees**: the interface is turned, and the diagnostic screen is a complete landscape layout - every
+  edge, corner marker and bar visible, nothing clipped.
+- **The `touch` and `board` templates** lay out for the rotated area too, and **touch lands where it is
+  pressed** after recalibrating.
+- **The recalibration gesture works**, and the calibration is redone and good.
+
+That closes the rotation feature: 0.0.35 (the setting) -> 0.0.41 (the drawing area, which broke rotation 3 with
+a white screen) -> 0.0.42 (the revert, which restored it) -> 0.0.43 (the touch/board screens following the drawn
+area) -> 0.0.44 (the gesture). The reason the trail is that long is worth keeping: three times in this feature I
+reasoned confidently from a crate's source and was corrected by the device - "esp-radio has no address API"
+(§74), "rotation cannot clip anything" (§75/§81), "the rotated size is needed / a landscape layout needs a
+coordinate transform" (§82/§83). Each time, the answer was in the crate; the *result* was only on the board.
