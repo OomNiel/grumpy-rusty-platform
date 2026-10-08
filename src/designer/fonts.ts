@@ -53,26 +53,11 @@ export function isBuiltInFont(value: string): boolean {
 }
 
 /**
- * The `style` expression that selects a built-in font for a widget.
- *
- * The shape is not the same for every tag, because the crate's emitter does not treat the expression the same
- * way. For most of them it is a `Style`, and the emitter passes it straight to `add_*`. A **button** is the
- * exception: the emitter builds its colour and corner settings by *chaining builder calls onto the expression*
- * (`.with_bg(...)`, `.with_corner_radius(...)`), so the expression has to be a `WidgetStyle` and not a `Style`
- * -- and since the designer always writes those colour properties, a `Style` here does not compile at all.
- * `WidgetStyle::button().with_normal(...)` satisfies both: the font rides in the normal state, and the chained
- * calls still have a `WidgetStyle` to land on.
- */
-export function builtInFontExpression(font: string, tag: string): string {
-    if (tag === 'button') {
-        return `{ let mut style = Style::button(); style.font = FontId::${font}; WidgetStyle::button().with_normal(style) }`;
-    }
-    return `{ let mut style = Style::label(); style.font = FontId::${font}; style }`;
-}
-
-/**
  * Whether a widget can be given a font the *declared* way (`font="name"`), which the crate reads for labels and
  * carousels only, or the built-in way (`style=...`), or both.
+ *
+ * The style expression that a built-in font needs is composed in `./appearance`, which also has to account for a
+ * chosen base style and for the button's `WidgetStyle`.
  */
 export type FontSupport = 'attribute' | 'style' | 'both';
 

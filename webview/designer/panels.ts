@@ -28,6 +28,7 @@ import {
 } from '../../src/designer/catalog';
 import type { DesignerAssetKind } from '../../src/designer/protocol';
 import { type DesignerFont, type DesignerWidget, designCanvasSize } from '../../src/designer/model';
+import { NAMED_STYLES } from '../../src/designer/appearance';
 import { BUILT_IN_FONTS, type FontSupport } from '../../src/designer/fonts';
 import {
     type DesignerState,
@@ -388,6 +389,22 @@ function propertyControl(
             input.checked = value === true;
             input.addEventListener('change', () => onChange(input.checked));
             return input;
+        }
+        case 'style': {
+            // The base styles a widget can wear. Named for what they look like rather than for the word the
+            // markup wants, because "panel" on a label means "give this label a panel's background".
+            const select = element('select', 'field-input');
+            const own = element('option', undefined, "(the widget's own look)");
+            own.value = '';
+            select.append(own);
+            for (const named of NAMED_STYLES) {
+                const choice = element('option', undefined, named.label);
+                choice.value = named.id;
+                select.append(choice);
+            }
+            select.value = typeof value === 'string' ? value : '';
+            select.addEventListener('change', () => onChange(select.value));
+            return select;
         }
         case 'enum': {
             const select = element('select', 'field-input');

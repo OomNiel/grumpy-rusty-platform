@@ -26,7 +26,8 @@ import { type DesignerDocument, type DesignerIconPart, type DesignerWidget, vali
 import { designCanvasSize } from './model';
 import { layoutToGrid, trackSpec, type GridLayout } from './grid';
 import { widgetSpec } from './catalog';
-import { builtInFontExpression, isBuiltInFont } from './fonts';
+import { isBuiltInFont } from './fonts';
+import { appearanceExpression } from './appearance';
 
 /** Escapes a value for a KDL quoted string. */
 function quote(value: string): string {
@@ -74,18 +75,31 @@ function widgetLine(
     const spec = widgetSpec(widget.tag);
     const parts = [`${widget.tag} id=${quote(widget.id)}`];
 
+    // The base style and a built-in font are not two attributes: a built-in font *is* a style expression, since
+    // the markup has no attribute for the crate's own fonts. So both are composed into one, and the individual
+    // properties are skipped by the loop below. See `src/designer/appearance.ts`.
+    const builtIn = typeof widget.props.font === 'string' && isBuiltInFont(widget.props.font) ? widget.props.font : '';
+    const appearance = appearanceExpression({
+        tag: widget.tag,
+        style: typeof widget.props.style === 'string' ? widget.props.style : undefined,
+        builtInFont: builtIn,
+    });
+
     for (const property of spec?.props ?? []) {
         const value = widget.props[property.name];
         if (isEmpty(value)) {
             continue;
         }
         if (property.kind === 'font' && isBuiltInFont(value as string)) {
-            // A built-in font has no attribute to travel in: the crate's own fonts are selected by a style
-            // expression, which the resolver passes through to the generated Rust. See `src/designer/fonts.ts`.
-            parts.push(`style=${literal(builtInFontExpression(value as string, widget.tag))}`);
+            continue;
+        }
+        if (property.kind === 'style') {
             continue;
         }
         parts.push(`${property.name}=${literal(value as string | number | boolean)}`);
+    }
+    if (appearance !== undefined) {
+        parts.push(`style=${literal(appearance)}`);
     }
     parts.push(`col=${placement.col}`, `row=${placement.row}`);
     parts.push(`col_span=${placement.colSpan}`, `row_span=${placement.rowSpan}`);

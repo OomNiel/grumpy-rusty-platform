@@ -4413,3 +4413,78 @@ so that part is its own module (`src/project/workspaceFolders.ts`) with its own 
 prefix gets wrong: `/home/abc` is not inside `/home/ab`, and `startsWith` says it is. The two `vscode` calls that
 do the loading are asserted by source, as the other command tests are, along with the ordering above -- which is
 the part that would silently rot.
+
+## 99. The appearance request, finished: the named styles are the handle (2026-10-08)
+
+The second half of the request -- "Only the Button control have the colour picker and font picker at the moment.
+All relevant controls should have these properties" -- is answered in two different ways, and the difference is
+worth writing down, because only one of them is the crate's fault.
+
+### Colours were already everywhere they could be
+
+The catalogue was built from the parser's own `get_*_prop` calls, so every colour property the crate reads is in
+it, with a colour input attached to `kind: 'color'`. That is fourteen names across most of the tag list (`fill`,
+`stroke`, `color`, `tint`, `bg`, `fg`, `text_color`, `border_color` and the per-state button set) -- it is just
+that the *button* is the only widget whose parser arm reads a whole per-state style, so it is the only one with
+a crowd of them. Nothing was missing; the Button simply looked like the only widget with a colour picker because
+it has fourteen.
+
+### The style attribute is the appearance handle, and it is real
+
+What was genuinely not offered is `style`. Reading `style_expr` in `embedded-gui-codegen` gives the mapping, and
+its first surprise is that most of the crate's names are aliases: `default`, `label`, `bold`, `dim`, `accent`,
+`success`, `danger` and `inverted` all become `Style::label()`; `card` becomes `Style::panel()`; `body*` and
+`menu` are a label carrying `Scaled6x10`; `hint*` a label carrying `Medium4x7`. Those font aliases are the Font
+field's business, named more directly there.
+
+What is left are four constructors that genuinely differ from one another -- and they differ in more than colour,
+which is why this is a real appearance control rather than a colour picker in disguise:
+
+| | background | gradient | corner | border | shadow |
+|---|---|---|---|---|---|
+| `label` | none | none | 0 | none | none |
+| `panel` | `new(2,4,8)` | vertical | 2 | yes | soft |
+| `button` | `new(4,8,12)` | vertical | 2 | yes | 1px offset |
+| `progress` | `new(3,4,5)` | **horizontal** | 1 | yes | none |
+
+So a Label can wear a panel's card, and a Panel a progress bar's thin horizontal fill. That is the "colour
+picker" for controls whose own properties have no colour: the crate's answer is a style, and the picker offers
+the four that mean something.
+
+Two things follow from the resolver, and both are the reason this is a closed list rather than a text field:
+
+- **An unknown name is passed through verbatim as Rust.** `Some(s) => s.to_string()`. A typo would not be
+  ignored, it would be compiled into the generated project. So validation refuses anything outside the four, and
+  the emitter refuses too -- the same discipline the font reference gets, for the same reason.
+- **A `#rrggbb` becomes a `WidgetStyle::button()`**, which is a button's shape and no other widget's, and which
+  the button emitter then overrides with the design's own colour properties. So the colour-as-style route adds
+  nothing to a designer that already writes those properties, and is not offered.
+
+### One attribute, not two
+
+A built-in font *is* a style expression (§97), so a widget with both a base style and a crate font cannot write
+`style` twice -- the markup would not parse. The two are composed into one, which is why the expression builder
+moved out of `fonts.ts` into its own module (`src/designer/appearance.ts`):
+
+    label, style=panel, font=Scaled6x10
+      -> style="{ let mut style = Style::panel(); style.font = FontId::Scaled6x10; style }"
+
+    label, style=panel, no font
+      -> style="Style::panel()"          # exactly what the resolver would have produced for the name
+
+    button, font=Vector(2), always colours
+      -> style="WidgetStyle::button().with_normal({ let mut style = Style::button(); style.font = ...; style })"
+
+A test asserts one `style=` per widget, because getting that wrong is a build failure rather than a wrong pixel.
+
+### Measured
+
+The host harness now measures every widget that was given an appearance, by any of the three routes, and the
+fixture grew a label wearing `Style::panel()`:
+
+    PASS: the appearances changed 2910 pixels inside their widgets
+          (one count per widget: 34 of 2700, 78 of 2700, 110 of 2700, 2688 of 2700)
+          and none of the 142800 outside them
+
+2688 of 2700 is the styled label: a panel background filling a 90x30 box, minus the glyphs drawn on top of it.
+All four counts are non-zero and nothing leaked, which is the whole claim.

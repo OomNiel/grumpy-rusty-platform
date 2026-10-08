@@ -25,6 +25,7 @@ import {
     widgetSpec,
     widgetRaises,
 } from './catalog';
+import { NAMED_STYLES, isNamedStyle } from './appearance';
 import { isBuiltInFont, supportsFontAttribute, supportsFontStyle } from './fonts';
 import { type LcdRotation } from '../display/rotation';
 
@@ -386,6 +387,15 @@ export function validateDocument(document: DesignerDocument): string[] {
                 if (!widgetRaises(widget.tag, event)) {
                     problems.push(`${where}: a ${spec.label.toLowerCase()} does not raise ${event}`);
                 }
+            }
+            const style = widget.props.style;
+            if (typeof style === 'string' && style !== '' && !isNamedStyle(style)) {
+                // The resolver passes a name it does not know through *verbatim*, as Rust. A typo would not be
+                // ignored, it would be compiled -- and a hand-edited design file is exactly where one appears.
+                problems.push(
+                    `${where}: "${style}" is not a base style the crate knows ` +
+                        `(${NAMED_STYLES.map((named) => named.id).join(', ')})`,
+                );
             }
             const font = widget.props.font;
             if (typeof font === 'string' && font !== '') {

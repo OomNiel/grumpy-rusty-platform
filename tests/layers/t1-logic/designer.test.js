@@ -773,7 +773,7 @@ test('a button gets a WidgetStyle, because the emitter chains its colours onto t
     ]);
     const kdl = emitKdl(doc);
     contains(kdl, 'style.font = FontId::Vector(2)', 'the font is set');
-    contains(kdl, 'WidgetStyle::button().with_normal(style)', 'and handed over as a WidgetStyle');
+    contains(kdl, 'WidgetStyle::button().with_normal(', 'and handed over as a WidgetStyle');
     equal(validateDocument(doc).length, 0, 'which is a valid button');
 });
 
@@ -807,6 +807,72 @@ test('a font is only offered where the crate reads one', () => {
         'reads a declared font for labels and carousels only',
         'a declared font on a button is reported',
     );
+});
+
+test('a chosen base style is the constructor the crate\'s own resolver would write', () => {
+    // The names are the crate's, and so is what each resolves to. Emitting the constructor directly means the
+    // markup says exactly what the resolver would have turned the name into, with one less thing in between.
+    const doc = document(0, [
+        widget('card', 'panel', { x: 0, y: 0, width: 160, height: 96 }, {
+            props: { ...defaultProps('panel'), style: 'progress' },
+        }),
+        widget('note', 'label', { x: 0, y: 100, width: 120, height: 24 }, {
+            props: { ...defaultProps('label'), text: 'AB', style: 'panel' },
+        }),
+    ]);
+    const kdl = emitKdl(doc);
+    contains(kdl, 'style="Style::progress()"', 'a panel can wear the progress look');
+    contains(kdl, 'style="Style::panel()"', 'and a label a panel\'s');
+    equal(validateDocument(doc).length, 0, 'both are valid designs');
+});
+
+test('a style and a font are one attribute, not two', () => {
+    // A built-in font *is* a style expression, so the two cannot both be written. Composing them is what lets a
+    // label wear a panel's background and a larger face at the same time.
+    const doc = document(0, [
+        widget('note', 'label', { x: 0, y: 0, width: 120, height: 24 }, {
+            props: { ...defaultProps('label'), text: 'AB', style: 'panel', font: 'Scaled6x10' },
+        }),
+    ]);
+    const kdl = emitKdl(doc);
+    equal(
+        kdl.split('style=').length - 1,
+        1,
+        'exactly one style attribute, or the markup would not parse',
+    );
+    contains(
+        kdl,
+        'style="{ let mut style = Style::panel(); style.font = FontId::Scaled6x10; style }"',
+        'the base look with the font set on it',
+    );
+    // A widget with neither says neither.
+    const plain = document(0, [
+        widget('note', 'label', { x: 0, y: 0, width: 120, height: 24 }, {
+            props: { ...defaultProps('label'), text: 'AB' },
+        }),
+    ]);
+    notContains(emitKdl(plain), 'style=', 'and a plain label carries no style at all');
+});
+
+test('a style name the crate does not know is refused, because it would be compiled', () => {
+    // `style_expr` passes an unrecognised name through *verbatim* as Rust. A typo would not be ignored, it would
+    // be compiled -- so a closed set is the only safe thing to offer, and validation enforces the same set.
+    const doc = document(0, [
+        widget('note', 'label', { x: 0, y: 0, width: 120, height: 24 }, {
+            props: { ...defaultProps('label'), text: 'AB', style: 'panell' },
+        }),
+    ]);
+    const problems = validateDocument(doc).join('\n');
+    contains(problems, 'is not a base style the crate knows', 'the typo is reported');
+    contains(problems, 'label, panel', 'and the message lists the names that would have worked');
+
+    // A widget whose emitter ignores a style must not offer one, so the property itself is the error.
+    const rect = document(0, [
+        widget('band', 'rect', { x: 0, y: 0, width: 40, height: 10 }, {
+            props: { ...defaultProps('rect'), style: 'panel' },
+        }),
+    ]);
+    contains(validateDocument(rect).join('\n'), 'is not a property of a rect', 'no handle, no property');
 });
 
 // ---------------------------------------------------------------- hover help
