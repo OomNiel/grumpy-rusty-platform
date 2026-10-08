@@ -22,6 +22,7 @@ import * as vscode from 'vscode';
 import type { BoardProfile } from '../boards/types';
 import { readActiveProject, readProjectAt } from '../project/activeProject';
 import { lcdRotationFromConfig, setLcdRotationInConfig, type LcdRotation } from '../display/rotation';
+import { setTouchInConfig, touchFromConfig, touchNeededBy } from '../display/touchSetting';
 import {
     DESIGNER_DOCUMENT_PATH,
     DESIGNER_HANDLERS_PATH,
@@ -66,6 +67,7 @@ class DesignerPanel {
         private readonly folder: vscode.Uri,
         private readonly board: BoardProfile | undefined,
         document: DesignerDocument,
+        private touchEnabled: boolean,
         private readonly loadError: string | undefined,
     ) {
         this.document = document;
@@ -111,6 +113,7 @@ class DesignerPanel {
         const config = (await readText(configPath)) ?? '';
         const rotation = lcdRotationFromConfig(config);
 
+        const touchEnabled = touchFromConfig(config);
         const stored = await readText(vscode.Uri.joinPath(project.folder, DESIGNER_DOCUMENT_PATH));
         const loaded = loadDocument(stored ?? '');
         const folderName = project.folder.path.split('/').pop() ?? 'Panel';
@@ -139,7 +142,16 @@ class DesignerPanel {
                 localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'out', 'webview')],
             },
         );
-        current = new DesignerPanel(panel, context, output, project.folder, board, document, loaded.error);
+        current = new DesignerPanel(
+            panel,
+            context,
+            output,
+            project.folder,
+            board,
+            document,
+            touchEnabled,
+            loaded.error,
+        );
         output.appendLine(
             `[designer] ${folderName}: canvas ${designCanvasSize(document.panelWidth, document.panelHeight, document.rotation).width}x` +
                 `${designCanvasSize(document.panelWidth, document.panelHeight, document.rotation).height} at rotation ${document.rotation}`,
@@ -182,6 +194,34 @@ class DesignerPanel {
         if (message.type === 'pickAsset') {
             await this.pickAsset(message.requestId, message.kind);
         }
+        if (message.type === 'setTouch') {
+            await this.setTouch(message.enabled);
+        }
+    }
+
+    /**
+     * Writes the touch setting, and says that a rebuild is what makes it real.
+     *
+     * It is a compile-time environment variable, so the running firmware is unchanged until it is built again --
+     * which the panel is told rather than left to discover.
+     */
+    private async setTouch(enabled: boolean): Promise<void> {
+        const configUri = vscode.Uri.joinPath(this.folder, '.cargo', 'esp-config.toml');
+        const existing = (await readText(configUri)) ?? '';
+        const updated = setTouchInConfig(existing, enabled);
+        if (updated !== existing) {
+            await writeProjectFile(this.folder, '.cargo/esp-config.toml', updated);
+        }
+        this.touchEnabled = enabled;
+        this.output.appendLine(`[designer] touch ${enabled ? 'enabled' : 'disabled'} for this project`);
+        await this.panel.webview.postMessage({
+            type: 'report',
+            problems: touchNeededBy(this.document.widgets, enabled),
+            note: enabled
+                ? 'Touch enabled. Rebuild for it to take effect.'
+                : 'Touch disabled. Rebuild for it to take effect.',
+            kdl: undefined,
+        });
     }
 
     /**
@@ -247,7 +287,8 @@ class DesignerPanel {
             document: this.document,
             canvas,
             paths: { document: DESIGNER_DOCUMENT_PATH, kdl: DESIGNER_KDL_PATH },
-            touch: (this.board?.kind === 'esp' && this.board.touch !== undefined) || false,
+            touchBoard: (this.board?.kind === 'esp' && this.board.touch !== undefined) || false,
+            touchEnabled: this.touchEnabled,
             loadError: this.loadError,
         });
     }
@@ -263,7 +304,10 @@ class DesignerPanel {
         this.document = document;
         const rendered = renderDesign(document);
         const assets = missingAssets(document, (relative) => this.assetExists(relative));
-        const problems = [...rendered.problems, ...assets];
+        // Reported, never enforced: a design with controls in it and touch switched off is a decision the user
+        // is allowed to make -- a half-built design, or placeholder buttons -- but not a silent one.
+        const touch = touchNeededBy(document.widgets, this.touchEnabled);
+        const problems = [...rendered.problems, ...assets, ...touch];
 
         if (rendered.documentJson !== this.lastWritten) {
             await writeProjectFile(this.folder, DESIGNER_DOCUMENT_PATH, rendered.documentJson);

@@ -37,6 +37,14 @@ mod ui_handlers;
 /// away at compile time. Kept rather than deleted: it is what to fall back on when a panel comes up wrong.
 const DESIGNER: bool = true;
 
+/// Whether touch is wanted, read at compile time so the driver, the calibration and the sampling fold
+/// away when it is off: no SPI traffic to a controller nobody asked for. Only "0" is off, so a project
+/// generated before the setting existed keeps the touchscreen it had.
+const TOUCH: bool = match option_env!("TOUCH_ENABLED") {
+    Some(value) => !(value.len() == 1 && value.as_bytes()[0] == b'0'),
+    None => true,
+};
+
 
 // The ESP-IDF bootloader expects an application descriptor in the image. Without it the
 // bootloader refuses to start the image, so this line is not decoration.
@@ -248,10 +256,13 @@ async fn main(_spawner: Spawner) -> ! {
         let _ = touch_frame(device, TOUCH_POWER_DOWN);
     }
 
+    // Only when touch is wanted: naming the controller is part of having asked for it.
+    if TOUCH {
     log::info!(
         "touch: XPT2046 on GPIO33 (cs), GPIO36 (irq), pen level now {}",
         touch_irq.is_low()
     );
+    }
 
 
 
@@ -320,13 +331,23 @@ async fn main(_spawner: Spawner) -> ! {
 
     // The idle baseline, taken before anything is drawn: this is what the axes read with nothing on the
     // glass, and a touch is judged by how far they move from it.
-    bus.borrow_mut().apply_config(&touch_clock()).expect("touch clock");
-    let (idle_a, _) = touch_axis(&mut touch, TOUCH_AXIS_A);
-    let (idle_b, _) = touch_axis(&mut touch, TOUCH_AXIS_B);
-    touch_idle(&mut touch);
-    bus.borrow_mut().apply_config(&panel_clock()).expect("panel clock");
-    let (idle_a, idle_b) = (i32::from(idle_a), i32::from(idle_b));
-    log::info!("touch: idle baseline a={} b={}", idle_a, idle_b);
+    //
+    // With touch off there is no baseline, because taking one *is* talking to the controller: the bus would be
+    // switched to its clock, two readings taken and the chip powered down again. Found on the board -- the
+    // first version of this guard stopped the sampling in the loop and left the startup naming the controller
+    // and reading it, which is not what "touch off" promised.
+    let (idle_a, idle_b) = if TOUCH {
+        bus.borrow_mut().apply_config(&touch_clock()).expect("touch clock");
+        let (idle_a, _) = touch_axis(&mut touch, TOUCH_AXIS_A);
+        let (idle_b, _) = touch_axis(&mut touch, TOUCH_AXIS_B);
+        touch_idle(&mut touch);
+        bus.borrow_mut().apply_config(&panel_clock()).expect("panel clock");
+        let (idle_a, idle_b) = (i32::from(idle_a), i32::from(idle_b));
+        log::info!("touch: idle baseline a={} b={}", idle_a, idle_b);
+        (idle_a, idle_b)
+    } else {
+        (0, 0)
+    };
 
     // A stored calibration is used straight away; a touch within RECALIBRATE_TICKS of boot throws it away
     // and asks for the corners again (see the press edge in the loop below). That gesture is the only way back
@@ -335,7 +356,9 @@ async fn main(_spawner: Spawner) -> ! {
     // content coordinate space, and that space is a different shape after a rotation. A record from another
     // orientation is discarded and the corners are asked for again -- otherwise every touch would land
     // somewhere plausible and wrong, which is the worst way for it to fail.
-    let stored = match calibration_load(&mut flash) {
+    // Read only when touch is wanted: an uncalibrated panel needs no calibration, and with the setting off the
+    // design is painted without a calibration screen ever being considered.
+    let stored = match if TOUCH { calibration_load(&mut flash) } else { None } {
         Some(found) if found.0 == rotation_code => Some(found),
         Some(found) => {
             log::warn!(
@@ -358,7 +381,11 @@ async fn main(_spawner: Spawner) -> ! {
             y_from,
             y_to
         ),
-        None => log::info!("calibration: none stored"),
+        None => {
+            if TOUCH {
+                log::info!("calibration: none stored");
+            }
+        }
     }
 
     // The four corners the screen asks for, in the order it asks.
@@ -415,7 +442,7 @@ async fn main(_spawner: Spawner) -> ! {
             display.clear(Rgb565::BLACK).expect("panel write failed");
             let style = MonoTextStyle::new(&FONT_6X10, Rgb565::WHITE);
 
-            if !calibrated {
+            if TOUCH && !calibrated {
                 // The calibration screen: one red block per corner, each with a crosshair in it, and the one
                 // being asked for lit up. Touching the crosshair records that corner's raw values.
                 Text::new("Touch the crosshair in the bright block", Point::new(8, 10), style)
@@ -579,7 +606,9 @@ async fn main(_spawner: Spawner) -> ! {
         // Every third tick is about 60 ms; a burst is a few bytes at 2 MHz, so the panel's clock is only
         // away for microseconds.
         ticks = ticks.wrapping_add(1);
-        if ticks % 3 == 0 {
+        // Every third tick, and only when touch is wanted: with the setting off this whole block is folded
+        // away, which keeps the controller's chip select and the bus clock untouched as well as unread.
+        if TOUCH && ticks % 3 == 0 {
             bus.borrow_mut().apply_config(&touch_clock()).expect("touch clock");
             let (a, frames_a) = touch_axis(&mut touch, TOUCH_AXIS_A);
             let (b, frames_b) = touch_axis(&mut touch, TOUCH_AXIS_B);

@@ -152,6 +152,9 @@ designer for the active project. Either way it works on a board that carries a p
   character set is worth narrowing: a title that only uses digits need not carry the alphabet. Assets are
   resolved from the project root, which is what the generated `project.kdl` anchors. Every asset field has a
   **browse button**, and a file from outside the project is copied into `assets/` rather than referenced.
+- **Touch is optional** — asked when the project is made and changeable from the toolbar. With it off there is no
+  touch driver, no calibration read and no calibration screen; dropping a control that raises events turns it on
+  by itself.
 
 The design is the source of truth and lives in `designer/panel.ui.json`; `src/ui.kdl` is generated from it, and
 the crate's `include_gui!` compiles that at build time. The rotation control writes the project's own

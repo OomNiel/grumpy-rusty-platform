@@ -50,7 +50,9 @@ test('the designer panel boots, builds itself from the catalogue, and posts its 
             document,
             canvas,
             paths: { document: 'designer/panel.ui.json', kdl: 'src/ui.kdl' },
-            touch: true,
+            touchBoard: true,
+            // Off to begin with, so the toolbar shows it and dropping a control has something to turn on.
+            touchEnabled: false,
         },
     });
 
@@ -186,6 +188,29 @@ test('the designer panel boots, builds itself from the catalogue, and posts its 
         'and the widget is back',
     );
 
+    // The toolbar carries the touch setting beside the rotation, since both are compile-time settings asked
+    // about in the wizard and changeable later.
+    const touchSelect = all().find(
+        (element) =>
+            element.tagName === 'SELECT' &&
+            element.children.some((option) => option.textContent === 'Touch: off'),
+    );
+    ok(touchSelect !== undefined, 'the toolbar offers the touch setting');
+    equal(touchSelect.value, 'false', 'showing what the project is built with');
+
+    messages.length = 0;
+    touchSelect.value = 'true';
+    touchSelect.emit('change');
+    const turnedOn = messages.find((message) => message.type === 'setTouch');
+    ok(turnedOn !== undefined, 'changing it tells the extension');
+    equal(turnedOn.enabled, true, 'with the new value');
+
+    // And turning it back off, so the auto-enable below has something to do.
+    messages.length = 0;
+    touchSelect.value = 'false';
+    touchSelect.emit('change');
+    equal(messages.find((message) => message.type === 'setTouch').enabled, false, 'and off again');
+
     // Clicking a Toolbox entry (the way in for anyone who cannot drag) drops a widget on the canvas.
     messages.length = 0;
     const labelEntry = all().find(
@@ -201,6 +226,29 @@ test('the designer panel boots, builds itself from the catalogue, and posts its 
     const added = afterAdd.document.widgets[afterAdd.document.widgets.length - 1];
     equal(added.tag, 'label', 'of the kind that was clicked');
     ok(added.width > 0 && added.height > 0, 'with the default size the catalogue gives it');
+
+    // Dropping a control that raises events turns touch on by itself: a button that can never be pressed is
+    // worse than a setting changed for you. A label, which raises nothing, must not.
+    const buttonEntry = all().find(
+        (element) => element.classList.contains('toolbox-item') && element.textContent === 'Button',
+    );
+    ok(buttonEntry !== undefined, 'the Toolbox offers a Button');
+    messages.length = 0;
+    buttonEntry.emit('click');
+    const autoEnabled = messages.find((message) => message.type === 'setTouch');
+    ok(autoEnabled !== undefined, 'dropping a button turns touch on');
+    equal(autoEnabled.enabled, true, 'because a button is a control that needs it');
+
+    messages.length = 0;
+    const secondLabel = all().find(
+        (element) => element.classList.contains('toolbox-item') && element.textContent === 'Label',
+    );
+    secondLabel.emit('click');
+    equal(
+        messages.filter((message) => message.type === 'setTouch').length,
+        0,
+        'and a label, which raises nothing, does not',
+    );
 
     // And editing a property -- the point of the panel on the right -- posts the new value. Adding a widget
     // selected it, so the button has to be selected again first, which is also what a user would do.

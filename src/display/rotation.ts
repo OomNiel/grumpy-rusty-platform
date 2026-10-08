@@ -1,3 +1,5 @@
+import { configHasValue, configLine, readConfigValue, setConfigValue } from './espConfig';
+
 /**
  * The LCD rotation a generated project is built with.
  *
@@ -59,56 +61,31 @@ export function templateUsesPanel(template: string): boolean {
 
 /** The `[env]` line itself. */
 export function lcdRotationLine(rotation: LcdRotation): string {
-    return `${LCD_ROTATION_ENV} = "${rotation}"`;
+    return configLine(LCD_ROTATION_ENV, String(rotation));
 }
 
 /**
  * Puts the rotation into a `.cargo/esp-config.toml`, replacing an existing entry or adding one.
  *
- * Rewritten line-wise rather than regenerated: by the time the setting changes, the project may well have
- * `[env]` entries of its own, and rewriting the whole file would throw them away. A missing `[env]` section
- * is created, and an existing one is added to in place; anything else in the file is left exactly as it is.
+ * The rewriting itself lives in `espConfig.ts`, shared with the touch setting: same mechanism, different key.
  */
 export function setLcdRotationInConfig(content: string, rotation: LcdRotation): string {
-    const line = lcdRotationLine(rotation);
-    const lines = content.split('\n');
-    const existing = lines.findIndex((candidate) => /^\s*LCD_ROTATION\s*=/.test(candidate));
-    if (existing !== -1) {
-        lines[existing] = line;
-        return lines.join('\n');
-    }
-
-    const envSection = lines.findIndex((candidate) => /^\s*\[env\]\s*$/.test(candidate));
-    if (envSection !== -1) {
-        lines.splice(envSection + 1, 0, line);
-        return lines.join('\n');
-    }
-
-    const separator = content.endsWith('\n') || content === '' ? '' : '\n';
-    return `${content}${separator}\n[env]\n${line}\n`;
+    return setConfigValue(content, LCD_ROTATION_ENV, String(rotation));
 }
 
 /** True when the file already carries the rotation, so a rewrite can be skipped. */
 export function configHasRotation(content: string, rotation: LcdRotation): boolean {
-    return content.split('\n').some((candidate) => candidate.trim() === lcdRotationLine(rotation));
+    return configHasValue(content, LCD_ROTATION_ENV, String(rotation));
 }
 
 /**
  * The rotation a `.cargo/esp-config.toml` asks for, or "no rotation" when it does not say.
  *
  * The counterpart to `setLcdRotationInConfig`, and needed for the same reason: the designer draws its canvas
- * for the rotation the project is built with, so it has to read the setting rather than assume it. A file
- * with no entry, a value that is not one of the four, or a hand-edit that left a comment in place all mean
- * the same thing -- the panel is not rotated -- rather than an error, since 0 is what the panel does without
- * being told otherwise.
+ * for the rotation the project is built with, so it has to read the setting rather than assume it. A file with
+ * no entry, a value that is not one of the four, or a comment left in place all mean the same thing -- the
+ * panel is not rotated -- rather than an error, since 0 is what the panel does without being told otherwise.
  */
 export function lcdRotationFromConfig(content: string): LcdRotation {
-    for (const line of content.split('\n')) {
-        const match = /^\s*LCD_ROTATION\s*=\s*"?'?(\d)'?"?\s*(?:#.*)?$/.exec(line);
-        if (match !== null) {
-            const value = Number(match[1]);
-            return asLcdRotation(value);
-        }
-    }
-    return 0;
+    return asLcdRotation(Number(readConfigValue(content, LCD_ROTATION_ENV)));
 }

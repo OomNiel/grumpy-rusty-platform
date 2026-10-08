@@ -154,6 +154,13 @@ export interface GenerateOptions {
     choices?: Record<string, string>;
     /** How to turn the panel: 0 = none, 1 = 90, 2 = 180, 3 = 270 degrees clockwise. */
     rotation?: number;
+    /**
+     * Whether the project should drive its touch controller.
+     *
+     * Only a Designer project on a board that has one asks: a board without a controller has no touch code to
+     * switch, and the explicit templates are what their names say.
+     */
+    touch?: boolean;
 }
 
 // The naming helpers (crateNameFrom, binaryNameFrom, isAcceptableProjectName) now live in
@@ -173,6 +180,7 @@ export function generateProjectFiles(options: GenerateOptions): GeneratedFile[] 
             template,
             choices: options.choices,
             rotation: options.rotation,
+            touch: options.touch,
         });
     }
 

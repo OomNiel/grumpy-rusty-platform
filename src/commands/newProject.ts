@@ -85,6 +85,45 @@ async function pickRotation(board: BoardProfile, template: AppTemplate): Promise
     return picked?.rotation;
 }
 
+/**
+ * Whether the project should drive its touch controller.
+ *
+ * Asked where the rotation is asked -- at creation, beside it -- because both are project settings the firmware
+ * reads at compile time, and both are changeable later from the designer's toolbar. Only a Designer project on
+ * a board that *has* a controller is asked: the named templates are what their names say, and a board without a
+ * controller has nothing to switch.
+ */
+async function pickTouch(board: BoardProfile, template: AppTemplate): Promise<boolean | undefined> {
+    if (template !== 'designer' || board.kind !== 'esp' || board.touch === undefined) {
+        return true;
+    }
+    const picked = await vscode.window.showQuickPick(
+        [
+            {
+                label: 'Touchscreen',
+                description: 'recommended',
+                detail:
+                    'The panel reacts to fingers: buttons, sliders and toggles in the design work, and the ' +
+                    'firmware carries the touch driver and asks for the four corners once.',
+                enabled: true,
+            },
+            {
+                label: 'Display only',
+                description: 'no touch driver, no calibration screen',
+                detail:
+                    'The design is drawn and nothing responds. Dropping a control later turns this back on, ' +
+                    'and the setting can be changed any time from the designer.',
+                enabled: false,
+            },
+        ],
+        {
+            title: `${board.name} — does this project use the touchscreen?`,
+            placeHolder: 'Touch',
+        },
+    );
+    return picked?.enabled;
+}
+
 async function pickParentFolder(): Promise<vscode.Uri | undefined> {
     const folders = vscode.workspace.workspaceFolders ?? [];
     if (folders.length === 0) {
@@ -160,6 +199,11 @@ export function registerNewProjectCommand(
             return;
         }
 
+        const touch = await pickTouch(board, template);
+        if (touch === undefined) {
+            return;
+        }
+
         const projectName = await vscode.window.showInputBox({
             title: `${board.name} — project name`,
             prompt: 'Folder name and crate name for the new project',
@@ -183,7 +227,7 @@ export function registerNewProjectCommand(
             return;
         }
 
-        const files = generateProjectFiles({ board, projectName, template, rotation });
+        const files = generateProjectFiles({ board, projectName, template, rotation, touch });
         for (const file of files) {
             const segments = file.path.split('/');
             const directory = vscode.Uri.joinPath(target, ...segments.slice(0, -1));

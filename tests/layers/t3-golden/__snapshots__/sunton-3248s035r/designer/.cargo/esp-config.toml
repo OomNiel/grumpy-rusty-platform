@@ -8,3 +8,7 @@ ESP_LOG = "info"
 # clockwise. The rustyPlatform.lcdRotation setting writes this line; editing it here works just as well
 # (the compiler reads this file), and neither ever touches src/main.rs.
 LCD_ROTATION = "0"
+
+# Whether the firmware drives the touch controller, read at compile time by src/main.rs. Only "0" turns it
+# off. The designer's toolbar writes this line; flip it and rebuild for the change to take effect.
+TOUCH_ENABLED = "1"
