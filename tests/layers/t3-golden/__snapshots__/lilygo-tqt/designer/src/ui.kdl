@@ -1,5 +1,5 @@
 screen id="RustyPanel" width=128 height=128 theme="dark" {
-    grid cols="16px 96px 16px" rows="8px 26px 18px 24px 52px" gap=0 padding=0 {
+    grid cols="16px 96px 16px 1fr" rows="8px 26px 18px 24px 52px 1fr" gap=0 padding=0 {
         label id="title" text="Rusty Platform" col=1 row=1 col_span=1 row_span=1
         button id="go" text="Press me" bg="#3a6ea5" fg="#f0f0f0" text_color="#ffffff" pressed_bg="#2a5a8a" pressed_fg="#ffffff" disabled_bg="#303030" disabled_fg="#808080" focused_bg="#4a7eb5" focused_fg="#ffffff" border_color="#101010" corner_radius=4 col=1 row=3 col_span=1 row_span=1
     }

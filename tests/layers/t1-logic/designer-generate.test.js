@@ -71,7 +71,9 @@ test('the starter markup is the design, laid out in pixel tracks', () => {
     contains(kdl, 'gap=0 padding=0', 'the zero-gap grid the mapping depends on');
     contains(kdl, 'label id="title"', 'the title');
     contains(kdl, 'button id="go"', 'the button');
-    notContains(kdl, 'fr"', 'no fractional tracks, anywhere');
+    // A design project's markup must carry the zero-width filler, or the board dies before it paints: a grid
+    // with no fractional track divides by zero in the crate's track resolution (found on hardware).
+    contains(kdl, ` ${'1fr'}"`, 'the zero-width filler track each axis carries');
 });
 
 // ---------------------------------------------------------------- the generated Rust

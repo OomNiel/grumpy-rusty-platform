@@ -14,7 +14,7 @@
 const { test, ok, notOk, equal, contains, notContains, throws, compiled } = require('../../lib/harness');
 const { KDL_WIDGETS, EVENT_SPECS, DESIGNER_EVENTS, widgetSpec, widgetRaises, toolboxGroups, CATEGORY_LABELS, widgetAddressable } =
     compiled('designer/catalog');
-const { layoutToGrid, resolveGrid, trackSpec, describeGrid } = compiled('designer/grid');
+const { layoutToGrid, resolveGrid, trackSpec, describeGrid, GRID_FILLER } = compiled('designer/grid');
 const {
     DESIGNER_FILE_VERSION,
     DESIGNER_DOCUMENT_PATH,
@@ -362,13 +362,22 @@ test('the tracks always cover the canvas exactly, so nothing is left outside the
     }
 });
 
-test('the track list is pixel-only, because a fractional track would move the pixels', () => {
+test('every track that carries geometry is a pixel track', () => {
+    // The one exception is the zero-width filler, which exists because a grid with no fractional track at all
+    // dies on the board -- see GRID_FILLER. It must be the *last* token, and there must be exactly one.
     const layout = layoutToGrid([{ x: 17, y: 33, width: 43, height: 29 }], 320, 480);
-    const spec = trackSpec(layout.cols);
-    ok(spec.endsWith('px'), `expected pixel tracks, got ${spec}`);
-    notContains(spec, 'fr', 'no fractional track may be emitted');
-    notContains(spec, 'auto', 'no automatic track may be emitted');
-    equal(spec.split(' ').length, layout.cols.length, 'one token per track');
+    const tokens = trackSpec(layout.cols).split(' ');
+    equal(tokens.length, layout.cols.length + 1, 'one token per track, plus the filler');
+    for (const token of tokens.slice(0, -1)) {
+        ok(token.endsWith('px'), `a geometry track must be in pixels, got ${token}`);
+    }
+    equal(tokens[tokens.length - 1], GRID_FILLER, 'and the filler comes last');
+    notContains(trackSpec(layout.cols), 'auto', 'no automatic track is ever emitted');
+
+    // Asking for the geometry alone still gives pixels only, which is what the round trip is asserted against.
+    const bare = trackSpec(layout.cols, false);
+    equal(bare.split(' ').length, layout.cols.length, 'one token per track when the filler is left off');
+    equal(bare, '17px 43px 260px', 'and they are the edges the design produced');
 });
 
 test('a single widget yields exactly the edges it has, and nothing more', () => {
@@ -549,7 +558,11 @@ test('the emitted markup is a screen around a zero-gap grid', () => {
     const doc = document(0, [widget('title', 'label', { x: 8, y: 8, width: 200, height: 24 })]);
     const kdl = emitKdl(doc);
     contains(kdl, 'screen id="Panel" width=320 height=480 theme="dark" {', 'the screen line');
-    contains(kdl, 'grid cols="8px 200px 112px" rows="8px 24px 448px" gap=0 padding=0 {', 'the grid line');
+    contains(
+        kdl,
+        `grid cols="8px 200px 112px ${GRID_FILLER}" rows="8px 24px 448px ${GRID_FILLER}" gap=0 padding=0 {`,
+        'the grid line, with the zero-width filler each axis carries',
+    );
     contains(kdl, 'label id="title" text="Label" col=1 row=1 col_span=1 row_span=1', 'the widget line');
     contains(kdl, '\n}\n', 'the closing brace');
 });
