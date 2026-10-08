@@ -741,6 +741,74 @@ test('the markup declares the fonts before the grid that refers to them', () => 
     notContains(emitKdl(doc), 'chars=', 'no empty chars attribute');
 });
 
+// ---------------------------------------------------------------- built-in fonts
+
+test('a built-in font travels as a style expression, since the markup has no attribute for it', () => {
+    // `font="name"` names a font the screen *declares*. The crate's own fonts are not declarable, so
+    // `font="Scaled6x10"` would be dropped in silence; a style expression is the route that reaches them, and
+    // the crate's own style resolver passes one through.
+    const doc = document(0, [
+        widget('note', 'label', { x: 0, y: 0, width: 120, height: 24 }, {
+            props: { ...defaultProps('label'), text: 'AB', font: 'Scaled6x10' },
+        }),
+    ]);
+    const kdl = emitKdl(doc);
+    contains(
+        kdl,
+        'style="{ let mut style = Style::label(); style.font = FontId::Scaled6x10; style }"',
+        'the font it asked for, in the expression the crate reads',
+    );
+    notContains(kdl, 'font="Scaled6x10"', 'and not the attribute, which would name nothing');
+    equal(validateDocument(doc).length, 0, 'a built-in font is valid without a declaration');
+});
+
+test('a button gets a WidgetStyle, because the emitter chains its colours onto the expression', () => {
+    // The crate's button arm appends `.with_bg(...)`, `.with_corner_radius(...)` and so on to whatever the
+    // style expression evaluates to. A plain `Style` therefore fails to compile for a button, and the designer
+    // always writes those colour properties, so this is not a corner case -- it is every button.
+    const doc = document(0, [
+        widget('go', 'button', { x: 0, y: 0, width: 100, height: 32 }, {
+            props: { ...defaultProps('button'), text: 'Go', font: 'Vector(2)' },
+        }),
+    ]);
+    const kdl = emitKdl(doc);
+    contains(kdl, 'style.font = FontId::Vector(2)', 'the font is set');
+    contains(kdl, 'WidgetStyle::button().with_normal(style)', 'and handed over as a WidgetStyle');
+    equal(validateDocument(doc).length, 0, 'which is a valid button');
+});
+
+test('a font is only offered where the crate reads one', () => {
+    // A declared font is read for labels and carousels; a built-in one needs a style handle, which a table and
+    // a panel do not have (the table's emitter arm hard-codes `Style::panel()`). A field that does nothing is
+    // worse than no field, so these tags must not offer one.
+    for (const tag of ['label', 'carousel', 'button']) {
+        ok(
+            widgetSpec(tag).props.some((property) => property.name === 'font'),
+            `${tag} can be given a font and must offer one`,
+        );
+    }
+    for (const tag of ['table', 'panel', 'rect']) {
+        notOk(
+            widgetSpec(tag).props.some((property) => property.name === 'font'),
+            `${tag} has no route to a font and must not offer one`,
+        );
+        ok(widgetSpec(tag).fontSupport === undefined, `${tag} claims no font support`);
+    }
+    // The attribute route is the narrower one, so a declared font on a button is refused rather than emitted
+    // into a dropped attribute.
+    const button = document(0, [
+        widget('go', 'button', { x: 0, y: 0, width: 100, height: 32 }, {
+            props: { ...defaultProps('button'), font: 'title' },
+        }),
+    ]);
+    button.fonts = [{ id: 'title', src: 'assets/title.bdf', chars: 'AB' }];
+    contains(
+        validateDocument(button).join('\n'),
+        'reads a declared font for labels and carousels only',
+        'a declared font on a button is reported',
+    );
+});
+
 // ---------------------------------------------------------------- hover help
 
 test('every property and every widget has a hover description', () => {

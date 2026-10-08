@@ -26,6 +26,7 @@ import { type DesignerDocument, type DesignerIconPart, type DesignerWidget, vali
 import { designCanvasSize } from './model';
 import { layoutToGrid, trackSpec, type GridLayout } from './grid';
 import { widgetSpec } from './catalog';
+import { builtInFontExpression, isBuiltInFont } from './fonts';
 
 /** Escapes a value for a KDL quoted string. */
 function quote(value: string): string {
@@ -76,6 +77,12 @@ function widgetLine(
     for (const property of spec?.props ?? []) {
         const value = widget.props[property.name];
         if (isEmpty(value)) {
+            continue;
+        }
+        if (property.kind === 'font' && isBuiltInFont(value as string)) {
+            // A built-in font has no attribute to travel in: the crate's own fonts are selected by a style
+            // expression, which the resolver passes through to the generated Rust. See `src/designer/fonts.ts`.
+            parts.push(`style=${literal(builtInFontExpression(value as string, widget.tag))}`);
             continue;
         }
         parts.push(`${property.name}=${literal(value as string | number | boolean)}`);

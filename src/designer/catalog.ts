@@ -20,13 +20,15 @@
  * No `vscode` import and no `fs` import, so the t1 layer can test the catalogue as plain data.
  */
 
-/** The kinds a property can take, which is what decides the editor the property panel shows. */
+import type { FontSupport } from './fonts';
+
 /**
  * The kinds a property can take, which is what decides the editor the property panel shows.
  *
  * `font` is its own kind rather than a `text` or an `asset` field because a widget does not name a font
- * *file*: it names a font the screen declared, and the markup's parser drops the reference silently when no
- * such font exists. The panel therefore offers the declared names and nothing else.
+ * *file*: it names either a font the screen declared or one the crate ships. The panel therefore offers the
+ * declared names and the built-ins together, and the emitter picks the route each one needs -- see
+ * `src/designer/fonts.ts` for why they are not the same attribute.
  */
 export type KdlPropertyKind = 'text' | 'int' | 'float' | 'bool' | 'color' | 'enum' | 'asset' | 'font';
 
@@ -187,6 +189,13 @@ export interface KdlWidgetSpec {
     draws?: 'widget' | 'panel' | 'nothing';
     /** A caveat the properties panel shows, for tags whose behaviour is not obvious from their properties. */
     note?: string;
+    /**
+     * How this widget can be given a font, when it can: the crate reads a declared `font="name"` for labels
+     * and carousels, and a `style` expression for labels, buttons, tables and carousels. Omitted when the
+     * widget is drawn wholly from the theme and neither route reaches it, which the properties panel then
+     * simply does not offer.
+     */
+    fontSupport?: FontSupport;
     props: readonly KdlProperty[];
     events: readonly DesignerEvent[];
 }
@@ -233,6 +242,7 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
             { name: 'text', kind: 'text', label: 'Text', defaultValue: 'Label' },
             { name: 'font', kind: 'font', label: 'Font', defaultValue: '' },
         ],
+        fontSupport: 'both',
         events: [],
     },
     {
@@ -245,7 +255,12 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
             'The background colours reach the widget but are painted over: the crate\'s default button ' +
             'style carries a vertical gradient that no markup attribute can clear, so the visible fill ' +
             'comes from the theme. Measured in the simulator, not assumed.',
-        props: [{ name: 'text', kind: 'text', label: 'Text', defaultValue: 'Button' }, ...CLICKABLE_COLOURS],
+        props: [
+            { name: 'text', kind: 'text', label: 'Text', defaultValue: 'Button' },
+            { name: 'font', kind: 'font', label: 'Font', defaultValue: '' },
+            ...CLICKABLE_COLOURS,
+        ],
+        fontSupport: 'style',
         events: ['clicked', 'pressed', 'released', 'doubleClicked', 'longPressed'],
     },
     {
@@ -480,6 +495,10 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         category: 'container',
         defaultSize: { width: 240, height: 120 },
         children: 'table',
+        // No Font property: the table's emitter arm hard-codes `Style::panel()` and drops any `style` the
+        // markup carries, so there is no route to a font for it at all. Offering one would be a field that
+        // does nothing, which is the trap this catalogue exists to avoid.
+        note: 'A table is drawn with the panel style and its own cells; the markup has no handle for its appearance.',
         props: [],
         events: ['scroll'],
     },
@@ -502,6 +521,7 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
             { name: 'pulse', kind: 'int', label: 'Pulse', defaultValue: 255, min: 0, max: 255 },
             { name: 'font', kind: 'font', label: 'Font', defaultValue: '' },
         ],
+        fontSupport: 'both',
         events: ['valueChanged', 'scroll'],
     },
     {
@@ -723,7 +743,9 @@ const PROPERTY_HELP: Record<string, string> = {
     fit: 'How the image is fitted into its box',
     focused_bg: 'Background while it has focus',
     focused_fg: 'Foreground while it has focus',
-    font: 'A font this screen declares, by name: add one under Fonts on the Screen panel',
+    font:
+        'A font for the text: one the crate ships, or one this screen declares under Fonts. The two travel ' +
+        'by different markup, and only some widgets read either',
     fov: 'Field of view, in degrees',
     hour: 'Hour of the day',
     indicator: 'Whether the position indicator is shown',

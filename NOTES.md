@@ -4298,3 +4298,118 @@ with touch off the chip is never addressed.
 And the oldest hazard in this project bit again: a TypeScript string I built with literal newlines inside it,
 where `tsc` reported the syntax error and **emitted JavaScript anyway** -- leaving a generator that could not even
 load. Fourth time. Read the exit status, not the output.
+
+## 97. The font picker: two routes to a font, and only a build can tell them apart (2026-10-08)
+
+The request was a Font picker: a list of every font the crate ships, next to the file browser that was already
+there. Seemed small. It turned out to be the first feature in this project where the *markup has no attribute for
+the thing the user is choosing* -- and where the generator is silent when you get it wrong.
+
+### The crate's own fonts are not nameable
+
+`FontId` has eight variants (`Tiny3x5`, `Medium4x7`, `Scaled6x10`, `Vector(u8)`, `Custom`, `Bitmap`, `Dynamic`,
+`MonoFont`), and three of them ship inside the crate. None of them can be asked for with `font="..."`: that
+attribute names a font the **screen declares**, which means a BDF file in the project. Write `font="Scaled6x10"`
+and `font_const_name` finds no such declaration, so the reference is dropped *without a word* -- the same silence
+that made the old text box a trap in §92.
+
+What does reach them is `style`. The codegen's `style_expr` accepts any Rust expression and passes it through, and
+the crate's own named styles read like a font menu: `body`, `menu` and `body-accent` select `Scaled6x10`, `hint`
+and `hint-accent` select `Medium4x7`. So a built-in font is asked for by writing the expression the crate would
+have written itself:
+
+    style="{ let mut style = Style::label(); style.font = FontId::Scaled6x10; style }"
+
+Two routes to one dropdown, and the emitter has to pick the right one per value: a built-in goes out as `style`,
+a declared BDF as `font="name"`. Validation still refuses a name that resolves to no declaration, and now also
+refuses a *declared* name on a widget that cannot read one.
+
+### "All relevant controls" is a much smaller set than it sounds
+
+The follow-up asked for the colour and font pickers on every control, not just the Button. Measuring the crate
+said most of that is not available, and the honest thing is to offer exactly what is:
+
+- **Colours** reach the **Button** only. Every other tag's appearance comes from the theme; the catalogue has no
+  colour properties to show for them, because the parser reads none.
+- **A `font`** is read for **Label** and **Carousel** only.
+- **A `style`** is honoured by **Label, Button, Panel, Carousel** -- and *ignored* by **Table**, whose emitter arm
+  hard-codes `Style::panel()` and never looks at the attribute. The Table therefore gets no Font field: a control
+  that does nothing is worse than a missing one.
+
+So the Font field exists on Label, Carousel and Button, and the list is built from what each tag can actually
+take rather than offered wholesale: Label and Carousel get both groups, Button only the built-ins.
+
+### A button's style expression must be a `WidgetStyle`
+
+This is the part a build found and nothing else would have. The button's emitter arm takes the style expression
+and *chains builder calls onto it* -- `.with_bg(...)`, `.with_corner_radius(...)`, all of them -- because a button
+carries per-state colours. A plain `Style` has none of those methods, and since the designer always writes those
+colour properties, the failing case is not an edge case: it is every button. `WidgetStyle::button().with_normal(s)`
+is what satisfies both sides, and it is the only reason the button's font renders at all.
+
+The first host run failed for a different and more embarrassing reason. The fixture asked for `Tiny3x5`, which is
+what `Style::new()` and `Style::label()` already start from -- so "no pixels changed" meant the measurement was
+empty, not that the feature was broken. The default font in this crate is the *smallest* one, which is what the
+dropdown now says out loud.
+
+### What proves it
+
+The host harness gained a second fonted widget (a Label with `Scaled6x10`) and a third (a Button with
+`Vector(2)`), and `font_diff` now measures *every* region the design gave a font to rather than one:
+
+    PASS: the fonts changed 222 pixels inside their widgets
+          (one count per widget: 34 of 2700, 78 of 2700, 110 of 2700)
+          and none of the 145500 outside them
+
+Three routes, three counts, nothing leaking. 34 px is the declared BDF; 78 and 110 are the built-ins, on a label
+and on a button -- the second of which is only there because the expression is a `WidgetStyle`.
+
+## 98. "The project is created but the folder is not loaded": the Designer skipped a step (2026-10-08)
+
+A report, in the user's own words: *"When creating a project using the Designer, the project is created but the
+folder is not loaded into the IDE."* Exactly right, and the cause was one line: for the designer template the
+notification's first button said **Open Designer** and opened the canvas, where every other template's first
+button said **Open Project** and ran `vscode.openFolder`. The designer flow had been built on the reasonable
+sounding idea that the canvas does not need the folder to be a workspace folder -- `showDesigner` takes an
+explicit target -- and that is true of the canvas and false of everything else. No Explorer entry, no Source
+Control, no terminal opened in the new project, no language service. The extension wrote a project and then
+behaved as though it had not.
+
+The fix is not "call `openFolder` too", because `openFolder` *replaces* the window: the notification, the log and
+the panel that was about to open all go with it, and the wizard would reload the window even when the project was
+created inside the folder that is already open. Instead the folder is added to the current window
+(`updateWorkspaceFolders`), which is non-destructive, and the created project is loaded whatever the user
+answers -- **Later** and **Build Now** never loaded it either, which the same report makes visible once you look.
+
+### The part the API documentation had to be read for
+
+`updateWorkspaceFolders` is not a quiet operation. The `vscode.d.ts` note says it may cause "the currently
+executing extensions (including the one that called this method) to be terminated and restarted ... when the
+first workspace folder is added, removed or changed ... Another case is when transitioning from an empty or
+single-folder workspace into a multi-folder workspace". Between them those two cases are most of how this wizard
+is used, so the naive version of this fix -- record nothing, then `await showDesigner(...)` after the change --
+would lose the panel precisely when the user asked for it, and would look like a race that only some machines
+have.
+
+So the request to open the Designer goes into `globalState` **before** the folder is loaded, and `activate` picks
+it up on the other side:
+
+    requestDesignerAfterReload(...)   // survives the restart
+    await loadIntoIde(target)         // may end this session here
+    await showDesigner(...)           // reached only if it did not
+    await forgetPendingDesigner(...)  // ... and then the request is cancelled
+
+The order of those last two is the whole trick: opening the panel before cancelling the request means that a
+restart which happens *after* the panel opened still finds the request and reopens it, and the panel is a
+singleton, so reopening is harmless. Global state rather than workspace state for the obvious reason -- the
+workspace it belongs to is the thing being created, so there is no identity to key it on yet. And the request
+carries a timestamp, because one that was never consumed (the user closed the window instead of waiting) must not
+open a panel twenty minutes later when the same folder is opened for some other reason.
+
+### What is testable about it
+
+The interesting half is a path question -- is the new project already inside a folder this window has open? --
+so that part is its own module (`src/project/workspaceFolders.ts`) with its own tests, including the case a string
+prefix gets wrong: `/home/abc` is not inside `/home/ab`, and `startsWith` says it is. The two `vscode` calls that
+do the loading are asserted by source, as the other command tests are, along with the ordering above -- which is
+the part that would silently rot.

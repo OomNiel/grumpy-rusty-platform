@@ -147,11 +147,22 @@ designer for the active project. Either way it works on a board that carries a p
 - **Properties** — position and size, every property the tag has, the events it can raise, its option list,
   table body or icon parts, and the layer order. Every field carries a **hover description**, and the Toolbox
   entries describe what each widget is.
-- **Fonts** — declare a BDF font once on the Screen panel (name, file, and which characters to embed), and any
-  widget that draws text picks it by name. The file is embedded into the firmware at build time, so the
-  character set is worth narrowing: a title that only uses digits need not carry the alphabet. Assets are
-  resolved from the project root, which is what the generated `project.kdl` anchors. Every asset field has a
-  **browse button**, and a file from outside the project is copied into `assets/` rather than referenced.
+- **Fonts** — a Font field lists everything a widget can be given: **five built-in fonts** from the crate
+  (Tiny 3x5, the default, through Scaled 6x10 and two scales of the vector face) *and* any BDF font declared on
+  the Screen panel (name, file, and which characters to embed). The `…` beside the field declares a new font
+  from a file and selects it in one step, so a new face is one action rather than a trip to another list. The
+  file is embedded into the firmware at build time, so the character set is worth narrowing: a title that only
+  uses digits need not carry the alphabet. Assets are resolved from the project root, which is what the
+  generated `project.kdl` anchors, and a file from outside the project is copied into `assets/`.
+
+  Which widgets offer a font is the crate's shape rather than a preference, and the catalogue follows it: the
+  built-ins travel as a `style` expression (the markup has no attribute for them) and so reach the widgets that
+  honour a style — Label, Button and Carousel — while a *declared* BDF is read for Label and Carousel only. A
+  Table is given no Font field at all, because the crate's table arm hard-codes its style and would drop one in
+  silence.
+- **A created project is loaded** — the folder the wizard writes becomes part of the window whatever the
+  notification's answer is, so the Explorer, Source Control and the terminal are already pointing at it. Loading
+  a folder can restart the extension host, so a Designer asked for at that moment reopens on the other side.
 - **Touch is optional** — asked when the project is made and changeable from the toolbar. With it off there is no
   touch driver, no calibration read and no calibration screen; dropping a control that raises events turns it on
   by itself.

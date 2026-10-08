@@ -26,6 +26,7 @@ const {
     toggleEvent,
     reorderWidget,
     addFont,
+    declareFontFromPath,
     duplicateWidget,
     removeFont,
     setChildren,
@@ -48,6 +49,7 @@ const {
     SNAP_TOLERANCE,
     GRID_STEP,
 } = compiled('designer/hit');
+const { validateDocument } = compiled('designer/model');
 
 /** A CYD document. Rotation 3 is the landscape canvas, 480x320. */
 function state(rotation = 0) {
@@ -327,6 +329,45 @@ test('a snapped drag is still kept inside the canvas', () => {
 });
 
 // ---------------------------------------------------------------- fonts
+
+test('declaring a font from a file names it after the file and selects it, in one step', () => {
+    // What the `...` beside a widget's Font does. Doing it as `add` then `rename` then `select` would leave two
+    // undo steps that are each half a change, so it is one.
+    const state1 = addWidget(state(), 'label', 10, 10);
+    const declared = declareFontFromPath(state1, 'label', 'assets/hero.bdf');
+    equal(declared.document.fonts.length, 1, 'the file becomes a declaration');
+    equal(declared.document.fonts[0].id, 'hero', 'named after the file, without the extension');
+    equal(declared.document.fonts[0].src, 'assets/hero.bdf', 'pointing at it');
+    equal(
+        declared.document.widgets.find((widget) => widget.id === 'label').props.font,
+        'hero',
+        'and the widget that asked for it now names it',
+    );
+    equal(validateDocument(declared.document).length, 0, 'which is a valid design');
+
+    // A name the generated Rust constant cannot be built from is sanitised, and a second file with the same
+    // stem is a duplicate the user meant to make rather than a refusal.
+    const awkward = declareFontFromPath(state1, 'label', 'assets/my-font 2.bdf');
+    equal(awkward.document.fonts[0].id, 'my_font_2', 'punctuation becomes an underscore');
+    equal(
+        declareFontFromPath(awkward, 'label', 'assets/hero.bdf').document.fonts.map((font) => font.id).join(','),
+        'my_font_2,hero',
+        'a new stem appends',
+    );
+    const twice = declareFontFromPath(declared, 'label', 'assets/hero.bdf');
+    equal(twice.document.fonts.map((font) => font.id).join(','), 'hero,hero_2', 'the same stem does not collide');
+    equal(twice.document.fonts[1].src, 'assets/hero.bdf', 'and still points at the file that was chosen');
+
+    // One step: the declaration and the reference go away together.
+    const undone = undo(declared);
+    equal(undone.document.fonts.length, 0, 'undo removes the declaration');
+    equal(
+        undone.document.widgets.find((widget) => widget.id === 'label').props.font,
+        '',
+        'and the reference with it',
+    );
+    equal(undo(twice).document.fonts.length, 1, 'undoing the second declaration leaves the first alone');
+});
 
 test('a font can be added, renamed and removed, and its name follows the widgets', () => {
     // A label, because `font` is a property of the tags that draw text.

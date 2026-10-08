@@ -6,6 +6,7 @@ import { ControlsViewProvider } from './ui/controlsView';
 import { StatusBarView } from './ui/statusBar';
 import { registerNewProjectCommand } from './commands/newProject';
 import { registerDesignerCommands } from './commands/designerCommands';
+import { resumePendingDesigner } from './designer/pendingOpen';
 import { registerLcdRotationSync } from './display/rotationSync';
 import { registerProjectCommands } from './commands/projectCommands';
 import { registerDebugCommand } from './commands/debugProject';
@@ -81,6 +82,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             void state.refresh();
         }),
     );
+
+    // Last: making a new project part of the window can restart this host, and the Designer that was asked for
+    // in the session that asked for the folder has to come back on this side of that restart. Opening a panel
+    // before the rest of the wiring exists would be a different bug, so it waits until everything is set up.
+    void resumePendingDesigner(context, output);
 
     // Kick off detection in the background so activation stays fast.
     void state.refresh();
