@@ -79,10 +79,17 @@ function widgetLine(
     // the markup has no attribute for the crate's own fonts. So both are composed into one, and the individual
     // properties are skipped by the loop below. See `src/designer/appearance.ts`.
     const builtIn = typeof widget.props.font === 'string' && isBuiltInFont(widget.props.font) ? widget.props.font : '';
+    // The colour the widget's text is painted with, when the markup gives the tag no colour attribute and the
+    // value therefore has to ride in the style expression with everything else.
+    const viaStyle = (spec?.props ?? []).find((property) => property.viaStyle === true);
     const appearance = appearanceExpression({
         tag: widget.tag,
         style: typeof widget.props.style === 'string' ? widget.props.style : undefined,
         builtInFont: builtIn,
+        textColour:
+            viaStyle !== undefined && typeof widget.props[viaStyle.name] === 'string'
+                ? (widget.props[viaStyle.name] as string)
+                : undefined,
     });
 
     for (const property of spec?.props ?? []) {
@@ -93,7 +100,7 @@ function widgetLine(
         if (property.kind === 'font' && isBuiltInFont(value as string)) {
             continue;
         }
-        if (property.kind === 'style') {
+        if (property.kind === 'style' || property.viaStyle === true) {
             continue;
         }
         parts.push(`${property.name}=${literal(value as string | number | boolean)}`);

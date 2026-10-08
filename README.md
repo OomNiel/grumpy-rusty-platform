@@ -168,6 +168,10 @@ designer for the active project. Either way it works on a board that carries a p
 - **A created project is loaded** — the folder the wizard writes becomes part of the window whatever the
   notification's answer is, so the Explorer, Source Control and the terminal are already pointing at it. Loading
   a folder can restart the extension host, so a Designer asked for at that moment reopens on the other side.
+- **A Label's text** — its **font** (built-in or a declared BDF) and its **text colour** both come from the
+  same place, because the markup has no attribute for either: they are written into the widget's `style`
+  expression, together with the base look. A Button sets its own text colour with a real attribute; most other
+  controls have neither, because the crate's emitter hard-codes their style (see the table in `NOTES.md` §101).
 - **Styles** — a Label, Button, Panel or Carousel can be given one of the crate's four base looks (`plain`,
   `panel`, `progress`, `button`), which is what carries a background, border, shadow and corner radius. A style
   and a font compose into one `style` attribute; a control the crate's emitter ignores the attribute for is

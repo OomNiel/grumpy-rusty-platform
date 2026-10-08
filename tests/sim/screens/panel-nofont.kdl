@@ -14,5 +14,6 @@ screen id="SimPanel" width=480 height=320 theme="dark" {
         label id="builtin" text="AB" col=5 row=11 col_span=3 row_span=1
         button id="builtinButton" text="AB" bg="#3a6ea5" fg="#f0f0f0" text_color="#ffffff" pressed_bg="#2a5a8a" pressed_fg="#ffffff" disabled_bg="#303030" disabled_fg="#808080" focused_bg="#4a7eb5" focused_fg="#ffffff" border_color="#101010" corner_radius=4 col=9 row=11 col_span=2 row_span=1
         label id="styled" text="AB" col=5 row=13 col_span=3 row_span=1
+        label id="tinted" text="AB" col=9 row=13 col_span=2 row_span=1
     }
 }

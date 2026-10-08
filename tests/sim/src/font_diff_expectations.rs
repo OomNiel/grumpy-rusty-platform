@@ -7,9 +7,10 @@ pub const CANVAS_H: u32 = 320;
 /// Three routes, and they travel by different markup. A *declared* font is a BDF file the screen
 /// declares and a widget names with `font=`, which the crate reads for labels and carousels. A
 /// *built-in* one ships inside the crate and has no attribute at all, so it is asked for with a
-/// `style` expression. And a *base style* is what gives an ordinary widget a look its own
-/// properties cannot -- a build is the only thing that can prove any of the three is honoured.
-pub const APPEARANCE_RECTS: [(i32, i32, u32, u32); 4] = [
+/// `style` expression. A *base style* gives an ordinary widget a look its own properties cannot,
+/// and a *text colour* on a label takes the same route. A build is the only thing that can prove
+/// any of them is honoured -- none of the four has an attribute the parser would read.
+pub const APPEARANCE_RECTS: [(i32, i32, u32, u32); 5] = [
     // "fonted" (declared font "test")
     (200, 120, 90, 30),
     // "builtin" (built-in font "Scaled6x10")
@@ -18,4 +19,6 @@ pub const APPEARANCE_RECTS: [(i32, i32, u32, u32); 4] = [
     (300, 160, 90, 30),
     // "styled" (style "panel")
     (200, 200, 90, 30),
+    // "tinted" (text colour "#ff0000")
+    (300, 200, 90, 30),
 ];

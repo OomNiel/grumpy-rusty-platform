@@ -43,6 +43,16 @@ export type KdlPropertyKind =
     | 'style';
 
 export interface KdlProperty {
+    /**
+     * True when the value does not travel as its own attribute, but is folded into the widget's `style`
+     * expression.
+     *
+     * A widget whose markup has no colour attribute of its own -- a label's text colour, where the parser reads
+     * no colour property at all -- can still be given one, because the crate paints text from `style.text`. The
+     * value has to be written into the same expression that carries the base style and the font, since a widget
+     * can only have one `style`.
+     */
+    viaStyle?: boolean;
     /** The KDL attribute name, exactly as the parser reads it. */
     name: string;
     kind: KdlPropertyKind;
@@ -248,6 +258,20 @@ const STYLE_PROPERTY: KdlProperty = {
     options: NAMED_STYLES.map((style) => style.id),
 };
 
+/**
+ * The colour of a widget's text, for a widget the markup gives no colour attribute.
+ *
+ * Only offered where a style expression reaches the widget: the crate reads no colour property for a label, so
+ * this is the one route to it, and it is the same route the font and base style take.
+ */
+const TEXT_COLOUR_PROPERTY: KdlProperty = {
+    name: 'text_color',
+    kind: 'color',
+    label: 'Text colour',
+    defaultValue: '',
+    viaStyle: true,
+};
+
 /** The colour pairs a clickable widget carries, with the parser's own defaults where it has none. */
 const CLICKABLE_COLOURS: KdlProperty[] = [
     { name: 'bg', kind: 'color', label: 'Background', defaultValue: '#3a6ea5' },
@@ -290,6 +314,7 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
             { name: 'text', kind: 'text', label: 'Text', defaultValue: 'Label' },
             { name: 'font', kind: 'font', label: 'Font', defaultValue: '' },
             STYLE_PROPERTY,
+            TEXT_COLOUR_PROPERTY,
         ],
         fontSupport: 'both',
         events: [],
@@ -582,6 +607,7 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
             { name: 'pulse', kind: 'int', label: 'Pulse', defaultValue: 255, min: 0, max: 255 },
             { name: 'font', kind: 'font', label: 'Font', defaultValue: '' },
             STYLE_PROPERTY,
+            TEXT_COLOUR_PROPERTY,
         ],
         fontSupport: 'both',
         events: ['valueChanged', 'scroll'],
@@ -845,6 +871,7 @@ const PROPERTY_HELP: Record<string, string> = {
     stroke_width: 'Width of the outline, in pixels',
     text: 'The words it shows',
     text_color: 'Colour of the text drawn on it',
+    'label.text_color': 'Colour of the words: painted from the widget\'s style, since the markup has no colour attribute for a label',
     threshold: 'Brightness at which a pixel counts as ink, from 0 to 255',
     time: 'The time it shows, as text',
     tint: 'Colour to draw it in',

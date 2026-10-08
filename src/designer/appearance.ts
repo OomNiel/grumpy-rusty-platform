@@ -21,6 +21,23 @@
 
 import { isBuiltInFont } from './fonts';
 
+/**
+ * A `#rrggbb` colour as the `Rgb565` the crate's runtime wants.
+ *
+ * The same 5/6/5 reduction the crate's own resolver performs on a hex colour, and the same one the canvas
+ * preview uses, so the swatch on the canvas and the pixel on the glass come from one arithmetic.
+ */
+export function rgb565Expression(colour: string): string | undefined {
+    const match = /^#([0-9a-fA-F]{2})([0-9a-fA-F]{2})([0-9a-fA-F]{2})$/.exec(colour);
+    if (match === null) {
+        return undefined;
+    }
+    const r = parseInt(match[1] ?? '00', 16);
+    const g = parseInt(match[2] ?? '00', 16);
+    const b = parseInt(match[3] ?? '00', 16);
+    return `Rgb565::new(${r >> 3}, ${g >> 2}, ${b >> 3})`;
+}
+
 /** One of the base styles, as the picker offers it. */
 export interface NamedStyle {
     /** The value stored in the design, and the `Style` constructor it selects. */
@@ -58,6 +75,10 @@ export function isNamedStyle(value: string): boolean {
  * A **button** is the exception, and it is the same one the font picker has to work around: the button's emitter
  * chains its colour and corner builders onto whatever the expression returns, so a button's appearance has to be
  * a `WidgetStyle` and not a `Style`. The named base rides in the normal state.
+ *
+ * A **text colour** is the third thing that has to ride in the same expression, for a widget whose markup has no
+ * colour attribute of its own. The crate draws text as `TextStyle::new(style.text).with_font(style.font)`, so the
+ * two are set on one `Style` and there is exactly one place they can both be written.
  */
 export function appearanceExpression(options: {
     tag: string;
@@ -65,10 +86,13 @@ export function appearanceExpression(options: {
     style?: string;
     /** The chosen font, when it is one of the crate's own. */
     builtInFont?: string;
+    /** The colour of the widget's text, as `#rrggbb`, for a widget the markup gives no colour attribute. */
+    textColour?: string;
 }): string | undefined {
     const style = options.style ?? '';
     const font = options.builtInFont ?? '';
-    if (style === '' && font === '') {
+    const text = options.textColour ?? '';
+    if (style === '' && font === '' && text === '') {
         return undefined;
     }
     if (style !== '' && !isNamedStyle(style)) {
@@ -78,10 +102,22 @@ export function appearanceExpression(options: {
     if (font !== '' && !isBuiltInFont(font)) {
         return undefined;
     }
+    const textValue = text === '' ? undefined : rgb565Expression(text);
+    if (text !== '' && textValue === undefined) {
+        // Not a colour the canvas could have shown either, so it is a bug rather than a design.
+        return undefined;
+    }
 
     const own = options.tag === 'button' ? 'button' : 'label';
     const base = `Style::${style === '' ? own : style}()`;
-    const normal = font === '' ? base : `{ let mut style = ${base}; style.font = FontId::${font}; style }`;
+    const fills: string[] = [];
+    if (font !== '') {
+        fills.push(`style.font = FontId::${font};`);
+    }
+    if (textValue !== undefined) {
+        fills.push(`style.text = ${textValue};`);
+    }
+    const normal = fills.length === 0 ? base : `{ let mut style = ${base}; ${fills.join(' ')} style }`;
 
     if (options.tag === 'button') {
         return `WidgetStyle::button().with_normal(${normal})`;

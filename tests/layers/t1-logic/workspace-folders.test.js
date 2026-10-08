@@ -13,66 +13,50 @@ const fs = require('fs');
 const path = require('path');
 const { test, ok, notOk, equal, compiled, repoRoot } = require('../../lib/harness');
 
-const { isInside, isAlreadyLoaded } = compiled('project/workspaceFolders');
+const { samePath } = compiled('project/workspaceFolders');
 
-// ---------------------------------------------------------------- nesting
+test('the same folder spelled two ways is recognised as the same folder', () => {
+    // The two spellings that actually meet here: VS Code's `Uri.fsPath` and a path the wizard joined itself.
+    ok(samePath('/home/me/proj', '/home/me/proj'), 'the plain case');
+    ok(samePath('/home/me/proj/', '/home/me/proj'), 'a trailing separator is not a difference');
+    ok(samePath('/home/me/proj/./', '/home/me/proj'), 'nor is a `.` segment');
+    ok(samePath('/home/me/proj/blinky/../', '/home/me/proj'), 'and `..` is resolved before comparing');
+    // Both separators, because a Windows path and a designer asset path can meet in one process.
+    ok(samePath('C:\\Users\\me\\proj', 'C:/Users/me/proj'), 'and the two spellings of a Windows path agree');
+    ok(samePath('C:\\Users\\me\\proj\\', 'C:\\Users\\me\\proj'), 'including a trailing backslash');
 
-test('a folder inside another is recognised, by segment rather than by string prefix', () => {
-    ok(isInside('/home/me/projects', '/home/me/projects/blinky'), 'the plain case');
-    ok(isInside('/home/me/projects', '/home/me/projects'), 'a folder contains itself');
-    // The one a string prefix gets wrong: `/home/ab` is not a prefix of `/home/abc`, but `/home/abc` is not
-    // inside `/home/ab` either -- and `startsWith` would say it is.
-    notOk(isInside('/home/ab', '/home/abc'), 'a sibling whose name merely starts the same');
-    notOk(isInside('/home/me/projects', '/home/me'), 'a parent is not inside its child');
-    notOk(isInside('/home/me/projects', '/elsewhere/projects'), 'an unrelated branch');
-});
-
-test('the path pieces a real machine produces line up', () => {
-    // Both separators, because a designer asset path and a Windows path can meet in one process.
-    ok(isInside('C:\\Users\\me\\proj', 'C:\\Users\\me\\proj\\blinky'), 'a Windows path with its own separator');
-    ok(isInside('C:/Users/me/proj', 'C:\\Users\\me\\proj\\blinky'), 'and the two spellings of it agree');
-    ok(isInside('/home/me/proj/', '/home/me/proj/blinky/'), 'trailing separators do not matter');
-    ok(isInside('/home/me/proj', '/home/me/proj/./blinky'), 'a `.` segment is not a difference');
-    ok(isInside('/home/me/proj', '/home/me/proj/blinky/../blinky'), 'and a `..` is resolved before comparing');
-    // A drive letter is just a segment that has to match.
-    notOk(isInside('C:\\Users\\me', 'D:\\Users\\me\\proj'), 'a different drive is a different place');
-});
-
-// ---------------------------------------------------------------- the decision
-
-test('a project already inside an open folder does not get added again', () => {
-    // The wizard offers the open folders as places to put a project, so this is the common case -- and adding it
-    // would leave the Explorer showing the same directory twice, once nested inside the other.
-    ok(isAlreadyLoaded(['/home/me/proj'], '/home/me/proj/blinky'), 'made inside the open folder');
-    ok(isAlreadyLoaded(['/home/me/proj'], '/home/me/proj'), 'or as the open folder itself');
-    ok(
-        isAlreadyLoaded(['/home/elsewhere', '/home/me/proj'], '/home/me/proj/blinky'),
-        'any of the open folders counts, not just the first',
-    );
-    notOk(isAlreadyLoaded(['/home/me/proj'], '/home/me/other'), 'a project outside every open folder');
-    notOk(isAlreadyLoaded([], '/home/me/proj'), 'and with nothing open at all, it always has to be loaded');
+    // A string prefix would get all of these wrong, which is why the comparison is by segments.
+    notOk(samePath('/home/ab', '/home/abc'), 'a sibling whose name merely starts the same');
+    notOk(samePath('/home/me/proj', '/home/me/proj/blinky'), 'a child is not the same folder');
+    notOk(samePath('/home/me/proj', '/home/me'), 'nor is a parent');
+    notOk(samePath('C:\\Users\\me', 'D:\\Users\\me'), 'a different drive is a different place');
+    notOk(samePath('/home/me/proj', '/home/me/projx'), 'and a longer name is a different folder');
 });
 
 // ---------------------------------------------------------------- the command
 
-test('creating a project loads it into the IDE, whatever the user clicks next', () => {
-    // Source-level, like the other command tests: the loading has to happen as part of creating the project and
-    // not only when a notification button is pressed -- "Later" and "Build Now" used to leave the folder
+test('creating a project opens it as a folder, and not as a workspace', () => {
+    // Source-level, like the other command tests: loading the folder has to happen as part of creating the
+    // project and not only when a notification button is pressed -- "Later" and "Build Now" used to leave it
     // unloaded too, and the Designer's own button opened a canvas over a folder the window did not show.
     const source = fs.readFileSync(path.join(repoRoot(), 'src/commands/newProject.ts'), 'utf8');
-    ok(source.includes('loadIntoIde(target)'), 'the new project is loaded');
+    ok(source.includes('openProjectFolder(target)'), 'the new project becomes the window\'s folder');
     ok(
-        source.indexOf('loadIntoIde(target)') > source.indexOf('showInformationMessage'),
+        source.indexOf('openProjectFolder(target)') > source.indexOf('showInformationMessage'),
         'after the prompt, so the answer can be acted on in this session',
     );
-    ok(!/\n\s*if \(action === 'Open Designer'\)/.test(source), 'the folder is not loaded only for the Designer');
-    ok(source.includes('updateWorkspaceFolders'), 'by adding it to this window');
-    ok(
-        source.includes("executeCommand('vscode.openFolder'"),
-        'with a reload kept as the fallback for a host that will not take it',
+    ok(!/\n\s*if \(action === 'Open Designer'\)/.test(source), 'and not only for the Designer');
+
+    // `openFolder` and not `updateWorkspaceFolders`. The latter was the first version of this fix, and adding a
+    // folder to a window that has none produces an *untitled workspace* rather than a folder -- which VS Code
+    // then wants saved as a `.code-workspace` file, so a generated project arrived as a workspace and stayed one.
+    ok(source.includes("executeCommand('vscode.openFolder'"), 'it is opened as a plain folder');
+    notOk(
+        /vscode\.workspace\.updateWorkspaceFolders\s*\(/.test(source),
+        'and never added as a second root of a workspace',
     );
-    // The designer keeps its explicit target: the folder it draws is the one just written, whether or not it
-    // has become a workspace folder yet.
+    ok(source.includes('samePath'), 'with the already-open case recognised before reloading for nothing');
+    // The designer keeps its explicit target: the folder it draws is the one just written.
     ok(source.includes('showDesigner(context, output, target)'), 'the designer is still pointed at the folder');
 });
 
@@ -84,7 +68,7 @@ test('a Designer asked for before a reload is opened after it', () => {
     const source = fs.readFileSync(path.join(repoRoot(), 'src/commands/newProject.ts'), 'utf8');
     ok(source.includes('requestDesignerAfterReload(context, target.fsPath)'), 'the request is recorded');
     ok(
-        source.indexOf('requestDesignerAfterReload') < source.indexOf('loadIntoIde(target)'),
+        source.indexOf('requestDesignerAfterReload') < source.indexOf('openProjectFolder(target)'),
         'before the folder is loaded, since that is what may kill this session',
     );
     ok(

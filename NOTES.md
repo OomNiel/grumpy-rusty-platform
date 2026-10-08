@@ -4565,3 +4565,70 @@ The one thing this deliberately does *not* do is patch the crate: a `[patch.crat
 fixed `embedded-gui-codegen` inside every generated project would fix all ten at once, and it is a real option --
 but it means shipping and maintaining a few thousand lines of someone else's source in every project the
 extension creates, which is the user's decision to make rather than mine to take quietly.
+
+## 101. "How do I set a Label's font and colour?" — one yes, one only through the style (2026-10-08)
+
+The question, and the follow-up that matters more: *"Also check other controls for this problem."*
+
+### The measure
+
+Two greps answer it. The parser reads `style` **once**, at line 327 of `parser.rs`, and only four widget arms
+carry it into their `WidgetDef`: `label` (and `banner`), `button`, `panel` (and `card`), `carousel`. The emitter
+calls `style_expr` at exactly four places, with those same four defaults (`Style::default()`, `Style::button()`,
+`Style::panel()`, `Style::label()`). Every other tag's builder call is written with a hard-coded
+`Style::default()` or `Style::panel()` and no way to change it.
+
+And the parser reads colour properties for `button` alone -- fourteen of them, the whole per-state set. Every
+other tag either has no colour property at all or has its own single one (`fill`/`stroke` on a circle, `color` on
+a line), which the catalogue already offers with a colour input.
+
+| | font | text colour | base style | own colours |
+|---|---|---|---|---|
+| Label | **yes** (built-in via style, declared BDF via `font=`) | **yes** (via style) | yes | — |
+| Carousel | **yes** (as a label) | **yes** (via style) | yes | — |
+| Button | built-in fonts only | yes (real `text_color`) | yes | 14 properties |
+| Panel | no text | — | yes | — |
+| Toggle, Checkbox, Dropdown, Roller, Spinbox, Table, Dialog, Progress, … | no | no | no | — |
+| Rect, Circle, Line, Image, Icon | no text | no | no | `fill`/`stroke`/`color`/`tint` |
+
+So the answer to the question is: **the font, yes, from the Font field -- and the colour, not before this
+release.** The crate paints text as `TextStyle::new(style.text).with_font(style.font)`, so the colour exists in
+the runtime but has no attribute in the markup, and the designer offered no way to write the expression that
+reaches it. That is a gap of exactly the kind §99 was about: the crate has a handle, and the designer did not
+expose it.
+
+### What changed
+
+A **Text colour** property on Label and Carousel, taking the same route as the font and the base style, because
+there is only one `style` attribute to write:
+
+    label, text colour #ff0000
+      -> style="{ let mut style = Style::label(); style.text = Rgb565::new(31, 0, 0); style }"
+
+    label, style panel + font Scaled6x10 + text colour #00ff00
+      -> style="{ let mut style = Style::panel(); style.font = FontId::Scaled6x10; style.text = Rgb565::new(0, 63, 0); style }"
+
+The hex-to-5/6/5 reduction is the crate's own (`color_to_rust_expr`), and a unit test pins the arithmetic -- a
+canvas swatch and a pixel that disagree would be the same class of lie as §92's silent font. A property that
+travels this way is marked `viaStyle` in the catalogue, which is what tells the emitter to fold it into the
+expression rather than write an attribute the parser would ignore -- and what stops a button's real
+`text_color` attribute from being swallowed by the same code path.
+
+### The rest of the answer
+
+For every other control, **there is nothing to expose**: the crate hard-codes the style in the emitter, so no
+markup can reach the font or the text colour of a toggle, a checkbox, a dropdown, a roller, a table cell or a
+dialog's body. That is the same shape as §99's ten unbuildable tags, one step milder -- silent rather than fatal
+-- and the honest thing is to say so rather than offer a field that does nothing. The table above is the
+catalogue's own view, and the README says the same thing in a paragraph.
+
+Measured on the host, all five routes in one run:
+
+    PASS: the appearances changed 2930 pixels inside their widgets
+          (one count per widget: 34 of 2700, 78 of 2700, 110 of 2700, 2688 of 2700, 20 of 2700)
+          and none of the 140100 outside them
+
+20 is the tinted label, and the small number is the interesting one: a label has no background, so a colour
+change moves only the ink -- two glyphs at 3x5 are about that many pixels -- while the 2688 next to it is a
+label wearing `Style::panel()`, which fills its whole box. Two controls, the same expression machinery, and the
+counts say which one paints what.
