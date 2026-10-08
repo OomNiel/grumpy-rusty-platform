@@ -34,22 +34,23 @@
     "main": "./out/extension.js",
     "scripts": {
         "vscode:prepublish": "npm run compile",
-        "compile": "tsc -p ./",
+        "compile": "tsc -p ./ && tsc -p tsconfig.webview.json && node scripts/build-webview.mjs",
         "watch": "tsc -watch -p ./",
-        "lint": "tsc -p ./ --noEmit",
+        "lint": "tsc -p ./ --noEmit && tsc -p tsconfig.webview.json",
         "test": "node tests/runner.js",
         "dap-session": "node tests/tools/dap-session.js"
     },
     "devDependencies": {
         "@types/node": "^22.10.0",
         "@types/vscode": "^1.90.0",
+        "esbuild": "^0.28.2",
         "typescript": "^5.6.3"
     },
     "contributes": {
         "commands": [
             {
                 "command": "rustyPlatform.newProject",
-                "title": "New Project…",
+                "title": "New Project\u2026",
                 "category": "Rusty Platform",
                 "icon": "$(new-folder)"
             },
@@ -91,7 +92,7 @@
             },
             {
                 "command": "rustyPlatform.flashUsb",
-                "title": "Flash over USB (BOOTSEL)…",
+                "title": "Flash over USB (BOOTSEL)\u2026",
                 "category": "Rusty Platform",
                 "icon": "$(plug)"
             },
@@ -109,7 +110,7 @@
             },
             {
                 "command": "rustyPlatform.setWifiCredentials",
-                "title": "Set Wi-Fi Credentials…",
+                "title": "Set Wi-Fi Credentials\u2026",
                 "category": "Rusty Platform"
             },
             {
@@ -137,37 +138,43 @@
             },
             {
                 "command": "rustyPlatform.installToolchain",
-                "title": "Install Missing Toolchain…",
+                "title": "Install Missing Toolchain\u2026",
                 "category": "Rusty Platform",
                 "icon": "$(cloud-download)"
             },
             {
                 "command": "rustyPlatform.installEspToolchain",
-                "title": "Install ESP Toolchain (espup + espflash)…",
+                "title": "Install ESP Toolchain (espup + espflash)\u2026",
                 "category": "Rusty Platform",
                 "icon": "$(cloud-download)"
             },
             {
                 "command": "rustyPlatform.installUdevRules",
-                "title": "Install USB Permissions (udev)…",
+                "title": "Install USB Permissions (udev)\u2026",
                 "category": "Rusty Platform",
                 "icon": "$(shield)"
             },
             {
                 "command": "rustyPlatform.fixShellPath",
-                "title": "Add Cargo to PATH…",
+                "title": "Add Cargo to PATH\u2026",
                 "category": "Rusty Platform",
                 "icon": "$(terminal)"
             },
             {
                 "command": "rustyPlatform.updateProbeFirmware",
-                "title": "Update Debug Probe Firmware…",
+                "title": "Update Debug Probe Firmware\u2026",
                 "category": "Rusty Platform",
                 "icon": "$(cloud-download)"
             },
             {
+                "command": "rustyPlatform.openDesigner",
+                "title": "Open Designer",
+                "category": "Rusty Platform",
+                "icon": "$(layout)"
+            },
+            {
                 "command": "rustyPlatform.addDependency",
-                "title": "Add Dependency…",
+                "title": "Add Dependency\u2026",
                 "category": "Rusty Platform",
                 "icon": "$(add)"
             },
@@ -196,18 +203,18 @@
             },
             {
                 "command": "rustyPlatform.assistant.implement",
-                "title": "Implement in Function…",
+                "title": "Implement in Function\u2026",
                 "category": "Rusty AI",
                 "icon": "$(sparkle)"
             },
             {
                 "command": "rustyPlatform.assistant.sendPrompt",
-                "title": "Send the Prompt in the ✎ AI Block",
+                "title": "Send the Prompt in the \u270e AI Block",
                 "category": "Rusty AI"
             },
             {
                 "command": "rustyPlatform.assistant.cancelPrompt",
-                "title": "Discard the ✎ AI Block",
+                "title": "Discard the \u270e AI Block",
                 "category": "Rusty AI"
             },
             {
@@ -227,7 +234,7 @@
             },
             {
                 "command": "rustyPlatform.assistant.repair",
-                "title": "Fix the Build…",
+                "title": "Fix the Build\u2026",
                 "category": "Rusty AI",
                 "icon": "$(wand)"
             },
@@ -238,7 +245,7 @@
             },
             {
                 "command": "rustyPlatform.assistant.learnConventions",
-                "title": "Learn the House Rules from My Code…",
+                "title": "Learn the House Rules from My Code\u2026",
                 "category": "Rusty AI"
             },
             {
@@ -248,7 +255,7 @@
             },
             {
                 "command": "rustyPlatform.assistant.setupModel",
-                "title": "Choose a Local Model…",
+                "title": "Choose a Local Model\u2026",
                 "category": "Rusty AI",
                 "icon": "$(server-process)"
             },
@@ -265,18 +272,18 @@
             },
             {
                 "command": "rustyPlatform.assistant.addModel",
-                "title": "Add a Model from Hugging Face…",
+                "title": "Add a Model from Hugging Face\u2026",
                 "category": "Rusty AI",
                 "icon": "$(cloud-download)"
             },
             {
                 "command": "rustyPlatform.assistant.removeAddedModel",
-                "title": "Remove a Model I Added…",
+                "title": "Remove a Model I Added\u2026",
                 "category": "Rusty AI"
             },
             {
                 "command": "rustyPlatform.assistant.startLlamaServer",
-                "title": "Start My llama-server…",
+                "title": "Start My llama-server\u2026",
                 "category": "Rusty AI",
                 "icon": "$(server-process)"
             },
@@ -384,6 +391,11 @@
                     "command": "rustyPlatform.assistant.status",
                     "when": "view == rustyPlatform.assistant",
                     "group": "navigation@2"
+                },
+                {
+                    "command": "rustyPlatform.openDesigner",
+                    "when": "view == rustyPlatform.project",
+                    "group": "navigation@1"
                 }
             ],
             "view/item/context": [
@@ -443,24 +455,24 @@
                     "markdownDescription": "Explicit path to `espflash`. Leave empty to auto-detect (`~/.cargo/bin`, then `PATH`)."
                 },
                 "rustyPlatform.lcdRotation": {
-                "type": "number",
-                "enum": [
-                    0,
-                    1,
-                    2,
-                    3
-                ],
-                "enumDescriptions": [
-                    "No rotation. What the panel does when it is not told otherwise.",
-                    "90 degrees clockwise.",
-                    "180 degrees clockwise.",
-                    "270 degrees clockwise."
-                ],
-                "default": 0,
-                "scope": "resource",
-                "markdownDescription": "How far to turn the LCD in this project. Written into the project's `.cargo/esp-config.toml` as `LCD_ROTATION` and read by the generated firmware at **compile time**, so changing it never means editing `src/main.rs`. The rotation turns the whole image; the drawing area keeps the panel's native size."
-            },
-            "rustyPlatform.flashProfile": {
+                    "type": "number",
+                    "enum": [
+                        0,
+                        1,
+                        2,
+                        3
+                    ],
+                    "enumDescriptions": [
+                        "No rotation. What the panel does when it is not told otherwise.",
+                        "90 degrees clockwise.",
+                        "180 degrees clockwise.",
+                        "270 degrees clockwise."
+                    ],
+                    "default": 0,
+                    "scope": "resource",
+                    "markdownDescription": "How far to turn the LCD in this project. Written into the project's `.cargo/esp-config.toml` as `LCD_ROTATION` and read by the generated firmware at **compile time**, so changing it never means editing `src/main.rs`. The rotation turns the whole image; the drawing area keeps the panel's native size."
+                },
+                "rustyPlatform.flashProfile": {
                     "type": "string",
                     "enum": [
                         "auto",
@@ -478,7 +490,7 @@
                 "rustyPlatform.serialPort": {
                     "type": "string",
                     "default": "",
-                    "markdownDescription": "Serial port used when flashing an ESP32, e.g. `/dev/ttyUSB0`. Leave empty to detect it — with more than one board attached, espflash asks."
+                    "markdownDescription": "Serial port used when flashing an ESP32, e.g. `/dev/ttyUSB0`. Leave empty to detect it \u2014 with more than one board attached, espflash asks."
                 },
                 "rustyPlatform.defaultBoard": {
                     "type": "string",
@@ -520,7 +532,7 @@
                         "bundled"
                     ],
                     "default": "off",
-                    "markdownDescription": "How the AI coding assist gets its model. `off` disables it entirely. `external` talks to any OpenAI-compatible server you already run (LM Studio, Ollama, your own `llama-server`). `bundled` builds and runs the extension's own local runtime — no other AI needed."
+                    "markdownDescription": "How the AI coding assist gets its model. `off` disables it entirely. `external` talks to any OpenAI-compatible server you already run (LM Studio, Ollama, your own `llama-server`). `bundled` builds and runs the extension's own local runtime \u2014 no other AI needed."
                 },
                 "rustyPlatform.assistant.endpoint": {
                     "type": "string",
@@ -530,12 +542,12 @@
                 "rustyPlatform.assistant.model": {
                     "type": "string",
                     "default": "",
-                    "markdownDescription": "Model id to ask for. Leave empty to let the server pick (some servers, like Ollama, refuse an unnamed request — then set this)."
+                    "markdownDescription": "Model id to ask for. Leave empty to let the server pick (some servers, like Ollama, refuse an unnamed request \u2014 then set this)."
                 },
                 "rustyPlatform.assistant.modelPath": {
                     "type": "string",
                     "default": "",
-                    "markdownDescription": "The `.gguf` file the bundled runtime serves. Set by **Rusty AI: Choose a Local Model…**."
+                    "markdownDescription": "The `.gguf` file the bundled runtime serves. Set by **Rusty AI: Choose a Local Model\u2026**."
                 },
                 "rustyPlatform.assistant.threads": {
                     "type": "number",
@@ -579,14 +591,14 @@
                 "rustyPlatform.assistant.loadGpu": {
                     "type": "string",
                     "default": "auto",
-                    "markdownDescription": "GPU offload the **Load Model** button asks for: `auto` decides from the model's size and this machine's memory, `off` is CPU only, `max` offloads everything, `0.5` asks for half. A plain string rather than an enum on purpose — the panel writes ratios here, and a value the schema rejects would be silently dropped."
+                    "markdownDescription": "GPU offload the **Load Model** button asks for: `auto` decides from the model's size and this machine's memory, `off` is CPU only, `max` offloads everything, `0.5` asks for half. A plain string rather than an enum on purpose \u2014 the panel writes ratios here, and a value the schema rejects would be silently dropped."
                 },
                 "rustyPlatform.assistant.loadTtlSeconds": {
                     "type": "number",
                     "default": 0,
                     "minimum": 0,
                     "maximum": 86400,
-                    "markdownDescription": "How long a model loaded through LM Studio stays in memory when idle. `0` means \"no timer\" — it stays until something unloads it."
+                    "markdownDescription": "How long a model loaded through LM Studio stays in memory when idle. `0` means \"no timer\" \u2014 it stays until something unloads it."
                 },
                 "rustyPlatform.assistant.gpuVramGb": {
                     "type": "number",
@@ -598,7 +610,7 @@
                 "rustyPlatform.assistant.llamaServerPath": {
                     "type": "string",
                     "default": "",
-                    "markdownDescription": "The `llama-server` binary to run for **My own llama-server**. Empty means \"find it yourself\" (PATH and the usual build folders); if nothing is found, **Rusty AI: Start My llama-server…** offers to download llama.cpp's own prebuilt build for this platform. Set it yourself to use a build you compiled."
+                    "markdownDescription": "The `llama-server` binary to run for **My own llama-server**. Empty means \"find it yourself\" (PATH and the usual build folders); if nothing is found, **Rusty AI: Start My llama-server\u2026** offers to download llama.cpp's own prebuilt build for this platform. Set it yourself to use a build you compiled."
                 },
                 "rustyPlatform.assistant.llamaServerArgs": {
                     "type": "string",
@@ -608,7 +620,7 @@
                 "rustyPlatform.assistant.llamaServerModelPath": {
                     "type": "string",
                     "default": "",
-                    "markdownDescription": "The `.gguf` **My own llama-server** runs. Set by **Rusty AI: Start My llama-server…** — the file you pick, or the known 27B fetched for you. Kept separately from `modelPath`, which is the built-in runtime's own model, so the two engines cannot change each other's weights."
+                    "markdownDescription": "The `.gguf` **My own llama-server** runs. Set by **Rusty AI: Start My llama-server\u2026** \u2014 the file you pick, or the known 27B fetched for you. Kept separately from `modelPath`, which is the built-in runtime's own model, so the two engines cannot change each other's weights."
                 },
                 "rustyPlatform.assistant.llamaServerService": {
                     "type": "string",
@@ -622,7 +634,7 @@
                         "process"
                     ],
                     "default": "unit",
-                    "markdownDescription": "How **Start server** starts your llama.cpp: `unit` starts the systemd user service (so it keeps running after VS Code closes), `process` starts it as a child of this window (so `Stop` can end it). The other route is tried — and reported — when the chosen one fails."
+                    "markdownDescription": "How **Start server** starts your llama.cpp: `unit` starts the systemd user service (so it keeps running after VS Code closes), `process` starts it as a child of this window (so `Stop` can end it). The other route is tried \u2014 and reported \u2014 when the chosen one fails."
                 },
                 "rustyPlatform.assistant.timeoutSeconds": {
                     "type": "number",
@@ -648,7 +660,7 @@
                 "rustyPlatform.assistant.showDiff": {
                     "type": "boolean",
                     "default": true,
-                    "markdownDescription": "Show the model's code as a diff before it is written. Switched off, the edit is applied directly — still a normal edit, so Ctrl+Z undoes it."
+                    "markdownDescription": "Show the model's code as a diff before it is written. Switched off, the edit is applied directly \u2014 still a normal edit, so Ctrl+Z undoes it."
                 },
                 "rustyPlatform.assistant.verifyAfterApply": {
                     "type": "boolean",
@@ -661,7 +673,7 @@
                         "type": "string"
                     },
                     "default": [],
-                    "markdownDescription": "House rules measured from your own code and accepted with **Rusty AI: Learn the House Rules from My Code…**. They are put in every prompt."
+                    "markdownDescription": "House rules measured from your own code and accepted with **Rusty AI: Learn the House Rules from My Code\u2026**. They are put in every prompt."
                 },
                 "rustyPlatform.assistant.ignoreHostCheck": {
                     "type": "boolean",
