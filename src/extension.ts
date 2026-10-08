@@ -48,7 +48,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         vscode.window.registerTreeDataProvider('rustyPlatform.boards', boardsView),
         vscode.window.registerTreeDataProvider('rustyPlatform.project', projectView),
         vscode.window.registerTreeDataProvider('rustyPlatform.controls', controlsView),
-        registerNewProjectCommand(output),
+        registerNewProjectCommand(context, output),
         registerLcdRotationSync(output),
         ...registerProjectCommands(state, output, context),
         ...registerDesignerCommands(context, output),

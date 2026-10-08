@@ -16,6 +16,13 @@ import { crateNameFrom } from './naming';
 import { BoardChoices, displayFor } from '../boards/esp';
 import { EspBoardProfile, EspDisplay, EspTouch } from '../boards/types';
 import { LCD_ROTATION_LABELS, LcdRotation, asLcdRotation, templateUsesPanel } from '../display/rotation';
+import {
+    DESIGNER_FILES,
+    emitHandlersRs,
+    emitStarterKdl,
+    emitUiRs,
+    starterDocument,
+} from '../designer/generate';
 
 /** Pinned ESP crate versions. See NOTES.md for where each one comes from. */
 export const ESP_CRATE_VERSIONS = {
@@ -86,6 +93,14 @@ export function templatesForEsp(board: EspBoardProfile): AppTemplateInfo[] {
         },
     ];
     if (board.displays.length > 0) {
+        templates.push({
+            id: 'designer',
+            label: 'WYSIWYG designer',
+            description:
+                'A project whose screen is a design rather than Rust: the extension opens the designer for this '
+                + 'board, the design is written to src/ui.kdl, and the widgets\' events land in src/ui_handlers.rs '
+                + 'for you to fill in.',
+        });
         templates.push({
             id: 'display',
             label: 'Panel diagnostic screen',
@@ -178,6 +193,8 @@ export function generateEspProjectFiles(options: EspGenerateOptions): GeneratedF
     // Anything unexpected (a hand-edited setting, a caller that does not care) is no rotation.
     const rotation: LcdRotation = asLcdRotation(options.rotation);
     const usesPanel = templateUsesPanel(template);
+    // The panel this project was generated for: the board's own, or the revision its options chose.
+    const panel = displayFor(board, choices);
 
     if (!isTemplateValidForEsp(board, template)) {
         throw new Error(
@@ -188,7 +205,7 @@ export function generateEspProjectFiles(options: EspGenerateOptions): GeneratedF
         );
     }
 
-    return [
+    const files: GeneratedFile[] = [
         { path: 'Cargo.toml', content: espCargoToml(board, crateName, template, choices) },
         { path: '.cargo/config.toml', content: espCargoConfigToml(board, template) },
         { path: '.cargo/esp-config.toml', content: espConfigToml(rotation, usesPanel) },
@@ -199,6 +216,25 @@ export function generateEspProjectFiles(options: EspGenerateOptions): GeneratedF
         { path: '.gitignore', content: '/target\n/dist\n' },
         { path: 'README.md', content: espReadme(board, crateName, template, choices, rotation) },
     ];
+
+    if (template === 'designer' && panel !== undefined) {
+        // The three files a Designer project is born with, plus the design document they describe. The markup
+        // and the Rust are regenerated whenever the designer saves; the handlers file is only ever appended
+        // to, so the code behind an event survives every later save (see designer/generate.ts).
+        const starter = starterDocument({
+            boardId: board.id,
+            panelWidth: panel.width,
+            panelHeight: panel.height,
+            rotation,
+        });
+        files.push(
+            { path: DESIGNER_FILES.markup, content: emitStarterKdl(starter) },
+            { path: DESIGNER_FILES.rust, content: emitUiRs(starter, board.touch !== undefined) },
+            { path: DESIGNER_FILES.handlers, content: emitHandlersRs(starter, board.touch !== undefined) },
+            { path: DESIGNER_FILES.document, content: `${JSON.stringify(starter, null, 2)}\n` },
+        );
+    }
+    return files;
 }
 
 // ---------------------------------------------------------------------- Cargo
@@ -210,9 +246,7 @@ function espCargoToml(
     choices: BoardChoices,
 ): string {
     // The touch template drives the same panel, so everything the panel needs is needed there too.
-    const display = template === 'display' || template === 'touch' || template === 'board'
-        ? displayFor(board, choices)
-        : undefined;
+    const display = templateUsesPanel(template) ? displayFor(board, choices) : undefined;
     const panelChoice = display?.panelChoice;
     const features =
         panelChoice === undefined
@@ -280,12 +314,22 @@ panel-gc9a01 = []
         // against, and getting the SD init handshake subtly wrong is a classic way to lose a day.
         dependencies.push(`embedded-sdmmc = "${ESP_CRATE_VERSIONS.embeddedSdmmc}"`);
     }
-    if (template === 'touch' || template === 'board') {
+    if (template === 'touch' || template === 'board' || (template === 'designer' && board.touch !== undefined)) {
         // The calibration is kept in flash, so the project needs the NOR-flash crate. Its chip feature is
         // what selects the flash driver, and it pulls the ROM glue that is already in the tree.
         dependencies.push(`esp-storage = { version = "${ESP_CRATE_VERSIONS.espStorage}", features = ["${board.espChip}"] }`);
     }
-    if (template === 'touch' || template === 'board') {
+    if (template === 'designer') {
+        // The widget toolkit the design is compiled into. Three things about this line were found by building
+        // a generated project rather than by reading documentation (2026-10-08):
+        //  - `default-features = false` is required, because the default set includes `std`;
+        //  - `micromath` is then required too, or the crate refuses to build for want of a maths backend;
+        //  - `macros` is what compiles the markup in `src/ui.kdl` at build time.
+        dependencies.push(
+            `embedded-gui = { version = "0.2.7", default-features = false, features = ["rich-widgets", "embedded-graphics", "macros", "micromath"] }`,
+        );
+    }
+    if (template === 'touch' || template === 'board' || (template === 'designer' && board.touch !== undefined)) {
         // The touch template reads the controller through a function generic over `SpiDevice`, so the
         // trait has to be nameable: `embedded-hal-bus` brings the trait's *implementations* but not the
         // crate name itself. Same 1.0 line mipidsi and embedded-hal-bus already resolve to.
@@ -611,7 +655,7 @@ function espImports(board: EspBoardProfile, template: AppTemplate): string {
             'use esp_println as _;',
         ].join('\n');
     }
-    if (template === 'touch' || template === 'board') {
+    if (template === 'touch' || template === 'board' || (template === 'designer' && board.touch !== undefined)) {
         // Only the board template drives the LDR and the speaker, and an unused import is a warning, so the
         // analog imports are added where the hardware actually is.
         const hardwareImports = template === 'board'
@@ -647,6 +691,29 @@ function espImports(board: EspBoardProfile, template: AppTemplate): string {
             // Flash access, for keeping the calibration across a power cycle.
             'use esp_storage::FlashStorage;',
             ...hardwareImports,
+            'use esp_hal::spi::master::{Config as SpiConfig, Spi};',
+            'use esp_hal::time::Rate;',
+            'use esp_hal::timer::timg::TimerGroup;',
+            'use esp_println as _;',
+            'use mipidsi::options::{ColorOrder, Orientation, Rotation};',
+            'use mipidsi::{models, Builder};',
+            'use mipidsi::interface::SpiInterface as SPIInterface;',
+        ].join('\n');
+    }
+    if (template === 'designer' && board.touch === undefined) {
+        // The panel bring-up imports without the diagnostic screen's drawing primitives and fonts. This
+        // template paints a design through the GUI, so keeping them produced eight unused-import warnings in
+        // every Designer project on a board with no touch controller (the T-QT).
+        return [
+            'use embassy_executor::Spawner;',
+            'use embassy_time::{Duration, Timer};',
+            'use embedded_graphics::pixelcolor::Rgb565;',
+            // A glob, so it costs nothing when unused: `display.clear` comes from this prelude.
+            'use embedded_graphics::prelude::*;',
+            'use embedded_hal_bus::spi::ExclusiveDevice;',
+            'use esp_hal::clock::CpuClock;',
+            'use esp_hal::delay::Delay;',
+            'use esp_hal::gpio::{Level, Output, OutputConfig};',
             'use esp_hal::spi::master::{Config as SpiConfig, Spi};',
             'use esp_hal::time::Rate;',
             'use esp_hal::timer::timg::TimerGroup;',
@@ -699,9 +766,15 @@ function espImports(board: EspBoardProfile, template: AppTemplate): string {
 }
 
 function espMainRs(board: EspBoardProfile, template: AppTemplate, choices: BoardChoices): string {
-    const usesPanel = template === 'display' || template === 'touch' || template === 'board';
+    // Asked rather than re-listed. This was a second copy of the rule, and the designer was added to the
+    // shared helper without reaching here -- which generated a Designer project whose body was the RGB LED
+    // heartbeat. Found by generating one, 2026-10-08.
+    const usesPanel = templateUsesPanel(template);
     const display = usesPanel ? displayFor(board, choices) : undefined;
-    const touch = template === 'touch' || template === 'board' ? board.touch : undefined;
+    // A Designer project drives touch where the board has a controller and is a static screen where it does
+    // not: the T-QT has a panel and no touch controller.
+    const touch =
+        template === 'touch' || template === 'board' || template === 'designer' ? board.touch : undefined;
     const led = board.led;
 
     const body = template === 'wifi'
@@ -712,6 +785,10 @@ function espMainRs(board: EspBoardProfile, template: AppTemplate, choices: Board
         ? espSdcardBody(board)
         : template === 'peripherals'
         ? espPeripheralsBody(board)
+        : template === 'designer' && display !== undefined && touch !== undefined
+        ? espTouchBody(display, board, touch, false, true)
+        : template === 'designer' && display !== undefined
+        ? espDesignerDisplayBody(display)
         : display !== undefined && touch !== undefined
         ? espTouchBody(display, board, touch, template === 'board')
         : display !== undefined
@@ -727,7 +804,7 @@ function espMainRs(board: EspBoardProfile, template: AppTemplate, choices: Board
 #![no_main]
 
 ${espImports(board, template)}
-use esp_backtrace as _;
+use esp_backtrace as _;${template === 'designer' ? "\n\n// The design's own module, and the code-behind it calls.\nmod ui;\nmod ui_handlers;\n" + (board.touch === undefined ? '' : "\n/// This project draws the design, so the diagnostic screen the touch template can paint is folded\n/// away at compile time. Kept rather than deleted: it is what to fall back on when a panel comes up wrong.\nconst DESIGNER: bool = true;\n") : ''}
 
 // The ESP-IDF bootloader expects an application descriptor in the image. Without it the
 // bootloader refuses to start the image, so this line is not decoration.
@@ -1435,6 +1512,7 @@ function espTouchBody(
     board: EspBoardProfile,
     touch: EspTouch,
     includeHardware: boolean,
+    designer = false,
 ): string {
     // The board template is this template plus whatever else the board carries: the RGB LED as a status
     // light, the light sensor in the log, and a beep on the speaker when a corner is recorded. One function
@@ -1807,7 +1885,9 @@ ${hardwareLog.length > 0 ? `    log::info!("board hardware: ${hardwareLog.join('
     let mut ticks: u32 = 0;
     // Whether the four corners have been measured -- by this run or by a previous one, which is what the
     // flash sector is for. Until they have, the panel shows the calibration screen.
-    let mut calibrated = stored.is_some();
+    let mut calibrated = stored.is_some();${designer ? `
+    // The design, built once on the first calibrated frame and driven by touch from then on.
+    let mut screen: Option<ui::Designer> = None;` : ''}
 
     loop {
         if redraw_screen {
@@ -1847,7 +1927,16 @@ ${hardwareLog.length > 0 ? `    log::info!("board hardware: ${hardwareLog.join('
                         .expect("panel write failed");
                 }
             } else {
-                // The graphics test screen, back again once the calibration is done: a frame around the
+${designer ? `                // The design, painted instead of the diagnostic screen. DESIGNER is a const, so the
+                // diagnostic branch below it is folded away in a Designer project and compiled out.
+                if DESIGNER {
+                    let screen = screen.get_or_insert_with(|| {
+                        ui::Designer::new(width_i as u32, height_i as u32)
+                    });
+                    display.clear(Rgb565::BLACK).expect("panel write failed");
+                    screen.repaint(&mut display).expect("the design did not render");
+                } else {
+` : ''}                // The graphics test screen, back again once the calibration is done: a frame around the
                 // whole panel, four coloured corner markers, five bars and a cross through the centre.
                 Text::new("Touch: numbers below, and the log", Point::new(8, 10), style)
                     .draw(&mut display)
@@ -1892,7 +1981,8 @@ ${hardwareLog.length > 0 ? `    log::info!("board hardware: ${hardwareLog.join('
                 Line::new(Point::new(8, height_i / 2), Point::new(width_i - 8, height_i / 2))
                     .into_styled(PrimitiveStyle::with_stroke(Rgb565::new(16, 40, 16), 1))
                     .draw(&mut display)
-                    .expect("panel write failed");
+                    .expect("panel write failed");${designer ? `
+                }` : ''}
             }
             redraw_screen = false;
             redraw_box = true;
@@ -2050,7 +2140,16 @@ ${hardwareLog.length > 0 ? `    log::info!("board hardware: ${hardwareLog.join('
                     MARGIN + (i32::from(axis_y) - y_from) * (height_i - 2 * MARGIN) / (y_to - y_from)
                 }
                 .clamp(0, height_i - 1);
-                point = (px, py);
+                point = (px, py);${designer ? `
+                // Hand the sample to the design: the press and the release are what a widget acts on, and the
+                // moves are what let a slider follow the finger.
+                if let Some(screen) = screen.as_mut() {
+                    screen.pointer(px, py, pressed);
+                    screen.pump();
+                    if screen.is_dirty() {
+                        screen.render(&mut display).expect("the design did not render");
+                    }
+                }` : ''}
                 if pressed && !was_touched {
                     log::info!("touch: a={} b={} -> pixel ({}, {})", raw_a, raw_b, px, py);
                 }
@@ -2436,6 +2535,32 @@ ${constant('LANDSCAPE_DIAGNOSTICS', landscape)}
 `;
 }
 
+/**
+ * The designer's screen on a board with no touch controller.
+ *
+ * There is nothing to interact with, so the design is painted once and the loop only keeps the log alive --
+ * but it is the same markup, the same budgets and the same `ui::Designer`, so a design moved between this
+ * board and the touch one behaves the same as far as the layout goes.
+ */
+function espDesignerDisplayBody(display: EspDisplay): string {
+    return `${espPanelSetup(display, false)}
+
+    let (width_i, height_i) = if rotated {
+        (height as u32, width as u32)
+    } else {
+        (width as u32, height as u32)
+    };
+    let mut screen = ui::Designer::new(width_i, height_i);
+    display.clear(Rgb565::BLACK).expect("panel write failed");
+    screen.repaint(&mut display).expect("the design did not render");
+    log::info!("design drawn: {}x{}", width_i, height_i);
+
+    loop {
+        log::info!("design alive");
+        Timer::after(Duration::from_secs(10)).await;
+    }`;
+}
+
 function espDisplayBody(display: EspDisplay): string {
     return `${espPanelSetup(display, false)}
 
@@ -2604,9 +2729,15 @@ function espReadme(
 ): string {
     // Only the pins the generated firmware actually drives are listed: the SD socket is still
     // described in the notes rather than claimed, because no template touches it yet.
-    const usesPanel = template === 'display' || template === 'touch' || template === 'board';
+    // Asked rather than re-listed. This was a second copy of the rule, and the designer was added to the
+    // shared helper without reaching here -- which generated a Designer project whose body was the RGB LED
+    // heartbeat. Found by generating one, 2026-10-08.
+    const usesPanel = templateUsesPanel(template);
     const display = usesPanel ? displayFor(board, choices) : undefined;
-    const touch = template === 'touch' || template === 'board' ? board.touch : undefined;
+    // A Designer project drives touch where the board has a controller and is a static screen where it does
+    // not: the T-QT has a panel and no touch controller.
+    const touch =
+        template === 'touch' || template === 'board' || template === 'designer' ? board.touch : undefined;
     const pinRows: string[] = [];
     if (display) {
         pinRows.push(`| ${display.cs} | panel chip select |`);

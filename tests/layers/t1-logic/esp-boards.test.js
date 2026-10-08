@@ -184,13 +184,13 @@ test('an ESP board offers only templates that are implemented', () => {
     );
     equal(
         templatesFor(espBoard('lilygo-tqt')).map((info) => info.id),
-        ['blinky', 'display', 'wifi', 'bluetooth'],
-        'the T-QT has a panel, no touch controller, and the S3 radio',
+        ['blinky', 'designer', 'display', 'wifi', 'bluetooth'],
+        'the T-QT has a panel, no touch controller, and the S3 radio; the designer needs only a panel',
     );
     // The CYD is the only board with a touch controller, so it is the only one offered the touch test.
     equal(
         templatesFor(espBoard('sunton-3248s035r')).map((info) => info.id),
-        ['blinky', 'display', 'sdcard', 'board', 'peripherals', 'touch', 'wifi', 'bluetooth'],
+        ['blinky', 'designer', 'display', 'sdcard', 'board', 'peripherals', 'touch', 'wifi', 'bluetooth'],
         'the card sits with the panel templates, board is everything, and wireless comes after the hardware',
     );
     for (const id of ['lilygo-tqt', 'sunton-3248s035r']) {

@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "boardId": "sunton-3248s035r",
+  "panelWidth": 320,
+  "panelHeight": 480,
+  "rotation": 0,
+  "screenId": "RustyPanel",
+  "theme": "dark",
+  "widgets": [
+    {
+      "id": "title",
+      "tag": "label",
+      "x": 16,
+      "y": 8,
+      "width": 288,
+      "height": 26,
+      "props": {
+        "text": "Rusty Platform",
+        "font": ""
+      },
+      "events": []
+    },
+    {
+      "id": "go",
+      "tag": "button",
+      "x": 90,
+      "y": 218,
+      "width": 140,
+      "height": 44,
+      "props": {
+        "text": "Press me",
+        "bg": "#3a6ea5",
+        "fg": "#f0f0f0",
+        "text_color": "#ffffff",
+        "pressed_bg": "#2a5a8a",
+        "pressed_fg": "#ffffff",
+        "disabled_bg": "#303030",
+        "disabled_fg": "#808080",
+        "focused_bg": "#4a7eb5",
+        "focused_fg": "#ffffff",
+        "border_color": "#101010",
+        "corner_radius": 4
+      },
+      "events": [
+        "clicked"
+      ]
+    }
+  ]
+}

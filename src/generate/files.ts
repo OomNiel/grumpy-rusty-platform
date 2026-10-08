@@ -52,6 +52,7 @@ export type AppTemplate =
     | 'touch'
     | 'peripherals'
     | 'board'
+    | 'designer'
     | 'sdcard';
 
 export interface AppTemplateInfo {

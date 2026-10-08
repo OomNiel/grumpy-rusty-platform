@@ -20,7 +20,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import type { BoardProfile } from '../boards/types';
-import { readActiveProject } from '../project/activeProject';
+import { readActiveProject, readProjectAt } from '../project/activeProject';
 import { lcdRotationFromConfig, setLcdRotationInConfig, type LcdRotation } from '../display/rotation';
 import {
     DESIGNER_DOCUMENT_PATH,
@@ -65,8 +65,18 @@ class DesignerPanel {
         this.panel.onDidDispose(() => this.dispose(), undefined, this.disposables);
     }
 
-    static async show(context: vscode.ExtensionContext, output: vscode.OutputChannel): Promise<void> {
-        const project = await readActiveProject();
+    /**
+     * Opens the designer for a project.
+     *
+     * `projectRoot` is the folder the designer is *about*: the wizard passes the folder it has just written,
+     * which may not be a workspace folder at all. Without it the active project is used.
+     */
+    static async show(
+        context: vscode.ExtensionContext,
+        output: vscode.OutputChannel,
+        projectRoot?: vscode.Uri,
+    ): Promise<void> {
+        const project = projectRoot === undefined ? await readActiveProject() : await readProjectAt(projectRoot);
         if (project === undefined) {
             void vscode.window.showWarningMessage('Open a Rusty Platform project before opening the designer.');
             return;
@@ -256,12 +266,13 @@ class DesignerPanel {
     }
 }
 
-/** Opens (or reveals) the designer for the active project. */
+/** Opens (or reveals) the designer, for the active project or for a named folder. */
 export async function showDesigner(
     context: vscode.ExtensionContext,
     output: vscode.OutputChannel,
+    projectRoot?: vscode.Uri,
 ): Promise<void> {
-    await DesignerPanel.show(context, output);
+    await DesignerPanel.show(context, output, projectRoot);
 }
 
 async function readText(uri: vscode.Uri): Promise<string | undefined> {

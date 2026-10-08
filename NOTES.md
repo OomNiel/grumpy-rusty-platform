@@ -3827,3 +3827,74 @@ Taken together with the shapes, **no widget property currently guarantees a visi
 ignored, the button is overpainted, and label, progress, gauge and the rest expose no colour properties at
 all in the parser. That is a real limit on requirement 6's "background and foreground colours", and it is a
 canvas decision rather than something to paper over.
+
+## 87. The designer reaches the board: a template, three files, and what the toolkit costs (2026-10-08)
+
+### Three artifacts with three lifetimes
+
+A Designer project is generated with four files the other templates do not have, and the split is the whole
+design:
+
+| File | Written | Why |
+|---|---|---|
+| `src/ui.kdl` | regenerated on every designer save | the compiled form of the design |
+| `src/ui.rs` | regenerated on every designer save | the `include_gui!` call, the budgets, the pointer plumbing, and the match that turns a `UiEvent` into a call -- all of which depend on what the design contains, and none of which is user code |
+| `src/ui_handlers.rs` | **appended to only** | the user's code: a stub appears for an event that has none, and a function that exists is never touched |
+| `designer/panel.ui.json` | regenerated | the design itself, which the panel edits |
+
+`src/main.rs` is untouched after the wizard writes it, which keeps the promise made in §75: it calls
+`ui::Designer`, and everything that changes arrives through the files above.
+
+The generated API is small on purpose -- `Designer::new`, `pointer`, `pump`, `is_dirty`, `render`, `repaint` --
+and `render` paints the first frame whole and every frame after it with `render_dirty`. That is not a
+micro-optimisation: a full 480x320 repaint over the panel's 24 MHz SPI link is on the order of a quarter of a
+second, so honouring the damage rectangles is what makes a finger-drag usable at all.
+
+### What the toolkit actually costs
+
+Measured by building three generated projects for the board, not estimated:
+
+| Firmware | text | data | bss |
+|---|---|---|---|
+| CYD, Designer (touch, 2 widgets) | 204 013 | 9 000 | 187 608 |
+| CYD, touch template (same board) | 96 457 | 8 648 | 187 960 |
+| T-QT, Designer (S3, no touch) | 167 201 | 9 252 | 398 040 |
+
+So `embedded-gui` costs **about 105 KB of flash** and **no measurable static RAM** on the classic ESP32: the
+`.bss` is 352 bytes *smaller* than the template without it, because the GUI's own state is sized by the
+markup's node count (a `Vec` of ten-odd nodes) and the heap the template already reserves dwarfs it. That
+settles the question §85 left open. A design that uses more widget types will link more of the crate; this
+figure is for two widgets.
+
+### Three wiring bugs the gate caught, all mine
+
+The gate was generating a project and compiling it, which is the only thing that would have found these:
+
+1. **A duplicated rule.** `espMainRs` and `espVscodeSettings` each kept their *own* copy of "which templates
+   drive a panel" instead of asking `templateUsesPanel`. Adding `designer` to the shared helper therefore did
+   not reach them, and the generated Designer project's body was the **RGB LED heartbeat** -- a project with a
+   panel that lit an LED and never touched the screen. All three call sites now ask the helper.
+2. **A second copy of the same condition** in `espImports` had been missed by the same fix, so the first
+   compiling build had no panel or touch imports at all: 120 errors naming `Point`, `SpiConfig` and
+   `SPIInterface`.
+3. **`embedded_graphics_core` is not nameable** in a project that declares `embedded-graphics` (which
+   re-exports it): `use embedded_graphics_core::...` does not resolve. Through `embedded_graphics::{draw_target,
+   pixelcolor}` it does.
+
+And one repeat of an old hazard: a backtick inside a *comment* in a generated template literal terminated the
+literal. `tsc` reported the syntax error and **still emitted JavaScript**, so the build ran a mangled generator
+and looked fine. Third occurrence of this class in this project, and the lesson is the same each time: run
+`tsc` and read its exit status before believing anything downstream.
+
+### The wizard opens the canvas
+
+Choosing the Designer template now offers **Open Designer** instead of *Open Project*, and opens the panel on
+the folder the wizard just wrote. That needed `readProjectAt`, because a project the extension has just
+generated is not a workspace folder yet -- `readActiveProject` only ever looked at workspace folders.
+
+### Not yet verified
+
+The firmware **compiles and links**, and nothing more: no board has run it. Whether the design appears at the
+right size and position on glass, and whether a touch lands on the widget it looks like it should, are what a
+flash and an eye have to answer -- and the rotation is the specific thing to check, since the markup is sized
+for the turned panel while the panel itself is still driven at its native size through mipidsi (§81/§82).
