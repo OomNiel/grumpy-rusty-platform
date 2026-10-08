@@ -36,6 +36,16 @@ export interface KdlProperty {
     options?: readonly string[];
     /** True when the parser errors without it, e.g. an image's `src`. */
     required?: boolean;
+    /**
+     * True when the parser reads the property but the generator throws it away.
+     *
+     * The shapes are why this exists. `embedded-gui-codegen` emits
+     * `gui.add_panel(cells[i], Style::panel())` for a `rect` or a `circle` and mentions the shape's own
+     * radius and stroke width only in a trailing comment, and a `line` becomes a `spacer`. So the canvas
+     * must not paint a fill the board will not paint: a designer that shows a red rectangle over a
+     * theme-coloured panel is lying about the one thing it exists to show.
+     */
+    ignoredByCodegen?: boolean;
 }
 
 /**
@@ -133,6 +143,25 @@ export interface KdlWidgetSpec {
     children?: ChildGrammar;
     /** True when the parser rejects the widget with no children, which only the composite icon does. */
     requiresChildren?: boolean;
+    /**
+     * True when the widget survives codegen with an id, so firmware can name it.
+     *
+     * Only the spacer is not addressable: `parse_widget` builds `WidgetDef::Spacer` with no id at all, so
+     * the generated `Widgets` struct has no field for it and `absolute_rect` can never be asked about it.
+     * It still occupies its cells and still draws nothing, which is what a spacer is for -- but anything
+     * expecting to look it up by id, events included, has to know it cannot be found.
+     */
+    addressable?: boolean;
+    /**
+     * What the widget actually draws on the board, which is not always what its properties suggest.
+     *
+     * `widget` is the honest case: the parser's properties reach the emitted widget. `panel` means the
+     * generator emits a theme-styled panel regardless of the shape's own colours. `nothing` means the tag
+     * reserves its space and paints none of it. Measured from `emitter.rs`, not assumed.
+     */
+    draws?: 'widget' | 'panel' | 'nothing';
+    /** A caveat the properties panel shows, for tags whose behaviour is not obvious from their properties. */
+    note?: string;
     props: readonly KdlProperty[];
     events: readonly DesignerEvent[];
 }
@@ -187,6 +216,10 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         label: 'Button',
         category: 'input',
         defaultSize: { width: 96, height: 32 },
+        note:
+            'The background colours reach the widget but are painted over: the crate\'s default button ' +
+            'style carries a vertical gradient that no markup attribute can clear, so the visible fill ' +
+            'comes from the theme. Measured in the simulator, not assumed.',
         props: [{ name: 'text', kind: 'text', label: 'Text', defaultValue: 'Button' }, ...CLICKABLE_COLOURS],
         events: ['clicked', 'pressed', 'released', 'doubleClicked', 'longPressed'],
     },
@@ -496,6 +529,7 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         label: '3D mesh',
         category: 'media',
         defaultSize: { width: 160, height: 120 },
+        note: 'Reserves its rect and builds a mesh panel, but the app has to draw it with render_mesh_panel.',
         props: [
             { name: 'src', kind: 'asset', label: 'Asset', defaultValue: '', required: true },
             {
@@ -521,6 +555,10 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         label: 'Spacer',
         category: 'shape',
         defaultSize: { width: 32, height: 32 },
+        // The one tag whose id the parser drops on the floor; see `addressable`.
+        addressable: false,
+        draws: 'nothing',
+        note: 'Reserves its space and draws nothing, and has no id in the generated code.',
         props: [],
         events: [],
     },
@@ -530,11 +568,13 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         label: 'Rectangle',
         category: 'shape',
         defaultSize: { width: 96, height: 48 },
+        draws: 'panel',
+        note: 'Drawn as a theme-styled panel: the generator ignores this shape\'s own fill, stroke and corners.',
         props: [
-            { name: 'radius', kind: 'int', label: 'Corner radius', defaultValue: 0, min: 0, max: 64 },
-            { name: 'stroke_width', kind: 'int', label: 'Stroke width', defaultValue: 0, min: 0, max: 32 },
-            { name: 'fill', kind: 'color', label: 'Fill', defaultValue: '#3a6ea5' },
-            { name: 'stroke', kind: 'color', label: 'Stroke', defaultValue: '#ffffff' },
+            { name: 'radius', kind: 'int', label: 'Corner radius', defaultValue: 0, min: 0, max: 64, ignoredByCodegen: true },
+            { name: 'stroke_width', kind: 'int', label: 'Stroke width', defaultValue: 0, min: 0, max: 32, ignoredByCodegen: true },
+            { name: 'fill', kind: 'color', label: 'Fill', defaultValue: '#3a6ea5', ignoredByCodegen: true },
+            { name: 'stroke', kind: 'color', label: 'Stroke', defaultValue: '#ffffff', ignoredByCodegen: true },
         ],
         events: [],
     },
@@ -544,9 +584,11 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         label: 'Line',
         category: 'shape',
         defaultSize: { width: 96, height: 8 },
+        draws: 'nothing',
+        note: 'The generator emits a spacer: a line reserves its space and draws none of it.',
         props: [
-            { name: 'stroke_width', kind: 'int', label: 'Stroke width', defaultValue: 1, min: 1, max: 32 },
-            { name: 'color', kind: 'color', label: 'Colour', defaultValue: '#ffffff' },
+            { name: 'stroke_width', kind: 'int', label: 'Stroke width', defaultValue: 1, min: 1, max: 32, ignoredByCodegen: true },
+            { name: 'color', kind: 'color', label: 'Colour', defaultValue: '#ffffff', ignoredByCodegen: true },
         ],
         events: [],
     },
@@ -556,11 +598,13 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         label: 'Circle',
         category: 'shape',
         defaultSize: { width: 64, height: 64 },
+        draws: 'panel',
+        note: 'Drawn as a theme-styled panel: the generator ignores this shape\'s own fill, stroke and radius.',
         props: [
-            { name: 'radius', kind: 'int', label: 'Radius', defaultValue: 32, min: 1, max: 240 },
-            { name: 'stroke_width', kind: 'int', label: 'Stroke width', defaultValue: 0, min: 0, max: 32 },
-            { name: 'fill', kind: 'color', label: 'Fill', defaultValue: '#3a6ea5' },
-            { name: 'stroke', kind: 'color', label: 'Stroke', defaultValue: '#ffffff' },
+            { name: 'radius', kind: 'int', label: 'Radius', defaultValue: 32, min: 1, max: 240, ignoredByCodegen: true },
+            { name: 'stroke_width', kind: 'int', label: 'Stroke width', defaultValue: 0, min: 0, max: 32, ignoredByCodegen: true },
+            { name: 'fill', kind: 'color', label: 'Fill', defaultValue: '#3a6ea5', ignoredByCodegen: true },
+            { name: 'stroke', kind: 'color', label: 'Stroke', defaultValue: '#ffffff', ignoredByCodegen: true },
         ],
         events: [],
     },
@@ -612,4 +656,14 @@ export function widgetRaises(tag: string, event: DesignerEvent): boolean {
 /** True when the property cannot be left empty, because the parser errors on a widget without it. */
 export function propertyRequired(tag: string, property: string): boolean {
     return widgetSpec(tag)?.props.some((candidate) => candidate.name === property && candidate.required === true) === true;
+}
+
+/**
+ * True when the generated `Widgets` struct will carry a field for this tag.
+ *
+ * Everything is addressable except the spacer, whose id the parser discards. A caller that wants to look a
+ * widget up by id -- the event dispatch and the simulator's measurement both do -- has to skip the rest.
+ */
+export function widgetAddressable(tag: string): boolean {
+    return widgetSpec(tag)?.addressable !== false;
 }

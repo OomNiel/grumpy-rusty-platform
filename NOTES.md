@@ -3756,3 +3756,74 @@ runtime cost is **not measured at all**.
 One process note: the first gate run printed `CARGO_EXIT` from a `cargo build | tail` pipeline and reported
 success from `tail` while the build had failed - the same masking that produced the ineffective merge gate
 earlier. Every build from here on runs under `set -o pipefail`.
+
+## 86. The designer's simulator: the geometry holds, and three things codegen does not do (2026-10-08)
+
+### Why a render, and not the board
+
+The t1 tests prove the pixel tracks add up to the rectangles they came from. They cannot prove that
+`embedded-gui`'s layout engine *honours* those tracks: that is a property of the engine, and the only honest
+way to test someone else's engine is to run it. It does not need hardware either -- the crate ships
+`display_backend::SimulatorBackend`, `test_buffer::TestBuffer` and has `embedded-graphics-simulator` as a
+dev-dependency.
+
+So `tests/sim/` is a small **host** crate (a separate package on purpose: the generated projects are no_std
+cross builds and the two must not share a feature set), and `tests/tools/designer-sim.js` generates
+`screens/panel.kdl` plus `src/expectations.rs` from `fixture.json` using the extension's *own* emitter. The
+program then compiles that markup through the real `include_gui!`, builds it into a `GuiContext`, renders into
+a `TestBuffer`, and asks `gui.absolute_rect` where every widget ended up.
+
+`fixture.json` is chosen so a mistake has somewhere to show: a band flush to three edges, a label sitting
+inside it (two widgets in overlapping cells), a 43x29 button at odd coordinates, a full-width meter, two
+footer pieces sharing the vertical edge at x=240, and a 3x3 spacer against the right edge.
+
+**Result: all eight came back at exactly the designed rectangles.** The canvas-to-glass mapping is no longer
+an assumption. It also runs in about a minute with no board attached, so it can be part of `--e2e`.
+
+### What the first render found: the spacer cannot be named
+
+The expectations file is generated Rust, so the first build failed at the compiler: `no field tiny on type
+&SimPanelWidgets`. The spacer is the one tag of thirty whose id the parser **drops** -- `parse_widget` builds
+`WidgetDef::Spacer` with no id at all -- so codegen emits no struct field for it and `absolute_rect` can never
+be asked about it. It still reserves its cells. The catalogue now carries `addressable: false`, and the
+simulator skips it with a comment in the generated file rather than silently measuring seven of eight.
+
+### And that the shapes do not draw themselves
+
+`expand` (a second binary in the same crate, printing `embedded-gui-codegen`'s output for a KDL file) shows
+what a `rect`, a `circle` and a `line` really become:
+
+    let band = gui.add_panel(cells[0], Style::panel())?; // rect r=0 sw=0
+    let knob = gui.add_panel(cells[3], Style::panel())?; // circle r=32 sw=0
+    (a line becomes gui.add_spacer, with its stroke width in a comment)
+
+The shape's `fill`, `stroke`, `stroke_width` and `radius` are **discarded** -- the radius and stroke width
+survive only inside a trailing comment. A designer that painted the fill the user picked would show a red
+rectangle where the board draws a theme-styled panel, which is the one lie a WYSIWYG tool must not tell. The
+catalogue marks them `draws: 'panel'` (rect, circle) and `draws: 'nothing'` (line, spacer), and every
+property of theirs `ignoredByCodegen`.
+
+### And that a button's background is painted over
+
+The paint probe failed, but not because the markup was wrong. `expand` shows the emitter getting it right:
+
+    let go = gui.add_button(cells[2], "Button", WidgetStyle::button().with_bg(Rgb565::new(7, 27, 20))...)?;
+
+Yet the buffer contained **zero** pixels of that colour, and the button's own rectangle read
+`Rgb565(4, 8, 12)`. The reason is in the crate: `WidgetStyle::with_bg` sets `normal.background`
+(`style.rs:484`), but `WidgetStyle::button()` also carries a default **vertical gradient** -- top
+`Rgb565::new(6, 12, 16)`, bottom `Rgb565::new(2, 4, 8)` -- and (4, 8, 12) is exactly its midpoint. The
+gradient is not cleared by `with_bg`, and nothing in the KDL surface can clear it: `Style::with_gradient`
+exists (`style.rs:345`) but no attribute reaches it.
+
+So the harness now asserts what is actually provable -- that the widget painted something at its own
+rectangle, comparing a pixel inside it against one just outside -- and **reports** the colour it found
+instead of pretending it matched. The designer's colour controls for buttons therefore promise the theme's
+colours, not the user's, until either the crate clears the gradient or the designer uses the raw-style escape
+hatch: the emitter passes a `style` value through verbatim when it begins with `WidgetStyle::`, `Style::` or
+`{`, so a hand-written Rust expression is reachable from the markup.
+
+Taken together with the shapes, **no widget property currently guarantees a visible fill**: the shapes are
+ignored, the button is overpainted, and label, progress, gauge and the rest expose no colour properties at
+all in the parser. That is a real limit on requirement 6's "background and foreground colours", and it is a
+canvas decision rather than something to paper over.

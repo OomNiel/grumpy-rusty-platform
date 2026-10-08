@@ -12,7 +12,7 @@
  */
 
 const { test, ok, notOk, equal, contains, notContains, throws, compiled } = require('../../lib/harness');
-const { KDL_WIDGETS, EVENT_SPECS, DESIGNER_EVENTS, widgetSpec, widgetRaises, toolboxGroups, CATEGORY_LABELS } =
+const { KDL_WIDGETS, EVENT_SPECS, DESIGNER_EVENTS, widgetSpec, widgetRaises, toolboxGroups, CATEGORY_LABELS, widgetAddressable } =
     compiled('designer/catalog');
 const { layoutToGrid, resolveGrid, trackSpec, describeGrid } = compiled('designer/grid');
 const {
@@ -236,6 +236,36 @@ test('the five widgets with a body declare the grammar the parser reads', () => 
     }
     equal(widgetSpec('icon').requiresChildren, true, 'an icon cannot be built without a part');
     equal(widgetSpec('panel').children, undefined, 'a panel has no body in the markup');
+});
+
+test('the only widget the parser cannot name is the spacer', () => {
+    // `parse_widget` builds `WidgetDef::Spacer` with no id, so the generated `Widgets` struct has no field
+    // for it and `absolute_rect` can never be asked where it went. Found by the simulator, which tried.
+    const unaddressable = KDL_WIDGETS.filter((widget) => !widgetAddressable(widget.tag)).map((widget) => widget.tag);
+    equal(unaddressable.join(','), 'spacer', 'exactly one widget has no id in codegen');
+});
+
+test('the shapes that do not paint themselves are marked, so a canvas cannot lie about them', () => {
+    // Measured from `emitter.rs`: a rect and a circle become `gui.add_panel(cells[i], Style::panel())` with
+    // their own radius and stroke width only in a trailing comment, and a line becomes `gui.add_spacer`. A
+    // designer that painted the fill the user picked would be showing something the board will not draw.
+    const draws = (tag) => widgetSpec(tag).draws ?? 'widget';
+    equal(draws('rect'), 'panel', 'a rectangle is a theme panel');
+    equal(draws('circle'), 'panel', 'so is a circle');
+    equal(draws('line'), 'nothing', 'a line draws nothing');
+    equal(draws('spacer'), 'nothing', 'neither does a spacer');
+    equal(draws('button'), 'widget', 'a button is drawn for real');
+    equal(draws('panel'), 'widget', 'and so is a panel');
+
+    for (const tag of ['rect', 'circle', 'line']) {
+        for (const property of widgetSpec(tag).props) {
+            ok(
+                property.ignoredByCodegen === true,
+                `${tag}.${property.name} has no effect in codegen and should say so`,
+            );
+        }
+        ok(typeof widgetSpec(tag).note === 'string', `${tag} should carry the caveat the UI shows`);
+    }
 });
 
 test('the Toolbox groups every widget, and only into known categories', () => {
