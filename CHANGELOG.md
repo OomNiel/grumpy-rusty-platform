@@ -11,6 +11,34 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.49] - 2026-10-08
+
+### Fixed
+
+- **The Designer firmware no longer dies on the board.** Flashed to the CYD it took a `DivideByZero` exception
+  and went black. The cause is a grid whose tracks are *all* pixel tracks -- exactly what pixel-exact placement
+  produces: `embedded-gui`'s track resolution divides by the number of fractional tracks, and with none it
+  divides by zero. On the Xtensa core, which has no hardware divide, LLVM's out-of-line division runs
+  speculatively and raises the exception before the source-level zero check can choose the safe branch; on
+  x86_64, where the host simulator runs, it does not. Every emitted grid now ends each axis with a zero-width
+  `1fr` filler, which is provably neutral: the pixel tracks total the canvas exactly, so the space left for a
+  fractional track is zero and the filler resolves to 0 px. All three host checks pass unchanged with it.
+
+### Verified on hardware
+
+- **The designer runs on the CYD.** A generated Designer project, flashed at rotation 3, logs
+  `design: built and painted 480x320` -- and then `design: on_go_clicked fired` when the button on the glass is
+  touched. The whole chain works: design document, markup, build-time code generation, panel, the touch
+  driver's mapping, the widget's hit test, the dispatch match, and the handler the user owns.
+
+### Notes
+
+- The host simulator could not have caught this: the same source is safe on x86_64 and fatal on Xtensa. The
+  host proves the logic; the board proves the code.
+- The symbolised backtrace pointed at a function containing no division, which cost a round. Three
+  flash-and-read cycles settled what another hour of reading would not.
+
+
 ## [0.0.48] - 2026-10-08
 
 ### Added
@@ -1368,7 +1396,8 @@ First build: everything the extension does today, packaged as `grumpy-rusty-plat
 - **An answer is no longer printed twice in the chat.** The streamed pieces drew the answer and the closing
   message added the whole thing again as a second turn; the closing message now *settles* the live turn,
   replacing the streamed text with the authoritative answer.
-[Unreleased]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.48...HEAD
+[Unreleased]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.49...HEAD
+[0.0.49]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.48...v0.0.49
 [0.0.48]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.47...v0.0.48
 [0.0.47]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.46...v0.0.47
 [0.0.46]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.45...v0.0.46

@@ -15,6 +15,9 @@ publish = false
 
 [dependencies]
 embedded-gui = { version = "0.2.7", features = ["embedded-graphics"] }
+# Declared because the *generated* `ui.rs` names it, exactly as a generated project does; without it the
+# dispatch harness would fail to compile for a reason that has nothing to do with the code under test.
+embedded-graphics = "0.8"
 # Host-only: the `expand` bin prints what the crate's code generator makes of our markup.
 embedded-gui-codegen = "0.2.7"
 

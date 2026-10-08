@@ -3934,3 +3934,110 @@ design at the right size and position, that the touch driver's mapped coordinate
 showed (the mapping is the template's long-standing one, but it has never been exercised through this path),
 and that the rotation is right -- the markup is sized for the turned panel while mipidsi is still given the
 native size (§81/§82). No board is on USB at the moment of writing, so that test is queued rather than done.
+
+## 89. On the glass at last, and it dies: a divide-by-zero in the grid layout (2026-10-08)
+
+### What the board did
+
+The Designer project was flashed to the CYD (rotation 3, the orientation its stored calibration belongs to)
+and the board printed its boot, loaded the calibration from flash, and then took an exception:
+
+    Exception occurred on ProCpu 'DivideByZero'
+    Context { PC: 0x400f5a85, A2: 480, A3: 0, ... }
+
+The panic came out of `esp-hal`'s default exception handler, so the *root* fault is the exception, not a Rust
+`panic!`. Symbolising with `espflash monitor --elf` and `xtensa-esp-elf-addr2line` puts the fault inside
+`embedded_gui::layout::GridLayout<5, 5>::resolve_tracks`, at the line of
+
+    let remaining = space.saturating_sub(fixed_sum);
+
+with `<u32>::saturating_sub` inlined there and 480 in `A2` against 0 in `A3`. The design is 480x320 with a
+5x5 grid of **pixel** tracks, which is exactly what the pixel-exact mapping produces: `fixed_sum` is the whole
+480 px of the design and there is no fractional track anywhere in it.
+
+The screen went black, which is what a panic in the paint path looks like.
+
+### What it is not
+
+The same markup, the same generated `ui.rs` and the same 480x320 viewport render perfectly on the host --
+`tests/sim` builds it, paints it, taps it and dispatches it, all in `--e2e`. So the difference is on the device
+side, and a first hypothesis was wrong: reproducing the *target's* mismatch (viewport 480x320, render target
+320x480, which is what mipidsi reports for a rotated panel) does **not** panic on the host
+(`src/bin/box_mismatch.rs`, kept for the next attempt). Something else about the device makes `space` smaller
+than the design's 480 px, and finding it is the next step.
+
+### Where the next attempt starts
+
+The faulting function has no unchecked division left in the code I can read (`checked_div`, `saturating_sub`),
+which means the divisor is a *value* that is zero at runtime rather than a division I can see -- so the next
+step is to make the device tell us: patch `embedded-gui` locally with a print of the resolved track state (a
+`[patch]` entry, a debug build, a flash) and read the numbers. That loop is now cheap: one flash per attempt,
+and the board is on the desk.
+
+Two things are already clear enough to act on: a design whose tracks total more than the space available is
+the trigger, and the designer's landscape canvas is what makes the total 480 while something on the device
+offers less.
+
+### The board is back on a known-good build
+
+The CYD is running the verified touch template again (124 544 bytes) rather than a firmware that dies, so the
+hardware is not left in a broken state while this is worked out.
+
+### And the host-side harness did its job
+
+Before the flash, `tests/sim` gained a third binary that drives the *generated* `ui.rs` -- `new`, `pointer`,
+`pump`, `render`, `repaint`, `is_dirty` -- with counting handlers, so the dispatch chain the extension
+generates is now tested rather than only compiled. Writing it with the wrong expectation found a real
+semantic: **a press captures the widget it lands on**, so a finger that goes down on a button and lifts
+somewhere else still clicks it, while a press that starts on empty canvas clicks nothing even if it ends on
+the button. That is now asserted, and worth knowing because it is not what every toolkit does.
+
+## 90. The fix: one zero-width fractional track, and the designer runs on glass (2026-10-08)
+
+### The bisection, and why the backtrace was a red herring
+
+§89 left a fault inside `resolve_tracks` in a function that contains no division. Three flashes settled it:
+
+1. **A portrait design crashed too** (320x480, rotation 0, the display's own box). That killed the "landscape
+   canvas is wider than mipidsi's box" theory outright -- and the register dump was the clue: `A2` was 320
+   where the landscape run had 480, so the numerator was the *canvas width* in both.
+2. **Disabling the render did not save it.** The `design: built` line still never appeared, which put the fault
+   inside `ui::Designer::new` -- that is, in `build`, before a single pixel was painted.
+3. **One trailing `1fr` track fixed it.** `build` resolves the grid's tracks, and with every track a pixel
+   track there is no fractional track at all.
+
+Which is the whole story: `GridLayout::resolve_tracks` computes `checked_div(total_fr)`. With an all-pixel
+grid, `total_fr` is 0 -- and the source-level zero check does not save the board, because **the Xtensa core has
+no hardware divide**: the division is an out-of-line libcall, LLVM issues it speculatively, and the routine
+raises `EXCCAUSE 6` before the check's `None` can be selected. On x86_64, where the host simulator runs, the
+same source does not trap. That is why every host check passed while the board died, and it is the clearest
+example yet of the rule this project keeps relearning: **the host proves the logic, the board proves the code**.
+
+The symboliser pointing at `saturating_sub` in a function with no division was the other lesson: optimised
+backtraces attribute inlined code to lines that can mislead, and three flash-and-read cycles beat another hour
+of reading.
+
+### The fix
+
+Every emitted grid now ends each axis with `GRID_FILLER` (`1fr`). It is provably neutral rather than a
+fudge: the pixel tracks are built from the design's own edges and include 0 and the full width, so they total
+the canvas exactly, the space left for a fractional track is zero, and the filler resolves to 0 px. The bare
+`trackSpec(tracks, false)` is still the geometry-only form the round-trip tests use, and all three host checks
+still pass with the filler in place -- tracks land exactly, taps reach their widgets, the generated `ui.rs`
+dispatches.
+
+### Confirmed on the board
+
+The properly generated Designer project (rotation 3, no diagnostic hacks) was flashed and the log reads:
+
+    INFO - panel rotation setting: 3
+    INFO - panel ready: 3.5" ST7796 320x480
+    INFO - calibration: loaded from flash - axis1 188..1866 1802..262
+    INFO - design: built and painted 480x320
+    INFO - design: on_go_clicked fired
+
+The last line is the one that matters most: a touch landed on the button in the design and the **generated
+handler ran**. The chain the whole feature rests on -- design document, markup, build-time code generation,
+the panel, the touch driver's mapping, the widget's hit test, the dispatch match, the user's handler -- is
+working on hardware. The template's own log line, added two rounds ago so a flash would be readable, is what
+made this legible.

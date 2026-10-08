@@ -1,5 +1,5 @@
 screen id="SimPanel" width=480 height=320 theme="dark" {
-    grid cols="17px 43px 40px 40px 77px 23px 60px 60px 117px 3px" rows="3px 3px 21px 13px 8px 12px 17px 13px 30px 30px 130px 20px 20px" gap=0 padding=0 {
+    grid cols="17px 43px 40px 40px 77px 23px 60px 60px 117px 3px 1fr" rows="3px 3px 21px 13px 8px 12px 17px 13px 30px 30px 130px 20px 20px 1fr" gap=0 padding=0 {
         rect id="band" radius=0 stroke_width=0 fill="#ff0000" stroke="#ffffff" col=0 row=0 col_span=10 row_span=4
         label id="title" text="Odd coordinates" col=1 row=1 col_span=4 row_span=2
         button id="go" text="Button" bg="#3a6ea5" fg="#f0f0f0" text_color="#ffffff" pressed_bg="#2a5a8a" pressed_fg="#ffffff" disabled_bg="#303030" disabled_fg="#808080" focused_bg="#4a7eb5" focused_fg="#ffffff" border_color="#101010" corner_radius=4 col=1 row=5 col_span=1 row_span=2

@@ -36,6 +36,7 @@ if (!cargo) {
     for (const [name, flag] of [
         ['the designer\'s pixel tracks land where the canvas placed them, on a real render', []],
         ['a tap at a widget\'s designed centre reaches that widget and no other', ['--touch']],
+        ['the generated ui.rs dispatches a tap to the handler it names', ['--dispatch']],
     ]) {
     test(name, () => {
         const tool = path.join(repoRoot(), 'tests', 'tools', 'designer-sim.js');

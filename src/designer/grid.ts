@@ -214,12 +214,34 @@ function cumulative(tracks: readonly number[]): number[] {
 /**
  * The `cols=`/`rows=` attribute value.
  *
- * Every track is emitted in pixels, never `fr`: a fractional track would let the engine redistribute space
- * and the canvas would stop matching the glass, which is the one promise a WYSIWYG designer makes.
+ * Every track that carries geometry is emitted in pixels, never `fr`: a fractional track would let the engine
+ * redistribute space and the canvas would stop matching the glass, which is the one promise a WYSIWYG
+ * designer makes.
+ *
+ * One fractional track is appended all the same, and it never carries anything: the filler below. See
+ * `GRID_FILLER` for why -- on the board, a grid with *no* fractional track at all dies with a divide-by-zero
+ * exception, which took a flash to find and is not visible on the host.
  */
-export function trackSpec(tracks: readonly number[]): string {
-    return tracks.map((track) => `${track}px`).join(' ');
+export function trackSpec(tracks: readonly number[], filler = true): string {
+    const pixels = tracks.map((track) => `${track}px`);
+    return (filler ? [...pixels, GRID_FILLER] : pixels).join(' ');
 }
+
+/**
+ * A zero-width fractional track, appended to every grid instead of being left out.
+ *
+ * `embedded-gui`'s `GridLayout::resolve_tracks` computes `checked_div(total_fr)` over the grid's tracks. When
+ * every track is a pixel track -- which is exactly what pixel-exact placement produces -- `total_fr` is 0, and
+ * the source-level check that would have chosen `None` does not save the board: with no hardware divide on the
+ * Xtensa core, LLVM's libcall for the speculative division executes anyway and raises `EXCCAUSE 6`, and the
+ * firmware dies before it paints anything. On x86_64, where the host simulator runs, it does not.
+ *
+ * The filler costs nothing and moves nothing, which is why it is preferred to any other workaround: this
+ * grid's pixel tracks already total the canvas exactly (the edges include 0 and the full width), so the space
+ * left for a fractional track is zero and the filler resolves to 0 px. The geometry tests assert the tracks
+ * still reproduce the design exactly, and the simulator asserts the rendered rectangles are unchanged.
+ */
+export const GRID_FILLER = '1fr';
 
 /** A one-line summary of a layout, for logs and for test failure messages. */
 export function describeGrid(layout: GridLayout): string {
