@@ -4170,3 +4170,37 @@ what tells you the touch driver and the handlers are working.
 - Rebuilt and flashed the same font design: the log now shows no heartbeats, and `design: built and painted
   480x320` followed by `design: on_go_clicked fired` for each press. The absence of the box is visual, so it is
   the one part a log cannot show.
+
+## 94. Proving a font reaches the pixels, and a menu on the control itself (2026-10-08)
+
+### The font difference, as a check rather than an eyeball
+
+"Fonts work" was verified by looking at the panel. That is not a check: the failure mode of the old field was a
+reference the generator **silently drops**, and a build that drops it compiles and renders perfectly -- with the
+default font. So the harness now renders the fixture twice, once as it stands and once with the declarations
+removed and the reference cleared, and asserts two things about the difference:
+
+- it is **non-zero inside** the rectangle of the widget that was given the font -- otherwise the reference was
+  dropped;
+- it is **zero everywhere else** -- which is what stops the check passing for the wrong reason, since a build
+  that painted nothing at all would otherwise satisfy the first half.
+
+Measured: **34 of 2700 pixels differ inside that label, and 0 of the 150 900 outside it.** The 34 are the
+strokes of the two glyphs, and the second number is the proof that a font is applied to its own widget and
+nothing else.
+
+### The right-click menu
+
+Deleting, duplicating and reordering a control were only reachable from the layer list, which is a list of
+*names*. Right-clicking the control itself is the shorter path, so that is where the menu now is: **Duplicate,
+Bring forward, Send backward, Delete**, with Delete in the error colour. The browser's own menu is suppressed
+even on empty canvas -- one that sometimes shows the page's menu instead is worse than one that does nothing --
+and it closes on a click or Escape.
+
+Writing its test found something worth fixing: a duplicate was named after its **tag**, so a copy of `title`
+came out as `label`, which reads as a different thing entirely. Copies are now named after the widget they copy
+(`title_2`), which is what anyone would expect.
+
+Two mistakes of mine in that test, both worth the note because they are the same mistake: I asserted absolute
+counts of widgets in a session whose state depends on where in the session the assertions sit, and both times the
+fix was to assert *relative to what is there now* (`before + 1`) rather than to a number I had counted by hand.

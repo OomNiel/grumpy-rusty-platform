@@ -30,6 +30,7 @@ import { type DesignerFont, type DesignerWidget, designCanvasSize } from '../../
 import {
     type DesignerState,
     addFont,
+    duplicateWidget,
     moveWidget,
     removeWidget,
     renameWidget,
@@ -549,4 +550,72 @@ function layerList(state: DesignerState, selectedId: string | undefined, callbac
     }
     node.append(list);
     return node;
+}
+
+// ---------------------------------------------------------------- the right-click menu
+
+export interface ContextMenuItem {
+    label: string;
+    action: () => void;
+    /** Drawn in the error colour, for the one that removes something. */
+    danger?: boolean;
+}
+
+/** The open menu, so opening another can replace it and a click anywhere can dismiss it. */
+let openMenu: HTMLElement | undefined;
+
+/**
+ * Opens the menu for a placed control at a point.
+ *
+ * Deleting, duplicating and reordering were only reachable from the layer list, which is a list of names --
+ * right-clicking the thing itself is the shorter path, and the menu is the natural home for the rest.
+ */
+export function showContextMenu(
+    host: HTMLElement,
+    x: number,
+    y: number,
+    items: readonly ContextMenuItem[],
+): void {
+    hideContextMenu(host);
+    const menu = element('div', 'context-menu');
+    for (const item of items) {
+        const entry = button(item.label, item.danger === true ? 'context-item danger' : 'context-item', () => {
+            hideContextMenu(host);
+            item.action();
+        });
+        menu.append(entry);
+    }
+    menu.style.left = `${x}px`;
+    menu.style.top = `${y}px`;
+    host.append(menu);
+    openMenu = menu;
+}
+
+/** Closes it, if one is open. Safe to call when none is. */
+export function hideContextMenu(host: HTMLElement): void {
+    if (openMenu !== undefined) {
+        host.removeChild(openMenu);
+        openMenu = undefined;
+    }
+}
+
+/** The menu a placed control offers. */
+export function widgetMenu(
+    state: DesignerState,
+    id: string,
+    callbacks: PanelCallbacks,
+): ContextMenuItem[] {
+    return [
+        { label: 'Duplicate', action: () => callbacks.onEdit(duplicateWidget(state, id)) },
+        { label: 'Bring forward', action: () => callbacks.onEdit(reorderWidget(state, id, 'up')) },
+        { label: 'Send backward', action: () => callbacks.onEdit(reorderWidget(state, id, 'down')) },
+        {
+            label: 'Delete',
+            danger: true,
+            action: () => {
+                callbacks.onEdit(removeWidget(state, id));
+                callbacks.onSelect(undefined);
+            },
+        },
+    ];
 }

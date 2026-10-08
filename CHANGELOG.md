@@ -11,6 +11,25 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.53] - 2026-10-08
+
+### Added
+
+- **A right-click menu on a placed control**: Duplicate, Bring forward, Send backward and Delete, with Delete in
+  the error colour. Those actions were only reachable from the layer list before; the browser's own menu is
+  suppressed even on empty canvas, and the menu closes on a click or Escape.
+- **A check that a declared font actually reaches the pixels.** The harness renders a design twice — once as it
+  stands, once with its font declarations removed — and asserts the images differ *inside* the widget that was
+  given the font and are **identical everywhere else**. It is the difference from a clear render that makes it
+  evidence: a build where nothing was painted would fail it. Measured: 34 of 2700 pixels differ inside that
+  label, 0 of the 150 900 outside it.
+
+### Fixed
+
+- A duplicated control is named after the widget it copies (`title_2`) rather than after its kind (a copy of
+  `title` used to arrive as `label`).
+
+
 ## [0.0.52] - 2026-10-08
 
 ### Fixed
@@ -1464,7 +1483,8 @@ First build: everything the extension does today, packaged as `grumpy-rusty-plat
 - **An answer is no longer printed twice in the chat.** The streamed pieces drew the answer and the closing
   message added the whole thing again as a second turn; the closing message now *settles* the live turn,
   replacing the streamed text with the authoritative answer.
-[Unreleased]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.52...HEAD
+[Unreleased]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.53...HEAD
+[0.0.53]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.52...v0.0.53
 [0.0.52]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.51...v0.0.52
 [0.0.51]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.50...v0.0.51
 [0.0.50]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.49...v0.0.50

@@ -190,4 +190,54 @@ test('the designer panel boots, builds itself from the catalogue, and posts its 
         'Hello',
         'with the value that was typed',
     );
+    // Right-clicking a placed control offers the per-widget actions, so the layer list is not the only way to
+    // reach them.
+    const menuButton = afterUndo[afterUndo.length - 1].document.widgets.find((widget) => widget.id === 'go');
+    all()
+        .find((element) => element.tagName === 'CANVAS')
+        .emit('contextmenu', {
+            clientX: menuButton.x + 5,
+            clientY: menuButton.y + 5,
+            preventDefault() {},
+        });
+    const menu = all().find((element) => element.classList.contains('context-menu'));
+    ok(menu !== undefined, 'a right-click opens a menu');
+    const entries = menu.children.map((item) => item.textContent);
+    equal(entries.join(', '), 'Duplicate, Bring forward, Send backward, Delete', 'with the four actions');
+    ok(
+        menu.children[menu.children.length - 1].classList.contains('danger'),
+        'and Delete is marked as the destructive one',
+    );
+
+    // Delete, from the menu.
+    messages.length = 0;
+    menu.children.find((item) => item.textContent === 'Delete').emit('click');
+    const afterMenuDelete = messages.filter((message) => message.type === 'changed').pop();
+    ok(afterMenuDelete !== undefined, 'the menu posts a change');
+    equal(
+        afterMenuDelete.document.widgets.some((widget) => widget.id === 'go'),
+        false,
+        'and the widget is gone',
+    );
+    equal(
+        all().some((element) => element.classList.contains('context-menu')),
+        false,
+        'the menu closes behind it',
+    );
+
+    // Duplicate, from the menu: the copy lands beside the original and gets its own name. Counted relative to
+    // what is there now, so this reads the same wherever the block sits in the session.
+    messages.length = 0;
+    const before = afterMenuDelete.document.widgets.length;
+    const label = afterMenuDelete.document.widgets.find((widget) => widget.tag === 'label');
+    all()
+        .find((element) => element.tagName === 'CANVAS')
+        .emit('contextmenu', { clientX: label.x + 3, clientY: label.y + 3, preventDefault() {} });
+    const secondMenu = all().find((element) => element.classList.contains('context-menu'));
+    ok(secondMenu !== undefined, 'the menu opens again');
+    secondMenu.children.find((item) => item.textContent === 'Duplicate').emit('click');
+    const afterDuplicate = messages.filter((message) => message.type === 'changed').pop();
+    ok(afterDuplicate !== undefined, 'duplicating posts a change');
+    equal(afterDuplicate.document.widgets.length, before + 1, 'the design gained exactly one widget');
+    equal(afterDuplicate.document.widgets[before].id, `${label.id}_2`, 'a copy of the one that was clicked');
 });

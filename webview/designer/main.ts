@@ -13,7 +13,7 @@
  */
 
 import { CanvasView } from './canvas';
-import { renderProperties, renderToolbox } from './panels';
+import { hideContextMenu, renderProperties, renderToolbox, showContextMenu, widgetMenu } from './panels';
 import {
     type DesignerState,
     addWidget,
@@ -98,6 +98,11 @@ const view = new CanvasView(canvasElement, {
     onCommit() {
         refreshProperties();
         flushPost();
+    },
+    onContextMenu(id, x, y) {
+        // The menu is offered for the widget under the pointer, which onContextMenu has already selected.
+        root.addEventListener('click', () => hideContextMenu(root), { once: true });
+        showContextMenu(root, x, y, widgetMenu(state, id, panels));
     },
 });
 
@@ -318,6 +323,10 @@ function status(text: string, isProblem: boolean): void {
 // ---------------------------------------------------------------- keyboard
 
 window.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+        hideContextMenu(root);
+        return;
+    }
     const target = event.target as HTMLElement | null;
     // Never steal a key from a field the user is typing in.
     if (target !== null && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT')) {

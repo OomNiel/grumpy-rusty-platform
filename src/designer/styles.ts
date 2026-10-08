@@ -252,6 +252,36 @@ body {
     opacity: 1;
 }
 
+/* The right-click menu on a placed control */
+
+.context-menu {
+    position: absolute;
+    z-index: 10;
+    min-width: 150px;
+    padding: 3px;
+    background: var(--vscode-menu-background, var(--vscode-editor-background));
+    border: 1px solid var(--vscode-menu-border, var(--vscode-panel-border));
+    border-radius: 3px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+
+.context-item {
+    display: block;
+    width: 100%;
+    padding: 4px 8px;
+    text-align: left;
+    background: transparent;
+    border: none;
+    border-radius: 2px;
+}
+
+.context-item:hover {
+    background: var(--vscode-menu-selectionBackground, #094771);
+    color: var(--vscode-menu-selectionForeground, #ffffff);
+}
+
+.context-item.danger { color: var(--vscode-errorForeground, #f48771); }
+
 .problem-list {
     margin: 4px 0 0;
     padding-left: 18px;

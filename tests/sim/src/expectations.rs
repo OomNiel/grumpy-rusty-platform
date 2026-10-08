@@ -12,6 +12,9 @@ pub const EXPECTED_FILL: (i32, i32, Rgb565) = (21, 62, Rgb565::new(7, 27, 20));
 /// The probed widget's own rectangle, so a failure can show what was painted inside it.
 pub const PROBE_RECT: (i32, i32, u32, u32) = (17, 48, 43, 29);
 
+/// The widget the design gives a font to: what the two renders must disagree about.
+pub const FONTED_RECT: (i32, i32, u32, u32) = (200, 120, 90, 30);
+
 /// A point just outside the probed widget, to compare paint against.
 pub const PROBE_REFERENCE: (i32, i32) = (13, 62);
 
