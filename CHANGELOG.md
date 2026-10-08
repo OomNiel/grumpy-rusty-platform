@@ -11,6 +11,28 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.54] - 2026-10-08
+
+### Added
+
+- **A file picker for every field that names a file**: a font's BDF, an image's or mesh's asset, each part of a
+  composite icon. The dialog is the extension's (only it can open one, and only it knows the project folder);
+  the edit stays the panel's, so the chosen path lands in the document and its undo history like any other
+  change. The filters are the formats the build actually reads — BDF, OBJ/STL, and the raster set the `image`
+  crate decodes.
+- **A file from outside the project is copied into `assets/`** and referenced there, because a design's paths are
+  relative to the project root and `../../somewhere/x.bdf` stops working the moment the folder moves. A name
+  already taken gains a number rather than replacing a file the design may be using, and a cancelled dialog
+  changes nothing.
+
+### Verified
+
+- 766 hermetic tests, including the import rules (inside the project, outside it, a name clash, no extension,
+  Windows separators) and the panel round-trip: click, request, answer, edit, cancellation.
+- A path comparison worth naming: `/home/me/project-two` is *not* inside `/home/me/project`, so the check
+  compares path segments rather than string prefixes, and there is a test for it.
+
+
 ## [0.0.53] - 2026-10-08
 
 ### Added
@@ -1483,7 +1505,8 @@ First build: everything the extension does today, packaged as `grumpy-rusty-plat
 - **An answer is no longer printed twice in the chat.** The streamed pieces drew the answer and the closing
   message added the whole thing again as a second turn; the closing message now *settles* the live turn,
   replacing the streamed text with the authoritative answer.
-[Unreleased]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.53...HEAD
+[Unreleased]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.54...HEAD
+[0.0.54]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.53...v0.0.54
 [0.0.53]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.52...v0.0.53
 [0.0.52]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.51...v0.0.52
 [0.0.51]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.50...v0.0.51

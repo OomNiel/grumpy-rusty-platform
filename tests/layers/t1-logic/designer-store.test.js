@@ -11,7 +11,7 @@
  */
 
 const { test, ok, notOk, equal, contains, notContains, compiled } = require('../../lib/harness');
-const { loadDocument, renderDesign, missingAssets } = compiled('designer/store');
+const { loadDocument, renderDesign, missingAssets, planAssetImport, ASSET_DIRECTORY } = compiled('designer/store');
 const { createDocument, defaultProps, defaultChildren, DESIGNER_FILE_VERSION } = compiled('designer/model');
 
 function document(widgets = []) {
@@ -161,4 +161,74 @@ test('a font file that is not in the project is reported against the font', () =
     equal(problems.length, 1, JSON.stringify(problems));
     contains(problems[0], '"title"', 'the font is named');
     contains(problems[0], 'assets/title.bdf', 'and so is the file');
+});
+
+// ---------------------------------------------------------------- bringing a file in
+
+test('a file already in the project is referenced where it is', () => {
+    const plan = planAssetImport({
+        chosen: '/home/me/proj/assets/logo.bmp',
+        projectRoot: '/home/me/proj',
+        taken: () => false,
+    });
+    equal(plan.relativePath, 'assets/logo.bmp', 'the path the design stores');
+    equal(plan.copyFrom, undefined, 'and nothing is copied');
+});
+
+test('a file from outside is copied in rather than referenced', () => {
+    // A path that climbs out of the project works until the folder moves, and then fails at build time with a
+    // path nobody recognises. So it comes in.
+    const plan = planAssetImport({
+        chosen: '/home/me/Pictures/logo.bmp',
+        projectRoot: '/home/me/proj',
+        taken: () => false,
+    });
+    equal(plan.relativePath, `${ASSET_DIRECTORY}/logo.bmp`, 'it lands in assets/');
+    equal(plan.copyFrom, '/home/me/Pictures/logo.bmp', 'and is copied from where it was');
+});
+
+test('a name already taken gains a number rather than replacing anything', () => {
+    const taken = new Set(['assets/logo.bmp', 'assets/logo-2.bmp']);
+    const plan = planAssetImport({
+        chosen: '/home/me/Pictures/logo.bmp',
+        projectRoot: '/home/me/proj',
+        taken: (relative) => taken.has(relative),
+    });
+    equal(plan.relativePath, 'assets/logo-3.bmp', 'the next free name');
+});
+
+test('a name with no extension, and Windows separators, are both handled', () => {
+    const bare = planAssetImport({
+        chosen: '/home/me/Pictures/README',
+        projectRoot: '/home/me/proj',
+        taken: () => false,
+    });
+    equal(bare.relativePath, 'assets/README', 'no extension, no invented one');
+
+    const windows = planAssetImport({
+        chosen: 'C:\\Users\\me\\pics\\logo.bmp',
+        projectRoot: 'C:\\Users\\me\\proj',
+        taken: () => false,
+        separator: '/',
+    });
+    equal(windows.relativePath, 'assets/logo.bmp', 'a Windows path still yields a markup path');
+
+    const inside = planAssetImport({
+        chosen: 'C:\\Users\\me\\proj\\assets\\logo.bmp',
+        projectRoot: 'C:\\Users\\me\\proj',
+        taken: () => false,
+        separator: '/',
+    });
+    equal(inside.relativePath, 'assets/logo.bmp', 'and one inside the project is left alone');
+});
+
+test('the project folder itself is not mistaken for a file inside it', () => {
+    // A prefix match on the string would say this is inside; it is not.
+    const plan = planAssetImport({
+        chosen: '/home/me/project-two/logo.bmp',
+        projectRoot: '/home/me/project',
+        taken: () => false,
+    });
+    equal(plan.relativePath, 'assets/logo.bmp', 'a sibling folder is outside, so the file is copied');
+    equal(plan.copyFrom, '/home/me/project-two/logo.bmp', 'from where it was');
 });

@@ -48,8 +48,37 @@ export interface DesignerReady {
     type: 'ready';
 }
 
-export type DesignerToHost = DesignerChanged | DesignerReady;
-export type HostToDesigner = DesignerInit | DesignerReport;
+/**
+ * Which kind of asset is being chosen, which is only about the file dialog's filter.
+ *
+ * `icon` is an image too, but a separate name because an icon composes several of them and the wording differs.
+ */
+export type DesignerAssetKind = 'font' | 'image' | 'mesh' | 'icon';
+
+/**
+ * The panel asking the extension to choose a file.
+ *
+ * The extension does the choosing -- only it can open a native dialog and only it knows the project folder --
+ * and the panel does the *editing*, when the answer comes back. That keeps the document and its undo history in
+ * one place, which is the arrangement the whole channel is built on.
+ */
+export interface DesignerPickAsset {
+    type: 'pickAsset';
+    /** Matches the answer to the request, since a dialog can take as long as the user takes. */
+    requestId: string;
+    kind: DesignerAssetKind;
+}
+
+/** The extension's answer: a project-relative path, a cancellation, or why it failed. */
+export interface DesignerAssetPicked {
+    type: 'assetPicked';
+    requestId: string;
+    path?: string;
+    error?: string;
+}
+
+export type DesignerToHost = DesignerChanged | DesignerReady | DesignerPickAsset;
+export type HostToDesigner = DesignerInit | DesignerReport | DesignerAssetPicked;
 
 /**
  * The buttons the panel offers beyond editing.

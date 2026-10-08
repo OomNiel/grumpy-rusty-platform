@@ -150,7 +150,8 @@ designer for the active project. Either way it works on a board that carries a p
 - **Fonts** — declare a BDF font once on the Screen panel (name, file, and which characters to embed), and any
   widget that draws text picks it by name. The file is embedded into the firmware at build time, so the
   character set is worth narrowing: a title that only uses digits need not carry the alphabet. Assets are
-  resolved from the project root, which is what the generated `project.kdl` anchors.
+  resolved from the project root, which is what the generated `project.kdl` anchors. Every asset field has a
+  **browse button**, and a file from outside the project is copied into `assets/` rather than referenced.
 
 The design is the source of truth and lives in `designer/panel.ui.json`; `src/ui.kdl` is generated from it, and
 the crate's `include_gui!` compiles that at build time. The rotation control writes the project's own
