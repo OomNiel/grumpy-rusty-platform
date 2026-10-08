@@ -1,0 +1,28 @@
+# The designer's host-side check: compiles the emitted KDL and measures where the engine put it.
+#
+# A separate crate from anything else in this repository on purpose. It is a *host* build (the default
+# features, including `std`), while every generated project is a no_std cross build, and the two must not
+# share a dependency set -- `micromath` versus `std` is exactly the kind of difference that would make this
+# harness prove something about a configuration that never ships.
+#
+# The empty `[workspace]` table keeps cargo from walking up the tree looking for a workspace root.
+
+[package]
+name = "designer-sim"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+embedded-gui = { version = "0.2.7", features = ["embedded-graphics"] }
+# Host-only: the `expand` bin prints what the crate's code generator makes of our markup.
+embedded-gui-codegen = "0.2.7"
+
+[[bin]]
+name = "designer-sim"
+path = "src/main.rs"
+
+[workspace]
+
+[profile.release]
+opt-level = 2

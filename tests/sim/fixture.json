@@ -1,0 +1,38 @@
+{
+    "screenId": "SimPanel",
+    "boardId": "sunton-3248s035r",
+    "panelWidth": 320,
+    "panelHeight": 480,
+    "rotation": 3,
+    "theme": "dark",
+    "comment": [
+        "The design the simulator lays out and measures. Only the properties that differ from the catalogue's",
+        "defaults are listed; tests/tools/designer-sim.js fills the rest in, so this stays readable.",
+        "",
+        "The geometry is chosen so that a mistake has somewhere to show: the band is flush to three edges, the",
+        "title sits inside the band (the common 'label on a background' case, which means two widgets in",
+        "overlapping cells), the button is at odd coordinates, the meter spans the full width, the two footer",
+        "pieces share the vertical edge at x=240, and the spacer is a 3x3 flush against the right edge."
+    ],
+    "probe": {
+        "comment": [
+            "A spot to check paint rather than geometry. The button is probed because it is a widget whose",
+            "background really is painted from its own property; the band cannot be, because the generator",
+            "emits a theme-styled panel for a rect and ignores its fill. The point is left of centre so the",
+            "button's centred text does not sit on it."
+        ],
+        "widget": "go",
+        "x": 21,
+        "y": 62
+    },
+    "widgets": [
+        { "id": "band", "tag": "rect", "x": 0, "y": 0, "width": 480, "height": 40, "props": { "fill": "#ff0000" } },
+        { "id": "title", "tag": "label", "x": 17, "y": 3, "width": 200, "height": 24, "props": { "text": "Odd coordinates" } },
+        { "id": "go", "tag": "button", "x": 17, "y": 48, "width": 43, "height": 29, "events": ["clicked"] },
+        { "id": "knob", "tag": "circle", "x": 100, "y": 60, "width": 40, "height": 30 },
+        { "id": "meter", "tag": "progress", "x": 0, "y": 280, "width": 480, "height": 20, "props": { "value": 50 } },
+        { "id": "foot", "tag": "rect", "x": 0, "y": 300, "width": 240, "height": 20, "props": { "fill": "#102030" } },
+        { "id": "foot2", "tag": "rect", "x": 240, "y": 300, "width": 240, "height": 20, "props": { "fill": "#203040" } },
+        { "id": "tiny", "tag": "spacer", "x": 477, "y": 3, "width": 3, "height": 3 }
+    ]
+}
