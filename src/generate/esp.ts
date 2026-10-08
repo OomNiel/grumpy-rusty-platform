@@ -72,6 +72,14 @@ export interface EspGenerateOptions {
      * rather than into `src/main.rs`, so it stays changeable after the project has been generated.
      */
     rotation?: number;
+    /**
+     * Whether the project should drive its touch controller, for the templates that can be either.
+     *
+     * Also an environment variable rather than a line in `src/main.rs`, and for the same reason: the choice has
+     * to survive that file being written once. Omitted means yes, which is what a project generated before the
+     * setting existed had.
+     */
+    touch?: boolean;
 }
 
 /**
@@ -206,10 +214,15 @@ export function generateEspProjectFiles(options: EspGenerateOptions): GeneratedF
         );
     }
 
+    // A designer project on a board with a touch controller carries the setting; a board without one has no
+    // touch code to switch, and the firmware reads an absent key as "on".
+    const touchSetting =
+        template === 'designer' && board.touch !== undefined ? (options.touch ?? true) : undefined;
+
     const files: GeneratedFile[] = [
         { path: 'Cargo.toml', content: espCargoToml(board, crateName, template, choices) },
         { path: '.cargo/config.toml', content: espCargoConfigToml(board, template) },
-        { path: '.cargo/esp-config.toml', content: espConfigToml(rotation, usesPanel) },
+        { path: '.cargo/esp-config.toml', content: espConfigToml(rotation, usesPanel, touchSetting) },
         { path: 'rust-toolchain.toml', content: espRustToolchainToml() },
         { path: 'build.rs', content: espBuildRs() },
         { path: 'src/main.rs', content: espMainRs(board, template, choices) },
@@ -445,7 +458,7 @@ build-std = [${needsAlloc ? '"alloc", ' : ''}"core"]
 `;
 }
 
-function espConfigToml(rotation: LcdRotation, usesPanel: boolean): string {
+function espConfigToml(rotation: LcdRotation, usesPanel: boolean, touch?: boolean): string {
     // An environment table is what makes the rotation reachable at compile time: cargo applies `[env]` to
     // the rustc invocations, so `option_env!` in main.rs sees it without the extension having to inject
     // anything at build time -- which is also why `cargo run` in a plain terminal honours it.
@@ -457,12 +470,23 @@ function espConfigToml(rotation: LcdRotation, usesPanel: boolean): string {
 LCD_ROTATION = "${rotation}"
 `
         : '';
+    // Whether the firmware drives the touch controller. Written for every Designer project rather than left
+    // to a default, because it is a choice the wizard asks about; the firmware's default only exists for
+    // projects generated before the setting did, which had a working touchscreen and must keep it.
+    const touchEntry =
+        touch === undefined
+            ? ''
+            : `
+# Whether the firmware drives the touch controller, read at compile time by src/main.rs. Only "0" turns it
+# off. The designer's toolbar writes this line; flip it and rebuild for the change to take effect.
+TOUCH_ENABLED = "${touch ? '1' : '0'}"
+`;
     return `# Runtime configuration for the ESP logging stack.
 [env]
 # log level for esp-println, read by esp_println::logger::init_logger_from_env() in main;
 # change to "debug" or "trace" when something is silent.
 ESP_LOG = "info"
-${rotationEntry}`;
+${rotationEntry}${touchEntry}`;
 }
 
 function espRustToolchainToml(): string {
@@ -808,7 +832,7 @@ function espMainRs(board: EspBoardProfile, template: AppTemplate, choices: Board
 #![no_main]
 
 ${espImports(board, template)}
-use esp_backtrace as _;${template === 'designer' ? "\n\n// The design's own module, and the code-behind it calls.\nmod ui;\nmod ui_handlers;\n" + (board.touch === undefined ? '' : "\n/// This project draws the design, so the diagnostic screen the touch template can paint is folded\n/// away at compile time. Kept rather than deleted: it is what to fall back on when a panel comes up wrong.\nconst DESIGNER: bool = true;\n") : ''}
+use esp_backtrace as _;${template === 'designer' ? "\n\n// The design's own module, and the code-behind it calls.\nmod ui;\nmod ui_handlers;\n" + (board.touch === undefined ? '' : "\n/// This project draws the design, so the diagnostic screen the touch template can paint is folded\n/// away at compile time. Kept rather than deleted: it is what to fall back on when a panel comes up wrong.\nconst DESIGNER: bool = true;\n\n/// Whether touch is wanted, read at compile time so the driver, the calibration and the sampling fold\n/// away when it is off: no SPI traffic to a controller nobody asked for. Only \"0\" is off, so a project\n/// generated before the setting existed keeps the touchscreen it had.\nconst TOUCH: bool = match option_env!(\"TOUCH_ENABLED\") {\n    Some(value) => !(value.len() == 1 && value.as_bytes()[0] == b'0'),\n    None => true,\n};\n") : ''}
 
 // The ESP-IDF bootloader expects an application descriptor in the image. Without it the
 // bootloader refuses to start the image, so this line is not decoration.
@@ -1731,10 +1755,13 @@ function espTouchBody(
         let _ = touch_frame(device, TOUCH_POWER_DOWN);
     }
 
-    log::info!(
+${designer ? `    // Only when touch is wanted: naming the controller is part of having asked for it.
+    if TOUCH {
+` : ''}    log::info!(
         "touch: ${touch.controller} on GPIO${touch.cs} (cs), GPIO${touch.irq} (irq), pen level now {}",
         touch_irq.is_low()
-    );
+    );${designer ? `
+    }` : ''}
 ${hardwareSetup}${beepMacro}
 ${hardwareLog.length > 0 ? `    log::info!("board hardware: ${hardwareLog.join(', ')}");` : ''}
 
@@ -1803,13 +1830,21 @@ ${hardwareLog.length > 0 ? `    log::info!("board hardware: ${hardwareLog.join('
 
     // The idle baseline, taken before anything is drawn: this is what the axes read with nothing on the
     // glass, and a touch is judged by how far they move from it.
-    bus.borrow_mut().apply_config(&touch_clock()).expect("touch clock");
-    let (idle_a, _) = touch_axis(&mut touch, TOUCH_AXIS_A);
-    let (idle_b, _) = touch_axis(&mut touch, TOUCH_AXIS_B);
-    touch_idle(&mut touch);
-    bus.borrow_mut().apply_config(&panel_clock()).expect("panel clock");
-    let (idle_a, idle_b) = (i32::from(idle_a), i32::from(idle_b));
-    log::info!("touch: idle baseline a={} b={}", idle_a, idle_b);
+    //
+    // With touch off there is no baseline, because taking one *is* talking to the controller: the bus would be
+    // switched to its clock, two readings taken and the chip powered down again. Found on the board -- the
+    // first version of this guard stopped the sampling in the loop and left the startup naming the controller
+    // and reading it, which is not what "touch off" promised.
+    let (idle_a, idle_b) = ${designer ? 'if TOUCH {' : '{'}
+        bus.borrow_mut().apply_config(&touch_clock()).expect("touch clock");
+        let (idle_a, _) = touch_axis(&mut touch, TOUCH_AXIS_A);
+        let (idle_b, _) = touch_axis(&mut touch, TOUCH_AXIS_B);
+        touch_idle(&mut touch);
+        bus.borrow_mut().apply_config(&panel_clock()).expect("panel clock");
+        let (idle_a, idle_b) = (i32::from(idle_a), i32::from(idle_b));
+        log::info!("touch: idle baseline a={} b={}", idle_a, idle_b);
+        (idle_a, idle_b)
+    }${designer ? ' else {\n        (0, 0)\n    }' : ''};
 
     // A stored calibration is used straight away; a touch within RECALIBRATE_TICKS of boot throws it away
     // and asks for the corners again (see the press edge in the loop below). That gesture is the only way back
@@ -1818,7 +1853,9 @@ ${hardwareLog.length > 0 ? `    log::info!("board hardware: ${hardwareLog.join('
     // content coordinate space, and that space is a different shape after a rotation. A record from another
     // orientation is discarded and the corners are asked for again -- otherwise every touch would land
     // somewhere plausible and wrong, which is the worst way for it to fail.
-    let stored = match calibration_load(&mut flash) {
+    // Read only when touch is wanted: an uncalibrated panel needs no calibration, and with the setting off the
+    // design is painted without a calibration screen ever being considered.
+    let stored = match ${designer ? 'if TOUCH { calibration_load(&mut flash) } else { None }' : 'calibration_load(&mut flash)'} {
         Some(found) if found.0 == rotation_code => Some(found),
         Some(found) => {
             log::warn!(
@@ -1841,7 +1878,7 @@ ${hardwareLog.length > 0 ? `    log::info!("board hardware: ${hardwareLog.join('
             y_from,
             y_to
         ),
-        None => log::info!("calibration: none stored"),
+        None => ${designer ? '{\n            if TOUCH {\n                log::info!("calibration: none stored");\n            }\n        }' : 'log::info!("calibration: none stored"),'}
     }
 
     // The four corners the screen asks for, in the order it asks.
@@ -1898,7 +1935,7 @@ ${hardwareLog.length > 0 ? `    log::info!("board hardware: ${hardwareLog.join('
             display.clear(Rgb565::BLACK).expect("panel write failed");
             let style = MonoTextStyle::new(&FONT_6X10, Rgb565::WHITE);
 
-            if !calibrated {
+            if ${designer ? 'TOUCH && ' : ''}!calibrated {
                 // The calibration screen: one red block per corner, each with a crosshair in it, and the one
                 // being asked for lit up. Touching the crosshair records that corner's raw values.
                 Text::new("Touch the crosshair in the bright block", Point::new(8, 10), style)
@@ -2062,7 +2099,9 @@ ${designer ? `                // The design, painted instead of the diagnostic s
         // Every third tick is about 60 ms; a burst is a few bytes at 2 MHz, so the panel's clock is only
         // away for microseconds.
         ticks = ticks.wrapping_add(1);
-        if ticks % 3 == 0 {
+        // Every third tick, and only when touch is wanted: with the setting off this whole block is folded
+        // away, which keeps the controller's chip select and the bus clock untouched as well as unread.
+        if ${designer ? 'TOUCH && ' : ''}ticks % 3 == 0 {
             bus.borrow_mut().apply_config(&touch_clock()).expect("touch clock");
             let (a, frames_a) = touch_axis(&mut touch, TOUCH_AXIS_A);
             let (b, frames_b) = touch_axis(&mut touch, TOUCH_AXIS_B);

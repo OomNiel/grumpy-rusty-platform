@@ -856,3 +856,38 @@ test('a Designer project does not paint the diagnostic readout over the design',
     contains(mainOf('touch'), 'if redraw_box {', 'the touch template keeps its readout');
     notContains(mainOf('touch'), 'DESIGNER', 'and has no design branch at all');
 });
+
+test('a Designer project carries the touch setting, and its firmware reads it', () => {
+    const filesOf = (template, touch) =>
+        generateProjectFiles({ board: boardById('sunton-3248s035r'), projectName: 'x', template, rotation: 3, touch });
+    const configOf = (files) => files.find((file) => file.path === '.cargo/esp-config.toml').content;
+    const mainOf = (files) => files.find((file) => file.path === 'src/main.rs').content;
+
+    const on = filesOf('designer', true);
+    contains(configOf(on), 'TOUCH_ENABLED = "1"', 'the setting is written for every Designer project');
+    contains(mainOf(on), 'const TOUCH: bool', 'and the firmware reads it at compile time');
+    contains(mainOf(on), 'if TOUCH && ticks % 3 == 0', 'so the sampling folds away when it is off');
+    contains(mainOf(on), 'if TOUCH && !calibrated', 'and so does the calibration screen');
+    contains(mainOf(on), 'if TOUCH { calibration_load', 'and the calibration is not even read');
+
+    const off = filesOf('designer', false);
+    contains(configOf(off), 'TOUCH_ENABLED = "0"', 'off is written as 0');
+
+    // The named templates are what their names say: nothing to switch, and the sampling is unconditional.
+    for (const template of ['touch', 'board']) {
+        const files = filesOf(template, false);
+        notContains(configOf(files), 'TOUCH_ENABLED', `${template} has no setting to make`);
+        contains(mainOf(files), 'if ticks % 3 == 0', `${template} samples unconditionally`);
+        notContains(mainOf(files), 'const TOUCH: bool', `${template} has no constant to read`);
+    }
+
+    // The T-QT has no controller, so its Designer project has no touch code at all.
+    const tqt = generateProjectFiles({
+        board: boardById('lilygo-tqt'),
+        projectName: 'x',
+        template: 'designer',
+        rotation: 0,
+    });
+    notContains(configOf(tqt), 'TOUCH_ENABLED', 'a board without a controller has nothing to switch');
+    notContains(mainOf(tqt), 'const TOUCH', 'and no constant to read');
+});

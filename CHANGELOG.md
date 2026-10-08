@@ -11,6 +11,39 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.55] - 2026-10-08
+
+### Added
+
+- **Touch is a choice.** A Designer project is asked about it in the wizard, beside the rotation question, and
+  the designer's toolbar can change it later — both write `TOUCH_ENABLED` in `.cargo/esp-config.toml`, which the
+  firmware reads at compile time, so the choice survives `src/main.rs` being written once. Touch **off** means no
+  XPT2046 driver, no calibration read and no calibration screen: the design is drawn and nothing responds.
+- **Dropping a control turns touch on.** A widget is interactive exactly when its catalogue entry declares an
+  event, so the rule is data-driven: drop a Button, Slider or Toggle and touch is enabled with a note saying a
+  rebuild is what makes it real. Dropping a Label does nothing.
+- **Switching touch off with controls in the design is reported, not enforced**: those controls will not respond,
+  and the panel says so while still saving the design.
+
+### Notes
+
+- Only `"0"` turns touch off, and an **absent** key means on. That is deliberate: every project generated before
+  this setting existed had a working touchscreen, and a default of "off" would have taken it away on the next
+  build.
+- The `touch` and `board` templates are unchanged — choosing one *is* asking for touch.
+
+### Verified on hardware, both ways
+
+| Build | What the board logged |
+|---|---|
+| touch **off** | `panel ready` … `design: built and painted 480x320`, and **no touch line at all** |
+| touch **on** | the controller, the idle baseline, the calibration loaded from flash, the design painted — and a touch on the glass triggering the recalibration gesture, four corners measured, a fresh calibration stored |
+
+The first version of the guard stopped only the sampling in the loop, and the board showed the startup still
+identifying the controller and reading it: taking a baseline *is* talking to the chip, so the startup is guarded
+too and with touch off the controller is never addressed.
+
+
 ## [0.0.54] - 2026-10-08
 
 ### Added
@@ -1505,7 +1538,8 @@ First build: everything the extension does today, packaged as `grumpy-rusty-plat
 - **An answer is no longer printed twice in the chat.** The streamed pieces drew the answer and the closing
   message added the whole thing again as a second turn; the closing message now *settles* the live turn,
   replacing the streamed text with the authoritative answer.
-[Unreleased]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.54...HEAD
+[Unreleased]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.55...HEAD
+[0.0.55]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.54...v0.0.55
 [0.0.54]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.53...v0.0.54
 [0.0.53]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.52...v0.0.53
 [0.0.52]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.51...v0.0.52

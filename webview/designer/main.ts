@@ -12,6 +12,7 @@
  * whatever the user is typing in.
  */
 
+import { widgetSpec } from '../../src/designer/catalog';
 import { CanvasView } from './canvas';
 import { hideContextMenu, renderProperties, renderToolbox, showContextMenu, widgetMenu } from './panels';
 import {
@@ -64,7 +65,10 @@ let state: DesignerState;
 let selectedId: string | undefined;
 let canvasWidth = 0;
 let canvasHeight = 0;
+/** Whether the board has a touch controller at all: without one, the setting is not a choice. */
 let touchBoard = false;
+/** Whether this project is built with touch, which the toolbar shows and writes. */
+let touchEnabled = true;
 let postTimer: number | undefined;
 
 const root = document.getElementById('designer');
@@ -151,7 +155,8 @@ window.addEventListener('message', (event: MessageEvent<DesignerInit | DesignerR
     if (message.type === 'init') {
         canvasWidth = message.canvas.width;
         canvasHeight = message.canvas.height;
-        touchBoard = message.touch;
+        touchBoard = message.touchBoard;
+        touchEnabled = message.touchEnabled;
         selectedId = undefined;
         state = initialState(message.document);
         view.select(undefined);
@@ -193,8 +198,31 @@ function flushPost(): void {
 
 // ---------------------------------------------------------------- actions
 
+/**
+ * Switches touch on or off for the project.
+ *
+ * The firmware reads it at compile time, so this writes the setting and says as much: the board keeps doing
+ * whatever it was built with until it is built again.
+ */
+function setTouch(enabled: boolean, why?: string): void {
+    if (enabled === touchEnabled) {
+        return;
+    }
+    touchEnabled = enabled;
+    host.postMessage({ type: 'setTouch', enabled });
+    refreshToolbar();
+    status(why ?? (enabled ? 'Touch enabled. Rebuild for it to take effect.' : 'Touch disabled. Rebuild for it to take effect.'), false);
+}
+
 /** A tag dropped or clicked in the Toolbox: put it in the middle of the canvas. */
 function drop(tag: string): void {
+    // A control that raises events is a control that needs touch, so dropping one turns it on rather than
+    // leaving a button that can never be pressed. The catalogue decides which those are: a widget is
+    // interactive exactly when it declares an event.
+    const dropped = widgetSpec(tag);
+    if (touchBoard && !touchEnabled && dropped !== undefined && dropped.events.length > 0) {
+        setTouch(true, `${dropped.label} needs touch, so it is now on. Rebuild to use it.`);
+    }
     const next = addWidget(state, tag, Math.round(canvasWidth / 2 - 24), Math.round(canvasHeight / 2 - 12));
     state = next;
     const added = next.document.widgets[next.document.widgets.length - 1];
@@ -277,6 +305,26 @@ function refreshToolbar(): void {
         flushPost();
     });
 
+    // Touch, beside the rotation: both are project settings the firmware reads at compile time, and both are
+    // asked about in the wizard -- so this is where a later change of mind goes.
+    const touch = document.createElement('select');
+    touch.className = 'tool-select';
+    for (const [label, value] of [
+        ['Touch: on', 'true'],
+        ['Touch: off', 'false'],
+    ] as const) {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = label;
+        touch.append(option);
+    }
+    touch.value = String(touchEnabled);
+    touch.disabled = !touchBoard;
+    touch.title = touchBoard
+        ? 'Whether the firmware drives the touch controller. Changing it needs a rebuild.'
+        : 'This board has no touch controller, so there is nothing to drive.';
+    touch.addEventListener('change', () => setTouch(touch.value === 'true'));
+
     const revealKdl = toolButton('Markup', () => host.postMessage({ type: 'action', action: 'revealKdl' }));
     const revealDocument = toolButton('Design file', () => host.postMessage({ type: 'action', action: 'revealDocument' }));
     const build = toolButton('Build', () => host.postMessage({ type: 'action', action: 'build' }));
@@ -296,6 +344,7 @@ function refreshToolbar(): void {
         separator(),
         zoom,
         rotation,
+        touch,
         separator(),
         revealDocument,
         revealKdl,
@@ -342,7 +391,11 @@ function applyPickedAsset(message: DesignerAssetPicked): void {
 function report(message: DesignerReport): void {
     const problems = message.problems;
     if (problems.length === 0) {
-        status(message.kdl === undefined ? 'Saved.' : `Saved. Markup is ${message.kdl.split('\n').length} lines.`, false);
+        status(
+            message.note ??
+                (message.kdl === undefined ? 'Saved.' : `Saved. Markup is ${message.kdl.split('\n').length} lines.`),
+            false,
+        );
         return;
     }
     status(`${problems.length} problem${problems.length === 1 ? '' : 's'}: ${problems[0]}`, true);

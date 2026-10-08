@@ -20,8 +20,10 @@ export interface DesignerInit {
     canvas: { width: number; height: number };
     /** Where the document and the markup are written, shown in the panel's footer. */
     paths: { document: string; kdl: string };
-    /** True when the board has a touch controller, so events can actually fire on it. */
-    touch: boolean;
+    /** True when the board has a touch controller at all, which is what makes touch a choice. */
+    touchBoard: boolean;
+    /** True when this project is built with touch enabled -- the setting the toolbar shows and writes. */
+    touchEnabled: boolean;
     /** The document as it was read, when it could not be parsed -- shown instead of a blank canvas. */
     loadError?: string;
 }
@@ -41,6 +43,8 @@ export interface DesignerReport {
     kdl?: string;
     /** Set when the document was written but the markup was not, e.g. it does not build. */
     wroteDocument?: boolean;
+    /** Something the panel should say that is not a problem, e.g. that a setting changed. */
+    note?: string;
 }
 
 /** The panel has finished loading and is ready for its document. */
@@ -77,7 +81,18 @@ export interface DesignerAssetPicked {
     error?: string;
 }
 
-export type DesignerToHost = DesignerChanged | DesignerReady | DesignerPickAsset;
+/**
+ * The panel asking for touch to be switched on or off.
+ *
+ * It is a *project* setting rather than part of the design -- flipping it changes the firmware, not the markup --
+ * so the panel asks and the extension writes `.cargo/esp-config.toml`, exactly as the rotation control does.
+ */
+export interface DesignerSetTouch {
+    type: 'setTouch';
+    enabled: boolean;
+}
+
+export type DesignerToHost = DesignerChanged | DesignerReady | DesignerPickAsset | DesignerSetTouch;
 export type HostToDesigner = DesignerInit | DesignerReport | DesignerAssetPicked;
 
 /**

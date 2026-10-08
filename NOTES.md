@@ -4243,3 +4243,58 @@ Comparing paths as strings says `/home/me/project-two/logo.bmp` is inside `/home
 prefix and is a different folder. The comparison is by path *segments* for that reason, and there is a test
 named after it. The planner is a pure function (`planAssetImport`) so that decision, the name-clash rule and the
 separator handling are all tested without touching a filesystem.
+
+## 96. Touch as a choice, and what "off" turned out to mean (2026-10-08)
+
+### A project setting, like the rotation
+
+`TOUCH_ENABLED` lives in `.cargo/esp-config.toml` beside `LCD_ROTATION` and for the same reason: it is the
+project's choice, and it has to survive `src/main.rs` being written once. Both paths are generated and one is
+folded away at compile time, which is what lets the designer's toolbar flip it without regenerating anything:
+
+    const TOUCH: bool = match option_env!("TOUCH_ENABLED") { ... };
+
+Only `"0"` is off, and an absent key means **on**. That is the backwards-compatible answer rather than the tidy
+one: every project generated before this setting existed had a working touchscreen, and a default of "off" would
+have silently taken it away on the next build. The wizard writes the key explicitly for every new Designer
+project, so the default only ever applies to the ones that predate it.
+
+Two things about the folding are worth recording. Matching a `&str` in a `const` is **not stable Rust** --
+`PartialEq` for `str` is not a const trait -- so the first version of that line did not compile (E0658) and the
+comparison is a length and a byte instead. And the `touch` option had to be threaded from `generateProjectFiles`
+down to the ESP generator before it did anything at all, which the first attempt forgot.
+
+### What "off" turned out to mean, from the board
+
+The first version guarded the *loop*: no sampling, no calibration screen, and a build that logged nothing about
+touching. The board said otherwise:
+
+    INFO - touch: XPT2046 on GPIO33 (cs), GPIO36 (irq), pen level now false
+    INFO - touch: idle baseline a=0 b=1701
+    INFO - calibration: none stored
+
+The *startup* still identified the controller, switched the bus to its clock, read the idle baseline twice and
+powered the chip down again. That is traffic to the chip, which is exactly what "the touch controller is only
+enabled when the user asks" forbids. Taking a baseline **is** talking to the controller; there is no such thing
+as a quiet baseline. So the startup is guarded too -- identity log, baseline and the calibration report -- and
+with touch off the chip is never addressed.
+
+### Verified on hardware, both ways
+
+| Build | The log |
+|---|---|
+| touch **off** | `panel ready` … `design: built and painted 480x320`, and **no touch line at all** |
+| touch **on** | the controller, the idle baseline, the calibration loaded from flash, the design painted -- and a touch on the glass triggering the recalibration gesture, the four corners measured and a fresh calibration stored |
+
+### The rules that go with it
+
+- **Dropping a control turns touch on.** A widget is interactive exactly when its catalogue entry declares an
+  event, so the rule needs no second list to maintain: drop a Button or a Slider and touch is enabled with a note
+  saying so and that a rebuild is what makes it real.
+- **Switching it off with controls in the design is reported, not enforced.** A half-built design, or one whose
+  buttons are placeholders, is a legitimate thing to have; but those controls will do nothing on the board, so
+  the panel says exactly that and still saves.
+
+And the oldest hazard in this project bit again: a TypeScript string I built with literal newlines inside it,
+where `tsc` reported the syntax error and **emitted JavaScript anyway** -- leaving a generator that could not even
+load. Fourth time. Read the exit status, not the output.
