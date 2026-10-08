@@ -25,6 +25,13 @@ _Nothing yet._
 
 ### Fixed
 
+- **A project created with the Designer template is now loaded into the IDE.** Its notification offered only
+  "Open Designer", which opened the canvas without ever making the folder part of the window: no Explorer entry,
+  no Source Control, no terminal in it. Creating a project now loads the folder whatever the answer is —
+  including "Later" and "Build Now", which used to leave it out too — by adding it to the current window, with a
+  reload kept as the fallback for a host that will not take it. Because loading a folder can restart the
+  extension host, a Designer that was asked for just before that restart is remembered and reopened on the other
+  side of it.
 - A built-in font name in the Font field used to be markup that did nothing at all: the crate's own fonts are not
   declarable, so `font="Scaled6x10"` was dropped without a word. They now travel as a `style` expression, which is
   the only route the crate has for them — and which for a button has to be a `WidgetStyle`, since the emitter

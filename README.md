@@ -160,6 +160,9 @@ designer for the active project. Either way it works on a board that carries a p
   honour a style — Label, Button and Carousel — while a *declared* BDF is read for Label and Carousel only. A
   Table is given no Font field at all, because the crate's table arm hard-codes its style and would drop one in
   silence.
+- **A created project is loaded** — the folder the wizard writes becomes part of the window whatever the
+  notification's answer is, so the Explorer, Source Control and the terminal are already pointing at it. Loading
+  a folder can restart the extension host, so a Designer asked for at that moment reopens on the other side.
 - **Touch is optional** — asked when the project is made and changeable from the toolbar. With it off there is no
   touch driver, no calibration read and no calibration screen; dropping a control that raises events turns it on
   by itself.

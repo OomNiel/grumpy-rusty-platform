@@ -4363,3 +4363,53 @@ The host harness gained a second fonted widget (a Label with `Scaled6x10`) and a
 
 Three routes, three counts, nothing leaking. 34 px is the declared BDF; 78 and 110 are the built-ins, on a label
 and on a button -- the second of which is only there because the expression is a `WidgetStyle`.
+
+## 98. "The project is created but the folder is not loaded": the Designer skipped a step (2026-10-08)
+
+A report, in the user's own words: *"When creating a project using the Designer, the project is created but the
+folder is not loaded into the IDE."* Exactly right, and the cause was one line: for the designer template the
+notification's first button said **Open Designer** and opened the canvas, where every other template's first
+button said **Open Project** and ran `vscode.openFolder`. The designer flow had been built on the reasonable
+sounding idea that the canvas does not need the folder to be a workspace folder -- `showDesigner` takes an
+explicit target -- and that is true of the canvas and false of everything else. No Explorer entry, no Source
+Control, no terminal opened in the new project, no language service. The extension wrote a project and then
+behaved as though it had not.
+
+The fix is not "call `openFolder` too", because `openFolder` *replaces* the window: the notification, the log and
+the panel that was about to open all go with it, and the wizard would reload the window even when the project was
+created inside the folder that is already open. Instead the folder is added to the current window
+(`updateWorkspaceFolders`), which is non-destructive, and the created project is loaded whatever the user
+answers -- **Later** and **Build Now** never loaded it either, which the same report makes visible once you look.
+
+### The part the API documentation had to be read for
+
+`updateWorkspaceFolders` is not a quiet operation. The `vscode.d.ts` note says it may cause "the currently
+executing extensions (including the one that called this method) to be terminated and restarted ... when the
+first workspace folder is added, removed or changed ... Another case is when transitioning from an empty or
+single-folder workspace into a multi-folder workspace". Between them those two cases are most of how this wizard
+is used, so the naive version of this fix -- record nothing, then `await showDesigner(...)` after the change --
+would lose the panel precisely when the user asked for it, and would look like a race that only some machines
+have.
+
+So the request to open the Designer goes into `globalState` **before** the folder is loaded, and `activate` picks
+it up on the other side:
+
+    requestDesignerAfterReload(...)   // survives the restart
+    await loadIntoIde(target)         // may end this session here
+    await showDesigner(...)           // reached only if it did not
+    await forgetPendingDesigner(...)  // ... and then the request is cancelled
+
+The order of those last two is the whole trick: opening the panel before cancelling the request means that a
+restart which happens *after* the panel opened still finds the request and reopens it, and the panel is a
+singleton, so reopening is harmless. Global state rather than workspace state for the obvious reason -- the
+workspace it belongs to is the thing being created, so there is no identity to key it on yet. And the request
+carries a timestamp, because one that was never consumed (the user closed the window instead of waiting) must not
+open a panel twenty minutes later when the same folder is opened for some other reason.
+
+### What is testable about it
+
+The interesting half is a path question -- is the new project already inside a folder this window has open? --
+so that part is its own module (`src/project/workspaceFolders.ts`) with its own tests, including the case a string
+prefix gets wrong: `/home/abc` is not inside `/home/ab`, and `startsWith` says it is. The two `vscode` calls that
+do the loading are asserted by source, as the other command tests are, along with the ordering above -- which is
+the part that would silently rot.
