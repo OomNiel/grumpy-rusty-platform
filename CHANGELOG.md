@@ -11,6 +11,39 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.51] - 2026-10-08
+
+### Added
+
+- **Fonts are real.** The `Font id` field was a text box that did nothing: a widget's `font` names a font the
+  *screen declares*, and the code generator drops an unresolvable name without a word. A design now declares
+  its fonts — name, BDF file, and optionally the characters to embed — under **Fonts** on the Screen panel, and
+  a widget's `Font` is a dropdown of what is declared, with a way back to the default. The declarations are
+  written into `src/ui.kdl` before the grid, validated (a plain identifier, no two names that collide once the
+  crate has upper-cased them, a file that is actually a `.bdf`, and every reference resolving), and the file is
+  checked while you design like any other asset.
+- **A hover description on every property and every widget.** All 64 distinct properties and all 30 tags carry
+  one line of help, shown as a native tooltip on the field and in the Toolbox. A test asserts the coverage, so a
+  new property cannot arrive without an explanation.
+- The design file went to **version 2**; version 1 documents are migrated rather than refused, since the change
+  is additive.
+
+### Fixed
+
+- **Asset paths were resolved from the wrong directory.** `embedded-gui`'s macros resolve an asset relative to
+  the *screen file's* directory — `src/` — unless a `project.kdl` exists above it. So `src="assets/logo.bmp"`
+  meant `src/assets/logo.bmp` to the compiler while the designer's own check looked in `assets/`. A Designer
+  project now writes a `project.kdl` at its root, which anchors the asset root where the validator expects it —
+  and which makes the project a valid `include_project!` target as a bonus. Found by building the test harness
+  with a font in it; the bug affected images and meshes too.
+
+### Verified
+
+- 758 hermetic tests, `tsc` clean for both the extension and the frontend.
+- The harness carries a real BDF and a label that uses it, so the geometry, touch and dispatch checks all
+  compile a design that declares a font, parses it at build time and renders with it.
+
+
 ## [0.0.50] - 2026-10-08
 
 ### Added
@@ -1416,7 +1449,8 @@ First build: everything the extension does today, packaged as `grumpy-rusty-plat
 - **An answer is no longer printed twice in the chat.** The streamed pieces drew the answer and the closing
   message added the whole thing again as a second turn; the closing message now *settles* the live turn,
   replacing the streamed text with the authoritative answer.
-[Unreleased]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.50...HEAD
+[Unreleased]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.51...HEAD
+[0.0.51]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.50...v0.0.51
 [0.0.50]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.49...v0.0.50
 [0.0.49]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.48...v0.0.49
 [0.0.48]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.47...v0.0.48

@@ -25,7 +25,10 @@ const {
     setProperty,
     toggleEvent,
     reorderWidget,
+    addFont,
+    removeFont,
     setChildren,
+    setFontField,
     setScreenField,
     setRotation,
     canvasOf,
@@ -320,4 +323,55 @@ test('a snapped drag is still kept inside the canvas', () => {
     equal(`${moved.x},${moved.y}`, '0,0', 'it cannot be dragged out through the top-left');
     const far = snapMove({ x: 310, y: 470, width: 40, height: 20 }, { xs: [320], ys: [480] }, { width: 320, height: 480 });
     equal(`${far.x},${far.y}`, `${320 - 40},${480 - 20}`, 'nor out through the bottom-right');
+});
+
+// ---------------------------------------------------------------- fonts
+
+test('a font can be added, renamed and removed, and its name follows the widgets', () => {
+    // A label, because `font` is a property of the tags that draw text.
+    let next = addFont(addWidget(state(), 'label', 10, 10));
+    equal(next.document.fonts.length, 1, 'added');
+    equal(next.document.fonts[0].id, 'font', 'with a plain name');
+    equal(next.document.fonts[0].src, '', 'and no file chosen yet');
+
+    // A second font gets a different name rather than colliding with the first.
+    next = addFont(next);
+    equal(next.document.fonts.map((font) => font.id).join(','), 'font,font_2', 'the second is named apart');
+
+    next = setFontField(next, 'font', 'src', 'assets/title.bdf');
+    next = setFontField(next, 'font', 'chars', '0123456789');
+    equal(next.document.fonts[0].src, 'assets/title.bdf', 'the file');
+    equal(next.document.fonts[0].chars, '0123456789', 'and the character set');
+
+    // A widget pointed at it, then the font is renamed: the reference has to follow, or the design breaks.
+    next = setProperty(next, 'label', 'font', 'font');
+    next = setFontField(next, 'font', 'id', 'title');
+    equal(next.document.fonts[0].id, 'title', 'renamed');
+    equal(
+        next.document.widgets.find((widget) => widget.id === 'label').props.font,
+        'title',
+        'and the widget that named it was renamed with it',
+    );
+
+    // Undo covers the rename as one step, name and references together.
+    next = undo(next);
+    equal(next.document.fonts[0].id, 'font', 'the font name came back');
+    equal(
+        next.document.widgets.find((widget) => widget.id === 'label').props.font,
+        'font',
+        'and so did the reference',
+    );
+
+    next = removeFont(next, 'font');
+    equal(next.document.fonts.map((font) => font.id).join(','), 'font_2', 'the font is gone');
+    equal(
+        next.document.widgets.find((widget) => widget.id === 'label').props.font,
+        '',
+        'and nothing is left pointing at it',
+    );
+});
+
+test('adding a font is one undo step', () => {
+    const withOne = addFont(state());
+    equal(undo(withOne).document.fonts.length, 0, 'undone');
 });

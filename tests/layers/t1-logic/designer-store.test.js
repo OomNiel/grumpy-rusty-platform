@@ -130,3 +130,35 @@ test('every part of a composite icon is checked', () => {
     contains(problems[0], 'bolt.bmp', 'the missing part');
     notContains(problems.join('\n'), 'shell.bmp', 'the present one is not mentioned');
 });
+
+// ---------------------------------------------------------------- fonts
+
+test('a version 1 design is migrated rather than refused', () => {
+    // Version 2 added the fonts list. The change is additive, so refusing the old file would throw away a
+    // design for a field that did not exist when it was written.
+    const old = { ...document([widget('go', 'button', { x: 8, y: 8, width: 96, height: 32 })]), version: 1 };
+    delete old.fonts;
+    const loaded = loadDocument(JSON.stringify(old));
+    equal(loaded.error, undefined, 'it loads');
+    equal(loaded.document.version, DESIGNER_FILE_VERSION, 'brought up to date');
+    equal(loaded.document.fonts.length, 0, 'with an empty font list');
+    equal(loaded.document.widgets.length, 1, 'and nothing else changed');
+});
+
+test('a document with no font list at all still loads', () => {
+    const bare = { ...document(), version: DESIGNER_FILE_VERSION };
+    delete bare.fonts;
+    const loaded = loadDocument(JSON.stringify(bare));
+    equal(loaded.error, undefined, 'an absent list is an empty one, not a broken file');
+    equal(loaded.document.fonts.length, 0, 'normalised');
+});
+
+test('a font file that is not in the project is reported against the font', () => {
+    const doc = document();
+    doc.fonts = [{ id: 'title', src: 'assets/title.bdf', chars: 'AB' }];
+    equal(missingAssets(doc, () => true).length, 0, 'nothing to report when the file is there');
+    const problems = missingAssets(doc, () => false);
+    equal(problems.length, 1, JSON.stringify(problems));
+    contains(problems[0], '"title"', 'the font is named');
+    contains(problems[0], 'assets/title.bdf', 'and so is the file');
+});

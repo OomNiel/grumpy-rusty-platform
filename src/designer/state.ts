@@ -17,6 +17,7 @@
 import {
     type DesignerChildren,
     type DesignerDocument,
+    type DesignerFont,
     type DesignerIconPart,
     type DesignerWidget,
     createDocument,
@@ -262,6 +263,68 @@ export function reorderWidget(state: DesignerState, id: string, direction: 'up' 
         widgets[target] = moved;
         return { ...document, widgets };
     });
+}
+
+/**
+ * Adds a font declaration, with a free name.
+ *
+ * The name is what widgets refer to and what the generated Rust constant is made from, so it is given a plain
+ * identifier rather than anything derived from the file path.
+ */
+export function addFont(state: DesignerState): DesignerState {
+    return edit(state, undefined, (document) => {
+        const fonts = document.fonts ?? [];
+        const taken = new Set(fonts.map((font) => font.id));
+        let id = 'font';
+        for (let n = 2; taken.has(id); n += 1) {
+            id = `font_${n}`;
+        }
+        const font: DesignerFont = { id, src: '', chars: '' };
+        return { ...document, fonts: [...fonts, font] };
+    });
+}
+
+/** Removes a font, and clears the reference from any widget that named it. */
+export function removeFont(state: DesignerState, id: string): DesignerState {
+    return edit(state, undefined, (document) => ({
+        ...document,
+        fonts: (document.fonts ?? []).filter((font) => font.id !== id),
+        // A widget left pointing at a font that no longer exists would be a validation error the user has to
+        // find; clearing it is what deleting the font meant.
+        widgets: document.widgets.map((widget) =>
+            widget.props.font === id ? { ...widget, props: { ...widget.props, font: '' } } : widget,
+        ),
+    }));
+}
+
+/** Sets one field of a font declaration. */
+export function setFontField(
+    state: DesignerState,
+    id: string,
+    field: keyof DesignerFont,
+    value: string,
+): DesignerState {
+    return edit(state, `font:${id}:${field}`, (document) => ({
+        ...document,
+        fonts: (document.fonts ?? []).map((font) => {
+            if (font.id !== id) {
+                return font;
+            }
+            if (field !== 'id') {
+                return { ...font, [field]: value };
+            }
+            // Renaming a font has to rename it for the widgets that use it, or every reference breaks at once.
+            return { ...font, id: value };
+        }),
+        widgets:
+            field === 'id'
+                ? document.widgets.map((widget) =>
+                      widget.props.font === id
+                          ? { ...widget, props: { ...widget.props, font: value } }
+                          : widget,
+                  )
+                : document.widgets,
+    }));
 }
 
 /** Sets the option list, table body or icon parts of a widget that has one. */

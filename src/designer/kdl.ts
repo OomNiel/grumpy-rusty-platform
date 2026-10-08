@@ -153,6 +153,15 @@ export function emitKdl(document: DesignerDocument): string {
     }
 
     const lines: string[] = [`screen ${attributes.join(' ')} {`];
+    // The fonts come first, before the grid: a widget names one, and a reader that meets `font="title"` should
+    // have met the declaration already. `chars` is left out when empty so the loader embeds every glyph.
+    for (const font of document.fonts ?? []) {
+        const parts = [`font id=${quote(font.id)}`, `src=${quote(font.src)}`];
+        if (font.chars !== '') {
+            parts.push(`chars=${quote(font.chars)}`);
+        }
+        lines.push(`    ${parts.join(' ')}`);
+    }
     lines.push(
         `    grid cols=${quote(trackSpec(layout.cols))} rows=${quote(trackSpec(layout.rows))} gap=0 padding=0 {`,
     );

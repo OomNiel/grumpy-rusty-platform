@@ -145,7 +145,12 @@ designer for the active project. Either way it works on a board that carries a p
   them to a neighbour's edge or to the canvas, and reorder them from the layer list. **Ctrl+Z** undoes, and one
   drag is one undo step.
 - **Properties** — position and size, every property the tag has, the events it can raise, its option list,
-  table body or icon parts, and the layer order.
+  table body or icon parts, and the layer order. Every field carries a **hover description**, and the Toolbox
+  entries describe what each widget is.
+- **Fonts** — declare a BDF font once on the Screen panel (name, file, and which characters to embed), and any
+  widget that draws text picks it by name. The file is embedded into the firmware at build time, so the
+  character set is worth narrowing: a title that only uses digits need not carry the alphabet. Assets are
+  resolved from the project root, which is what the generated `project.kdl` anchors.
 
 The design is the source of truth and lives in `designer/panel.ui.json`; `src/ui.kdl` is generated from it, and
 the crate's `include_gui!` compiles that at build time. The rotation control writes the project's own

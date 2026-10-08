@@ -27,8 +27,14 @@ import {
 } from './catalog';
 import { type LcdRotation } from '../display/rotation';
 
-/** Bumped when the on-disk shape changes, so an old document can be refused loudly rather than misread. */
-export const DESIGNER_FILE_VERSION = 1;
+/**
+ * Bumped when the on-disk shape changes, so an old document is never misread.
+ *
+ * Version 2 added `fonts`. Version 1 documents are *migrated* rather than refused (see `migrateDocument` in
+ * `store.ts`): the change is purely additive, so refusing them would throw away work for no reason, and a
+ * migration seam is what makes the version number worth having at all.
+ */
+export const DESIGNER_FILE_VERSION = 2;
 
 /** Where the document lives inside a generated project, relative to the project root. */
 export const DESIGNER_DOCUMENT_PATH = 'designer/panel.ui.json';
@@ -41,6 +47,23 @@ export const DESIGNER_MODULE_PATH = 'src/ui.rs';
 
 /** The code-behind the user owns, written once and never regenerated. */
 export const DESIGNER_HANDLERS_PATH = 'src/ui_handlers.rs';
+
+/**
+ * A font the design declares, which widgets then refer to by name.
+ *
+ * A widget never names a font *file*: it names a font the screen declared, and the markup's parser drops the
+ * reference without a word if no declaration matches. The file itself is a BDF -- that is the only format the
+ * crate's asset loader parses -- and it is embedded into the firmware at build time, so `chars` is worth
+ * setting: a design that only ever shows digits pays for nothing else.
+ */
+export interface DesignerFont {
+    /** The name widgets use, and the one the generated Rust constant is made from. */
+    id: string;
+    /** The BDF file, relative to the project root. */
+    src: string;
+    /** Which characters to embed; empty means all of them. */
+    chars: string;
+}
 
 /** One layer of a composite icon: an asset plus where it sits inside the icon's box. */
 export interface DesignerIconPart {
@@ -91,6 +114,8 @@ export interface DesignerDocument {
     /** The `screen` node's own attributes. There is no background: the markup has no such attribute. */
     screenId: string;
     theme: string;
+    /** Fonts the screen declares, which the widgets' `font` properties refer to by name. */
+    fonts: DesignerFont[];
     widgets: DesignerWidget[];
 }
 
@@ -140,6 +165,26 @@ export function rustFieldName(id: string): string {
     return out;
 }
 
+/**
+ * Mirrors `font_const_name` in `embedded-gui-codegen`, which is what a font name becomes in the generated Rust.
+ *
+ * Two names that differ only in punctuation -- `big-font` and `big font` -- both become `__FONT_BIG_FONT`, and
+ * the second would silently use the first's data. Validation refuses that rather than letting the compiler
+ * report a duplicate constant.
+ */
+export function fontConstName(id: string): string {
+    let out = '__FONT_';
+    for (const c of id) {
+        out += /[A-Za-z0-9]/.test(c) ? c.toUpperCase() : '_';
+    }
+    return out;
+}
+
+/** True when a name can be a font id: the generated Rust constant is built from it, so keep it tame. */
+export function isFontId(value: string): boolean {
+    return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
+}
+
 /** A fresh document for a board, with no widgets. */
 export function createDocument(options: {
     boardId: string;
@@ -156,6 +201,7 @@ export function createDocument(options: {
         rotation: options.rotation,
         screenId: options.screenId,
         theme: 'dark',
+        fonts: [],
         widgets: [],
     };
 }
@@ -260,6 +306,37 @@ export function validateDocument(document: DesignerDocument): string[] {
     const seenIds = new Map<string, string>();
     const seenFields = new Map<string, string>();
 
+    const fonts = document.fonts ?? [];
+    const fontIds = new Set<string>();
+    const fontConstants = new Map<string, string>();
+    for (const font of fonts) {
+        const where = font.id === '' ? '(unnamed font)' : `font "${font.id}"`;
+        if (!isFontId(font.id)) {
+            problems.push(
+                `${where}: the name must start with a letter and contain only letters, digits and underscores`,
+            );
+        } else if (fontIds.has(font.id)) {
+            problems.push(`${where}: two fonts have this name`);
+        } else {
+            fontIds.add(font.id);
+            const constant = fontConstName(font.id);
+            const clash = fontConstants.get(constant);
+            if (clash !== undefined) {
+                problems.push(
+                    `${where}: the name becomes ${constant} in the generated code, which "${clash}" already uses`,
+                );
+            } else {
+                fontConstants.set(constant, font.id);
+            }
+        }
+        if (font.src.trim() === '') {
+            problems.push(`${where}: no font file has been chosen`);
+        } else if (!font.src.toLowerCase().endsWith('.bdf')) {
+            // The crate's asset loader parses BDF and nothing else, so say so here rather than at build time.
+            problems.push(`${where}: "${font.src}" is not a .bdf file, and BDF is the only format the loader reads`);
+        }
+    }
+
     for (const widget of document.widgets) {
         const where = widget.id === '' ? '(unnamed widget)' : `"${widget.id}"`;
 
@@ -308,6 +385,12 @@ export function validateDocument(document: DesignerDocument): string[] {
                 if (!widgetRaises(widget.tag, event)) {
                     problems.push(`${where}: a ${spec.label.toLowerCase()} does not raise ${event}`);
                 }
+            }
+            const font = widget.props.font;
+            if (typeof font === 'string' && font !== '' && !fontIds.has(font)) {
+                // Worth an error rather than a shrug: the markup's parser ignores a font it cannot resolve
+                // without saying anything, so a typo here would look like "the font did nothing".
+                problems.push(`${where}: no font named "${font}" is declared on the screen`);
             }
             problems.push(...childrenProblems(widget, spec.children, spec.label));
         }

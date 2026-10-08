@@ -1,11 +1,12 @@
 {
-  "version": 1,
+  "version": 2,
   "boardId": "sunton-3248s035r",
   "panelWidth": 320,
   "panelHeight": 480,
   "rotation": 0,
   "screenId": "RustyPanel",
   "theme": "dark",
+  "fonts": [],
   "widgets": [
     {
       "id": "title",

@@ -21,7 +21,14 @@
  */
 
 /** The kinds a property can take, which is what decides the editor the property panel shows. */
-export type KdlPropertyKind = 'text' | 'int' | 'float' | 'bool' | 'color' | 'enum' | 'asset';
+/**
+ * The kinds a property can take, which is what decides the editor the property panel shows.
+ *
+ * `font` is its own kind rather than a `text` or an `asset` field because a widget does not name a font
+ * *file*: it names a font the screen declared, and the markup's parser drops the reference silently when no
+ * such font exists. The panel therefore offers the declared names and nothing else.
+ */
+export type KdlPropertyKind = 'text' | 'int' | 'float' | 'bool' | 'color' | 'enum' | 'asset' | 'font';
 
 export interface KdlProperty {
     /** The KDL attribute name, exactly as the parser reads it. */
@@ -224,7 +231,7 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         defaultSize: { width: 96, height: 24 },
         props: [
             { name: 'text', kind: 'text', label: 'Text', defaultValue: 'Label' },
-            { name: 'font', kind: 'asset', label: 'Font id', defaultValue: '' },
+            { name: 'font', kind: 'font', label: 'Font', defaultValue: '' },
         ],
         events: [],
     },
@@ -493,6 +500,7 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
             { name: 'fade', kind: 'bool', label: 'Fade edges', defaultValue: true },
             { name: 'indicator', kind: 'bool', label: 'Show indicator', defaultValue: false },
             { name: 'pulse', kind: 'int', label: 'Pulse', defaultValue: 255, min: 0, max: 255 },
+            { name: 'font', kind: 'font', label: 'Font', defaultValue: '' },
         ],
         events: ['valueChanged', 'scroll'],
     },
@@ -684,4 +692,134 @@ export function propertyRequired(tag: string, property: string): boolean {
  */
 export function widgetAddressable(tag: string): boolean {
     return widgetSpec(tag)?.addressable !== false;
+}
+
+/**
+ * One line of help per property, shown as a tooltip on the field.
+ *
+ * Keyed by property name because most of them mean the same thing wherever they appear; the ones that do not
+ * are in `TAG_PROPERTY_HELP` below. A test asserts that every property of every tag resolves one of these, so
+ * a new property cannot arrive without help.
+ */
+const PROPERTY_HELP: Record<string, string> = {
+    active: 'Whether the spinner is turning',
+    align: 'Where the parts sit inside the widget',
+    bg: 'Background colour',
+    border_color: 'Colour of the border',
+    camera_distance: 'How far the camera sits from the model',
+    checked: 'Whether it starts switched on',
+    color: 'Colour to draw it in',
+    corner_radius: 'How round the corners are, in pixels',
+    count: 'How many items there are to mark',
+    d: 'SVG path data, e.g. "M 0 0 L 32 32 Z"',
+    decimals: 'Digits after the decimal point',
+    digits: 'How many digits to show, including the sign',
+    disabled_bg: 'Background while it cannot be used',
+    disabled_fg: 'Foreground while it cannot be used',
+    end_angle: 'Where the arc stops, in degrees clockwise from the top',
+    fade: 'Whether the items fade out towards the edges',
+    fg: 'Foreground colour',
+    fill: 'Fill colour',
+    fit: 'How the image is fitted into its box',
+    focused_bg: 'Background while it has focus',
+    focused_fg: 'Foreground while it has focus',
+    font: 'A font this screen declares, by name: add one under Fonts on the Screen panel',
+    fov: 'Field of view, in degrees',
+    hour: 'Hour of the day',
+    indicator: 'Whether the position indicator is shown',
+    invert: 'Draw the glyph inverted',
+    is_12h: 'Use a 12-hour clock',
+    is_pm: 'Whether it is the afternoon',
+    item_step: 'Pixels between one item and the next',
+    label: 'Text shown beside the control',
+    major_ticks: 'How many long tick marks to draw',
+    mask_bottom: 'How many pixels to fade at the bottom edge',
+    mask_top: 'How many pixels to fade at the top edge',
+    max: 'Largest value it accepts',
+    message: 'The body text',
+    min: 'Smallest value it accepts',
+    minor_ticks: 'How many short ticks to draw between the long ones',
+    minute: 'Minute of the hour',
+    mode: 'How it is drawn',
+    pitch: 'Tilt up or down, in degrees',
+    pressed_bg: 'Background while it is pressed',
+    pressed_fg: 'Foreground while it is pressed',
+    pulse: 'Brightness of the highlight, from 0 to 255',
+    roll: 'Rotation about the viewing axis, in degrees',
+    selected: 'Index of the chosen item, counting from zero',
+    shading: 'How the surfaces are shaded',
+    shift: 'Scroll offset, in pixels',
+    src: 'File to load, relative to the project root',
+    start_angle: 'Where the arc starts, in degrees clockwise from the top',
+    stroke: 'Outline colour',
+    stroke_width: 'Width of the outline, in pixels',
+    text: 'The words it shows',
+    text_color: 'Colour of the text drawn on it',
+    threshold: 'Brightness at which a pixel counts as ink, from 0 to 255',
+    time: 'The time it shows, as text',
+    tint: 'Colour to draw it in',
+    title: 'Heading text',
+    type: 'Which kind of message it is',
+    unit: 'Suffix shown after the number',
+    value: 'The value it shows',
+    visible: 'Whether this part is drawn',
+    yaw: 'Rotation about the vertical axis, in degrees',
+};
+
+/** The properties whose meaning depends on the widget they belong to. */
+const TAG_PROPERTY_HELP: Record<string, string> = {
+    'scale.mode': 'A dial, or a bar that runs down or across',
+    'chart.mode': 'A line through the points, or bars',
+    'image.mode': 'How the pixels are interpreted, e.g. colour or monochrome',
+    'rect.radius': 'Corner radius in pixels',
+    'circle.radius': 'Radius in pixels',
+    'icon.scale': 'How much to enlarge the glyph',
+    'mesh.scale': 'Size of the model',
+    'icon.align': 'Where the glyph sits inside the box',
+    'mesh.color': 'Base colour of the model',
+    'line.color': 'Colour of the line',
+};
+
+/** One line of help per widget, shown as a tooltip in the Toolbox. */
+const WIDGET_HELP: Record<string, string> = {
+    label: 'Plain text',
+    button: 'A pressable button, with a click event',
+    toggle: 'A switch that stays on or off',
+    checkbox: 'A tick box with a label',
+    slider: 'A value dragged between a minimum and a maximum',
+    dropdown: 'A closed list that opens to choose one option',
+    roller: 'A wheel of options',
+    spinbox: 'A number with up and down steps',
+    number_picker: 'A number with a unit after it',
+    time_picker: 'An hour and a minute',
+    progress: 'A bar that fills to show a value',
+    scale: 'A gauge, as a dial or a bar',
+    arc: 'A sweeping arc',
+    busy_wheel: 'A spinner for work in progress',
+    chart: 'A line or bar plot',
+    status_bar: 'A strip with a clock',
+    content_indicator: 'Dots showing where you are in a set',
+    crumbs: 'A trail of position markers',
+    panel: 'A surface to put things on',
+    dialog: 'A message box with a heading',
+    table: 'Rows and columns of text',
+    carousel: 'A scrolling row of options',
+    image: 'A bitmap from a file in the project',
+    icon: 'A glyph drawn from one or more parts',
+    mesh: 'A 3D model, which your own code draws',
+    spacer: 'Reserves space and draws nothing at all',
+    rect: 'A theme-styled panel: its own colours are ignored by the generator',
+    line: 'Reserves space and draws nothing at all',
+    circle: 'A theme-styled panel: its own colours are ignored by the generator',
+    path: 'A vector outline built from SVG path data',
+};
+
+/** The help for one property of one widget, or `undefined` if it has none. */
+export function propertyHelp(tag: string, property: string): string | undefined {
+    return TAG_PROPERTY_HELP[`${tag}.${property}`] ?? PROPERTY_HELP[property];
+}
+
+/** The one-line description of a widget, for the Toolbox tooltip. */
+export function widgetHelp(tag: string): string | undefined {
+    return WIDGET_HELP[tag];
 }

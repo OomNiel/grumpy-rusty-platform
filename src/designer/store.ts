@@ -15,7 +15,12 @@
  *   that worked.
  */
 
-import { type DesignerDocument, DESIGNER_FILE_VERSION, validateDocument } from './model';
+import {
+    type DesignerDocument,
+    DESIGNER_FILE_VERSION,
+    type DesignerFont,
+    validateDocument,
+} from './model';
 import { emitKdl } from './kdl';
 
 export interface LoadResult {
@@ -46,17 +51,41 @@ export function loadDocument(json: string): LoadResult {
     }
 
     const candidate = parsed as Partial<DesignerDocument>;
-    if (candidate.version !== DESIGNER_FILE_VERSION) {
-        return {
-            error:
-                `the design file says it is version ${String(candidate.version)}, and this extension reads ` +
-                `version ${DESIGNER_FILE_VERSION}`,
-        };
-    }
-    if (typeof candidate.boardId !== 'string' || !Array.isArray(candidate.widgets)) {
+    if (candidate.boardId === undefined || !Array.isArray(candidate.widgets)) {
         return { error: 'the design file is missing its board or its widgets' };
     }
-    return { document: candidate as DesignerDocument };
+    return migrateDocument(candidate);
+}
+
+/**
+ * Brings a stored document up to the current shape.
+ *
+ * Version 1 had no `fonts`, so it migrates by gaining an empty list -- refusing it would throw away work over
+ * a field that did not exist yet. Anything else is refused with both versions named, because a document from a
+ * newer extension may carry fields this one would silently drop on the next save.
+ */
+function migrateDocument(candidate: Partial<DesignerDocument>): LoadResult {
+    const version = candidate.version;
+    if (version === 1) {
+        return {
+            document: { ...(candidate as DesignerDocument), version: DESIGNER_FILE_VERSION, fonts: [] },
+        };
+    }
+    if (version !== DESIGNER_FILE_VERSION) {
+        return {
+            error:
+                `the design file says it is version ${String(version)}, and this extension reads version ` +
+                `${DESIGNER_FILE_VERSION}`,
+        };
+    }
+    return {
+        document: {
+            ...(candidate as DesignerDocument),
+            // A document written by hand, or by a version that predates the field, still loads: an absent list
+            // is an empty one, not a broken file.
+            fonts: Array.isArray(candidate.fonts) ? (candidate.fonts as DesignerFont[]) : [],
+        },
+    };
 }
 
 export interface RenderedDesign {
@@ -104,6 +133,11 @@ export function missingAssets(
     exists: (relativePath: string) => boolean,
 ): string[] {
     const problems: string[] = [];
+    for (const font of document.fonts ?? []) {
+        if (font.src !== '' && !exists(font.src)) {
+            problems.push(`the font "${font.id}" names "${font.src}", which is not in the project`);
+        }
+    }
     for (const widget of document.widgets) {
         const source = widget.props.src;
         if (typeof source === 'string' && source !== '' && !exists(source)) {

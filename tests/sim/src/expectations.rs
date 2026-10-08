@@ -44,6 +44,7 @@ pub fn check(
     one("foot2", widgets.foot2, 240, 300, 240, 20);
     one("eco", widgets.eco, 60, 120, 40, 30);
     one("ok", widgets.ok, 300, 120, 60, 30);
+    one("fonted", widgets.fonted, 200, 120, 90, 30);
     problems
 }
 
