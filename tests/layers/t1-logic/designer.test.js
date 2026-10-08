@@ -269,14 +269,38 @@ test('the shapes that do not paint themselves are marked, so a canvas cannot lie
     }
 });
 
-test('the Toolbox groups every widget, and only into known categories', () => {
+test('the Toolbox offers every widget that can be built, and only into known categories', () => {
     const groups = toolboxGroups();
-    const total = groups.reduce((sum, group) => sum + group.widgets.length, 0);
-    equal(total, KDL_WIDGETS.length, 'every widget appears exactly once');
+    const offered = groups.flatMap((group) => group.widgets.map((widget) => widget.tag));
+    const usable = KDL_WIDGETS.filter((widget) => widget.unavailable === undefined).map((widget) => widget.tag);
+    equal(offered.length, usable.length, 'every buildable widget appears exactly once');
+    equal(new Set(offered).size, offered.length, 'and none of them twice');
     for (const group of groups) {
         equal(group.label, CATEGORY_LABELS[group.category], `${group.category} label`);
         ok(group.widgets.length > 0, `${group.category} should not be an empty group`);
     }
+
+    // The ten the crate cannot build are documented but not handed out: dropping one would produce a project
+    // that does not compile, which is the one thing a WYSIWYG designer must never do.
+    for (const widget of KDL_WIDGETS) {
+        if (widget.unavailable === undefined) {
+            continue;
+        }
+        notOk(offered.includes(widget.tag), `${widget.tag} must not be offered`);
+        ok(widget.unavailable.length > 0, `${widget.tag} must say why not`);
+    }
+    ok(usable.length > 0, 'and the toolbox is not empty');
+    ok(usable.length < KDL_WIDGETS.length, 'the catalogue still documents the ones it cannot offer');
+});
+
+test('a design using a tag the crate cannot build is refused, with the reason', () => {
+    // An older design file, or one hand-edited, can hold one of them. Refusing on load is what turns "the build
+    // failed inside a macro" into "delete this control, here is why".
+    const doc = document(0, [widget('level', 'slider', { x: 8, y: 8, width: 200, height: 28 })]);
+    const problems = validateDocument(doc);
+    equal(problems.length, 1, JSON.stringify(problems));
+    contains(problems[0], '"level"', 'the widget is named');
+    contains(problems[0], 'add_slider', 'and the crate\'s own method is quoted, so the reason can be checked');
 });
 
 // ---------------------------------------------------------------- the grid mapping
@@ -472,7 +496,7 @@ test('a valid document has nothing to report', () => {
     const doc = document(0, [
         widget('title', 'label', { x: 8, y: 8, width: 200, height: 24 }),
         widget('go', 'button', { x: 8, y: 40, width: 96, height: 32, events: ['clicked'] }),
-        widget('level', 'slider', { x: 8, y: 80, width: 200, height: 28, events: ['valueChanged'] }),
+        widget('level', 'progress', { x: 8, y: 80, width: 200, height: 28 }),
     ]);
     equal(validateDocument(doc).length, 0, JSON.stringify(validateDocument(doc)));
 });
@@ -739,6 +763,42 @@ test('the markup declares the fonts before the grid that refers to them', () => 
     // An empty character set is left out, which is what tells the loader to embed every glyph.
     doc.fonts[0].chars = '';
     notContains(emitKdl(doc), 'chars=', 'no empty chars attribute');
+});
+
+test('a widget with children gets a block, because KDL nests by braces and not by indentation', () => {
+    // The bug this pins: the children were emitted on deeper lines with no braces, which KDL reads as *siblings*
+    // of their widget. Every dropdown, roller, carousel, table and icon therefore produced markup that codegen
+    // rejected outright -- "Unknown widget or container node: 'option'" -- and nothing caught it because the
+    // host fixtures used none of those five tags.
+    const doc = document(0, [
+        widget('pick', 'dropdown', { x: 0, y: 0, width: 120, height: 28 }, {
+            props: { ...defaultProps('dropdown') },
+            children: { kind: 'options', values: ['One', 'Two'] },
+        }),
+    ]);
+    const kdl = emitKdl(doc);
+    const lines = kdl.split('\n').map((line) => line.trim());
+    const opening = lines.findIndex((line) => line.startsWith('dropdown '));
+    ok(opening >= 0, 'the widget is there');
+    ok(lines[opening].endsWith('{'), 'and opens a block, rather than letting the children float');
+    equal(lines[opening + 1], 'option "One"', 'the first child is inside it');
+    equal(lines[opening + 2], 'option "Two"', 'and so is the second');
+    equal(lines[opening + 3], '}', 'and the block is closed again');
+    // An icon is the same shape, and its parts are the ones codegen refuses to meet as widgets.
+    const withIcon = document(0, [
+        widget('mark', 'icon', { x: 0, y: 0, width: 32, height: 32 }, {
+            props: { ...defaultProps('icon') },
+            children: {
+                kind: 'parts',
+                parts: [{ src: 'assets/a.png', x: 0, y: 0, visible: true, tint: '' }],
+            },
+        }),
+    ]);
+    const iconLines = emitKdl(withIcon).split('\n').map((line) => line.trim());
+    const iconAt = iconLines.findIndex((line) => line.startsWith('icon '));
+    ok(iconLines[iconAt].endsWith('{'), 'an icon opens a block too');
+    ok(iconLines[iconAt + 1].startsWith('part '), 'with its part inside');
+    equal(iconLines[iconAt + 2], '}', 'and closed');
 });
 
 // ---------------------------------------------------------------- built-in fonts

@@ -206,9 +206,33 @@ export interface KdlWidgetSpec {
      * simply does not offer.
      */
     fontSupport?: FontSupport;
+    /**
+     * Why this tag cannot be used at all, when it cannot.
+     *
+     * Not a caveat about its looks -- that is `note` -- but a defect that makes the widget's generated code fail
+     * to build. The catalogue still documents these tags, because they are part of the crate, but the Toolbox
+     * does not offer them and validation refuses a design that contains one: a designer whose canvas promises
+     * something the toolchain cannot produce is worse than one with fewer controls.
+     *
+     * The text is the reason, and it is shown to the user. See `NOTES.md` §100 for the evidence.
+     */
+    unavailable?: string;
     props: readonly KdlProperty[];
     events: readonly DesignerEvent[];
 }
+
+/**
+ * The defect that makes a tag's generated code fail to build, quoted from the compiler.
+ *
+ * `embedded-gui-codegen` 0.2.7 and `embedded-gui` 0.2.7 do not agree with one another for ten of the tags it
+ * parses: the emitter calls builder methods the runtime does not have, passes the wrong number or type of
+ * arguments, or names types it never brings into scope. Each of those is a `cargo build` failure inside the
+ * `include_gui!` macro, with no markup that can avoid it -- the call is written by the crate, not by us.
+ *
+ * Written once here because the ten vary only in which method and which error, and because the day the crate is
+ * fixed all ten are deleted together.
+ */
+const CRATE_DEFECT = 'embedded-gui-codegen 0.2.7 emits a call the runtime crate does not accept: ';
 
 /**
  * The crate's named base styles, for the widgets whose emitter honours one.
@@ -318,6 +342,7 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         aliases: [],
         label: 'Slider',
         category: 'input',
+        unavailable: CRATE_DEFECT + "add_slider is declared (value: f32, min: f32, max: f32) but is called with three i32 fields in the order (min, max, value) -- error[E0308] and, once it compiles, the wrong value",
         defaultSize: { width: 160, height: 28 },
         props: [
             { name: 'min', kind: 'int', label: 'Minimum', defaultValue: 0 },
@@ -366,6 +391,7 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         aliases: [],
         label: 'Number picker',
         category: 'input',
+        unavailable: CRATE_DEFECT + "there is no add_number_picker -- error[E0599]",
         defaultSize: { width: 96, height: 28 },
         props: [
             { name: 'min', kind: 'int', label: 'Minimum', defaultValue: 0 },
@@ -380,6 +406,7 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         aliases: [],
         label: 'Time picker',
         category: 'input',
+        unavailable: CRATE_DEFECT + "there is no add_time_picker -- error[E0599]",
         defaultSize: { width: 120, height: 32 },
         props: [
             { name: 'hour', kind: 'int', label: 'Hour', defaultValue: 12, min: 0, max: 23 },
@@ -425,6 +452,7 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         aliases: ['sweeping_arc'],
         label: 'Sweeping arc',
         category: 'value',
+        unavailable: CRATE_DEFECT + "add_sweeping_arc takes ten arguments and is called with four -- error[E0061]",
         defaultSize: { width: 96, height: 96 },
         props: [
             { name: 'start_angle', kind: 'int', label: 'Start angle', defaultValue: 0, min: -32768, max: 32767 },
@@ -437,6 +465,7 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         aliases: ['spinner'],
         label: 'Busy wheel',
         category: 'value',
+        unavailable: CRATE_DEFECT + "there is no add_busy_wheel -- error[E0599]",
         defaultSize: { width: 48, height: 48 },
         props: [{ name: 'active', kind: 'bool', label: 'Spinning', defaultValue: true }],
         events: [],
@@ -446,6 +475,7 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         aliases: ['plotter'],
         label: 'Chart',
         category: 'value',
+        unavailable: CRATE_DEFECT + "add_plotter takes (values, head, min, max) and is called with a ChartMode -- error[E0061]",
         defaultSize: { width: 160, height: 96 },
         props: [
             { name: 'mode', kind: 'enum', label: 'Mode', defaultValue: 'line', options: ['line', 'bar'] },
@@ -457,6 +487,7 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         aliases: [],
         label: 'Status bar',
         category: 'value',
+        unavailable: CRATE_DEFECT + "there is no add_status_bar -- error[E0599]",
         defaultSize: { width: 240, height: 24 },
         props: [{ name: 'time', kind: 'text', label: 'Time', defaultValue: '12:00' }],
         events: [],
@@ -466,6 +497,7 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         aliases: [],
         label: 'Content indicator',
         category: 'value',
+        unavailable: CRATE_DEFECT + "there is no add_content_indicator -- error[E0599]",
         defaultSize: { width: 72, height: 16 },
         props: [
             { name: 'count', kind: 'int', label: 'Count', defaultValue: 3, min: 1, max: 255 },
@@ -478,6 +510,7 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         aliases: ['crumbs_indicator'],
         label: 'Crumbs indicator',
         category: 'value',
+        unavailable: CRATE_DEFECT + "there is no add_crumbs_indicator -- error[E0599]",
         defaultSize: { width: 72, height: 16 },
         props: [
             { name: 'count', kind: 'int', label: 'Count', defaultValue: 3, min: 1, max: 255 },
@@ -688,6 +721,7 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         aliases: ['vector_path'],
         label: 'Vector path',
         category: 'shape',
+        unavailable: CRATE_DEFECT + "the generated path code names Point, which is never imported, and builds PathVerb::QuadTo as a tuple variant where the runtime declares a struct variant -- error[E0433]",
         defaultSize: { width: 96, height: 96 },
         props: [
             { name: 'stroke_width', kind: 'int', label: 'Stroke width', defaultValue: 1, min: 1, max: 32 },
@@ -717,7 +751,9 @@ export function toolboxGroups(): { category: KdlCategory; label: string; widgets
     const groups = categories.map((category) => ({
         category,
         label: CATEGORY_LABELS[category],
-        widgets: KDL_WIDGETS.filter((widget) => widget.category === category),
+        // Only what can be built. An unavailable tag is still in the catalogue -- its properties are documented
+        // and a design that already contains one is reported by name -- but it is not something to hand out.
+        widgets: KDL_WIDGETS.filter((widget) => widget.category === category && widget.unavailable === undefined),
     }));
     return groups.filter((group) => group.widgets.length > 0);
 }

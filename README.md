@@ -160,6 +160,11 @@ designer for the active project. Either way it works on a board that carries a p
   honour a style — Label, Button and Carousel — while a *declared* BDF is read for Label and Carousel only. A
   Table is given no Font field at all, because the crate's table arm hard-codes its style and would drop one in
   silence.
+- **Only buildable controls are offered** — the Toolbox lists the tags whose generated code compiles against
+  `embedded-gui` 0.2.7. Ten of the crate's own tags (`slider`, `arc`, `busy_wheel`, `chart`, `status_bar`,
+  `time_picker`, `number_picker`, `content_indicator`, `crumbs`, `path`) are parsed by its code generator but
+  emit calls its runtime does not accept, so they are documented and refused rather than handed out. A design
+  that already contains one says so, by name, with the reason, and the control can be selected and deleted.
 - **A created project is loaded** — the folder the wizard writes becomes part of the window whatever the
   notification's answer is, so the Explorer, Source Control and the terminal are already pointing at it. Loading
   a folder can restart the extension host, so a Designer asked for at that moment reopens on the other side.

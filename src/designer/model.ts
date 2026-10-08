@@ -388,6 +388,12 @@ export function validateDocument(document: DesignerDocument): string[] {
                     problems.push(`${where}: a ${spec.label.toLowerCase()} does not raise ${event}`);
                 }
             }
+            if (spec.unavailable !== undefined) {
+                // Refused rather than emitted: the crate writes this widget's builder call itself, and there is
+                // no markup that makes it compile. Saying so here is the difference between a design that
+                // cannot be built and a design that explains why.
+                problems.push(`${where}: ${spec.unavailable}`);
+            }
             const style = widget.props.style;
             if (typeof style === 'string' && style !== '' && !isNamedStyle(style)) {
                 // The resolver passes a name it does not know through *verbatim*, as Rust. A typo would not be

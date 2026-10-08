@@ -154,12 +154,14 @@ test('the designer panel boots, builds itself from the catalogue, and posts its 
         'including the description of the text property',
     );
 
-    // The Toolbox is generated from the catalogue, so it holds one entry per tag the markup supports.
+    // The Toolbox is generated from the catalogue, so it holds one entry per tag that can actually be built.
+    // The tags the crate's codegen cannot produce are in the catalogue but not in the toolbox.
     const toolboxItems = all().filter((element) => element.classList.contains('toolbox-item'));
+    const usable = KDL_WIDGETS.filter((widget) => widget.unavailable === undefined);
     equal(
         toolboxItems.length,
-        KDL_WIDGETS.length,
-        `every widget tag is offered, catalogue has ${KDL_WIDGETS.length}`,
+        usable.length,
+        `every buildable widget tag is offered, catalogue has ${KDL_WIDGETS.length}`,
     );
     ok(
         toolboxItems.some((item) => item.textContent === 'Button'),

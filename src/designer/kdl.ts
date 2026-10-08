@@ -193,10 +193,18 @@ export function emitKdl(document: DesignerDocument): string {
         if (widget === undefined || placement === undefined) {
             throw new Error('internal: the layout and the widget list disagree');
         }
-        lines.push(widgetLine(widget, placement, '        '));
-        for (const child of childLines(widget, '            ') ?? []) {
-            lines.push(child);
+        const children = childLines(widget, '            ');
+        if (children === undefined || children.length === 0) {
+            lines.push(widgetLine(widget, placement, '        '));
+            continue;
         }
+        // Braces, not indentation. KDL has no indentation-based nesting: children written on deeper lines are
+        // *siblings* of their widget, and codegen rejects them outright -- "Unknown widget or container node:
+        // 'option'" -- so a dropdown or an icon produced markup that could not be parsed at all. The screen and
+        // the grid were always braced, which is what made the omission here invisible.
+        lines.push(`${widgetLine(widget, placement, '        ')} {`);
+        lines.push(...children);
+        lines.push('        }');
     }
 
     lines.push('    }');
