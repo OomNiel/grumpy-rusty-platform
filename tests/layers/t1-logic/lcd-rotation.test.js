@@ -27,6 +27,7 @@ const {
     lcdRotationLine,
     setLcdRotationInConfig,
     configHasRotation,
+    lcdRotationFromConfig,
 } = compiled('display/rotation');
 
 const CYD = 'sunton-3248s035r';
@@ -226,4 +227,28 @@ test('a hand-edited line is recognised by its value, not by its position', () =>
         1,
         'the hand-edited line is replaced, not duplicated',
     );
+});
+
+/**
+ * Reading the setting back.
+ *
+ * The designer draws its canvas for the rotation the project is built with, so it has to read the setting
+ * rather than assume it -- and a file with no entry, one that says something else, or one whose line was
+ * hand-edited into a comment all mean the same thing: no rotation.
+ */
+test('the rotation is read back out of the config, or defaults to none', () => {
+    equal(lcdRotationFromConfig('[env]\nLCD_ROTATION = "3"\n'), 3, 'a quoted value');
+    equal(lcdRotationFromConfig('[env]\nLCD_ROTATION=1\n'), 1, 'an unquoted one');
+    equal(lcdRotationFromConfig('  LCD_ROTATION = "2"  \n'), 2, 'leading and trailing space');
+    equal(lcdRotationFromConfig('[env]\nLCD_ROTATION = "3" # turned for the desk\n'), 3, 'a trailing comment');
+    equal(lcdRotationFromConfig('[env]\nOTHER = "1"\n'), 0, 'a file that does not mention it');
+    equal(lcdRotationFromConfig(''), 0, 'an empty file');
+    equal(lcdRotationFromConfig('[env]\nLCD_ROTATION = "9"\n'), 0, 'a value that is not one of the four');
+    equal(lcdRotationFromConfig('[env]\n# LCD_ROTATION = "1"\n'), 0, 'a commented-out line');
+});
+
+test('what is written can be read back', () => {
+    for (const rotation of LCD_ROTATIONS) {
+        equal(lcdRotationFromConfig(setLcdRotationInConfig('', rotation)), rotation, `rotation ${rotation}`);
+    }
 });

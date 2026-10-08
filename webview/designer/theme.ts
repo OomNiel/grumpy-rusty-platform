@@ -1,0 +1,201 @@
+/**
+ * How the canvas paints each widget.
+ *
+ * This file exists because of what the simulator found: the markup's properties do not always reach the
+ * pixels. A `rect` becomes a theme-styled panel whatever colour the user picked, a `line` draws nothing at
+ * all, a button's background is painted over by a gradient the markup cannot turn off. A WYSIWYG canvas that
+ * ignored all that and painted the user's choices would be confidently wrong about the one thing it exists
+ * to show.
+ *
+ * So every tag is drawn here according to `KDL_WIDGETS[].draws`, and the parts that are *not* what the
+ * document says are drawn as such: nothing is a dashed outline, a theme panel is the theme's surface colour,
+ * and a placeholder that needs an asset says so. Where a property does reach the pixels -- button labels,
+ * a panel's text -- it is used.
+ *
+ * These colours are the designer's own approximation of the crate's dark theme so the canvas reads like the
+ * board. They are not read from the crate: the point is what shapes are where, not an exact match of a
+ * palette that the board decides for itself.
+ */
+
+import { widgetSpec } from '../../src/designer/catalog';
+import type { DesignerWidget } from '../../src/designer/model';
+
+export interface Palette {
+    /** The screen behind everything. */
+    screen: string;
+    /** What a widget drawn for real looks like when it has no colour property of its own. */
+    widget: string;
+    /** A widget's border. */
+    border: string;
+    /** What the engine actually paints for a `rect` or a `circle`. */
+    themePanel: string;
+    /** Text drawn on a widget. */
+    text: string;
+    /** The selection outline. */
+    selection: string;
+    /** The resize handles. */
+    handle: string;
+    /** A guide line shown while snapping. */
+    guide: string;
+    /** Anything the board will not draw. */
+    placeholder: string;
+    /** Grid lines on the empty screen. */
+    grid: string;
+}
+
+/** The dark theme, near enough to the crate's own to read as the same board. */
+export const DARK_PALETTE: Palette = {
+    screen: '#101418',
+    widget: '#2a3138',
+    border: '#4a545e',
+    themePanel: '#1b2026',
+    text: '#e6e9ec',
+    selection: '#4ea1ff',
+    handle: '#ffffff',
+    guide: '#ff5d8f',
+    placeholder: '#8a939c',
+    grid: '#1a1f25',
+};
+
+/** How far the id label sits from a widget's top-left corner. */
+const LABEL_INSET = 3;
+
+/** Rounds a rectangle path, so a widget with corners looks like one. */
+function roundedRect(
+    context: CanvasRenderingContext2D,
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+    radius: number,
+): void {
+    const r = Math.max(0, Math.min(radius, Math.floor(Math.min(width, height) / 2)));
+    context.beginPath();
+    if (r === 0) {
+        context.rect(x, y, width, height);
+        return;
+    }
+    context.moveTo(x + r, y);
+    context.lineTo(x + width - r, y);
+    context.quadraticCurveTo(x + width, y, x + width, y + r);
+    context.lineTo(x + width, y + height - r);
+    context.quadraticCurveTo(x + width, y + height, x + width - r, y + height);
+    context.lineTo(x + r, y + height);
+    context.quadraticCurveTo(x, y + height, x, y + height - r);
+    context.lineTo(x, y + r);
+    context.quadraticCurveTo(x, y, x + r, y);
+    context.closePath();
+}
+
+/** The text a widget shows, from whichever property its tag actually uses. */
+function labelOf(widget: DesignerWidget): string {
+    for (const name of ['text', 'label', 'title', 'unit']) {
+        const value = widget.props[name];
+        if (typeof value === 'string' && value !== '') {
+            return value;
+        }
+    }
+    return widgetSpec(widget.tag)?.label ?? widget.tag;
+}
+
+/**
+ * Draws one widget at its document rectangle.
+ *
+ * `offsetX`/`offsetY` are the canvas origin in *device* pixels, so the panel can draw at whatever zoom the
+ * context has been scaled to without this function knowing about it.
+ */
+export function drawWidget(
+    context: CanvasRenderingContext2D,
+    widget: DesignerWidget,
+    palette: Palette,
+): void {
+    const spec = widgetSpec(widget.tag);
+    const draws = spec?.draws ?? 'widget';
+    const { x, y, width, height } = widget;
+
+    if (draws === 'nothing') {
+        // A line or a spacer reserves its space and paints none of it: show the space, mark it as empty.
+        context.save();
+        context.setLineDash([4, 3]);
+        context.strokeStyle = palette.placeholder;
+        context.lineWidth = 1;
+        context.strokeRect(x + 0.5, y + 0.5, Math.max(0, width - 1), Math.max(0, height - 1));
+        context.restore();
+    } else {
+        const radius = typeof widget.props.corner_radius === 'number' ? widget.props.corner_radius : 2;
+        // A theme panel is what the engine paints for the shapes; everything else is a widget surface.
+        const background = draws === 'panel' ? palette.themePanel : palette.widget;
+        context.fillStyle = background;
+        roundedRect(context, x, y, width, height, radius);
+        context.fill();
+        context.strokeStyle = palette.border;
+        context.lineWidth = 1;
+        context.stroke();
+
+        if (width > 16 && height > 12) {
+            context.save();
+            context.beginPath();
+            context.rect(x, y, width, height);
+            context.clip();
+            context.fillStyle = palette.text;
+            context.font = '11px sans-serif';
+            context.textBaseline = 'middle';
+            context.fillText(labelOf(widget), x + LABEL_INSET + 2, y + height / 2, width - 8);
+            context.restore();
+        }
+    }
+
+    // The widget's name, small, in the corner: the fastest way to find the one the property panel is showing.
+    if (width > 24 && height > 14) {
+        context.save();
+        context.fillStyle = palette.placeholder;
+        context.font = '9px sans-serif';
+        context.textBaseline = 'top';
+        context.fillText(widget.id, x + LABEL_INSET, y + LABEL_INSET, width - LABEL_INSET * 2);
+        context.restore();
+    }
+
+    // An asset-backed widget will not build until its file exists, which is worth saying on the canvas.
+    if (spec?.tag === 'image' || spec?.tag === 'mesh') {
+        const source = widget.props.src;
+        if (typeof source !== 'string' || source === '') {
+            context.save();
+            context.fillStyle = palette.placeholder;
+            context.font = '9px sans-serif';
+            context.textAlign = 'center';
+            context.textBaseline = 'bottom';
+            context.fillText('needs an asset', x + width / 2, y + height - 2);
+            context.restore();
+        }
+    }
+}
+
+/** The eight handles around a selected widget. */
+export function drawSelection(
+    context: CanvasRenderingContext2D,
+    widget: DesignerWidget,
+    palette: Palette,
+    handleSize: number,
+): void {
+    context.save();
+    context.strokeStyle = palette.selection;
+    context.lineWidth = 1;
+    context.strokeRect(widget.x + 0.5, widget.y + 0.5, Math.max(0, widget.width - 1), Math.max(0, widget.height - 1));
+
+    const half = Math.floor(handleSize / 2);
+    const centres: [number, number][] = [
+        [widget.x, widget.y],
+        [widget.x + Math.floor(widget.width / 2), widget.y],
+        [widget.x + widget.width, widget.y],
+        [widget.x + widget.width, widget.y + Math.floor(widget.height / 2)],
+        [widget.x + widget.width, widget.y + widget.height],
+        [widget.x + Math.floor(widget.width / 2), widget.y + widget.height],
+        [widget.x, widget.y + widget.height],
+        [widget.x, widget.y + Math.floor(widget.height / 2)],
+    ];
+    context.fillStyle = palette.handle;
+    for (const [cx, cy] of centres) {
+        context.fillRect(cx - half, cy - half, handleSize, handleSize);
+    }
+    context.restore();
+}

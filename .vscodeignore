@@ -14,3 +14,4 @@ sidecar/**/.backend
 .dsh-worktrees/**
 **/.cargo-home/**
 **/target/**
+webview/**

@@ -90,3 +90,23 @@ export function setLcdRotationInConfig(content: string, rotation: LcdRotation): 
 export function configHasRotation(content: string, rotation: LcdRotation): boolean {
     return content.split('\n').some((candidate) => candidate.trim() === lcdRotationLine(rotation));
 }
+
+/**
+ * The rotation a `.cargo/esp-config.toml` asks for, or "no rotation" when it does not say.
+ *
+ * The counterpart to `setLcdRotationInConfig`, and needed for the same reason: the designer draws its canvas
+ * for the rotation the project is built with, so it has to read the setting rather than assume it. A file
+ * with no entry, a value that is not one of the four, or a hand-edit that left a comment in place all mean
+ * the same thing -- the panel is not rotated -- rather than an error, since 0 is what the panel does without
+ * being told otherwise.
+ */
+export function lcdRotationFromConfig(content: string): LcdRotation {
+    for (const line of content.split('\n')) {
+        const match = /^\s*LCD_ROTATION\s*=\s*"?'?(\d)'?"?\s*(?:#.*)?$/.exec(line);
+        if (match !== null) {
+            const value = Number(match[1]);
+            return asLcdRotation(value);
+        }
+    }
+    return 0;
+}

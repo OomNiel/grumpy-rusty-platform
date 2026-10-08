@@ -5,6 +5,7 @@ import { ProjectViewProvider } from './ui/projectView';
 import { ControlsViewProvider } from './ui/controlsView';
 import { StatusBarView } from './ui/statusBar';
 import { registerNewProjectCommand } from './commands/newProject';
+import { registerDesignerCommands } from './commands/designerCommands';
 import { registerLcdRotationSync } from './display/rotationSync';
 import { registerProjectCommands } from './commands/projectCommands';
 import { registerDebugCommand } from './commands/debugProject';
@@ -50,6 +51,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         registerNewProjectCommand(output),
         registerLcdRotationSync(output),
         ...registerProjectCommands(state, output, context),
+        ...registerDesignerCommands(context, output),
         ...registerDebugCommand(state, output, context),
         ...registerWifiCommands(context, output),
         trackDebugSessions(),
