@@ -11,6 +11,42 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.46] - 2026-10-08
+
+### Added
+
+- **The WYSIWYG designer, first slice.** **Open Designer** on the Project view's title bar opens a panel with a
+  Toolbox of the thirty widget tags `embedded-gui`'s markup supports, a canvas showing the board's own panel at
+  the rotation the project is built with, and a property panel for the selected widget. Widgets are dragged from
+  the Toolbox onto the canvas, moved, resized from their handles, snapped to their neighbours' edges and to the
+  canvas, and reordered; every edit can be undone, and one drag is **one** undo step rather than forty. The design
+  is saved to `designer/panel.ui.json`, and the markup generated from it to `src/ui.kdl`, which the crate's
+  `include_gui!` compiles at build time.
+- **A canvas that draws what the board draws.** Which is not always what the document says: a `rect` or a
+  `circle` becomes a theme-styled panel whatever colour was picked, a `line` and a `spacer` paint nothing, and a
+  button's background is painted over by a gradient the markup cannot clear. Those are measured facts about
+  `embedded-gui-codegen` 0.2.7, so properties the code generator ignores are marked as such rather than shown as
+  controls that appear to work, and a tag the board does not paint is drawn as what it will be.
+- **The rotation control** in the designer writes the project's own `LCD_ROTATION`, so a design and the build it
+  belongs to cannot end up disagreeing about the orientation.
+- **A host simulator for the canvas mapping** (`tests/sim`, run by `--e2e`): it compiles the emitted markup with
+  the real `include_gui!` on the host, renders it, and asks the layout engine where every widget ended up. All
+  eight fixture widgets, including odd coordinates, a label inside a band and widgets flush to the edges, come
+  back at exactly the designed rectangles -- so "what you see is what the board draws" is now a claim with a
+  render behind it rather than an assumption.
+
+### Notes
+
+- The designer generates and validates the markup but **does not yet wire it into a generated project**, so a
+  project will not draw the design yet. The wizard's Designer template, `src/ui.rs` / `src/ui_handlers.rs` and
+  the code-behind handlers are the next stages.
+- `embedded-gui` 0.2.7 is now verified to build for `xtensa-esp32-none-elf` beside `esp-hal` and `mipidsi`. Its
+  runtime cost on the board is **not** measured yet: unreferenced code is dropped by LTO, so the crate's flash
+  and RAM figures need a build that actually drives it.
+- The extension now builds its frontend with esbuild (`npm run compile`), because a drag-and-drop canvas is not
+  something a webview's inline string can carry.
+
+
 ## [0.0.45] - 2026-10-07
 
 ### Documentation
@@ -1272,7 +1308,8 @@ First build: everything the extension does today, packaged as `grumpy-rusty-plat
 - **An answer is no longer printed twice in the chat.** The streamed pieces drew the answer and the closing
   message added the whole thing again as a second turn; the closing message now *settles* the live turn,
   replacing the streamed text with the authoritative answer.
-[Unreleased]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.4...HEAD
+[Unreleased]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.46...HEAD
+[0.0.46]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.45...v0.0.46
 [0.0.4]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.3...v0.0.4
 [0.0.3]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.2...v0.0.3
 [0.0.2]: https://github.com/OomNiel/grumpy-rusty-platform/releases/tag/v0.0.2

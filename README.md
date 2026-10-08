@@ -24,12 +24,13 @@ Espressif boards, `espflash`.
 | **Publish .deb** — the firmware plus a `<package>-flash` helper, packed into a `.deb` in the project root | ✅ |
 | **Install .deb** — shows `dpkg-deb --info`, then `sudo dpkg -i` in a terminal | ✅ Linux |
 | **Back Up Project** — a dated copy beside the project (`<folder>-2026-10-05_1804`), minus `target/` | ✅ |
+| **Open Designer** — a Toolbox, a canvas at the board's real size and rotation, a property panel and undo; writes `designer/panel.ui.json` and the `src/ui.kdl` markup `include_gui!` compiles | ✅ canvas and markup; firmware wiring ⬜ next |
 | Debug session (probe-rs-debug + RTT) | ✅ RP only, verified against `probe-rs.probe-rs-debugger` 0.32.0. An ESP32 has no SWD, so **Debug** flashes and monitors instead |
 | Four debug configurations, all on the **debug** build | ✅ RP: flash & run · flash & halt · restart without flashing · attach |
 | Chip check before a no-flash session (`probe-rs verify`) | ✅ RP only |
 | Flash / monitor over USB serial (`espflash`) | ✅ ESP — one-shot write, and a monitor that holds the port on purpose |
 | crates.io Library Manager | ✅ curated catalog + live sparse index |
-| Layered test suite | ✅ 370 hermetic (t1 345 · t2 21 · t3 4) + 2 opt-in e2e + 1 hardware HIL |
+| Layered test suite | ✅ 732 hermetic (t1 707 · t2 21 · t3 4) + opt-in e2e (generated-project builds, and the designer's canvas-to-glass simulator) + 1 hardware HIL |
 | Phase 4 guard rails: validate a launch config against the installed debugger | ⬜ |
 | Windows support | ⬜ later (installer URLs are already platform-aware) |
 
@@ -122,12 +123,54 @@ Wired boards are never asked: the prompt only appears for a project whose `src/m
 | Flash over USB (BOOTSEL)… | The UF2 route on purpose (recovery, or a board with no probe). On an ESP project it uses `espflash` instead |
 | Debug / Stop Debugging | RP: build, flash and start a probe-rs session with RTT. ESP: says there are no breakpoints without JTAG, then flashes and monitors in one terminal |
 | Monitor (defmt) | RP: `probe-rs attach` — RTT without reflashing. ESP: `espflash monitor` — the serial log. The Controls row and its tooltip are worded for the board in front of you. Both hold the device until their terminal is closed |
+| Open Designer | The WYSIWYG designer for a board with a panel. Also an icon in the Project view's title bar |
 | Add Dependency… | crates.io search (bundled catalog + live index); edits `Cargo.toml` |
 | Set / Clear Wi-Fi Credentials | See above |
 | Check Toolchain / Install Missing Toolchain… | Detection, and the one-click installer |
 | Install ESP Toolchain (espup + espflash)… | The Espressif side of the same idea: installs espup, the Xtensa toolchain (only the chips in use) and espflash |
 | Add Cargo to PATH… | Writes `~/.cargo/bin` into the login profile when rustup was installed with `--no-modify-path` |
 | Install USB Permissions (udev)… / Update Debug Probe Firmware… / Show Connected Probes | Probe housekeeping |
+
+## WYSIWYG designer
+
+**Open Designer** — the Project view's title bar, or the palette — opens a panel for the active project when its
+board carries a panel: the **ESP32-035** (320x480 with touch) or the **T-QT** (128x128, no touch).
+
+- **Toolbox** — every widget tag the markup supports, grouped into text, input, values and gauges, containers,
+  media and 3D, and shapes. Drag one onto the canvas, or click it to drop it in the middle.
+- **Canvas** — the board's own panel at the rotation the project is built with, drawn in the board's dark
+  palette rather than the editor's theme. Move widgets by dragging, resize them from their eight handles, snap
+  them to a neighbour's edge or to the canvas, and reorder them from the layer list. **Ctrl+Z** undoes, and one
+  drag is one undo step.
+- **Properties** — position and size, every property the tag has, the events it can raise, its option list,
+  table body or icon parts, and the layer order.
+
+The design is the source of truth and lives in `designer/panel.ui.json`; `src/ui.kdl` is generated from it, and
+the crate's `include_gui!` compiles that at build time. The rotation control writes the project's own
+`LCD_ROTATION`, so a design and the build it belongs to cannot disagree about the orientation.
+
+### What the canvas will not pretend
+
+The markup's properties do not always reach the pixels, and a designer that hid that would be wrong about the
+one thing it exists to show. Measured against `embedded-gui-codegen` 0.2.7:
+
+| Tag | What the board really draws |
+|---|---|
+| `rect`, `circle` | a theme-styled panel: `fill`, `stroke`, `stroke_width` and `radius` are discarded |
+| `line`, `spacer` | nothing at all; the space is reserved and left empty |
+| `button` | the background colours are applied and then painted over by a default vertical gradient that no markup attribute can clear, so the visible fill is the theme's |
+| `image`, `mesh`, `icon` | nothing until the asset they name is in the project — which the panel reports while you are still designing |
+
+Properties the code generator ignores are shown struck through with the reason, and unresolved assets are
+reported as problems rather than left to fail at the next compile.
+
+### Status
+
+The canvas, the model and the generated markup are in place and tested, and the canvas-to-glass mapping is
+verified by a host renderer (`node tests/tools/designer-sim.js`). The wizard's **Designer template** — a new
+project that opens the designer for its board — and the wiring that makes a generated project draw the design
+and route events into `src/ui_handlers.rs` are the next stages. Until those land the markup is written but
+nothing compiles it.
 
 ## Debugging
 
@@ -201,7 +244,7 @@ npm run dap-session -- --help
 node tests/runner.js                       # t1 + t2 + t3  (fast, hermetic)
 node tests/runner.js --layer t1-logic      # one layer
 node tests/runner.js --file cargo-toml     # one file (substring match)
-node tests/runner.js --e2e                 # + real `cargo build` of generated projects
+node tests/runner.js --e2e                 # + real `cargo build`, and the designer's host renderer
 node tests/runner.js --hil                 # + flash real hardware and read defmt over RTT
 UPDATE_SNAPSHOTS=1 node tests/runner.js --layer t3-golden   # re-record golden files
 ```
@@ -211,7 +254,7 @@ UPDATE_SNAPSHOTS=1 node tests/runner.js --layer t3-golden   # re-record golden f
 | `t1-logic` | Board matrix (both families), generator, crate/binary naming, parsers, install planner, ESP toolchain plan |
 | `t2-cli` | Toolchain detection against fake `cargo`/`rustup`/`probe-rs`/`espup`/`espflash` shims (real processes) |
 | `t3-golden` | Byte-for-byte snapshots of generated projects |
-| `t4-e2e` | The generated firmware really compiles and links (opt-in, slow, needs network) |
+| `t4-e2e` | The generated firmware really compiles and links, and the designer's pixel tracks land where the canvas placed them (opt-in, slow, needs network) |
 | `t5-hil` | The firmware really flashes and logs over RTT (opt-in, needs a probe) |
 
 ## Supported boards
