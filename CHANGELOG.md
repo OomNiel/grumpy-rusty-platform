@@ -11,6 +11,26 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.50] - 2026-10-08
+
+### Added
+
+- **The designer's panel is now run by a test.** It is a browser bundle, and it was the one part of the feature
+  nothing had exercised. A thin stub DOM (`tests/lib/dom.js`) loads the built bundle the way a webview does and
+  drives a session through it: the init message, a press, a drag, Delete, Undo, a Toolbox click and a property
+  edit — asserting on what the panel tells the extension, since that is what decides what is written. All of it
+  passes.
+- `node tests/runner.js` now builds the frontend bundle as well as the TypeScript, so a test that loads the
+  bundle cannot pass against one older than the source.
+
+### Fixed
+
+- **A property edit can no longer be lost to a debounce.** Edits from the property panel, the Toolbox and the
+  layer buttons were being batched on the 120 ms timer that exists for drags — right for a drag, wrong for a
+  discrete edit, because a user who edits a property and closes the panel would lose it. They post at once now.
+  Found by the panel test, which asserted the post and got nothing.
+
+
 ## [0.0.49] - 2026-10-08
 
 ### Fixed
@@ -1396,7 +1416,8 @@ First build: everything the extension does today, packaged as `grumpy-rusty-plat
 - **An answer is no longer printed twice in the chat.** The streamed pieces drew the answer and the closing
   message added the whole thing again as a second turn; the closing message now *settles* the live turn,
   replacing the streamed text with the authoritative answer.
-[Unreleased]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.49...HEAD
+[Unreleased]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.50...HEAD
+[0.0.50]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.49...v0.0.50
 [0.0.49]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.48...v0.0.49
 [0.0.48]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.47...v0.0.48
 [0.0.47]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.46...v0.0.47
