@@ -11,6 +11,32 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.58] - 2026-10-08
+
+### Fixed
+
+- **A widget with children produced markup that could not be parsed at all.** A dropdown, roller, carousel,
+  table or icon was written with its children on deeper lines and no braces — but KDL has no indentation-based
+  nesting, so they were *siblings* of their widget, and the crate's codegen rejected them with
+  `Unknown widget or container node: 'option'`. Children are now emitted in a proper `{ … }` block. Found by
+  building a probe design that contains one widget of every tag in the Toolbox, which is what the host fixtures
+  had never done.
+
+### Changed
+
+- **Ten tags are no longer offered in the Toolbox**, because `embedded-gui-codegen` 0.2.7 emits code that
+  `embedded-gui` 0.2.7 cannot compile: `slider`, `arc`, `busy_wheel`, `chart`, `status_bar`, `time_picker`,
+  `number_picker`, `content_indicator`, `crumbs` and `path` (see the table in `NOTES.md` §100 for the exact
+  compiler error behind each). A design that already contains one is reported by name when it loads, with the
+  reason, and can be selected and deleted — so a project never has to be debugged through a macro expansion.
+  The toolbar, the catalogue and validation all agree on the set.
+
+### Verified
+
+- One widget of every tag in the Toolbox, built for `xtensa-esp32-none-elf` with the real toolchain: before the
+  nesting fix the build stopped at a parse error on `option`; after it, every tag except the ten above compiles.
+- 786 hermetic tests pass; `tsc` clean on both sides; all four host checks pass.
+
 ## [0.0.57] - 2026-10-08
 
 ### Added

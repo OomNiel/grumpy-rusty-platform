@@ -4488,3 +4488,80 @@ fixture grew a label wearing `Style::panel()`:
 
 2688 of 2700 is the styled label: a panel background filling a 90x30 box, minus the glyphs drawn on top of it.
 All four counts are non-zero and nothing leaked, which is the whole claim.
+
+## 100. "DesignerESP32-035 Build error": one bug of ours, ten of the crate's (2026-10-08)
+
+Reported from a test project. Building it produced one error, inside the macro:
+
+    error[E0308]: arguments to this method are incorrect
+      --> src/ui.rs:19:5
+       |
+    19 |     embedded_gui::include_gui!("src/ui.kdl");
+       |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `f32`, found integer
+
+`add_slider` is declared `(value: f32, min: f32, max: f32, style)`. The markup's `slider` node is parsed into
+`min: i32, max: i32, value: i32`, and the emitter writes those three integers into the call -- so the arguments
+are the wrong type *and*, once that is fixed, in the wrong order (`min, max, value` against `value, min, max`).
+That is a defect in `embedded-gui-codegen` 0.2.7, and no markup can avoid it: the call is written by the crate.
+
+So the reported error is not ours. Investigating it properly, though, turned up one that is.
+
+### Ours: children were indented, not braced
+
+Writing a probe that used *every* tag in the Toolbox was the only way to find out how far the crate's own
+mismatch went -- and it failed immediately, before the compiler was even reached:
+
+    error: KDL GUI Codegen Error: Unknown widget or container node: 'option'
+
+KDL has no indentation-based nesting. Our emitter wrote a widget's children as deeper lines:
+
+    dropdown id="pick" selected=0 col=0 row=3 col_span=1 row_span=1
+        option "One"
+
+which KDL reads as three **siblings** -- `dropdown`, `option`, `option` -- and codegen then rejects `option` as
+a widget. The screen and the grid were always braced, which is exactly what made the omission invisible; and
+the host fixtures never used a dropdown, roller, carousel, table or icon, which is why 786 tests and four
+hardware checks had nothing to say about it. Five tags, and every one of them produced markup that could not be
+parsed at all. The fix is two lines in `emitKdl`, and the new test pins the block for a dropdown *and* for an
+icon -- the icon being the tag whose children the parser is strictest about.
+
+With the braces in place, the same probe compiled everything else, which is the proof that the nesting was the
+whole of it.
+
+### The crate's: ten tags whose builder call cannot be built
+
+The probe's second run reached the compiler, and the compiler named the rest. Measured, one widget of every tag
+the Toolbox offers, against `embedded-gui` 0.2.7:
+
+| tag | the crate's own error |
+|---|---|
+| `slider` | `[E0308]` three `i32` where `add_slider` wants `f32` -- and in the wrong order |
+| `arc` | `[E0061]` `add_sweeping_arc` takes ten arguments, called with four |
+| `busy_wheel` | `[E0599]` there is no `add_busy_wheel` |
+| `chart` | `[E0061]` `add_plotter` takes `(values, head, min, max)`, called with a `ChartMode` |
+| `status_bar` | `[E0599]` there is no `add_status_bar` |
+| `time_picker` | `[E0599]` there is no `add_time_picker` |
+| `number_picker` | `[E0599]` there is no `add_number_picker` |
+| `content_indicator` | `[E0599]` there is no `add_content_indicator` |
+| `crumbs` | `[E0599]` there is no `add_crumbs_indicator` |
+| `path` | `[E0433]` names `Point` without importing it, and builds `PathVerb::QuadTo` as a tuple variant where the runtime declares a struct variant |
+
+Ten of the thirty tags. The two crates do not agree with one another: `embedded-gui-codegen` 0.2.7 emits
+against an API `embedded-gui` 0.2.7 does not have. There is no newer version of either to move to -- 0.2.7 is
+the latest published -- so this cannot be fixed by a version bump.
+
+**What we do about it.** A WYSIWYG designer's one promise is that what is on the canvas appears on the glass, and
+a Toolbox entry that produces a project which cannot compile breaks it in the worst possible way: the failure
+arrives minutes later, inside a macro, in a file the user did not write. So those ten tags are marked
+`unavailable` in the catalogue with the compiler's own words as the reason, the Toolbox no longer offers them,
+and validation refuses a design that contains one -- so an older design file, like the one in the reported
+project, is reported by name on load and can be selected and deleted rather than built and failed.
+
+They stay in the catalogue rather than being deleted, for two reasons: the reason has to be shown to whoever
+wonders where the bus wheel went, and the day the crate is fixed the ten `unavailable` lines are deleted
+together. Nothing else changes.
+
+The one thing this deliberately does *not* do is patch the crate: a `[patch.crates-io]` pointing at a vendored,
+fixed `embedded-gui-codegen` inside every generated project would fix all ten at once, and it is a real option --
+but it means shipping and maintaining a few thousand lines of someone else's source in every project the
+extension creates, which is the user's decision to make rather than mine to take quietly.

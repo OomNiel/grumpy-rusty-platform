@@ -239,6 +239,11 @@ export function renderProperties(
     root.append(identityForm(state, widget, callbacks));
 
     if (spec !== undefined) {
+        if (spec.unavailable !== undefined) {
+            // In the design but not in the toolbox: a tag the crate's own code generator cannot build. It is
+            // still selectable and deletable, and this is the sentence that explains why it has to be.
+            root.append(element('p', 'panel-note panel-note-blocked', spec.unavailable));
+        }
         if (spec.note !== undefined) {
             root.append(element('p', 'panel-note', spec.note));
         }
