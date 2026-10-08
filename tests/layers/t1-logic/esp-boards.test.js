@@ -843,3 +843,16 @@ test('a calibrated panel can be recalibrated from the firmware', () => {
     // And the README has to tell the reader, since it is the only way to recalibrate by hand.
     contains(filesFor(espBoard('sunton-3248s035r'), 'touch').get('README.md'), 'first two seconds');
 });
+
+test('a Designer project does not paint the diagnostic readout over the design', () => {
+    // The raw-numbers box is a diagnostic, and it sits outside the branch that chooses between the design and
+    // the diagnostic screen -- so without a guard, a touch anywhere repainted it on top of the design. Reported
+    // from the board: "I can touch anywhere on the screen to update the touch readout."
+    const mainOf = (template) =>
+        generateProjectFiles({ board: boardById('sunton-3248s035r'), projectName: 'x', template, rotation: 3 })
+            .find((file) => file.path === 'src/main.rs').content;
+
+    contains(mainOf('designer'), 'if !DESIGNER && redraw_box', 'the readout is guarded out of a design');
+    contains(mainOf('touch'), 'if redraw_box {', 'the touch template keeps its readout');
+    notContains(mainOf('touch'), 'DESIGNER', 'and has no design branch at all');
+});

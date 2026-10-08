@@ -1999,7 +1999,12 @@ ${designer ? `                // The design, painted instead of the diagnostic s
 
         // Only the readout box is repainted while a finger is down: a full clear costs about 200 ms of
         // SPI, and the numbers are supposed to keep up with the finger.
-        if redraw_box {
+        //
+        // In a Designer project it is not drawn at all. The box is a diagnostic -- raw controller readings over
+        // the middle of the panel -- and it sits *outside* the branch that chooses between the design and the
+        // diagnostic screen, so without this guard a touch anywhere repainted it on top of the design. Reported
+        // from the board: "I can touch anywhere on the screen to update the touch readout."
+        if ${designer ? '!DESIGNER && ' : ''}redraw_box {
             // The interior first, then the border on top of its edges. The numbers change length as a finger
             // moves -- "raw a=0 b=0" is shorter than "raw a=1806 b=286" -- so without clearing, each reading
             // is drawn over the tail of the one before it. Filling and then stroking is what keeps the border
@@ -2173,7 +2178,9 @@ ${designer ? `                // The design, painted instead of the diagnostic s
             was_touched = pressed;
         }
 
-        if ticks % 100 == 0 {
+        // Not in a Designer project: the per-touch lines below and the design's own event logs are the sign of
+        // life that matters there, and a line every two seconds that says "touch test" is noise in an app.
+        if ${designer ? '!DESIGNER && ' : ''}ticks % 100 == 0 {
             // A heartbeat with the numbers that matter, so "the log is quiet" cannot be mistaken for
             // "the app is not running".
             log::info!("touch test alive: a={} b={} idle a={} b={} pen={}", raw_a, raw_b, idle_a, idle_b, touch_irq.is_low());
