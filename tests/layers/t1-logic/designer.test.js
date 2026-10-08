@@ -12,7 +12,7 @@
  */
 
 const { test, ok, notOk, equal, contains, notContains, throws, compiled } = require('../../lib/harness');
-const { KDL_WIDGETS, EVENT_SPECS, DESIGNER_EVENTS, widgetSpec, widgetRaises, toolboxGroups, CATEGORY_LABELS, widgetAddressable } =
+const { KDL_WIDGETS, EVENT_SPECS, DESIGNER_EVENTS, widgetSpec, widgetRaises, toolboxGroups, CATEGORY_LABELS, widgetAddressable, propertyHelp, widgetHelp } =
     compiled('designer/catalog');
 const { layoutToGrid, resolveGrid, trackSpec, describeGrid, GRID_FILLER } = compiled('designer/grid');
 const {
@@ -30,6 +30,7 @@ const {
     validateDocument,
 } = compiled('designer/model');
 const { emitKdl, layoutDocument } = compiled('designer/kdl');
+const { fontConstName } = compiled('designer/model');
 
 /** The CYD's panel, which is the board the designer is developed against. */
 const PANEL = { boardId: 'sunton-3248s035r', panelWidth: 320, panelHeight: 480 };
@@ -662,4 +663,113 @@ test('the emitter lays out exactly what the canvas laid out', () => {
     const layout = layoutDocument(doc);
     const resolved = resolveGrid(layout);
     equal(JSON.stringify(resolved), JSON.stringify(doc.widgets.map((w) => ({ x: w.x, y: w.y, width: w.width, height: w.height }))));
+});
+
+// ---------------------------------------------------------------- fonts
+
+test('a widget may only name a font the design declares', () => {
+    const titled = () =>
+        widget('title', 'label', { x: 0, y: 0, width: 100, height: 24 }, {
+            props: { ...defaultProps('label'), text: 'AB', font: 'title' },
+        });
+
+    // Nothing declared yet: refused, because the markup's parser drops an unresolvable font in silence and a
+    // typo would look like "the font did nothing".
+    const undeclared = document(0, [titled()]);
+    const problems = validateDocument(undeclared);
+    equal(problems.length, 1, JSON.stringify(problems));
+    contains(problems[0], 'no font named "title"', 'the message says what is missing');
+
+    const declared = document(0, [titled()]);
+    declared.fonts = [{ id: 'title', src: 'assets/title.bdf', chars: 'AB' }];
+    equal(validateDocument(declared).length, 0, 'and declaring it makes the design valid');
+});
+
+test('a font name is checked for the Rust constant it becomes, not just for uniqueness', () => {
+    const withFonts = (fonts) => {
+        const doc = document(0, []);
+        doc.fonts = fonts;
+        return validateDocument(doc);
+    };
+
+    // The crate's rule: everything that is not alphanumeric becomes an underscore, and everything is
+    // upper-cased. Punctuation would collide (`big-font` and `big font` both become `__FONT_BIG_FONT`), but names
+    // like those are refused earlier by the identifier rule -- so the collision that can actually reach the
+    // constant is a difference of case.
+    equal(fontConstName('big-font'), '__FONT_BIG_FONT', 'the crate\'s sanitisation, mirrored');
+    equal(fontConstName('big font'), '__FONT_BIG_FONT', 'two spellings, one constant');
+
+    const collision = withFonts([
+        { id: 'Title', src: 'assets/a.bdf', chars: '' },
+        { id: 'title', src: 'assets/b.bdf', chars: '' },
+    ]);
+    equal(collision.length, 1, JSON.stringify(collision));
+    contains(collision[0], '__FONT_TITLE', 'the message names the constant');
+
+    const duplicate = withFonts([
+        { id: 'title', src: 'assets/a.bdf', chars: '' },
+        { id: 'title', src: 'assets/b.bdf', chars: '' },
+    ]);
+    contains(duplicate.join('\n'), 'two fonts have this name', 'a plain duplicate');
+
+    const badName = withFonts([{ id: 'my title', src: 'assets/a.bdf', chars: '' }]);
+    contains(badName.join('\n'), 'must start with a letter', 'and a name that is not an identifier');
+
+    const noFile = withFonts([{ id: 'title', src: '', chars: '' }]);
+    contains(noFile.join('\n'), 'no font file', 'a font with no file');
+
+    const wrongFormat = withFonts([{ id: 'title', src: 'assets/title.ttf', chars: '' }]);
+    contains(wrongFormat.join('\n'), '.bdf', 'and a file the loader cannot read');
+});
+
+test('the markup declares the fonts before the grid that refers to them', () => {
+    const doc = document(0, [
+        widget('title', 'label', { x: 0, y: 0, width: 100, height: 24 }, {
+            props: { ...defaultProps('label'), text: 'AB', font: 'title' },
+        }),
+    ]);
+    doc.fonts = [{ id: 'title', src: 'assets/title.bdf', chars: 'AB' }];
+    const kdl = emitKdl(doc);
+    contains(kdl, 'font id="title" src="assets/title.bdf" chars="AB"', 'the declaration');
+    ok(
+        kdl.indexOf('font id=') < kdl.indexOf('grid cols='),
+        'and it comes before the grid, so a reader has met it before the reference',
+    );
+
+    // An empty character set is left out, which is what tells the loader to embed every glyph.
+    doc.fonts[0].chars = '';
+    notContains(emitKdl(doc), 'chars=', 'no empty chars attribute');
+});
+
+// ---------------------------------------------------------------- hover help
+
+test('every property and every widget has a hover description', () => {
+    // The panel shows these as the field's tooltip, so a property without one is a control the user has to
+    // guess at. Asserted over the whole catalogue rather than per widget, so a new tag cannot arrive without
+    // its help.
+    for (const spec of KDL_WIDGETS) {
+        const about = widgetHelp(spec.tag);
+        ok(typeof about === 'string' && about.length > 0, `${spec.tag} has no description for the Toolbox`);
+        for (const property of spec.props) {
+            const help = propertyHelp(spec.tag, property.name);
+            ok(
+                typeof help === 'string' && help.length > 0,
+                `${spec.tag}.${property.name} has no hover description`,
+            );
+        }
+    }
+});
+
+test('the two properties that mean something different per widget say so', () => {
+    // A shared name would otherwise describe the wrong thing: `radius` is a corner on a rectangle and the
+    // whole shape on a circle, and `mode` selects between quite different drawings.
+    ok(propertyHelp('rect', 'radius') !== propertyHelp('circle', 'radius'), 'radius differs');
+    ok(propertyHelp('scale', 'mode') !== propertyHelp('chart', 'mode'), 'mode differs');
+    ok(propertyHelp('icon', 'scale') !== propertyHelp('mesh', 'scale'), 'scale differs');
+    equal(propertyHelp('label', 'text'), propertyHelp('button', 'text'), 'and a shared one is shared');
+});
+
+test('the font property explains where a font comes from', () => {
+    // The field was a trap once: it takes a name, and the name has to be declared on the screen.
+    contains(propertyHelp('label', 'font'), 'Fonts', 'it points at the section that declares them');
 });

@@ -1,0 +1,5 @@
+// The harness's own manifest, so the fixture's `assets/test.bdf` resolves from this directory rather than
+// from screens/. Declares the fixture screen because a manifest is supposed to.
+project {
+    screen id="SimPanel" file="screens/panel.kdl"
+}

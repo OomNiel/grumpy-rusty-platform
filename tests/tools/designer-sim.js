@@ -57,6 +57,7 @@ function documentFromFixture(fixture) {
         screenId: fixture.screenId,
     });
     document.theme = fixture.theme ?? 'dark';
+    document.fonts = (fixture.fonts ?? []).map((font) => ({ id: font.id, src: font.src, chars: font.chars }));
     document.widgets = fixture.widgets.map((entry) => ({
         id: entry.id,
         tag: entry.tag,

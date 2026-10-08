@@ -38,6 +38,11 @@ test('the designer panel boots, builds itself from the catalogue, and posts its 
         panelHeight: 480,
         rotation: 3,
     });
+    // Give the design a font, declared on the screen and used by the title, so the panel's font UI has
+    // something to show.
+    document.fonts = [{ id: 'title', src: 'assets/title.bdf', chars: 'AB' }];
+    document.widgets.find((widget) => widget.id === 'title').props.font = 'title';
+
     const canvas = { width: 480, height: 320 };
     window.emit('message', {
         data: {
@@ -50,6 +55,40 @@ test('the designer panel boots, builds itself from the catalogue, and posts its 
     });
 
     const all = () => root.descendants();
+
+    // The screen form is where fonts are declared, and it shows the one the design has.
+    ok(
+        all().some((element) => element.value === 'title'),
+        'the declared font is in the screen form',
+    );
+    ok(
+        all().some((element) => element.value === 'assets/title.bdf'),
+        'with its file',
+    );
+
+    // A widget that uses a font gets a dropdown of what is declared, not a text box: a widget names a
+    // declaration, and a name the markup cannot resolve is dropped without a word.
+    const titleWidget = document.widgets.find((widget) => widget.id === 'title');
+    all()
+        .find((element) => element.tagName === 'CANVAS')
+        .emit('pointerdown', { clientX: titleWidget.x + 2, clientY: titleWidget.y + 2, pointerId: 1 });
+    const fontSelect = all().find(
+        (element) => element.tagName === 'SELECT' && element.children.some((option) => option.textContent === 'title'),
+    );
+    ok(fontSelect !== undefined, 'the Font property offers the declared fonts');
+    equal(fontSelect.value, 'title', 'showing the one this widget uses');
+    ok(
+        fontSelect.children.some((option) => option.textContent === '(default)'),
+        'and a way back to the default font',
+    );
+
+    // Hover help: a property row carries its description as a tooltip.
+    const explained = all().filter((element) => typeof element.title === 'string' && element.title.length > 0);
+    ok(explained.length > 0, 'fields carry a hover description');
+    ok(
+        explained.some((element) => element.title.includes('The words it shows')),
+        'including the description of the text property',
+    );
 
     // The Toolbox is generated from the catalogue, so it holds one entry per tag the markup supports.
     const toolboxItems = all().filter((element) => element.classList.contains('toolbox-item'));

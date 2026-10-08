@@ -1,11 +1,12 @@
 {
-  "version": 1,
+  "version": 2,
   "boardId": "lilygo-tqt",
   "panelWidth": 128,
   "panelHeight": 128,
   "rotation": 0,
   "screenId": "RustyPanel",
   "theme": "dark",
+  "fonts": [],
   "widgets": [
     {
       "id": "title",

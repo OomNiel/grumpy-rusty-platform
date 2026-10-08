@@ -130,11 +130,31 @@
             "events": [
                 "clicked"
             ]
+        },
+        {
+            "id": "fonted",
+            "tag": "label",
+            "x": 200,
+            "y": 120,
+            "width": 90,
+            "height": 30,
+            "props": {
+                "text": "AB",
+                "font": "test"
+            }
         }
     ],
     "empty": {
         "comment": "A point no widget covers, to check that a tap there raises nothing.",
         "x": 250,
         "y": 240
-    }
+    },
+    "fonts": [
+        {
+            "_comment": "A font the design declares, so the whole path -- declaration, reference, build-time BDF parse, render -- is exercised by every host check.",
+            "id": "test",
+            "src": "assets/test.bdf",
+            "chars": "AB"
+        }
+    ]
 }

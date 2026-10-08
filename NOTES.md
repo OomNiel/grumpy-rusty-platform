@@ -4085,3 +4085,54 @@ for itself by being written with a wrong expectation.
 designer.js` could have passed against a bundle older than the source. The runner now builds it too, for the
 same reason it runs `tsc`: a stale artifact must not be able to make a test green. It takes tens of
 milliseconds.
+
+## 92. Fonts made real, and the asset root nobody had noticed (2026-10-08)
+
+### The field that could not work
+
+`Font id` was a text box that did nothing. A widget's `font` is not a file and not a built-in name: it is a
+reference to a font **the screen declares**, and `embedded-gui-codegen` drops an unresolvable name without a
+word -- so the field took whatever was typed and silently discarded it.
+
+Fonts are now first-class design data:
+
+- **The document** carries `fonts: [{ id, src, chars }]`, and the file version went to 2 with a *migration*
+  rather than a refusal: version 1 documents gain an empty list, because refusing them would throw work away
+  over a field that did not exist when they were written. Anything newer is still refused loudly.
+- **Validation** checks what the generator would otherwise swallow: the name is a plain identifier, no two
+  names collide *after the crate's own sanitisation* (`Title` and `title` both become `__FONT_TITLE`), the file
+  is named and is a `.bdf`, and every widget's reference resolves to a declaration.
+- **The panel** declares fonts under **Fonts** on the Screen form (name, file, characters) and a widget's
+  `Font` is a dropdown of what is declared, with a way back to the default.
+- **The markup** writes the declarations before the grid, so a reader meets `font="title"` after the
+  declaration that gives it meaning.
+
+### The find: asset paths were resolved from the wrong directory
+
+Building the harness with a font failed with a message worth more than the hour it saved:
+
+    Failed to read font '.../tests/sim/screens/assets/test.bdf'
+
+The macros resolve an asset relative to the **screen file's** directory, unless they find a `project.kdl`
+somewhere above it -- `find_project_root` walks the ancestors and falls back to the screen's own directory.
+For a generated project that means `src/`, so `src="assets/logo.bmp"` was being read as
+`src/assets/logo.bmp`. **That was a latent bug for images and meshes too**, and worse, the designer's own asset
+check resolved the same path from the project root: the panel would have said the file was fine while the
+compiler looked somewhere else.
+
+The fix is the crate's own mechanism rather than a workaround: a designer project now gets a `project.kdl` at
+its root, which anchors the asset root there and matches what the validator checks. It declares the screen as
+well, so the project is already a valid `include_project!` target if a design ever grows into several screens.
+
+And it is now *exercised*: the harness has a real three-glyph BDF (`tests/sim/assets/test.bdf`) and a label that
+uses it, so every host check -- geometry, touch, dispatch -- compiles a design that declares a font and refers
+to it, parses the font at build time and renders with it.
+
+### Hover descriptions for every property
+
+Every one of the 64 distinct properties and all 30 widgets now carry one line of help, shown as the field's
+`title` -- a native tooltip, so there is no popup to keep in step with the theme and screen readers announce it
+too. The help lives in the catalogue (`PROPERTY_HELP`, with `TAG_PROPERTY_HELP` for the handful that mean
+something different per widget, like `radius` on a rectangle and on a circle) and a test asserts the coverage,
+so a new property cannot arrive without an explanation. The `Font` property's own line points at the section
+that declares fonts, which is the answer to the question that started this.

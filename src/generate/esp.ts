@@ -19,6 +19,7 @@ import { LCD_ROTATION_LABELS, LcdRotation, asLcdRotation, templateUsesPanel } fr
 import {
     DESIGNER_FILES,
     emitHandlersRs,
+    emitProjectKdl,
     emitStarterKdl,
     emitUiRs,
     starterDocument,
@@ -232,6 +233,9 @@ export function generateEspProjectFiles(options: EspGenerateOptions): GeneratedF
             { path: DESIGNER_FILES.rust, content: emitUiRs(starter, board.touch !== undefined) },
             { path: DESIGNER_FILES.handlers, content: emitHandlersRs(starter, board.touch !== undefined) },
             { path: DESIGNER_FILES.document, content: `${JSON.stringify(starter, null, 2)}\n` },
+            // The manifest that anchors asset paths to the project root -- without it the crate resolves
+            // them from src/, which is where the screen file lives.
+            { path: DESIGNER_FILES.manifest, content: emitProjectKdl(starter) },
         );
     }
     return files;

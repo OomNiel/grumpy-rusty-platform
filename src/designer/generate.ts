@@ -42,13 +42,38 @@ export const PINNED_SCREEN_ID = 'RustyPanel';
 export const UI_MARKER = 'rusty-designer-ui';
 export const HANDLERS_MARKER = 'rusty-designer-handlers';
 
-/** The three files a designer project carries, relative to the project root. */
+/** The files a designer project carries, relative to the project root. */
 export const DESIGNER_FILES = {
     markup: 'src/ui.kdl',
     rust: 'src/ui.rs',
     handlers: 'src/ui_handlers.rs',
     document: 'designer/panel.ui.json',
+    /** The screen manifest, which is also what anchors asset paths to the project root. */
+    manifest: 'project.kdl',
 } as const;
+
+/**
+ * The project manifest.
+ *
+ * It exists for two reasons and both matter. `embedded-gui`'s macros resolve an asset path -- an image, a font
+ * -- relative to the directory of the *screen* file, unless they find a `project.kdl` above it, in which case
+ * that directory is the asset root. So without this file, `src="assets/logo.bmp"` in `src/ui.kdl` would be
+ * read as `src/assets/logo.bmp`: a path nobody would guess, and one the designer's own asset check would
+ * disagree with (found by building the harness with a font in it). And declaring the screen here means
+ * `include_project!` would accept this project as it stands, should a design ever grow into several screens.
+ */
+export function emitProjectKdl(document: DesignerDocument): string {
+    return `// Grumpy's Rusty Platform -- the project's screen manifest.
+//
+// Asset paths in ${DESIGNER_FILES.markup} are relative to the project root because this file is here:
+// embedded-gui looks for a project.kdl above a screen and treats its directory as the asset root. Deleting it
+// does not break the build, but it silently moves the root to src/ and every asset path with it.
+
+project {
+    screen id="${document.screenId}" file="${DESIGNER_FILES.markup}"
+}
+`;
+}
 
 /**
  * The design a new Designer project starts with.

@@ -20,19 +20,24 @@ import {
     type KdlWidgetSpec,
     DESIGNER_EVENTS,
     EVENT_SPECS,
+    propertyHelp,
     toolboxGroups,
+    widgetHelp,
     widgetRaises,
     widgetSpec,
 } from '../../src/designer/catalog';
-import { type DesignerWidget, designCanvasSize } from '../../src/designer/model';
+import { type DesignerFont, type DesignerWidget, designCanvasSize } from '../../src/designer/model';
 import {
     type DesignerState,
+    addFont,
     moveWidget,
     removeWidget,
     renameWidget,
+    removeFont,
     reorderWidget,
     resizeWidget,
     setChildren,
+    setFontField,
     setIconParts,
     setProperty,
     setScreenField,
@@ -60,9 +65,17 @@ function element<K extends keyof HTMLElementTagNameMap>(
     return node;
 }
 
-/** A labelled row. */
-function field(label: string, control: HTMLElement, className = 'field'): HTMLElement {
+/**
+ * A labelled row, with an optional tooltip.
+ *
+ * The tooltip is a plain `title` attribute, which is what gives a native hover description in the webview --
+ * no custom popup to keep in step with the theme, and it is announced by screen readers too.
+ */
+function field(label: string, control: HTMLElement, className = 'field', help?: string): HTMLElement {
     const row = element('label', className);
+    if (help !== undefined) {
+        row.title = help;
+    }
     row.append(element('span', 'field-label', label));
     row.append(control);
     return row;
@@ -130,7 +143,13 @@ export function renderToolbox(root: HTMLElement, onTag: (tag: string) => void): 
         for (const spec of group.widgets) {
             const item = button(spec.label, 'toolbox-item', () => onTag(spec.tag));
             item.draggable = true;
-            item.title = spec.note ?? `${spec.label} (${spec.defaultSize.width}x${spec.defaultSize.height})`;
+            item.title = [
+                widgetHelp(spec.tag) ?? spec.label,
+                `starts at ${spec.defaultSize.width}x${spec.defaultSize.height} px`,
+                spec.note,
+            ]
+                .filter((line) => line !== undefined)
+                .join(' — ');
             if (spec.note !== undefined) {
                 item.classList.add('has-caveat');
             }
@@ -233,14 +252,24 @@ function propertyForm(
 ): HTMLElement {
     const node = section('Properties');
     for (const property of spec.props) {
-        const control = propertyControl(property, widget.props[property.name], (next) =>
-            callbacks.onEdit(setProperty(state, widget.id, property.name, next)),
+        const control = propertyControl(
+            property,
+            widget.props[property.name],
+            (next) => callbacks.onEdit(setProperty(state, widget.id, property.name, next)),
+            state.document.fonts ?? [],
         );
-        const row = field(property.label, control);
-        if (property.ignoredByCodegen === true) {
+        const help = [
+            propertyHelp(widget.tag, property.name),
             // The parser reads it and the generator throws it away: say so rather than implying it works.
+            property.ignoredByCodegen === true
+                ? 'The markup accepts this, but the current code generator ignores it.'
+                : undefined,
+        ]
+            .filter((line) => line !== undefined)
+            .join(' ');
+        const row = field(property.label, control, 'field', help === '' ? undefined : help);
+        if (property.ignoredByCodegen === true) {
             row.classList.add('field-ignored');
-            row.title = 'The markup accepts this, but the current code generator ignores it.';
         }
         node.append(row);
     }
@@ -251,8 +280,26 @@ function propertyControl(
     property: KdlProperty,
     value: string | number | boolean | undefined,
     onChange: (value: string | number | boolean) => void,
+    fonts: readonly DesignerFont[],
 ): HTMLElement {
     switch (property.kind) {
+        case 'font': {
+            // A dropdown of what the screen declares, because a widget names a *declaration* and not a file:
+            // the markup's parser drops a name it cannot resolve without a word, so a free text box here would
+            // be a trap (which is what it was before this).
+            const select = element('select', 'field-input');
+            const none = element('option', undefined, '(default)');
+            none.value = '';
+            select.append(none);
+            for (const font of fonts) {
+                const option = element('option', undefined, font.id);
+                option.value = font.id;
+                select.append(option);
+            }
+            select.value = typeof value === 'string' ? value : '';
+            select.addEventListener('change', () => onChange(select.value));
+            return select;
+        }
         case 'bool': {
             const input = element('input', 'field-input');
             input.type = 'checkbox';
@@ -415,6 +462,64 @@ function screenForm(state: DesignerState, callbacks: PanelCallbacks): HTMLElemen
             element('span', 'field-static', `${canvas.width}x${canvas.height} at rotation ${document.rotation}`),
         ),
     );
+    node.append(fontList(state, callbacks));
+    return node;
+}
+
+/**
+ * The fonts the screen declares.
+ *
+ * A widget's `Font` is a reference to one of these, so this is where the file is actually chosen. A font is
+ * embedded into the firmware at build time from a BDF -- the only format the crate's loader parses -- and
+ * `chars` narrows it, which matters on a panel where flash is the budget: a design that shows digits need not
+ * carry the whole alphabet.
+ */
+function fontList(state: DesignerState, callbacks: PanelCallbacks): HTMLElement {
+    const node = section('Fonts');
+    const fonts = state.document.fonts ?? [];
+    node.append(
+        element(
+            'p',
+            'panel-note',
+            'A BDF file, embedded into the firmware at build time. Widgets then pick one by name.',
+        ),
+    );
+
+    for (const font of fonts) {
+        const entry = element('div', 'font-entry');
+        entry.append(
+            field(
+                'Name',
+                textInput(font.id, (value) => callbacks.onEdit(setFontField(state, font.id, 'id', value))),
+                'field',
+                'The name widgets refer to. Letters, digits and underscores only.',
+            ),
+        );
+        // The file is a path relative to the project root, like every other asset.
+        entry.append(
+            field(
+                'File',
+                textInput(font.src, (value) => callbacks.onEdit(setFontField(state, font.id, 'src', value))),
+                'field',
+                'A BDF file, relative to the project root, e.g. assets/title.bdf. It is embedded at build time.',
+            ),
+        );
+        entry.append(
+            field(
+                'Characters',
+                textInput(font.chars, (value) => callbacks.onEdit(setFontField(state, font.id, 'chars', value))),
+                'field',
+                'Which characters to embed. Empty embeds every glyph in the file; a title can use far fewer.',
+            ),
+        );
+        const remove = button('Remove', 'secondary-button', () =>
+            callbacks.onEdit(removeFont(state, font.id)),
+        );
+        entry.append(remove);
+        node.append(entry);
+    }
+
+    node.append(button('Add a font', 'secondary-button', () => callbacks.onEdit(addFont(state))));
     return node;
 }
 
