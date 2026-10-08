@@ -48,6 +48,8 @@ pub fn check(
     one("eco", widgets.eco, 60, 120, 40, 30);
     one("ok", widgets.ok, 300, 120, 60, 30);
     one("fonted", widgets.fonted, 200, 120, 90, 30);
+    one("builtin", widgets.builtin, 200, 160, 90, 30);
+    one("builtinButton", widgets.builtin_button, 300, 160, 90, 30);
     problems
 }
 
@@ -103,6 +105,13 @@ pub fn touch_checks<const N: usize, const E: usize, const D: usize>(
         let raised = events.iter().any(|event| matches!(event, UiEvent::Clicked(other) | UiEvent::ValueChanged(other) if *other == widgets.ok));
         if !raised {
             problems.push(format!("ok: a tap at its designed centre (330, 135) raised nothing for it ({} events came back)", events.len()));
+        }
+    }
+    {
+        let events = tap(gui, 345, 175);
+        let raised = events.iter().any(|event| matches!(event, UiEvent::Clicked(other) | UiEvent::ValueChanged(other) if *other == widgets.builtin_button));
+        if !raised {
+            problems.push(format!("builtinButton: a tap at its designed centre (345, 175) raised nothing for it ({} events came back)", events.len()));
         }
     }
     {

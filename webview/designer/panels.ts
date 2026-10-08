@@ -28,9 +28,11 @@ import {
 } from '../../src/designer/catalog';
 import type { DesignerAssetKind } from '../../src/designer/protocol';
 import { type DesignerFont, type DesignerWidget, designCanvasSize } from '../../src/designer/model';
+import { BUILT_IN_FONTS, type FontSupport } from '../../src/designer/fonts';
 import {
     type DesignerState,
     addFont,
+    declareFontFromPath,
     duplicateWidget,
     moveWidget,
     removeWidget,
@@ -139,6 +141,13 @@ function assetKindFor(tag: string): DesignerAssetKind {
  * The path is still typed-able -- a file that is already in the project is often quicker to name than to find --
  * but nobody should have to work out where an asset lives relative to the project root.
  */
+/** The `...` that opens the file picker, named for the widget that reads it. */
+function browseButton(onBrowse: () => void): HTMLElement {
+    const pick = button('\u2026', 'secondary-button', onBrowse);
+    pick.title = 'Choose a file. One from outside the project is copied into assets/.';
+    return pick;
+}
+
 function assetField(
     value: string,
     onChange: (value: string) => void,
@@ -147,9 +156,7 @@ function assetField(
     const row = element('div', 'asset-field');
     row.append(textInput(value, onChange));
     if (onBrowse !== undefined) {
-        const pick = button('\u2026', 'secondary-button', onBrowse);
-        pick.title = 'Choose a file. One from outside the project is copied into assets/.';
-        row.append(pick);
+        row.append(browseButton(onBrowse));
     }
     return row;
 }
@@ -292,12 +299,18 @@ function propertyForm(
             widget.props[property.name],
             (next) => callbacks.onEdit(setProperty(state, widget.id, property.name, next)),
             state.document.fonts ?? [],
+            spec.fontSupport,
             property.kind === 'asset'
                 ? () =>
                       callbacks.onBrowseAsset(assetKindFor(widget.tag), (path) =>
                           callbacks.onEdit(setProperty(state, widget.id, property.name, path)),
                       )
-                : undefined,
+                : property.kind === 'font'
+                  ? () =>
+                        callbacks.onBrowseAsset('font', (path) =>
+                            callbacks.onEdit(declareFontFromPath(state, widget.id, path)),
+                        )
+                  : undefined,
         );
         const help = [
             propertyHelp(widget.tag, property.name),
@@ -322,27 +335,52 @@ function propertyControl(
     value: string | number | boolean | undefined,
     onChange: (value: string | number | boolean) => void,
     fonts: readonly DesignerFont[],
+    support: FontSupport | undefined,
     onBrowse?: () => void,
 ): HTMLElement {
     switch (property.kind) {
         case 'asset':
             return assetField(String(value ?? ''), onChange, onBrowse);
         case 'font': {
-            // A dropdown of what the screen declares, because a widget names a *declaration* and not a file:
-            // the markup's parser drops a name it cannot resolve without a word, so a free text box here would
-            // be a trap (which is what it was before this).
+            // Two routes, one control. A *declared* font is a BDF file in the project and the crate reads it
+            // from `font="name"` on labels and carousels; a *built-in* one ships inside the crate and can only
+            // be reached by a style expression. Which of the two a widget can take is the crate's shape, so the
+            // list is built from what `fontSupport` allows rather than offered wholesale.
             const select = element('select', 'field-input');
             const none = element('option', undefined, '(default)');
             none.value = '';
             select.append(none);
-            for (const font of fonts) {
-                const option = element('option', undefined, font.id);
-                option.value = font.id;
-                select.append(option);
+            if (support !== 'attribute') {
+                const group = element('optgroup');
+                group.label = 'Built into the crate';
+                for (const font of BUILT_IN_FONTS) {
+                    const option = element('option', undefined, font.label);
+                    option.value = font.id;
+                    group.append(option);
+                }
+                select.append(group);
+            }
+            if (support !== 'style' && fonts.length > 0) {
+                const group = element('optgroup');
+                group.label = 'In this project';
+                for (const font of fonts) {
+                    const option = element('option', undefined, font.id);
+                    option.value = font.id;
+                    group.append(option);
+                }
+                select.append(group);
             }
             select.value = typeof value === 'string' ? value : '';
             select.addEventListener('change', () => onChange(select.value));
-            return select;
+            if (onBrowse === undefined) {
+                return select;
+            }
+            // The `...` declares a font from a file and selects it, so the common case -- "use this BDF, I have
+            // not added it yet" -- is one action rather than two lists to visit in the right order.
+            const rowNode = element('div', 'asset-field');
+            rowNode.append(select);
+            rowNode.append(browseButton(onBrowse));
+            return rowNode;
         }
         case 'bool': {
             const input = element('input', 'field-input');

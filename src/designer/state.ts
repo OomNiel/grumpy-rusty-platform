@@ -24,6 +24,7 @@ import {
     defaultChildren,
     defaultProps,
     designCanvasSize,
+    isFontId,
     placeWidget,
     uniqueWidgetId,
 } from './model';
@@ -323,6 +324,41 @@ export function addFont(state: DesignerState): DesignerState {
         }
         const font: DesignerFont = { id, src: '', chars: '' };
         return { ...document, fonts: [...fonts, font] };
+    });
+}
+
+/**
+ * Declares a font from a chosen BDF file and points a widget at it, in one undo step.
+ *
+ * This is what the `...` next to a widget's Font dropdown does. It is one step rather than two because the
+ * declaration and the reference are only meaningful together: half of it would be a font nothing uses, or a
+ * reference to a font that does not exist yet, and Ctrl+Z on either alone would be a puzzle.
+ *
+ * The id is derived from the file name so the declaration list reads like the folder it came from, and made
+ * unique rather than refused -- choosing the same file twice is a duplicate the user meant to make.
+ */
+export function declareFontFromPath(
+    state: DesignerState,
+    widgetId: string,
+    path: string,
+): DesignerState {
+    return edit(state, undefined, (document) => {
+        const stem = path.split(/[\\/]/).pop() ?? path;
+        const cleaned = stem.replace(/\.bdf$/i, '').replace(/[^A-Za-z0-9_]/g, '_');
+        const base = isFontId(cleaned) ? cleaned : `font_${cleaned}`;
+        const taken = new Set((document.fonts ?? []).map((font) => font.id));
+        let id = isFontId(base) ? base : 'font';
+        for (let n = 2; taken.has(id); n += 1) {
+            id = `${base}_${n}`;
+        }
+        const font: DesignerFont = { id, src: path, chars: '' };
+        return {
+            ...document,
+            fonts: [...(document.fonts ?? []), font],
+            widgets: document.widgets.map((widget) =>
+                widget.id === widgetId ? { ...widget, props: { ...widget.props, font: id } } : widget,
+            ),
+        };
     });
 }
 

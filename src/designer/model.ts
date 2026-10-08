@@ -25,6 +25,7 @@ import {
     widgetSpec,
     widgetRaises,
 } from './catalog';
+import { isBuiltInFont, supportsFontAttribute, supportsFontStyle } from './fonts';
 import { type LcdRotation } from '../display/rotation';
 
 /**
@@ -387,10 +388,28 @@ export function validateDocument(document: DesignerDocument): string[] {
                 }
             }
             const font = widget.props.font;
-            if (typeof font === 'string' && font !== '' && !fontIds.has(font)) {
-                // Worth an error rather than a shrug: the markup's parser ignores a font it cannot resolve
-                // without saying anything, so a typo here would look like "the font did nothing".
-                problems.push(`${where}: no font named "${font}" is declared on the screen`);
+            if (typeof font === 'string' && font !== '') {
+                if (isBuiltInFont(font)) {
+                    // A built-in travels as a style expression, since the markup has no attribute for the
+                    // crate's own fonts. A widget with no style handle cannot carry one at all.
+                    if (!supportsFontStyle(spec.fontSupport)) {
+                        problems.push(
+                            `${where}: the crate has no style handle for a ${spec.label.toLowerCase()}, ` +
+                                `so the built-in font "${font}" could not reach it`,
+                        );
+                    }
+                } else if (!fontIds.has(font)) {
+                    // Worth an error rather than a shrug: the markup's parser ignores a font it cannot resolve
+                    // without saying anything, so a typo here would look like "the font did nothing".
+                    problems.push(`${where}: no font named "${font}" is declared on the screen`);
+                } else if (!supportsFontAttribute(spec.fontSupport)) {
+                    // The same silence, one step further out: the name resolves, but the crate only reads
+                    // `font` for labels and carousels, so a button or a table would drop it without a word.
+                    problems.push(
+                        `${where}: the crate reads a declared font for labels and carousels only, so ` +
+                            `"${font}" would be ignored on a ${spec.label.toLowerCase()}`,
+                    );
+                }
             }
             problems.push(...childrenProblems(widget, spec.children, spec.label));
         }

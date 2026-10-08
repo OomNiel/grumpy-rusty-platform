@@ -2,5 +2,17 @@
 
 pub const CANVAS_W: u32 = 480;
 pub const CANVAS_H: u32 = 320;
-/// The widget the design gives a font to: what the two renders must disagree about.
-pub const FONTED_RECT: (i32, i32, u32, u32) = (200, 120, 90, 30);
+/// Every widget the design gives a font to: the regions the two renders must disagree about.
+///
+/// There are two kinds, and they travel by different markup. A *declared* font is a BDF file the
+/// screen declares and a widget names with `font=`, which the crate reads for labels and carousels.
+/// A *built-in* one ships inside the crate and has no attribute at all, so it is asked for with a
+/// `style` expression -- and a build is the only thing that can prove that expression is honoured.
+pub const FONTED_RECTS: [(i32, i32, u32, u32); 3] = [
+    // "fonted" (declared): "test"
+    (200, 120, 90, 30),
+    // "builtin" (built in): "Scaled6x10"
+    (200, 160, 90, 30),
+    // "builtinButton" (built in): "Vector(2)"
+    (300, 160, 90, 30),
+];

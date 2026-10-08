@@ -97,20 +97,53 @@ test('the designer panel boots, builds itself from the catalogue, and posts its 
         'a cancelled dialog leaves the design alone',
     );
 
-    // A widget that uses a font gets a dropdown of what is declared, not a text box: a widget names a
-    // declaration, and a name the markup cannot resolve is dropped without a word.
+    // A widget that uses a font gets a dropdown, not a text box: a widget names a declaration, and a name the
+    // markup cannot resolve is dropped without a word. The list is grouped, because there are two routes to a
+    // font and only one of them is a file in the project.
     const titleWidget = document.widgets.find((widget) => widget.id === 'title');
     all()
         .find((element) => element.tagName === 'CANVAS')
         .emit('pointerdown', { clientX: titleWidget.x + 2, clientY: titleWidget.y + 2, pointerId: 1 });
     const fontSelect = all().find(
-        (element) => element.tagName === 'SELECT' && element.children.some((option) => option.textContent === 'title'),
+        (element) =>
+            element.tagName === 'SELECT' &&
+            element.descendants().some((option) => option.textContent === 'title'),
     );
     ok(fontSelect !== undefined, 'the Font property offers the declared fonts');
     equal(fontSelect.value, 'title', 'showing the one this widget uses');
     ok(
-        fontSelect.children.some((option) => option.textContent === '(default)'),
+        fontSelect.descendants().some((option) => option.textContent === '(default)'),
         'and a way back to the default font',
+    );
+    ok(
+        fontSelect.descendants().some((option) => option.value === 'Vector(2)'),
+        'the crate\'s own fonts are offered too, since a style expression can select them',
+    );
+    // The `...` on a font property declares a font from a file and selects it, rather than making the user
+    // add a declaration in the Fonts list first and come back.
+    const fontRow = all().find(
+        (element) =>
+            element.classList.contains('asset-field') &&
+            element.descendants().some((child) => child === fontSelect),
+    );
+    const fontBrowse = fontRow?.descendants().find((child) => child.textContent === '\u2026');
+    ok(fontBrowse !== undefined, 'and the font property has its own file browser');
+    messages.length = 0;
+    fontBrowse.emit('click');
+    const fontPick = messages.find((message) => message.type === 'pickAsset');
+    equal(fontPick.kind, 'font', 'which asks for a font file');
+    window.emit('message', {
+        data: { type: 'assetPicked', requestId: fontPick.requestId, path: 'assets/hero.bdf' },
+    });
+    const afterFontPick = messages.filter((message) => message.type === 'changed').pop();
+    ok(
+        afterFontPick.document.fonts.some((font) => font.id === 'hero' && font.src === 'assets/hero.bdf'),
+        'and the chosen file becomes a declaration named after it',
+    );
+    equal(
+        afterFontPick.document.widgets.find((widget) => widget.id === 'title').props.font,
+        'hero',
+        'selected on the widget that asked for it',
     );
 
     // Hover help: a property row carries its description as a tooltip.

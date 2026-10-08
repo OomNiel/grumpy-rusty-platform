@@ -142,6 +142,35 @@
                 "text": "AB",
                 "font": "test"
             }
+        },
+        {
+            "_comment": "The same text set in one of the crate's own fonts. The markup has no attribute for those, so the emitter has to write a style expression -- and only a build can prove it is accepted and honoured.",
+            "id": "builtin",
+            "tag": "label",
+            "x": 200,
+            "y": 160,
+            "width": 90,
+            "height": 30,
+            "props": {
+                "text": "AB",
+                "font": "Scaled6x10"
+            }
+        },
+        {
+            "_comment": "A button with a built-in font too: its font travels as a style expression starting from the button style, and this is what says whether the theme paints over it.",
+            "id": "builtinButton",
+            "tag": "button",
+            "x": 300,
+            "y": 160,
+            "width": 90,
+            "height": 30,
+            "props": {
+                "text": "AB",
+                "font": "Vector(2)"
+            },
+            "events": [
+                "clicked"
+            ]
         }
     ],
     "empty": {

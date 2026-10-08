@@ -30,6 +30,7 @@
       "height": 24,
       "props": {
         "text": "Press me",
+        "font": "",
         "bg": "#3a6ea5",
         "fg": "#f0f0f0",
         "text_color": "#ffffff",

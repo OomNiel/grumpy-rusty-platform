@@ -25,6 +25,7 @@ const { compiled, repoRoot } = require('../lib/harness');
 
 const { defaultProps, defaultChildren, createDocument, validateDocument } = compiled('designer/model');
 const { emitKdl } = compiled('designer/kdl');
+const { isBuiltInFont } = compiled('designer/fonts');
 const { rustFieldName } = compiled('designer/model');
 const { widgetAddressable } = compiled('designer/catalog');
 const { starterDocument, emitStarterKdl, emitUiRs, DESIGNER_FILES } = compiled('designer/generate');
@@ -74,6 +75,16 @@ function documentFromFixture(fixture) {
     return document;
 }
 
+/** The widgets the design gives a *declared* font to, which is the route the markup has an attribute for. */
+function declaredFontWidgets(document) {
+    return document.widgets.filter(
+        (widget) =>
+            typeof widget.props.font === 'string' &&
+            widget.props.font !== '' &&
+            !isBuiltInFont(widget.props.font),
+    );
+}
+
 function expectationSource(document, kdl, fixture) {
     const canvas = kdl.match(/width=(\d+) height=(\d+)/);
     const probeWidget = document.widgets.find((widget) => widget.id === fixture.probe.widget);
@@ -106,7 +117,7 @@ function expectationSource(document, kdl, fixture) {
     // A reference point just outside the widget. Comparing the two proves the widget painted something at
     // its own rectangle, which is the claim that does not depend on how the theme resolves colours.
     const referenceX = probeWidget.x > 4 ? probeWidget.x - 4 : probeWidget.x + probeWidget.width + 4;
-    const fonted = document.widgets.find((widget) => typeof widget.props.font === 'string' && widget.props.font !== '');
+    const fonted = declaredFontWidgets(document)[0];
     if (fonted === undefined) {
         throw new Error('the fixture has no widget using a font, so there is nothing for the difference to measure');
     }
@@ -311,8 +322,21 @@ function main() {
     fs.writeFileSync(SCREEN_NO_FONT, emitKdl(fontless));
     fs.writeFileSync(EXPECTATIONS, expectationSource(document, kdl, fixture));
     const canvas = designCanvasSize(document.panelWidth, document.panelHeight, document.rotation);
-    const fonted = document.widgets.find(
-        (widget) => typeof widget.props.font === 'string' && widget.props.font !== '',
+    const fontedWidgets = declaredFontWidgets(document);
+    const builtInWidgets = document.widgets.filter(
+        (widget) => typeof widget.props.font === 'string' && isBuiltInFont(widget.props.font),
+    );
+    if (fontedWidgets.length === 0 || builtInWidgets.length === 0) {
+        throw new Error(
+            'the fixture must give a font to a widget of each kind: one the screen declares, one the crate ' +
+                'ships, since the two travel by different markup',
+        );
+    }
+    const rectOf = (widget) => `(${widget.x}, ${widget.y}, ${widget.width}, ${widget.height})`;
+    const rectList = [...fontedWidgets, ...builtInWidgets].map(
+        (widget) =>
+            `    // ${JSON.stringify(widget.id)} (${isBuiltInFont(widget.props.font) ? 'built in' : 'declared'}): ` +
+            `${JSON.stringify(widget.props.font)}\n    ${rectOf(widget)},`,
     );
     fs.writeFileSync(
         path.join(SIM_DIR, 'src', 'font_diff_expectations.rs'),
@@ -321,8 +345,15 @@ function main() {
             '',
             `pub const CANVAS_W: u32 = ${canvas.width};`,
             `pub const CANVAS_H: u32 = ${canvas.height};`,
-            '/// The widget the design gives a font to: what the two renders must disagree about.',
-            `pub const FONTED_RECT: (i32, i32, u32, u32) = (${fonted.x}, ${fonted.y}, ${fonted.width}, ${fonted.height});`,
+            '/// Every widget the design gives a font to: the regions the two renders must disagree about.',
+            '///',
+            '/// There are two kinds, and they travel by different markup. A *declared* font is a BDF file the',
+            '/// screen declares and a widget names with `font=`, which the crate reads for labels and carousels.',
+            '/// A *built-in* one ships inside the crate and has no attribute at all, so it is asked for with a',
+            '/// `style` expression -- and a build is the only thing that can prove that expression is honoured.',
+            `pub const FONTED_RECTS: [(i32, i32, u32, u32); ${fontedWidgets.length + builtInWidgets.length}] = [`,
+            ...rectList,
+            '];',
             '',
         ].join('\n'),
     );

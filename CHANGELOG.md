@@ -11,6 +11,33 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.56] - 2026-10-08
+
+### Added
+
+- **A font picker.** The Font field now lists the crate's own fonts — Tiny 3x5 (the default), Medium 4x7,
+  Scaled 6x10 and two scales of the vector face — alongside the BDF fonts the screen declares, so a face can be
+  chosen without a file. The `…` button stayed, and now declares a font from the file it opens *and* selects it on
+  the widget, in one undoable step, instead of leaving the user to add a declaration elsewhere and come back.
+- A Font field on **Button** too (built-ins only). Which widget offers one follows what the crate reads: a
+  declared `font="name"` reaches Label and Carousel, a `style` expression reaches Label, Button and Carousel, and
+  a Table is given none at all because its emitter arm hard-codes the style and would drop one in silence.
+
+### Fixed
+
+- A built-in font name in the Font field used to be markup that did nothing at all: the crate's own fonts are not
+  declarable, so `font="Scaled6x10"` was dropped without a word. They now travel as a `style` expression, which is
+  the only route the crate has for them — and which for a button has to be a `WidgetStyle`, since the emitter
+  chains its colour builders onto whatever the expression returns.
+- Validation refuses a *declared* font on a widget the crate does not read one for, which would otherwise be the
+  same silent drop one step further out.
+
+### Verified
+
+- The host pixel check measures every fonted widget in the fixture rather than one, across both routes:
+  `the fonts changed 222 pixels inside their widgets (34 of 2700, 78 of 2700, 110 of 2700) and none of the 145500
+  outside them` — the declared BDF, a built-in on a label, and a built-in on a button.
+
 ## [0.0.55] - 2026-10-08
 
 ### Added
