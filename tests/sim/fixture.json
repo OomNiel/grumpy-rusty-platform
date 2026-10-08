@@ -184,6 +184,19 @@
                 "text": "AB",
                 "style": "panel"
             }
+        },
+        {
+            "_comment": "A label given a text colour: the crate paints text from style.text and the markup has no colour attribute for a label, so this is the third thing that has to reach the pixels through one style expression.",
+            "id": "tinted",
+            "tag": "label",
+            "x": 300,
+            "y": 200,
+            "width": 90,
+            "height": 30,
+            "props": {
+                "text": "AB",
+                "text_color": "#ff0000"
+            }
         }
     ],
     "empty": {

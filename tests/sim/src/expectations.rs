@@ -51,6 +51,7 @@ pub fn check(
     one("builtin", widgets.builtin, 200, 160, 90, 30);
     one("builtinButton", widgets.builtin_button, 300, 160, 90, 30);
     one("styled", widgets.styled, 200, 200, 90, 30);
+    one("tinted", widgets.tinted, 300, 200, 90, 30);
     problems
 }
 

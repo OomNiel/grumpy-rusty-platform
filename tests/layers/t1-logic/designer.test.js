@@ -31,6 +31,7 @@ const {
 } = compiled('designer/model');
 const { emitKdl, layoutDocument } = compiled('designer/kdl');
 const { fontConstName } = compiled('designer/model');
+const { rgb565Expression } = compiled('designer/appearance');
 
 /** The CYD's panel, which is the board the designer is developed against. */
 const PANEL = { boardId: 'sunton-3248s035r', panelWidth: 320, panelHeight: 480 };
@@ -933,6 +934,61 @@ test('a style name the crate does not know is refused, because it would be compi
         }),
     ]);
     contains(validateDocument(rect).join('\n'), 'is not a property of a rect', 'no handle, no property');
+});
+
+test('a label can be given a text colour, which the markup has no attribute for', () => {
+    // The crate paints text as `TextStyle::new(style.text).with_font(style.font)`, and the parser reads no colour
+    // property for a label at all -- so the colour has to ride in the style expression, with the font and the
+    // base style. That is the only route there is; the alternative is not being able to set it.
+    const doc = document(0, [
+        widget('note', 'label', { x: 0, y: 0, width: 120, height: 24 }, {
+            props: { ...defaultProps('label'), text: 'AB', text_color: '#ff0000' },
+        }),
+    ]);
+    const kdl = emitKdl(doc);
+    contains(
+        kdl,
+        'style="{ let mut style = Style::label(); style.text = Rgb565::new(31, 0, 0); style }"',
+        'the colour, in the 5/6/5 the crate itself reduces a hex colour to',
+    );
+    notContains(kdl, 'text_color=', 'and not as an attribute, which the parser would ignore for a label');
+    equal(validateDocument(doc).length, 0, 'which is a valid design');
+
+    // All three ride in one expression, because a widget has one style and no more.
+    const all = document(0, [
+        widget('note', 'label', { x: 0, y: 0, width: 120, height: 24 }, {
+            props: { ...defaultProps('label'), text: 'AB', style: 'panel', font: 'Scaled6x10', text_color: '#00ff00' },
+        }),
+    ]);
+    const combined = emitKdl(all);
+    equal(combined.split('style=').length - 1, 1, 'one style attribute');
+    contains(
+        combined,
+        '{ let mut style = Style::panel(); style.font = FontId::Scaled6x10; style.text = Rgb565::new(0, 63, 0); style }',
+        'the base look, the font and the colour together',
+    );
+
+    // A button's text colour is a real attribute and must not be swallowed by the appearance handling.
+    const button = document(0, [
+        widget('go', 'button', { x: 0, y: 0, width: 100, height: 32 }, {
+            props: { ...defaultProps('button'), text: 'Go', text_color: '#ffffff' },
+        }),
+    ]);
+    const buttonKdl = emitKdl(button);
+    contains(buttonKdl, 'text_color="#ffffff"', 'a button keeps its own text colour attribute');
+    notContains(buttonKdl, 'style=', 'and needs no style expression for it');
+});
+
+test('the canvas colour and the emitted colour are the same arithmetic', () => {
+    // The swatch on the canvas and the pixel on the glass have to agree; both reduce a `#rrggbb` the same way
+    // the crate's resolver does.
+    equal(rgb565Expression('#ffffff'), 'Rgb565::new(31, 63, 31)', 'white is full on all three');
+    equal(rgb565Expression('#000000'), 'Rgb565::new(0, 0, 0)', 'black is none');
+    equal(rgb565Expression('#ff0000'), 'Rgb565::new(31, 0, 0)', 'red keeps five bits');
+    equal(rgb565Expression('#0000ff'), 'Rgb565::new(0, 0, 31)', 'blue keeps five bits');
+    equal(rgb565Expression('#00ff00'), 'Rgb565::new(0, 63, 0)', 'green keeps six');
+    equal(rgb565Expression('#3a6ea5'), 'Rgb565::new(7, 27, 20)', 'and a mixed colour matches the crate\'s own reduction');
+    equal(rgb565Expression('red'), undefined, 'a name the design never stores is refused');
 });
 
 // ---------------------------------------------------------------- hover help

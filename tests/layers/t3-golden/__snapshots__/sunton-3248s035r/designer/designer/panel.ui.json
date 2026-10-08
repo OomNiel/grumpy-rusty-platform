@@ -18,7 +18,8 @@
       "props": {
         "text": "Rusty Platform",
         "font": "",
-        "style": ""
+        "style": "",
+        "text_color": ""
       },
       "events": []
     },

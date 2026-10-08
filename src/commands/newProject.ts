@@ -19,34 +19,36 @@ import {
     templateUsesPanel,
 } from '../display/rotation';
 import { installFirmwareIntoProject } from '../toolchain/cyw43FirmwareRunner';
-import { isAlreadyLoaded } from '../project/workspaceFolders';
+import { samePath } from '../project/workspaceFolders';
 import { ensureEspToolchain } from './espToolchainCommands';
 import { runInTerminal } from './terminal';
 
 /**
- * Makes the folder that was just created part of the IDE.
+ * Makes the folder that was just created the folder the window is working in.
  *
  * This is part of *creating* a project, not something a button does afterwards: a project the extension wrote
  * but the window does not know about has no Explorer entry, no Source Control and no terminal opened in it, so
  * the user has to go and open by hand the thing they just asked for. The Designer made that obvious, because its
- * button opened the canvas instead of the folder -- but the other templates only escaped it by reloading the
- * whole window, which throws away the message, the log and any panel that was about to open.
+ * button opened the canvas instead of the folder.
  *
- * Adding the folder to the current window is preferred for that reason. `vscode.openFolder` remains the fallback
- * for a host that will not take it (a virtual workspace, or an older editor), and it returns `false` so the
- * caller knows the window is about to be replaced and nothing else it does will be seen.
+ * It opens it as a **plain folder** -- `vscode.openFolder`, one root, no workspace file -- which is what a
+ * generated project is and what every other template has always done. The first version of this fix used
+ * `updateWorkspaceFolders` to avoid the reload that `openFolder` costs, and that was a mistake worth recording:
+ * adding a folder to a window that has none does not produce a plain window with a folder in it, it produces an
+ * *untitled workspace*, which VS Code then wants to save as a `.code-workspace` file. A generated project would
+ * have arrived as a workspace, and stayed one, for no reason the user asked for.
  *
- * Returns true when the folder is loaded in *this* window and the session can carry on.
+ * The reload is handled where it happens: a Designer asked for before it is recorded in global state and
+ * reopened afterwards (see `src/designer/pendingOpen.ts`).
+ *
+ * Returns true when the folder was already the one this window has open, so the session carries on and the
+ * caller can still do something with it.
  */
-async function loadIntoIde(target: vscode.Uri): Promise<boolean> {
-    const open = (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath);
-    if (isAlreadyLoaded(open, target.fsPath)) {
-        // Already inside a folder the window has open, which is the common case: the wizard offers the open
-        // folders as places to put a project, and adding it again would show the same directory twice.
-        return true;
-    }
-    // `updateWorkspaceFolders` is asynchronous in effect but answers immediately whether the host will try.
-    if (vscode.workspace.updateWorkspaceFolders(0, 0, { uri: target, name: target.fsPath.split(/[\\/]/).pop() })) {
+async function openProjectFolder(target: vscode.Uri): Promise<boolean> {
+    const open = vscode.workspace.workspaceFolders ?? [];
+    const only = open.length === 1 ? open[0] : undefined;
+    if (only !== undefined && samePath(only.uri.fsPath, target.fsPath)) {
+        // Already this window's folder: reloading to open what is open would be a no-op with a price.
         return true;
     }
     await vscode.commands.executeCommand('vscode.openFolder', target, { forceNewWindow: false });
@@ -320,7 +322,7 @@ export function registerNewProjectCommand(
         // Loaded whatever the answer was, including "Later" and "Build Now": a project the window does not know
         // about has no Explorer entry, no Source Control and no terminal in it, so creating one and then not
         // showing it is only half the command. This is what the Designer flow used to skip.
-        const loadedHere = await loadIntoIde(target);
+        const loadedHere = await openProjectFolder(target);
 
         if (wantsDesigner && loadedHere) {
             // This session survived the folder change, so open it here -- and cancel the request, which was only
@@ -328,13 +330,9 @@ export function registerNewProjectCommand(
             await showDesigner(context, output, target);
             await forgetPendingDesigner(context);
         } else if (action === 'Open Project') {
-            if (loadedHere) {
-                // The folder is already in the window, so reveal what was just created rather than reloading
-                // the window for no gain.
-                await vscode.commands.executeCommand('revealInExplorer', target);
-            } else {
-                await vscode.commands.executeCommand('vscode.openFolder', target, { forceNewWindow: false });
-            }
+            // The folder is already open, or is being opened, by `openProjectFolder` above -- so this is where
+            // to look first, rather than a second request to open the same thing.
+            await vscode.commands.executeCommand('revealInExplorer', target);
         } else if (action === 'Build Now') {
             runInTerminal(`Rusty: ${board.id}`, 'cargo build', target);
         }

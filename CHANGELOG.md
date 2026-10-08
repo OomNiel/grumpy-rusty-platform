@@ -11,6 +11,40 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.59] - 2026-10-08
+
+### Added
+
+- **A Text colour property on Label and Carousel.** The crate paints text as
+  `TextStyle::new(style.text).with_font(style.font)`, but the markup has no colour attribute for a label — so the
+  colour travels in the widget's `style` expression, alongside the base look and the font, because there is only
+  one `style` attribute to write. The `#rrggbb`-to-5/6/5 reduction is the crate's own, pinned by a test so the
+  canvas swatch and the pixel cannot drift apart. A button keeps its real `text_color` attribute and is not
+  affected.
+
+### Fixed
+
+- **A created project opens as a folder, not as a workspace.** The previous release made the new folder part of
+  the window with `updateWorkspaceFolders`, which does not produce a plain window with a folder in it — adding a
+  folder to a window that has none produces an *untitled workspace*, which VS Code then wants saved as a
+  `.code-workspace` file. A generated project therefore arrived as a workspace and stayed one. It now opens with
+  `vscode.openFolder`: one root, no workspace file, the same as every other template. The reload that costs is
+  handled by the Designer request that survives it.
+
+### Note
+
+- The rest of the answer to "how do I set a control's font and colour" is that most controls cannot be given
+  either: `embedded-gui-codegen` hard-codes the style it passes for every tag except Label, Button, Panel and
+  Carousel. The full table is in `NOTES.md` §101; the README says the same in a paragraph.
+
+### Verified
+
+- The host appearance check now covers five routes in one run:
+  `the appearances changed 2930 pixels inside their widgets (34 of 2700, 78 of 2700, 110 of 2700, 2688 of 2700,
+  20 of 2700) and none of the 140100 outside them` — a declared BDF, a built-in font on a label, a built-in font
+  on a button, a base style on a label, and a text colour on a label.
+- 786 hermetic tests pass; `tsc` clean on both sides; all four host checks pass.
+
 ## [0.0.58] - 2026-10-08
 
 ### Fixed

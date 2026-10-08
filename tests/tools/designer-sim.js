@@ -26,6 +26,7 @@ const { compiled, repoRoot } = require('../lib/harness');
 const { defaultProps, defaultChildren, createDocument, validateDocument } = compiled('designer/model');
 const { emitKdl } = compiled('designer/kdl');
 const { isBuiltInFont } = compiled('designer/fonts');
+const { widgetSpec } = compiled('designer/catalog');
 const { rustFieldName } = compiled('designer/model');
 const { widgetAddressable } = compiled('designer/catalog');
 const { starterDocument, emitStarterKdl, emitUiRs, DESIGNER_FILES } = compiled('designer/generate');
@@ -314,6 +315,13 @@ function main() {
             if ('style' in props) {
                 props.style = '';
             }
+            // A property that travels *inside* the style expression is cleared the same way, or the widget would
+            // look identical in both renders and the difference would be attributed to nothing.
+            for (const property of widgetSpec(widget.tag)?.props ?? []) {
+                if (property.viaStyle === true) {
+                    props[property.name] = '';
+                }
+            }
             return { ...widget, props };
         }),
     };
@@ -332,7 +340,12 @@ function main() {
     const styled = document.widgets.filter(
         (widget) => typeof widget.props.style === 'string' && widget.props.style !== '',
     );
-    if (declared.length === 0 || builtIn.length === 0 || styled.length === 0) {
+    const tinted = document.widgets.filter((widget) =>
+        (widgetSpec(widget.tag)?.props ?? []).some(
+            (property) => property.viaStyle === true && widget.props[property.name] !== '',
+        ),
+    );
+    if (declared.length === 0 || builtIn.length === 0 || styled.length === 0 || tinted.length === 0) {
         throw new Error(
             'the fixture must show every appearance route: a font the screen declares, one the crate ships, ' +
                 'and a base style, since each reaches the pixels by different markup',
@@ -342,6 +355,7 @@ function main() {
         ...declared.map((widget) => [widget, `declared font ${JSON.stringify(widget.props.font)}`]),
         ...builtIn.map((widget) => [widget, `built-in font ${JSON.stringify(widget.props.font)}`]),
         ...styled.map((widget) => [widget, `style ${JSON.stringify(widget.props.style)}`]),
+        ...tinted.map((widget) => [widget, `text colour ${JSON.stringify(widget.props.text_color)}`]),
     ];
     const rectList = described.map(
         ([widget, what]) =>
@@ -360,8 +374,9 @@ function main() {
             '/// Three routes, and they travel by different markup. A *declared* font is a BDF file the screen',
             '/// declares and a widget names with `font=`, which the crate reads for labels and carousels. A',
             '/// *built-in* one ships inside the crate and has no attribute at all, so it is asked for with a',
-            '/// `style` expression. And a *base style* is what gives an ordinary widget a look its own',
-            '/// properties cannot -- a build is the only thing that can prove any of the three is honoured.',
+            '/// `style` expression. A *base style* gives an ordinary widget a look its own properties cannot,',
+            '/// and a *text colour* on a label takes the same route. A build is the only thing that can prove',
+            '/// any of them is honoured -- none of the four has an attribute the parser would read.',
             `pub const APPEARANCE_RECTS: [(i32, i32, u32, u32); ${described.length}] = [`,
             ...rectList,
             '];',
