@@ -106,6 +106,11 @@ class Element {
         this.children = [...nodes];
     }
 
+    removeChild(node) {
+        this.children = this.children.filter((child) => child !== node);
+        return node;
+    }
+
     addEventListener(type, handler) {
         const list = this.listeners.get(type) ?? [];
         list.push(handler);

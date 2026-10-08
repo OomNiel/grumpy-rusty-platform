@@ -205,6 +205,48 @@ export function removeWidget(state: DesignerState, id: string): DesignerState {
     }));
 }
 
+/**
+ * Copies a widget, placing the copy a little down and right of the original.
+ *
+ * The offset is what makes the copy visible: on top of the original it would look like nothing happened, and a
+ * drag from there would then move the wrong one of the two. The name is made free the same way a new widget's
+ * is.
+ */
+export function duplicateWidget(state: DesignerState, id: string): DesignerState {
+    const canvas = canvasOf(state.document);
+    return edit(state, undefined, (document) => {
+        const source = document.widgets.find((widget) => widget.id === id);
+        if (source === undefined) {
+            return document;
+        }
+        const offset = 8;
+        const copy: DesignerWidget = {
+            ...source,
+            // Named after the widget it copies, not after its kind: a copy of `title` becoming `label` reads as
+            // a different thing entirely. (A test caught exactly that.)
+            id: uniqueWidgetId(document, source.id),
+            x: Math.min(source.x + offset, Math.max(0, canvas.width - source.width)),
+            y: Math.min(source.y + offset, Math.max(0, canvas.height - source.height)),
+            // Deep enough that editing the copy cannot touch the original.
+            props: { ...source.props },
+            events: [...source.events],
+            children:
+                source.children === undefined
+                    ? undefined
+                    : source.children.kind === 'parts'
+                      ? { kind: 'parts', parts: source.children.parts.map((part) => ({ ...part })) }
+                      : source.children.kind === 'options'
+                        ? { kind: 'options', values: [...source.children.values] }
+                        : {
+                              kind: 'table',
+                              headers: [...source.children.headers],
+                              rows: source.children.rows.map((row) => [...row]),
+                          },
+        };
+        return { ...document, widgets: [...document.widgets, copy] };
+    });
+}
+
 /** Renames a widget. The validator is what rejects a name the generated code cannot carry. */
 export function renameWidget(state: DesignerState, id: string, newId: string): DesignerState {
     return edit(state, undefined, (document) =>

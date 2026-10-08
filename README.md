@@ -142,8 +142,8 @@ designer for the active project. Either way it works on a board that carries a p
   media and 3D, and shapes. Drag one onto the canvas, or click it to drop it in the middle.
 - **Canvas** — the board's own panel at the rotation the project is built with, drawn in the board's dark
   palette rather than the editor's theme. Move widgets by dragging, resize them from their eight handles, snap
-  them to a neighbour's edge or to the canvas, and reorder them from the layer list. **Ctrl+Z** undoes, and one
-  drag is one undo step.
+  them to a neighbour's edge or to the canvas, and reorder them from the layer list. **Right-click a control**
+  for Duplicate, Bring forward, Send backward and Delete. **Ctrl+Z** undoes, and one drag is one undo step.
 - **Properties** — position and size, every property the tag has, the events it can raise, its option list,
   table body or icon parts, and the layer order. Every field carries a **hover description**, and the Toolbox
   entries describe what each widget is.

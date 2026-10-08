@@ -26,6 +26,7 @@ const {
     toggleEvent,
     reorderWidget,
     addFont,
+    duplicateWidget,
     removeFont,
     setChildren,
     setFontField,
@@ -374,4 +375,30 @@ test('a font can be added, renamed and removed, and its name follows the widgets
 test('adding a font is one undo step', () => {
     const withOne = addFont(state());
     equal(undo(withOne).document.fonts.length, 0, 'undone');
+});
+
+test('a duplicate is a separate widget, placed beside the original', () => {
+    const original = withButton(10, 10);
+    const copy = duplicateWidget(original, 'button');
+    equal(copy.document.widgets.length, 2, 'there are two now');
+    const made = copy.document.widgets[1];
+    equal(made.id, 'button_2', 'with a free name');
+    equal(made.tag, 'button', 'the same kind');
+    equal(`${made.x},${made.y}`, '18,18', 'placed a little down and right, so it can be seen');
+    equal(made.width, original.document.widgets[0].width, 'the same size');
+
+    // Editing the copy must not touch the original: the two share nothing.
+    const renamed = setProperty(copy, 'button_2', 'text', 'Copy');
+    equal(widgetById(renamed.document, 'button').props.text, 'Button', 'the original is untouched');
+    equal(widgetById(renamed.document, 'button_2').props.text, 'Copy', 'and the copy took the change');
+
+    // One undo step, like adding.
+    equal(undo(copy).document.widgets.length, 1, 'undo removes the copy');
+});
+
+test('duplicating near an edge keeps the copy inside the canvas', () => {
+    const far = moveWidget(withButton(), 'button', 319, 479);
+    const copy = duplicateWidget(far, 'button');
+    const made = copy.document.widgets[1];
+    ok(made.x + made.width <= 320 && made.y + made.height <= 480, `the copy is inside, got ${made.x},${made.y}`);
 });

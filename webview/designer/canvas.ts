@@ -32,6 +32,8 @@ export interface CanvasCallbacks {
     onEdit(state: DesignerState): void;
     /** The selection changed, including to nothing. */
     onSelect(id: string | undefined): void;
+    /** A right-click on a widget, with where it happened so the menu can open there. */
+    onContextMenu(id: string, x: number, y: number): void;
     /**
      * A drag or a drop finished.
      *
@@ -72,6 +74,7 @@ export class CanvasView {
             event.preventDefault();
         });
         this.element.addEventListener('drop', (event) => this.drop(event));
+        this.element.addEventListener('contextmenu', (event) => this.contextMenu(event));
     }
 
     setState(state: DesignerState): void {
@@ -173,7 +176,7 @@ export class CanvasView {
     }
 
     /** A pointer event in design pixels, which is the only coordinate system the rules know about. */
-    private point(event: PointerEvent | DragEvent): { x: number; y: number } {
+    private point(event: PointerEvent | DragEvent | MouseEvent): { x: number; y: number } {
         const bounds = this.element.getBoundingClientRect();
         return {
             x: (event.clientX - bounds.left) / this.zoom,
@@ -241,6 +244,29 @@ export class CanvasView {
             this.draw();
             this.callbacks.onCommit();
         }
+    }
+
+    /**
+     * A right-click: select what is under it and ask the panel for a menu.
+     *
+     * The browser's own menu is suppressed, even on empty canvas where there is nothing to offer -- a context
+     * menu that sometimes shows the page's own is worse than one that does nothing.
+     */
+    private contextMenu(event: MouseEvent): void {
+        const state = this.state;
+        if (state === undefined) {
+            return;
+        }
+        event.preventDefault();
+        const { x, y } = this.point(event);
+        const target = hitTest(state.document, x, y, this.selected);
+        if (target === undefined) {
+            return;
+        }
+        this.selected = target.id;
+        this.callbacks.onSelect(target.id);
+        this.draw();
+        this.callbacks.onContextMenu(target.id, event.clientX, event.clientY);
     }
 
     /** A widget dragged out of the Toolbox and dropped on the canvas. */
