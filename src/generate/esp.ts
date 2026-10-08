@@ -1931,7 +1931,12 @@ ${designer ? `                // The design, painted instead of the diagnostic s
                 // diagnostic branch below it is folded away in a Designer project and compiled out.
                 if DESIGNER {
                     let screen = screen.get_or_insert_with(|| {
-                        ui::Designer::new(width_i as u32, height_i as u32)
+                        // Built once, on the first calibrated frame, and logged: when this project is flashed
+                        // the log is what says whether the design exists at all, since a design that fails to
+                        // build panics and a design that draws says nothing on its own.
+                        let built = ui::Designer::new(width_i as u32, height_i as u32);
+                        log::info!("design: built and painted {}x{}", width_i, height_i);
+                        built
                     });
                     display.clear(Rgb565::BLACK).expect("panel write failed");
                     screen.repaint(&mut display).expect("the design did not render");

@@ -42,5 +42,75 @@ pub fn check(
     one("meter", widgets.meter, 0, 280, 480, 20);
     one("foot", widgets.foot, 0, 300, 240, 20);
     one("foot2", widgets.foot2, 240, 300, 240, 20);
+    one("eco", widgets.eco, 60, 120, 40, 30);
+    one("ok", widgets.ok, 300, 120, 60, 30);
+    problems
+}
+
+/// Taps the centre of every widget that raises an event, and checks what comes back.
+pub fn touch_checks<const N: usize, const E: usize, const D: usize>(
+    gui: &mut GuiContext<'_, N, E, D>,
+    widgets: &crate::screen::SimPanelWidgets,
+) -> Vec<String> {
+    /// A press and a release at one point, with the timing the crate needs to call it a click.
+    fn tap<const N: usize, const E: usize, const D: usize>(
+        gui: &mut GuiContext<'_, N, E, D>,
+        x: i32,
+        y: i32,
+    ) -> Vec<UiEvent> {
+        let _ = gui.handle_input(InputEvent::Pointer {
+            x,
+            y,
+            state: PointerState::Pressed,
+            button: PointerButton::Primary,
+        });
+        let _ = gui.tick_input(20);
+        let _ = gui.handle_input(InputEvent::Pointer {
+            x,
+            y,
+            state: PointerState::Released,
+            button: PointerButton::Primary,
+        });
+        let _ = gui.tick_input(20);
+        let mut events = Vec::new();
+        while let Some(event) = gui.pop_event() {
+            events.push(event);
+        }
+        events
+    }
+
+    let mut problems: Vec<String> = Vec::new();
+    {
+        let events = tap(gui, 38, 62);
+        let raised = events.iter().any(|event| matches!(event, UiEvent::Clicked(other) | UiEvent::ValueChanged(other) if *other == widgets.go));
+        if !raised {
+            problems.push(format!("go: a tap at its designed centre (38, 62) raised nothing for it ({} events came back)", events.len()));
+        }
+    }
+    {
+        let events = tap(gui, 80, 135);
+        let raised = events.iter().any(|event| matches!(event, UiEvent::Clicked(other) | UiEvent::ValueChanged(other) if *other == widgets.eco));
+        if !raised {
+            problems.push(format!("eco: a tap at its designed centre (80, 135) raised nothing for it ({} events came back)", events.len()));
+        }
+    }
+    {
+        let events = tap(gui, 330, 135);
+        let raised = events.iter().any(|event| matches!(event, UiEvent::Clicked(other) | UiEvent::ValueChanged(other) if *other == widgets.ok));
+        if !raised {
+            problems.push(format!("ok: a tap at its designed centre (330, 135) raised nothing for it ({} events came back)", events.len()));
+        }
+    }
+    {
+        // Nothing is under this point, so nothing may claim it.
+        let events = tap(gui, 250, 240);
+        let claimed = events
+            .iter()
+            .filter(|event| matches!(event, UiEvent::Clicked(_) | UiEvent::ValueChanged(_)))
+            .count();
+        if claimed != 0 {
+            problems.push(format!("a tap at (250, 240), where no widget is, was claimed by {} widget event(s)", claimed));
+        }
+    }
     problems
 }

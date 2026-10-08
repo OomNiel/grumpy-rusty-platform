@@ -26,13 +26,115 @@
         "y": 62
     },
     "widgets": [
-        { "id": "band", "tag": "rect", "x": 0, "y": 0, "width": 480, "height": 40, "props": { "fill": "#ff0000" } },
-        { "id": "title", "tag": "label", "x": 17, "y": 3, "width": 200, "height": 24, "props": { "text": "Odd coordinates" } },
-        { "id": "go", "tag": "button", "x": 17, "y": 48, "width": 43, "height": 29, "events": ["clicked"] },
-        { "id": "knob", "tag": "circle", "x": 100, "y": 60, "width": 40, "height": 30 },
-        { "id": "meter", "tag": "progress", "x": 0, "y": 280, "width": 480, "height": 20, "props": { "value": 50 } },
-        { "id": "foot", "tag": "rect", "x": 0, "y": 300, "width": 240, "height": 20, "props": { "fill": "#102030" } },
-        { "id": "foot2", "tag": "rect", "x": 240, "y": 300, "width": 240, "height": 20, "props": { "fill": "#203040" } },
-        { "id": "tiny", "tag": "spacer", "x": 477, "y": 3, "width": 3, "height": 3 }
-    ]
+        {
+            "id": "band",
+            "tag": "rect",
+            "x": 0,
+            "y": 0,
+            "width": 480,
+            "height": 40,
+            "props": {
+                "fill": "#ff0000"
+            }
+        },
+        {
+            "id": "title",
+            "tag": "label",
+            "x": 17,
+            "y": 3,
+            "width": 200,
+            "height": 24,
+            "props": {
+                "text": "Odd coordinates"
+            }
+        },
+        {
+            "id": "go",
+            "tag": "button",
+            "x": 17,
+            "y": 48,
+            "width": 43,
+            "height": 29,
+            "events": [
+                "clicked"
+            ]
+        },
+        {
+            "id": "knob",
+            "tag": "circle",
+            "x": 100,
+            "y": 60,
+            "width": 40,
+            "height": 30
+        },
+        {
+            "id": "meter",
+            "tag": "progress",
+            "x": 0,
+            "y": 280,
+            "width": 480,
+            "height": 20,
+            "props": {
+                "value": 50
+            }
+        },
+        {
+            "id": "foot",
+            "tag": "rect",
+            "x": 0,
+            "y": 300,
+            "width": 240,
+            "height": 20,
+            "props": {
+                "fill": "#102030"
+            }
+        },
+        {
+            "id": "foot2",
+            "tag": "rect",
+            "x": 240,
+            "y": 300,
+            "width": 240,
+            "height": 20,
+            "props": {
+                "fill": "#203040"
+            }
+        },
+        {
+            "id": "tiny",
+            "tag": "spacer",
+            "x": 477,
+            "y": 3,
+            "width": 3,
+            "height": 3
+        },
+        {
+            "_comment": "Two more widgets that raise events, in the empty middle, so the event path can be driven.",
+            "id": "eco",
+            "tag": "toggle",
+            "x": 60,
+            "y": 120,
+            "width": 40,
+            "height": 30,
+            "events": [
+                "valueChanged"
+            ]
+        },
+        {
+            "id": "ok",
+            "tag": "button",
+            "x": 300,
+            "y": 120,
+            "width": 60,
+            "height": 30,
+            "events": [
+                "clicked"
+            ]
+        }
+    ],
+    "empty": {
+        "comment": "A point no widget covers, to check that a tap there raises nothing.",
+        "x": 250,
+        "y": 240
+    }
 }

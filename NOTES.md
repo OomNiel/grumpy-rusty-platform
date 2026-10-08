@@ -3898,3 +3898,39 @@ The firmware **compiles and links**, and nothing more: no board has run it. Whet
 right size and position on glass, and whether a touch lands on the widget it looks like it should, are what a
 flash and an eye have to answer -- and the rotation is the specific thing to check, since the markup is sized
 for the turned panel while the panel itself is still driven at its native size through mipidsi (§81/§82).
+
+## 88. Does a touch land on the widget it looks like? Answered without a board (2026-10-08)
+
+### The half a screenshot cannot show
+
+§86 proved the layout engine puts every widget on the rectangle the canvas drew. That is only half of what a
+WYSIWYG designer promises: the other half is that a *finger* at those coordinates reaches that widget. That is
+the question a flash and a finger would answer, and it can be answered deterministically instead, because the
+crate's input path is ordinary code: `handle_input(InputEvent::Pointer { .. })` in, `pop_event()` out.
+
+So `tests/sim` gained a second binary (`touch`). It taps the designed centre of every widget the fixture gives
+an event to and checks that an event *for that widget* comes back, and then taps a point no widget covers and
+checks that nothing claims it. The coordinates are generated from the fixture by the same tool that writes the
+markup, so nothing in the test is hand-written that the canvas did not draw.
+
+**Result:** every tapped widget received its own event, and the empty canvas claimed nothing. The negative
+half matters as much as the positive one: a check that could not tell "no widget" from "the right widget"
+would pass for the wrong reason.
+
+Both halves now run in `--e2e`, as two tests over one host build.
+
+### And a log line, so the glass test can be read
+
+The generated firmware panicked loudly when a design could not be built and said nothing at all when it could,
+which makes a flash hard to interpret: a black panel and a design that drew fine look the same from the serial
+port. The Designer body now logs `design: built and painted WxH` once, on the first calibrated frame, so that
+flashing a Designer project answers the first question by itself -- whether the design exists at all.
+
+### What is still only a compile
+
+The firmware compiles and links for both panel boards, the geometry is proven on a host render, and the event
+path is proven on the same render. What remains is the part that needs the hardware: that the panel shows the
+design at the right size and position, that the touch driver's mapped coordinates agree with what the canvas
+showed (the mapping is the template's long-standing one, but it has never been exercised through this path),
+and that the rotation is right -- the markup is sized for the turned panel while mipidsi is still given the
+native size (§81/§82). No board is on USB at the moment of writing, so that test is queued rather than done.
