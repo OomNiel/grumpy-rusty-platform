@@ -4204,3 +4204,42 @@ came out as `label`, which reads as a different thing entirely. Copies are now n
 Two mistakes of mine in that test, both worth the note because they are the same mistake: I asserted absolute
 counts of widgets in a session whose state depends on where in the session the assertions sit, and both times the
 fix was to assert *relative to what is there now* (`before + 1`) rather than to a number I had counted by hand.
+
+## 95. A file picker, and who owns what when a dialog is involved (2026-10-08)
+
+### The division of labour
+
+An asset field used to be a text box: fine for `assets/logo.bmp` if you already knew the path, useless if you
+did not. Now every field that names a file -- a font's BDF, an image's or mesh's `src`, each part of an icon --
+has a browse button. The interesting part is who does what when it is clicked:
+
+- the **extension** opens the dialog, because only it can, and only it knows the project folder;
+- the **panel** makes the edit when the answer comes back, because the document and its undo history live there.
+
+That is why the request carries an id and the answer carries it back -- a modal dialog takes as long as the user
+takes, so more than one can be in flight -- and why the panel hands the extension an *apply* closure rather than
+a field name: the extension never touches the document, which is the arrangement the whole channel is built on.
+
+### What a chosen file does
+
+A design's paths are relative to the project root (that is what the generated `project.kdl` anchors), so a file
+picked from elsewhere on the disk is **copied into `assets/`** rather than referenced: `../../Pictures/logo.bmp`
+would work until the folder moved and then fail at build time with a path nobody recognises. Actions:
+
+| Chosen file | What happens |
+|---|---|
+| already inside the project | referenced where it is |
+| somewhere else | copied to `assets/<name>`, and referenced there |
+| a name already taken | the copy gains a number (`logo-2.bmp`), because replacing a file the design uses would be a silent loss |
+| the dialog cancelled | nothing: the field keeps what it had |
+
+The dialog's filters are the formats the build actually reads, taken from the crate rather than guessed: **BDF**
+for fonts, **OBJ and STL** for meshes (its own error message lists them), and for images the raster set the
+`image` crate decodes.
+
+### The trap in "is this file inside the project?"
+
+Comparing paths as strings says `/home/me/project-two/logo.bmp` is inside `/home/me/project` -- it shares a
+prefix and is a different folder. The comparison is by path *segments* for that reason, and there is a test
+named after it. The planner is a pure function (`planAssetImport`) so that decision, the name-clash rule and the
+separator handling are all tested without touching a filesystem.

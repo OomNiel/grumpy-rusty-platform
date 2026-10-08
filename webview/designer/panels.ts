@@ -26,6 +26,7 @@ import {
     widgetRaises,
     widgetSpec,
 } from '../../src/designer/catalog';
+import type { DesignerAssetKind } from '../../src/designer/protocol';
 import { type DesignerFont, type DesignerWidget, designCanvasSize } from '../../src/designer/model';
 import {
     type DesignerState,
@@ -48,6 +49,13 @@ import {
 export interface PanelCallbacks {
     onEdit(state: DesignerState): void;
     onSelect(id: string | undefined): void;
+    /**
+     * Asks the extension to choose a file.
+     *
+     * The extension owns the dialog; the panel owns the edit, and applies the path when the answer arrives --
+     * which is why it hands over the *apply* rather than the field's name.
+     */
+    onBrowseAsset(kind: DesignerAssetKind, apply: (path: string) => void): void;
 }
 
 /** A short element factory, because the DOM API is otherwise nine lines per control. */
@@ -118,6 +126,32 @@ function textInput(value: string, onChange: (value: string) => void): HTMLInputE
     input.value = value;
     input.addEventListener('change', () => onChange(input.value));
     return input;
+}
+
+/** The file dialog filter a widget's asset field wants. */
+function assetKindFor(tag: string): DesignerAssetKind {
+    return tag === 'mesh' ? 'mesh' : tag === 'icon' ? 'icon' : 'image';
+}
+
+/**
+ * A path field with a button that opens a file dialog.
+ *
+ * The path is still typed-able -- a file that is already in the project is often quicker to name than to find --
+ * but nobody should have to work out where an asset lives relative to the project root.
+ */
+function assetField(
+    value: string,
+    onChange: (value: string) => void,
+    onBrowse: (() => void) | undefined,
+): HTMLElement {
+    const row = element('div', 'asset-field');
+    row.append(textInput(value, onChange));
+    if (onBrowse !== undefined) {
+        const pick = button('\u2026', 'secondary-button', onBrowse);
+        pick.title = 'Choose a file. One from outside the project is copied into assets/.';
+        row.append(pick);
+    }
+    return row;
 }
 
 function button(label: string, className: string, onClick: () => void): HTMLButtonElement {
@@ -258,6 +292,12 @@ function propertyForm(
             widget.props[property.name],
             (next) => callbacks.onEdit(setProperty(state, widget.id, property.name, next)),
             state.document.fonts ?? [],
+            property.kind === 'asset'
+                ? () =>
+                      callbacks.onBrowseAsset(assetKindFor(widget.tag), (path) =>
+                          callbacks.onEdit(setProperty(state, widget.id, property.name, path)),
+                      )
+                : undefined,
         );
         const help = [
             propertyHelp(widget.tag, property.name),
@@ -282,8 +322,11 @@ function propertyControl(
     value: string | number | boolean | undefined,
     onChange: (value: string | number | boolean) => void,
     fonts: readonly DesignerFont[],
+    onBrowse?: () => void,
 ): HTMLElement {
     switch (property.kind) {
+        case 'asset':
+            return assetField(String(value ?? ''), onChange, onBrowse);
         case 'font': {
             // A dropdown of what the screen declares, because a widget names a *declaration* and not a file:
             // the markup's parser drops a name it cannot resolve without a word, so a free text box here would
@@ -419,15 +462,16 @@ function childrenForm(state: DesignerState, widget: DesignerWidget, callbacks: P
             ),
         );
         children.parts.forEach((part, index) => {
+            const setPart = (value: string) => {
+                const parts = children.parts.map((candidate, at) =>
+                    at === index ? { ...candidate, src: value } : candidate,
+                );
+                callbacks.onEdit(setIconParts(state, widget.id, parts));
+            };
             node.append(
                 field(
                     `Part ${index + 1}`,
-                    textInput(part.src, (value) => {
-                        const parts = children.parts.map((candidate, at) =>
-                            at === index ? { ...candidate, src: value } : candidate,
-                        );
-                        callbacks.onEdit(setIconParts(state, widget.id, parts));
-                    }),
+                    assetField(part.src, setPart, () => callbacks.onBrowseAsset('icon', setPart)),
                 ),
             );
         });
@@ -500,7 +544,14 @@ function fontList(state: DesignerState, callbacks: PanelCallbacks): HTMLElement 
         entry.append(
             field(
                 'File',
-                textInput(font.src, (value) => callbacks.onEdit(setFontField(state, font.id, 'src', value))),
+                assetField(
+                    font.src,
+                    (value) => callbacks.onEdit(setFontField(state, font.id, 'src', value)),
+                    () =>
+                        callbacks.onBrowseAsset('font', (path) =>
+                            callbacks.onEdit(setFontField(state, font.id, 'src', path)),
+                        ),
+                ),
                 'field',
                 'A BDF file, relative to the project root, e.g. assets/title.bdf. It is embedded at build time.',
             ),

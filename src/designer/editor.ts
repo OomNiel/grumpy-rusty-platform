@@ -32,9 +32,22 @@ import {
     screenIdFrom,
     type DesignerDocument,
 } from './model';
-import { loadDocument, missingAssets, renderDesign } from './store';
-import type { DesignerInbound, DesignerReport } from './protocol';
+import { loadDocument, missingAssets, planAssetImport, renderDesign } from './store';
+import type { DesignerAssetKind, DesignerInbound, DesignerReport } from './protocol';
 import { designerStyles } from './styles';
+
+/**
+ * The file dialog's filters, one per kind of asset.
+ *
+ * These are the formats the build actually reads: BDF for fonts, OBJ and STL for meshes (the crate's own error
+ * message lists them), and for images whatever the `image` crate decodes, which is the common raster set.
+ */
+const ASSET_FILTERS: Record<DesignerAssetKind, Record<string, string[]>> = {
+    font: { 'BDF fonts': ['bdf'] },
+    image: { Images: ['png', 'jpg', 'jpeg', 'bmp', 'gif', 'webp', 'tif', 'tiff'] },
+    mesh: { '3D models': ['obj', 'stl'] },
+    icon: { Images: ['png', 'jpg', 'jpeg', 'bmp', 'gif', 'webp', 'tif', 'tiff'] },
+};
 
 /** The open panel, so a second invocation reveals the first rather than opening a duplicate. */
 let current: DesignerPanel | undefined;
@@ -165,6 +178,65 @@ class DesignerPanel {
         }
         if (message.type === 'action') {
             await this.act(message.action);
+        }
+        if (message.type === 'pickAsset') {
+            await this.pickAsset(message.requestId, message.kind);
+        }
+    }
+
+    /**
+     * Chooses a file for an asset field and brings it into the project if it came from outside.
+     *
+     * The dialog is the extension's job (only it can open a native one, and only it knows the project folder);
+     * the *edit* stays the panel's, which applies the returned path through its own undo history. A file from
+     * outside is copied into `assets/` rather than referenced, because a design's paths are relative to the
+     * project root and `../../somewhere/x.bdf` stops working the moment the folder moves.
+     */
+    private async pickAsset(requestId: string, kind: DesignerAssetKind): Promise<void> {
+        const chosen = await vscode.window.showOpenDialog({
+            canSelectFiles: true,
+            canSelectFolders: false,
+            canSelectMany: false,
+            openLabel: 'Use this file',
+            filters: ASSET_FILTERS[kind],
+        });
+        const file = chosen?.[0];
+        if (file === undefined) {
+            // Cancelled. Said explicitly rather than left hanging, so the panel forgets the request.
+            await this.panel.webview.postMessage({ type: 'assetPicked', requestId });
+            return;
+        }
+
+        try {
+            const plan = planAssetImport({
+                chosen: file.fsPath,
+                projectRoot: this.folder.fsPath,
+                taken: (relative) => this.assetExists(relative),
+                separator: '/',
+            });
+            if (plan.copyFrom !== undefined) {
+                const destination = path.join(this.folder.fsPath, ...plan.relativePath.split('/'));
+                await vscode.workspace.fs.createDirectory(vscode.Uri.file(path.dirname(destination)));
+                await vscode.workspace.fs.copy(
+                    vscode.Uri.file(plan.copyFrom),
+                    vscode.Uri.file(destination),
+                    { overwrite: false },
+                );
+                this.output.appendLine(`[designer] copied ${plan.copyFrom} in as ${plan.relativePath}`);
+            }
+            await this.panel.webview.postMessage({
+                type: 'assetPicked',
+                requestId,
+                path: plan.relativePath,
+            });
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            this.output.appendLine(`[designer] could not use that file: ${message}`);
+            await this.panel.webview.postMessage({
+                type: 'assetPicked',
+                requestId,
+                error: message.split('\n')[0],
+            });
         }
     }
 

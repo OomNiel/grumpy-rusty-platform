@@ -153,3 +153,61 @@ export function missingAssets(
     }
     return problems;
 }
+
+/**
+ * Where a chosen file goes, and under what path the design should refer to it.
+ *
+ * A design names its assets relative to the project root -- that is what the generated `project.kdl` anchors --
+ * so a file picked from somewhere else on the disk has to be brought in rather than referenced: `../../../x.bdf`
+ * would work until the folder moved, and then fail at build time with a path nobody recognises.
+ *
+ * Pure, and separated from the copying itself, so the decisions worth testing (is it inside? does the name
+ * clash? what is the path?) are tested without touching a filesystem.
+ */
+export interface AssetImport {
+    /** The path to store in the design, relative to the project root. */
+    relativePath: string;
+    /** The file to copy first, when the choice lies outside the project. */
+    copyFrom?: string;
+}
+
+/** Where imported files are put, and the only folder the generated project knows about. */
+export const ASSET_DIRECTORY = 'assets';
+
+export function planAssetImport(options: {
+    /** The absolute path the user chose. */
+    chosen: string;
+    /** The absolute path of the project root. */
+    projectRoot: string;
+    /** Whether a project-relative path is already taken, so a copy never overwrites one. */
+    taken: (relativePath: string) => boolean;
+    /** Path separator for the platform, so the result is a markup path rather than an OS one. */
+    separator?: string;
+}): AssetImport {
+    const separator = options.separator ?? '/';
+    const normalise = (value: string) => value.split(/[\\/]+/).filter((part) => part !== '');
+
+    const rootParts = normalise(options.projectRoot);
+    const chosenParts = normalise(options.chosen);
+
+    // Same drive and the project's own path as a prefix: the file is already in the project.
+    let shared = 0;
+    while (shared < rootParts.length && shared < chosenParts.length && rootParts[shared] === chosenParts[shared]) {
+        shared += 1;
+    }
+    if (shared === rootParts.length && chosenParts.length > rootParts.length) {
+        return { relativePath: chosenParts.slice(rootParts.length).join(separator) };
+    }
+
+    // Outside: it comes in under assets/, keeping its name, and gains a suffix rather than replacing anything.
+    const base = chosenParts[chosenParts.length - 1] ?? 'asset';
+    const dot = base.lastIndexOf('.');
+    const stem = dot > 0 ? base.slice(0, dot) : base;
+    const extension = dot > 0 ? base.slice(dot) : '';
+
+    let name = base;
+    for (let n = 2; options.taken(`${ASSET_DIRECTORY}/${name}`); n += 1) {
+        name = `${stem}-${n}${extension}`;
+    }
+    return { relativePath: `${ASSET_DIRECTORY}/${name}`, copyFrom: options.chosen };
+}

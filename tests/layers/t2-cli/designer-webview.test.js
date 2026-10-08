@@ -66,6 +66,35 @@ test('the designer panel boots, builds itself from the catalogue, and posts its 
         'with its file',
     );
 
+    // The picker: a path field has a browse button, which asks the extension -- it is the only side that can
+    // open a dialog or know the project folder -- and the answer comes back as an edit the panel makes itself,
+    // so the change lands in the document and its undo history like any other.
+    const browse = all().find((element) => element.tagName === 'BUTTON' && element.textContent === '\u2026');
+    ok(browse !== undefined, 'the font file field offers a browse button');
+    messages.length = 0;
+    browse.emit('click');
+    const request = messages.find((message) => message.type === 'pickAsset');
+    ok(request !== undefined, 'clicking it asks the extension to choose a file');
+    equal(request.kind, 'font', 'for the kind of asset that field wants');
+
+    window.emit('message', {
+        data: { type: 'assetPicked', requestId: request.requestId, path: 'assets/other.bdf' },
+    });
+    const afterPick = messages.filter((message) => message.type === 'changed').pop();
+    ok(afterPick !== undefined, 'the answer is applied through the panel');
+    equal(afterPick.document.fonts[0].src, 'assets/other.bdf', 'and the field names the chosen file');
+
+    // A cancellation changes nothing, and a refusal says so.
+    messages.length = 0;
+    browse.emit('click');
+    const second = messages.find((message) => message.type === 'pickAsset');
+    window.emit('message', { data: { type: 'assetPicked', requestId: second.requestId } });
+    equal(
+        messages.filter((message) => message.type === 'changed').length,
+        0,
+        'a cancelled dialog leaves the design alone',
+    );
+
     // A widget that uses a font gets a dropdown of what is declared, not a text box: a widget names a
     // declaration, and a name the markup cannot resolve is dropped without a word.
     const titleWidget = document.widgets.find((widget) => widget.id === 'title');

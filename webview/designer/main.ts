@@ -28,7 +28,13 @@ import {
     undo,
     widgetById,
 } from '../../src/designer/state';
-import type { DesignerInbound, DesignerInit, DesignerReport } from '../../src/designer/protocol';
+import type {
+    DesignerAssetKind,
+    DesignerAssetPicked,
+    DesignerInbound,
+    DesignerInit,
+    DesignerReport,
+} from '../../src/designer/protocol';
 import type { LcdRotation } from '../../src/display/rotation';
 
 interface VsCodeApi {
@@ -40,6 +46,16 @@ interface VsCodeApi {
 declare function acquireVsCodeApi(): VsCodeApi;
 
 const host = acquireVsCodeApi();
+
+/**
+ * The asset requests waiting for an answer, keyed by the id that came with the request.
+ *
+ * A file dialog is modal and can take as long as the user takes, so the answer carries the id back rather than
+ * relying on there being only one request in flight. Each entry is the *edit* to make, which is what keeps the
+ * document and its undo history in this pane.
+ */
+const pendingAssets = new Map<string, (path: string) => void>();
+let assetRequest = 0;
 
 /** How long edits are batched before being sent, in milliseconds. */
 const POST_DELAY_MS = 120;
@@ -122,9 +138,15 @@ const panels = {
         view.select(id);
         refreshProperties();
     },
+    onBrowseAsset(kind: DesignerAssetKind, apply: (path: string) => void) {
+        assetRequest += 1;
+        const requestId = `asset-${assetRequest}`;
+        pendingAssets.set(requestId, apply);
+        host.postMessage({ type: 'pickAsset', requestId, kind });
+    },
 };
 
-window.addEventListener('message', (event: MessageEvent<DesignerInit | DesignerReport>) => {
+window.addEventListener('message', (event: MessageEvent<DesignerInit | DesignerReport | DesignerAssetPicked>) => {
     const message = event.data;
     if (message.type === 'init') {
         canvasWidth = message.canvas.width;
@@ -143,6 +165,9 @@ window.addEventListener('message', (event: MessageEvent<DesignerInit | DesignerR
     }
     if (message.type === 'report') {
         report(message);
+    }
+    if (message.type === 'assetPicked') {
+        applyPickedAsset(message);
     }
 });
 
@@ -293,6 +318,24 @@ function separator(): HTMLElement {
     const node = document.createElement('span');
     node.className = 'toolbar-separator';
     return node;
+}
+
+/**
+ * Applies a chosen file, or says why it could not be used.
+ *
+ * A cancellation arrives with no path and no error, and is simply forgotten -- the field keeps whatever it had.
+ */
+function applyPickedAsset(message: DesignerAssetPicked): void {
+    const apply = pendingAssets.get(message.requestId);
+    pendingAssets.delete(message.requestId);
+    if (message.error !== undefined) {
+        status(`That file could not be used: ${message.error}`, true);
+        return;
+    }
+    if (apply === undefined || message.path === undefined) {
+        return;
+    }
+    apply(message.path);
 }
 
 /** Shows the extension's verdict: the problems, or a note that the markup was written. */
