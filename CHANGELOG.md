@@ -11,6 +11,34 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.48] - 2026-10-08
+
+### Added
+
+- **A proof that a touch reaches the widget it looks like it should, without a board.** The host renderer now
+  taps the designed centre of every widget the fixture gives an event to and checks that an event *for that
+  widget* comes back, then taps empty canvas and checks that nothing claims it -- through the crate's own
+  `handle_input(InputEvent::Pointer { .. })` / `pop_event()` path, at the coordinates the canvas drew. Both
+  halves run under `--e2e`.
+- **The generated firmware logs `design: built and painted WxH`** once, on the first calibrated frame. A design
+  that fails to build panics and one that draws says nothing, so without this line a flash cannot tell the two
+  apart from the serial port.
+
+### Verified
+
+- A tap at each designed widget centre reaches that widget; a tap on empty canvas is claimed by none.
+- The pixel tracks still land exactly where the canvas placed them (the fixture grew two widgets for the event
+  checks).
+- 746 hermetic tests, and both host-renderer checks pass.
+
+### Notes
+
+- **Still not on glass.** The firmware compiles and links for both panel boards and the logic is proven on a
+  host render, but no board has run it: that the panel shows the design at the right size and place, that the
+  touch driver's mapped coordinates agree with the canvas, and that the rotation is right all still need a
+  flash. No board was on USB when this was written.
+
+
 ## [0.0.47] - 2026-10-08
 
 ### Added
@@ -1340,7 +1368,8 @@ First build: everything the extension does today, packaged as `grumpy-rusty-plat
 - **An answer is no longer printed twice in the chat.** The streamed pieces drew the answer and the closing
   message added the whole thing again as a second turn; the closing message now *settles* the live turn,
   replacing the streamed text with the authoritative answer.
-[Unreleased]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.47...HEAD
+[Unreleased]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.48...HEAD
+[0.0.48]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.47...v0.0.48
 [0.0.47]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.46...v0.0.47
 [0.0.46]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.45...v0.0.46
 [0.0.4]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.3...v0.0.4

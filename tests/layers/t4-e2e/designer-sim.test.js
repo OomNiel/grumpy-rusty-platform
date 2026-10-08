@@ -28,9 +28,18 @@ if (!cargo) {
         skip('cargo is not installed', 'install the Rust toolchain to enable this layer');
     });
 } else {
-    test('the designer\'s pixel tracks land where the canvas placed them, on a real render', () => {
+    /**
+     * The two halves of the designer's promise, each a separate run of the host renderer: that the layout
+     * engine puts every widget on the rectangle the canvas showed, and that a *touch* at those coordinates
+     * reaches that widget and raises its event. The second is the question a flash and a finger would answer.
+     */
+    for (const [name, flag] of [
+        ['the designer\'s pixel tracks land where the canvas placed them, on a real render', []],
+        ['a tap at a widget\'s designed centre reaches that widget and no other', ['--touch']],
+    ]) {
+    test(name, () => {
         const tool = path.join(repoRoot(), 'tests', 'tools', 'designer-sim.js');
-        const result = spawnSync(process.execPath, [tool], {
+        const result = spawnSync(process.execPath, [tool, ...flag], {
             cwd: repoRoot(),
             encoding: 'utf8',
             timeout: SIM_TIMEOUT_MS,
@@ -52,4 +61,5 @@ if (!cargo) {
             `expected the simulator to report PASS, got:\n      ${result.stdout}`,
         );
     });
+    }
 }

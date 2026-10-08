@@ -142,6 +142,79 @@ function expectationSource(document, kdl, fixture) {
     lines.push('    problems');
     lines.push('}');
     lines.push('');
+
+    // The event path: tap the designed centre of each widget that raises something, and check that an event
+    // for *that* widget comes back. This is the question a flash and a finger would answer, answered here
+    // instead -- whether the coordinates the canvas shows are the coordinates the widgets respond to.
+    const withEvents = document.widgets.filter((widget) => widget.events.length > 0);
+    lines.push('/// Taps the centre of every widget that raises an event, and checks what comes back.');
+    lines.push('pub fn touch_checks<const N: usize, const E: usize, const D: usize>(');
+    lines.push("    gui: &mut GuiContext<'_, N, E, D>,");
+    lines.push('    widgets: &crate::screen::SimPanelWidgets,');
+    lines.push(') -> Vec<String> {');
+    lines.push('    /// A press and a release at one point, with the timing the crate needs to call it a click.');
+    lines.push('    fn tap<const N: usize, const E: usize, const D: usize>(');
+    lines.push("        gui: &mut GuiContext<'_, N, E, D>,");
+    lines.push('        x: i32,');
+    lines.push('        y: i32,');
+    lines.push('    ) -> Vec<UiEvent> {');
+    lines.push('        let _ = gui.handle_input(InputEvent::Pointer {');
+    lines.push('            x,');
+    lines.push('            y,');
+    lines.push('            state: PointerState::Pressed,');
+    lines.push('            button: PointerButton::Primary,');
+    lines.push('        });');
+    lines.push('        let _ = gui.tick_input(20);');
+    lines.push('        let _ = gui.handle_input(InputEvent::Pointer {');
+    lines.push('            x,');
+    lines.push('            y,');
+    lines.push('            state: PointerState::Released,');
+    lines.push('            button: PointerButton::Primary,');
+    lines.push('        });');
+    lines.push('        let _ = gui.tick_input(20);');
+    lines.push('        let mut events = Vec::new();');
+    lines.push('        while let Some(event) = gui.pop_event() {');
+    lines.push('            events.push(event);');
+    lines.push('        }');
+    lines.push('        events');
+    lines.push('    }');
+    lines.push('');
+    lines.push('    let mut problems: Vec<String> = Vec::new();');
+    for (const widget of withEvents) {
+        const cx = widget.x + Math.floor(widget.width / 2);
+        const cy = widget.y + Math.floor(widget.height / 2);
+        lines.push('    {');
+        lines.push(`        let events = tap(gui, ${cx}, ${cy});`);
+        lines.push(
+            `        let raised = events.iter().any(|event| matches!(event, ` +
+                `UiEvent::Clicked(other) | UiEvent::ValueChanged(other) if *other == widgets.${rustFieldName(widget.id)}));`,
+        );
+        lines.push('        if !raised {');
+        lines.push(
+            `            problems.push(format!("${widget.id}: a tap at its designed centre (${cx}, ${cy}) raised ` +
+                `nothing for it ({} events came back)", events.len()));`,
+        );
+        lines.push('        }');
+        lines.push('    }');
+    }
+    const empty = fixture.empty ?? { x: 0, y: 0 };
+    lines.push('    {');
+    lines.push('        // Nothing is under this point, so nothing may claim it.');
+    lines.push(`        let events = tap(gui, ${empty.x}, ${empty.y});`);
+    lines.push('        let claimed = events');
+    lines.push('            .iter()');
+    lines.push('            .filter(|event| matches!(event, UiEvent::Clicked(_) | UiEvent::ValueChanged(_)))');
+    lines.push('            .count();');
+    lines.push('        if claimed != 0 {');
+    lines.push(
+        `            problems.push(format!("a tap at (${empty.x}, ${empty.y}), where no widget is, was claimed by ` +
+            `{} widget event(s)", claimed));`,
+    );
+    lines.push('        }');
+    lines.push('    }');
+    lines.push('    problems');
+    lines.push('}');
+    lines.push('');
     return lines.join('\n');
 }
 
@@ -178,7 +251,8 @@ function main() {
     };
     fs.mkdirSync(env.TMPDIR, { recursive: true });
 
-    const result = spawnSync('cargo', ['run', '--release', '--quiet', '--bin', 'designer-sim'], {
+    const mode = process.argv.includes('--touch') ? 'touch' : 'designer-sim';
+    const result = spawnSync('cargo', ['run', '--release', '--quiet', '--bin', mode], {
         cwd: SIM_DIR,
         env,
         stdio: 'inherit',
