@@ -4041,3 +4041,47 @@ handler ran**. The chain the whole feature rests on -- design document, markup, 
 the panel, the touch driver's mapping, the widget's hit test, the dispatch match, the user's handler -- is
 working on hardware. The template's own log line, added two rounds ago so a flash would be readable, is what
 made this legible.
+
+## 91. The panel, finally run: a stub DOM, and a debounce that could lose an edit (2026-10-08)
+
+### The one part nothing had touched
+
+Everything else in this feature had been tested or flashed. The designer's frontend had not: it is a browser
+bundle, and "it compiles and it typechecks" is a weak thing to say about code that builds a Toolbox out of the
+catalogue, turns a pointer into a drag, rebuilds a property panel and posts documents.
+
+It did not need a browser. It needed a dozen DOM methods. `tests/lib/dom.js` is a deliberately thin stub --
+`createElement`, `append`, `classList`, `addEventListener`/`emit`, `getContext('2d')` as a proxy that records
+drawing calls, `getBoundingClientRect`, and `acquireVsCodeApi` capturing what gets posted -- and it fails
+loudly on anything it does not implement, because a stub that swallowed everything would make the test pass
+for the wrong reason.
+
+`tests/layers/t2-cli/designer-webview.test.js` then loads the built bundle the way a webview does and drives a
+session through it: the init message, a press on the button, a drag, Delete, Undo, a click on a Toolbox entry,
+and an edit of a text field. **All of it works**, and the assertions are on what the panel *told the
+extension*, because that decides what gets written to the project:
+
+- the Toolbox holds all thirty tags, by the catalogue's own labels;
+- the canvas is sized to the design (480x320 at rotation 3) and is drawn;
+- a press selects, and the property panel shows that widget's own fields;
+- a drag posts the whole document with the widget moved by the drag;
+- Delete posts a document without it, and Undo posts one with it back;
+- a Toolbox click adds a widget of that kind at the catalogue's default size;
+- editing a text field posts the new value.
+
+### The bug it found
+
+The sixth of those failed at first, and the reason was not the test: **property edits were being batched on the
+120 ms timer meant for drags**. A drag produces an edit per pointer move, so batching it is right; a property
+edit is discrete -- a field's change event, a click, a layer button -- and a user who edits a property and
+closes the panel is a user who loses the edit. Those now post at once.
+
+That is the sort of thing only running the code finds, and it is the second time this round that a test paid
+for itself by being written with a wrong expectation.
+
+### And the runner builds the frontend now
+
+`node tests/runner.js` compiled the TypeScript but not the esbuild bundle, so a test that loads `out/webview/
+designer.js` could have passed against a bundle older than the source. The runner now builds it too, for the
+same reason it runs `tsc`: a stale artifact must not be able to make a test green. It takes tens of
+milliseconds.

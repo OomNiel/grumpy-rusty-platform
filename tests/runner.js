@@ -90,6 +90,20 @@ function compile() {
         console.error('Compilation failed — tests were not run.');
         process.exit(1);
     }
+
+    // The designer's frontend is a separate build (esbuild), and a test loads the bundle from `out/`. Built
+    // here for the same reason `tsc` runs here: a stale artifact would let a test pass against code that no
+    // longer exists. esbuild takes tens of milliseconds, so it is not worth a second configuration path.
+    const webviewBuild = path.join(REPO_ROOT, 'scripts', 'build-webview.mjs');
+    if (fs.existsSync(webviewBuild) && fs.existsSync(path.join(REPO_ROOT, 'node_modules', 'esbuild'))) {
+        const bundle = spawnSync(process.execPath, [webviewBuild], { cwd: REPO_ROOT, encoding: 'utf8' });
+        if (bundle.status !== 0) {
+            console.error(bundle.stdout || '');
+            console.error(bundle.stderr || '');
+            console.error('The designer frontend failed to build — tests were not run.');
+            process.exit(1);
+        }
+    }
 }
 
 function discover(layer) {

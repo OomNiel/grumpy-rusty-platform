@@ -106,7 +106,11 @@ const panels = {
         state = next;
         view.setState(next);
         refreshProperties();
-        schedulePost();
+        // Sent at once rather than on the timer a drag uses: a property edit is discrete -- a field's change
+        // event, a click on the Toolbox, a layer button -- and a user who edits and immediately closes the
+        // panel must not lose it to a debounce. Found by the panel test, which asserted the post and got
+        // nothing because it was still waiting out the timer.
+        flushPost();
     },
     onSelect(id: string | undefined) {
         selectedId = id;
