@@ -4136,3 +4136,37 @@ too. The help lives in the catalogue (`PROPERTY_HELP`, with `TAG_PROPERTY_HELP` 
 something different per widget, like `radius` on a rectangle and on a circle) and a test asserts the coverage,
 so a new property cannot arrive without an explanation. The `Font` property's own line points at the section
 that declares fonts, which is the answer to the question that started this.
+
+## 93. The diagnostic readout was still painting over the design (2026-10-08)
+
+### What was reported
+
+"I can touch anywhere on the screen to update the touch readout. Touching the button only should trigger a touch,
+not anywhere on the screen." -- from the board, watching a Designer project.
+
+The touch template has **two** diagnostic surfaces, not one: the screen it draws (calibration, or the graphics
+test) and a separate raw-numbers box that is repainted whenever `redraw_box` is set. When the designer was wired
+in (§87) the `DESIGNER` guard was put on the *screen* choice -- `if DESIGNER { paint the design } else { draw the
+diagnostic screen }` -- and the box sits **after** that branch, in its own `if redraw_box` block. So a Designer
+project still painted raw controller readings over the middle of the design, and every touch anywhere set
+`redraw_box`, which is exactly the behaviour reported.
+
+That is the lesson worth keeping: "the diagnostic template's diagnostics" turned out to be plural, and I guarded
+the one I had been reading about rather than all of them. Fixed by guarding the box's condition with
+`!DESIGNER`, so the design is the only thing a finger can cause to change.
+
+### And the heartbeat, which was the same oversight in the log
+
+A Designer project also logged `touch test alive: a=0 b=1683 idle a=0 b=1697 pen=false` every two seconds
+(measured: nine times in a 28-second capture). That line exists so "the log is quiet" cannot be mistaken for
+"the app is not running" in the *touch test*, and its wording is that template's. In an app it is noise. It is
+now guarded out of Designer builds too; the per-touch lines and the design's own event logs remain, which is
+what tells you the touch driver and the handlers are working.
+
+### Verified
+
+- A test asserts both guards in a generated Designer project *and* that the touch template keeps its readout and
+  has no `DESIGNER` symbol at all -- so this cannot regress by someone tidying the template.
+- Rebuilt and flashed the same font design: the log now shows no heartbeats, and `design: built and painted
+  480x320` followed by `design: on_go_clicked fired` for each press. The absence of the box is visual, so it is
+  the one part a log cannot show.

@@ -11,6 +11,21 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.52] - 2026-10-08
+
+### Fixed
+
+- **A Designer project no longer paints the diagnostic readout over the design.** The touch template has two
+  diagnostic surfaces — the screen it draws and a separate raw-numbers box — and the box sits after the branch
+  that chooses between the design and the diagnostic screen, so it was still repainted on every touch. Reported
+  from the board: "I can touch anywhere on the screen to update the touch readout." Now only the design responds.
+- **The `touch test alive` heartbeat is not logged in a Designer project either** (it was nine lines in a
+  28-second capture). The per-touch lines and the design's own event logs remain, which is what shows the touch
+  driver and the handlers are working.
+- A test asserts both guards in a generated Designer project, and that the touch template still has its readout —
+  so neither can be lost by tidying the shared template.
+
+
 ## [0.0.51] - 2026-10-08
 
 ### Added
@@ -1449,7 +1464,8 @@ First build: everything the extension does today, packaged as `grumpy-rusty-plat
 - **An answer is no longer printed twice in the chat.** The streamed pieces drew the answer and the closing
   message added the whole thing again as a second turn; the closing message now *settles* the live turn,
   replacing the streamed text with the authoritative answer.
-[Unreleased]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.51...HEAD
+[Unreleased]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.52...HEAD
+[0.0.52]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.51...v0.0.52
 [0.0.51]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.50...v0.0.51
 [0.0.50]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.49...v0.0.50
 [0.0.49]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.48...v0.0.49
