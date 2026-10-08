@@ -1,0 +1,6 @@
+screen id="RustyPanel" width=320 height=480 theme="dark" {
+    grid cols="16px 74px 140px 74px 16px" rows="8px 26px 184px 44px 218px" gap=0 padding=0 {
+        label id="title" text="Rusty Platform" col=1 row=1 col_span=3 row_span=1
+        button id="go" text="Press me" bg="#3a6ea5" fg="#f0f0f0" text_color="#ffffff" pressed_bg="#2a5a8a" pressed_fg="#ffffff" disabled_bg="#303030" disabled_fg="#808080" focused_bg="#4a7eb5" focused_fg="#ffffff" border_color="#101010" corner_radius=4 col=2 row=3 col_span=1 row_span=1
+    }
+}

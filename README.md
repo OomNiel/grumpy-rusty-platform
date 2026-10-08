@@ -24,7 +24,7 @@ Espressif boards, `espflash`.
 | **Publish .deb** — the firmware plus a `<package>-flash` helper, packed into a `.deb` in the project root | ✅ |
 | **Install .deb** — shows `dpkg-deb --info`, then `sudo dpkg -i` in a terminal | ✅ Linux |
 | **Back Up Project** — a dated copy beside the project (`<folder>-2026-10-05_1804`), minus `target/` | ✅ |
-| **Open Designer** — a Toolbox, a canvas at the board's real size and rotation, a property panel and undo; writes `designer/panel.ui.json` and the `src/ui.kdl` markup `include_gui!` compiles | ✅ canvas and markup; firmware wiring ⬜ next |
+| **Open Designer** — a Toolbox, a canvas at the board's real size and rotation, a property panel and undo; writes `designer/panel.ui.json` and the `src/ui.kdl` markup `include_gui!` compiles | ✅ canvas, markup and firmware |
 | Debug session (probe-rs-debug + RTT) | ✅ RP only, verified against `probe-rs.probe-rs-debugger` 0.32.0. An ESP32 has no SWD, so **Debug** flashes and monitors instead |
 | Four debug configurations, all on the **debug** build | ✅ RP: flash & run · flash & halt · restart without flashing · attach |
 | Chip check before a no-flash session (`probe-rs verify`) | ✅ RP only |
@@ -133,8 +133,10 @@ Wired boards are never asked: the prompt only appears for a project whose `src/m
 
 ## WYSIWYG designer
 
-**Open Designer** — the Project view's title bar, or the palette — opens a panel for the active project when its
-board carries a panel: the **ESP32-035** (320x480 with touch) or the **T-QT** (128x128, no touch).
+The **WYSIWYG designer** template in the wizard generates a project whose screen is a design rather than Rust,
+and opens the canvas on it. **Open Designer** — the Project view's title bar, or the palette — reopens the
+designer for the active project. Either way it works on a board that carries a panel: the **ESP32-035**
+(320x480 with touch) or the **T-QT** (128x128, no touch).
 
 - **Toolbox** — every widget tag the markup supports, grouped into text, input, values and gauges, containers,
   media and 3D, and shapes. Drag one onto the canvas, or click it to drop it in the middle.
@@ -164,13 +166,23 @@ one thing it exists to show. Measured against `embedded-gui-codegen` 0.2.7:
 Properties the code generator ignores are shown struck through with the reason, and unresolved assets are
 reported as problems rather than left to fail at the next compile.
 
+### How a design reaches the board
+
+`designer/panel.ui.json` is the design and the only thing the panel edits. Saving writes two generated files —
+`src/ui.kdl`, which `include_gui!` compiles at build time, and `src/ui.rs`, which holds the budgets, the
+pointer plumbing and the `match` that turns an event into a call — and *appends* to a third, `src/ui_handlers.rs`,
+where the code behind your events lives. Nothing that exists in that file is ever rewritten, and `src/main.rs`
+is untouched after the wizard writes it.
+
+A generated Designer project compiles for both panel boards, and the toolkit costs about **105 KB of flash**
+and no measurable extra static RAM against the same board's touch template.
+
 ### Status
 
-The canvas, the model and the generated markup are in place and tested, and the canvas-to-glass mapping is
-verified by a host renderer (`node tests/tools/designer-sim.js`). The wizard's **Designer template** — a new
-project that opens the designer for its board — and the wiring that makes a generated project draw the design
-and route events into `src/ui_handlers.rs` are the next stages. Until those land the markup is written but
-nothing compiles it.
+The canvas, the model, the generated markup and the firmware all compile and are tested; the canvas-to-glass
+mapping is verified by a host renderer (`node tests/tools/designer-sim.js`). What has **not** happened yet is a
+flash: whether the design appears at the right size and place on glass, and whether a touch lands on the widget
+it looks like it should, is the next thing to check on hardware.
 
 ## Debugging
 

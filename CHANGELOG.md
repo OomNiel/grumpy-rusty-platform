@@ -11,6 +11,38 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.47] - 2026-10-08
+
+### Added
+
+- **The Designer template, and the design reaching the board.** Choosing **WYSIWYG designer** in the wizard
+  generates a project whose screen is a design rather than hand-written Rust: `src/ui.kdl` is compiled by the
+  crate's `include_gui!` at build time, `src/ui.rs` drives it from the touch loop, and the events the design
+  asks for arrive as stubs in `src/ui_handlers.rs`. The wizard then offers **Open Designer** and opens the
+  canvas on the project it just wrote.
+- **Three files, three lifetimes.** The markup and `src/ui.rs` are regenerated whenever the designer saves;
+  `src/ui_handlers.rs` is only ever *appended* to, so a handler you have written, renamed or moved into a
+  module survives every later save; and `src/main.rs` is never touched after the wizard writes it.
+- **The rotation is chosen once and honoured everywhere**: the wizard asks for it, the markup is sized for the
+  turned panel, and the designer's rotation control rewrites the project's own `LCD_ROTATION`.
+
+### Measured
+
+- A generated Designer project **compiles and links for xtensa-esp32-none-elf** on both panel boards -- the
+  ESP32-035 with touch and the T-QT without -- with no warnings of our own.
+- What the widget toolkit costs, against the same board's touch template: **about 105 KB of flash**
+  (204 013 vs 96 457 bytes of text) and **no measurable static RAM** (`.bss` 187 608 vs 187 960, i.e. 352 bytes
+  *smaller*). That answers the question the previous release left open.
+
+### Notes
+
+- The firmware compiles; **no board has run it yet**. Whether the design appears at the right size and place
+  on glass, and whether a touch lands on the widget it looks like it should, still needs a flash -- and the
+  rotation is the specific thing to check.
+- A board with no touch controller gets the same generated API, marked `#[allow(dead_code)]` with the reason:
+  a design can be moved between a touch board and a touchless one unchanged.
+
+
 ## [0.0.46] - 2026-10-08
 
 ### Added
@@ -1308,7 +1340,8 @@ First build: everything the extension does today, packaged as `grumpy-rusty-plat
 - **An answer is no longer printed twice in the chat.** The streamed pieces drew the answer and the closing
   message added the whole thing again as a second turn; the closing message now *settles* the live turn,
   replacing the streamed text with the authoritative answer.
-[Unreleased]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.46...HEAD
+[Unreleased]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.47...HEAD
+[0.0.47]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.46...v0.0.47
 [0.0.46]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.45...v0.0.46
 [0.0.4]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.3...v0.0.4
 [0.0.3]: https://github.com/OomNiel/grumpy-rusty-platform/compare/v0.0.2...v0.0.3

@@ -50,9 +50,11 @@ export function asLcdRotation(value: unknown): LcdRotation {
  * The templates that drive a panel, and therefore have a rotation worth asking about.
  *
  * A string rather than the `AppTemplate` type so that this module stays free of the generator's imports.
+ * `designer` is here because the designer draws its canvas for the rotation the project is built with: the
+ * markup it writes is sized to the turned panel, so the two have to be chosen together rather than separately.
  */
 export function templateUsesPanel(template: string): boolean {
-    return template === 'display' || template === 'touch' || template === 'board';
+    return template === 'display' || template === 'touch' || template === 'board' || template === 'designer';
 }
 
 /** The `[env]` line itself. */

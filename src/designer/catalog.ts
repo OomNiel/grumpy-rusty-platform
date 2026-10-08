@@ -78,6 +78,14 @@ export type DesignerEvent =
 export interface DesignerEventSpec {
     /** The `UiEvent` variant that carries it. */
     variant: string;
+    /**
+     * How the variant is matched, with the widget id bound to `id`.
+     *
+     * Two variants are not newtypes: `Scroll` carries a delta and `TextInput` a character, so the match
+     * pattern has fields rather than a single binding. Generated code that assumed `Variant(id)` everywhere
+     * would fail to compile on exactly those two, which is the sort of thing worth writing down once.
+     */
+    pattern: string;
     /** Anything the variant carries besides the widget id. */
     parameter?: { name: string; type: string };
     /** What the handler is called, appended to `on_<widget>_`. */
@@ -92,16 +100,26 @@ export interface DesignerEventSpec {
  * are the raw touch phases whose `Pressed`/`Released` counterparts are what a widget reports.
  */
 export const EVENT_SPECS: Record<DesignerEvent, DesignerEventSpec> = {
-    clicked: { variant: 'Clicked', suffix: 'clicked' },
-    pressed: { variant: 'Pressed', suffix: 'pressed' },
-    released: { variant: 'Released', suffix: 'released' },
-    doubleClicked: { variant: 'DoubleClicked', suffix: 'double_clicked' },
-    longPressed: { variant: 'LongPressed', suffix: 'long_pressed' },
-    valueChanged: { variant: 'ValueChanged', suffix: 'value_changed' },
-    scroll: { variant: 'Scroll', suffix: 'scroll', parameter: { name: 'delta', type: 'i32' } },
-    opened: { variant: 'Opened', suffix: 'opened' },
-    closed: { variant: 'Closed', suffix: 'closed' },
-    textInput: { variant: 'TextInput', suffix: 'text_input', parameter: { name: 'ch', type: 'char' } },
+    clicked: { variant: 'Clicked', pattern: 'Clicked(id)', suffix: 'clicked' },
+    pressed: { variant: 'Pressed', pattern: 'Pressed(id)', suffix: 'pressed' },
+    released: { variant: 'Released', pattern: 'Released(id)', suffix: 'released' },
+    doubleClicked: { variant: 'DoubleClicked', pattern: 'DoubleClicked(id)', suffix: 'double_clicked' },
+    longPressed: { variant: 'LongPressed', pattern: 'LongPressed(id)', suffix: 'long_pressed' },
+    valueChanged: { variant: 'ValueChanged', pattern: 'ValueChanged(id)', suffix: 'value_changed' },
+    scroll: {
+        variant: 'Scroll',
+        pattern: 'Scroll { id, delta }',
+        suffix: 'scroll',
+        parameter: { name: 'delta', type: 'i32' },
+    },
+    opened: { variant: 'Opened', pattern: 'Opened(id)', suffix: 'opened' },
+    closed: { variant: 'Closed', pattern: 'Closed(id)', suffix: 'closed' },
+    textInput: {
+        variant: 'TextInput',
+        pattern: 'TextInput { id, ch }',
+        suffix: 'text_input',
+        parameter: { name: 'ch', type: 'char' },
+    },
 };
 
 /** The order events are offered in, so the property panel and the golden markup stay stable. */

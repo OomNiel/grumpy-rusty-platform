@@ -10,6 +10,7 @@ import {
     requiredFirmware,
     templatesFor,
 } from '../generate/files';
+import { showDesigner } from '../designer/editor';
 import {
     LCD_ROTATION_CHOICES,
     LCD_ROTATION_LABELS,
@@ -139,7 +140,10 @@ async function ensureWritableTarget(target: vscode.Uri): Promise<boolean> {
     return choice === 'Overwrite generated files';
 }
 
-export function registerNewProjectCommand(output: vscode.OutputChannel): vscode.Disposable {
+export function registerNewProjectCommand(
+    context: vscode.ExtensionContext,
+    output: vscode.OutputChannel,
+): vscode.Disposable {
     return vscode.commands.registerCommand('rustyPlatform.newProject', async (boardId?: string) => {
         const board = await pickBoard(boardId);
         if (!board) {
@@ -220,14 +224,19 @@ export function registerNewProjectCommand(output: vscode.OutputChannel): vscode.
         }
 
         const crateName = crateNameFrom(projectName);
+        // A Designer project's whole point is the canvas, so the prompt offers it first and passes the folder
+        // that was just written -- which is not a workspace folder yet, hence the explicit target.
+        const opening = template === 'designer' ? 'Open Designer' : 'Open Project';
         const action = await vscode.window.showInformationMessage(
             `Created ${crateName} for ${board.name} (${template}, ${files.length} files).`,
-            'Open Project',
+            opening,
             'Build Now',
             'Later',
         );
 
-        if (action === 'Open Project') {
+        if (action === 'Open Designer') {
+            await showDesigner(context, output, target);
+        } else if (action === 'Open Project') {
             await vscode.commands.executeCommand('vscode.openFolder', target, { forceNewWindow: false });
         } else if (action === 'Build Now') {
             runInTerminal(`Rusty: ${board.id}`, 'cargo build', target);
