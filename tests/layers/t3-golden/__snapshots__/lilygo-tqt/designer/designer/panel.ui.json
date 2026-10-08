@@ -17,7 +17,8 @@
       "height": 26,
       "props": {
         "text": "Rusty Platform",
-        "font": ""
+        "font": "",
+        "style": ""
       },
       "events": []
     },
@@ -31,6 +32,7 @@
       "props": {
         "text": "Press me",
         "font": "",
+        "style": "",
         "bg": "#3a6ea5",
         "fg": "#f0f0f0",
         "text_color": "#ffffff",

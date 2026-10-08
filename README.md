@@ -163,6 +163,10 @@ designer for the active project. Either way it works on a board that carries a p
 - **A created project is loaded** — the folder the wizard writes becomes part of the window whatever the
   notification's answer is, so the Explorer, Source Control and the terminal are already pointing at it. Loading
   a folder can restart the extension host, so a Designer asked for at that moment reopens on the other side.
+- **Styles** — a Label, Button, Panel or Carousel can be given one of the crate's four base looks (`plain`,
+  `panel`, `progress`, `button`), which is what carries a background, border, shadow and corner radius. A style
+  and a font compose into one `style` attribute; a control the crate's emitter ignores the attribute for is
+  offered no Style field at all.
 - **Touch is optional** — asked when the project is made and changeable from the toolbar. With it off there is no
   touch driver, no calibration read and no calibration screen; dropping a control that raises events turns it on
   by itself.

@@ -171,6 +171,19 @@
             "events": [
                 "clicked"
             ]
+        },
+        {
+            "_comment": "A label wearing a base style: the appearance an ordinary widget's own properties cannot give it, and the second thing the diff has to prove reaches the pixels.",
+            "id": "styled",
+            "tag": "label",
+            "x": 200,
+            "y": 200,
+            "width": 90,
+            "height": 30,
+            "props": {
+                "text": "AB",
+                "style": "panel"
+            }
         }
     ],
     "empty": {

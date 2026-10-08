@@ -311,6 +311,9 @@ function main() {
             if ('font' in props) {
                 props.font = '';
             }
+            if ('style' in props) {
+                props.style = '';
+            }
             return { ...widget, props };
         }),
     };
@@ -322,21 +325,28 @@ function main() {
     fs.writeFileSync(SCREEN_NO_FONT, emitKdl(fontless));
     fs.writeFileSync(EXPECTATIONS, expectationSource(document, kdl, fixture));
     const canvas = designCanvasSize(document.panelWidth, document.panelHeight, document.rotation);
-    const fontedWidgets = declaredFontWidgets(document);
-    const builtInWidgets = document.widgets.filter(
+    const declared = declaredFontWidgets(document);
+    const builtIn = document.widgets.filter(
         (widget) => typeof widget.props.font === 'string' && isBuiltInFont(widget.props.font),
     );
-    if (fontedWidgets.length === 0 || builtInWidgets.length === 0) {
+    const styled = document.widgets.filter(
+        (widget) => typeof widget.props.style === 'string' && widget.props.style !== '',
+    );
+    if (declared.length === 0 || builtIn.length === 0 || styled.length === 0) {
         throw new Error(
-            'the fixture must give a font to a widget of each kind: one the screen declares, one the crate ' +
-                'ships, since the two travel by different markup',
+            'the fixture must show every appearance route: a font the screen declares, one the crate ships, ' +
+                'and a base style, since each reaches the pixels by different markup',
         );
     }
-    const rectOf = (widget) => `(${widget.x}, ${widget.y}, ${widget.width}, ${widget.height})`;
-    const rectList = [...fontedWidgets, ...builtInWidgets].map(
-        (widget) =>
-            `    // ${JSON.stringify(widget.id)} (${isBuiltInFont(widget.props.font) ? 'built in' : 'declared'}): ` +
-            `${JSON.stringify(widget.props.font)}\n    ${rectOf(widget)},`,
+    const described = [
+        ...declared.map((widget) => [widget, `declared font ${JSON.stringify(widget.props.font)}`]),
+        ...builtIn.map((widget) => [widget, `built-in font ${JSON.stringify(widget.props.font)}`]),
+        ...styled.map((widget) => [widget, `style ${JSON.stringify(widget.props.style)}`]),
+    ];
+    const rectList = described.map(
+        ([widget, what]) =>
+            `    // ${JSON.stringify(widget.id)} (${what})\n    (${widget.x}, ${widget.y}, ${widget.width}, ` +
+            `${widget.height}),`,
     );
     fs.writeFileSync(
         path.join(SIM_DIR, 'src', 'font_diff_expectations.rs'),
@@ -345,13 +355,14 @@ function main() {
             '',
             `pub const CANVAS_W: u32 = ${canvas.width};`,
             `pub const CANVAS_H: u32 = ${canvas.height};`,
-            '/// Every widget the design gives a font to: the regions the two renders must disagree about.',
+            '/// Every widget the design gave an appearance to: the regions the two renders must disagree about.',
             '///',
-            '/// There are two kinds, and they travel by different markup. A *declared* font is a BDF file the',
-            '/// screen declares and a widget names with `font=`, which the crate reads for labels and carousels.',
-            '/// A *built-in* one ships inside the crate and has no attribute at all, so it is asked for with a',
-            '/// `style` expression -- and a build is the only thing that can prove that expression is honoured.',
-            `pub const FONTED_RECTS: [(i32, i32, u32, u32); ${fontedWidgets.length + builtInWidgets.length}] = [`,
+            '/// Three routes, and they travel by different markup. A *declared* font is a BDF file the screen',
+            '/// declares and a widget names with `font=`, which the crate reads for labels and carousels. A',
+            '/// *built-in* one ships inside the crate and has no attribute at all, so it is asked for with a',
+            '/// `style` expression. And a *base style* is what gives an ordinary widget a look its own',
+            '/// properties cannot -- a build is the only thing that can prove any of the three is honoured.',
+            `pub const APPEARANCE_RECTS: [(i32, i32, u32, u32); ${described.length}] = [`,
             ...rectList,
             '];',
             '',

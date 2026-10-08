@@ -11,6 +11,32 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.57] - 2026-10-08
+
+### Added
+
+- **A Style field on the controls whose appearance the crate takes from one** — Label, Button, Panel and
+  Carousel. It offers the four base looks that actually differ (`plain`, `panel`, `progress`, `button`), which
+  is how a control gets a background, border, shadow and corner radius its own properties cannot give it: a Label
+  can wear a panel's card, a Panel a progress bar's thin horizontal fill. Which controls offer it follows the
+  crate's emitter, and a Table is given none because its arm hard-codes `Style::panel()` and ignores the
+  attribute. The list is closed rather than a text box on purpose: the crate passes a name it does not recognise
+  through *verbatim as Rust*, so a typo would be compiled rather than ignored.
+- A chosen style and a chosen built-in font are composed into a **single** `style` attribute, since a built-in
+  font is itself a style expression and the markup cannot carry both.
+
+### Changed
+
+- The Designer's font and style handling now lives in `src/designer/appearance.ts`, which owns the one expression
+  a widget needs from either route.
+
+### Verified
+
+- The host pixel check measures every widget the design gave an appearance to, by all three routes:
+  `the appearances changed 2910 pixels inside their widgets (34 of 2700, 78 of 2700, 110 of 2700, 2688 of 2700)
+  and none of the 142800 outside them` — a declared BDF, a built-in font on a label, a built-in font on a button,
+  and a base style on a label.
+
 ## [0.0.56] - 2026-10-08
 
 ### Added

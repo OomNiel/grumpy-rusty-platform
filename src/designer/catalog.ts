@@ -20,6 +20,7 @@
  * No `vscode` import and no `fs` import, so the t1 layer can test the catalogue as plain data.
  */
 
+import { NAMED_STYLES } from './appearance';
 import type { FontSupport } from './fonts';
 
 /**
@@ -30,7 +31,16 @@ import type { FontSupport } from './fonts';
  * declared names and the built-ins together, and the emitter picks the route each one needs -- see
  * `src/designer/fonts.ts` for why they are not the same attribute.
  */
-export type KdlPropertyKind = 'text' | 'int' | 'float' | 'bool' | 'color' | 'enum' | 'asset' | 'font';
+export type KdlPropertyKind =
+    | 'text'
+    | 'int'
+    | 'float'
+    | 'bool'
+    | 'color'
+    | 'enum'
+    | 'asset'
+    | 'font'
+    | 'style';
 
 export interface KdlProperty {
     /** The KDL attribute name, exactly as the parser reads it. */
@@ -200,6 +210,20 @@ export interface KdlWidgetSpec {
     events: readonly DesignerEvent[];
 }
 
+/**
+ * The crate's named base styles, for the widgets whose emitter honours one.
+ *
+ * A closed set rather than a text box, because the resolver passes an unknown name through **verbatim as Rust**:
+ * a typo would not be ignored, it would be compiled. See `./appearance` for what each name resolves to.
+ */
+const STYLE_PROPERTY: KdlProperty = {
+    name: 'style',
+    kind: 'style',
+    label: 'Style',
+    defaultValue: '',
+    options: NAMED_STYLES.map((style) => style.id),
+};
+
 /** The colour pairs a clickable widget carries, with the parser's own defaults where it has none. */
 const CLICKABLE_COLOURS: KdlProperty[] = [
     { name: 'bg', kind: 'color', label: 'Background', defaultValue: '#3a6ea5' },
@@ -241,6 +265,7 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         props: [
             { name: 'text', kind: 'text', label: 'Text', defaultValue: 'Label' },
             { name: 'font', kind: 'font', label: 'Font', defaultValue: '' },
+            STYLE_PROPERTY,
         ],
         fontSupport: 'both',
         events: [],
@@ -258,6 +283,7 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         props: [
             { name: 'text', kind: 'text', label: 'Text', defaultValue: 'Button' },
             { name: 'font', kind: 'font', label: 'Font', defaultValue: '' },
+            STYLE_PROPERTY,
             ...CLICKABLE_COLOURS,
         ],
         fontSupport: 'style',
@@ -465,7 +491,9 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         label: 'Panel',
         category: 'container',
         defaultSize: { width: 160, height: 96 },
-        props: [],
+        // A panel's whole appearance comes from its style, and its emitter reads one -- so this is the only
+        // appearance property it has, and the reason the base styles are worth offering at all.
+        props: [STYLE_PROPERTY],
         events: [],
     },
     {
@@ -520,6 +548,7 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
             { name: 'indicator', kind: 'bool', label: 'Show indicator', defaultValue: false },
             { name: 'pulse', kind: 'int', label: 'Pulse', defaultValue: 255, min: 0, max: 255 },
             { name: 'font', kind: 'font', label: 'Font', defaultValue: '' },
+            STYLE_PROPERTY,
         ],
         fontSupport: 'both',
         events: ['valueChanged', 'scroll'],
@@ -774,6 +803,9 @@ const PROPERTY_HELP: Record<string, string> = {
     src: 'File to load, relative to the project root',
     start_angle: 'Where the arc starts, in degrees clockwise from the top',
     stroke: 'Outline colour',
+    style:
+        'A base look from the crate: plain, panel, progress or button. It carries the background, border, ' +
+        'shadow and corner radius, so it is what gives a widget an appearance its own properties do not',
     stroke_width: 'Width of the outline, in pixels',
     text: 'The words it shows',
     text_color: 'Colour of the text drawn on it',
