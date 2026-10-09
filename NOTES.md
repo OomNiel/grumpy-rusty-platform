@@ -4793,3 +4793,37 @@ calls `pointer`/`pump` and then, only if the design is dirty, `render`, which pa
 full paint happens on a calibration frame and after the recalibration gesture. So the number to watch after
 touching a widget is the size of the dirty rectangles it causes -- and that is exactly where the runs pay off,
 because a shape overlapping a damaged rectangle is re-rendered through the same path.
+
+## 104. "Open Designer" gets a door where the commands live (2026-10-09)
+
+The request: *"The new command button must go in the Rusty Platform sidebar on top of the Controls section."*
+
+Worth writing down because two attempts missed it. The first put the button in the Designer panel's toolbar, the
+second in the panel's Toolbox -- both inside the *webview*, and both shipped a small amount of plumbing
+(`openDesigner` in the panel's action protocol, a branch in `DesignerPanel.act` routing it back to the command)
+to reach a command that the panel was already sitting next to. The sidebar was the answer, and it needed no new
+plumbing at all.
+
+### What the sidebar needed
+
+`src/ui/controls.ts` is already a list of command rows -- `command`, `icon`, `detail`, `tooltip` -- rendered by
+`controlsView.ts` as `TreeItem`s with a `ThemeIcon`. The designer's command was simply not in that list. It is
+now `OPEN_DESIGNER_CONTROL`, first in `visibleControls()`, above New Project:
+
+    0  rustyPlatform.openDesigner    Open Designer   the canvas, Toolbox and properties
+    1  rustyPlatform.newProject      New Project     pick a board, then a template
+    2  rustyPlatform.checkToolchain  Rusty           check the toolchain
+
+### Two details that were not guesswork
+
+*The row leads, and New Project is second.* New Project was the first row, with a comment explaining why ("it is
+the one control that makes the others possible"). The user asked for the designer on top, so it leads and the
+comment now covers both -- and the test that asserted `shown[0] === 'rustyPlatform.newProject'` moved to row 1
+rather than being deleted, which is the honest way to record a deliberate reordering.
+
+*The icon.* `paintcan` was checked against the codicon list in the installed editor before use, rather than
+guessed: a name VS Code does not know renders as nothing, which would look like a rendering bug rather than a
+typo, and the repository has no local codicon package to check against.
+
+The row runs the command, so nothing else changed: the sidebar, the Command Palette and the Project view's
+title-bar icon are one entry point with three doors.

@@ -11,6 +11,22 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.62] - 2026-10-09
+
+### Added
+
+- **An `Open Designer` row at the top of the Controls section** in the Rusty Platform sidebar. It runs the
+  `rustyPlatform.openDesigner` command — the same one the Command Palette and the Project view's title-bar icon
+  use — so there is one implementation behind all three doors, including the question it asks when no project is
+  open. The designer had no button in the sidebar at all: its only entry point in the interface was a title-bar
+  icon on the Project view, which is not where anyone looks for a command.
+
+### Verified
+
+- 796 hermetic tests pass. A new one pins the row: it leads the Controls section, matches the command's own
+  title, carries the icon, detail and tooltip its neighbours carry, and stays out of the status bar (which keeps
+  its six rows). `tsc` clean on both sides.
+
 ## [0.0.61] - 2026-10-09
 
 ### Changed
