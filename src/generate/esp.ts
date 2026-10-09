@@ -705,6 +705,8 @@ function espImports(board: EspBoardProfile, template: AppTemplate): string {
     if (template === 'touch' || template === 'board' || (template === 'designer' && board.touch !== undefined)) {
         // Only the board template drives the LDR and the speaker, and an unused import is a warning, so the
         // analog imports are added where the hardware actually is.
+        // The paint timing below is Designer-only, and an unused import is a warning in a generated project.
+        const clockImports = template === 'designer' ? ['use embassy_time::Instant;'] : [];
         const hardwareImports = template === 'board'
             ? [
                 'use esp_hal::analog::adc::{Adc, AdcConfig, Attenuation};',
@@ -722,6 +724,7 @@ function espImports(board: EspBoardProfile, template: AppTemplate): string {
             'use core::fmt::Write as _;',
             'use embassy_executor::Spawner;',
             'use embassy_time::{Duration, Timer};',
+            ...clockImports,
             'use embedded_graphics::mono_font::{ascii::{FONT_6X10, FONT_10X20}, MonoTextStyle};',
             'use embedded_graphics::pixelcolor::Rgb565;',
             'use embedded_graphics::prelude::*;',
@@ -753,7 +756,7 @@ function espImports(board: EspBoardProfile, template: AppTemplate): string {
         // every Designer project on a board with no touch controller (the T-QT).
         return [
             'use embassy_executor::Spawner;',
-            'use embassy_time::{Duration, Timer};',
+            'use embassy_time::{Duration, Instant, Timer};',
             'use embedded_graphics::pixelcolor::Rgb565;',
             // A glob, so it costs nothing when unused: `display.clear` comes from this prelude.
             'use embedded_graphics::prelude::*;',
@@ -1994,12 +1997,20 @@ ${designer ? `                // The design, painted instead of the diagnostic s
                         // Built once, on the first calibrated frame, and logged: when this project is flashed
                         // the log is what says whether the design exists at all, since a design that fails to
                         // build panics and a design that draws says nothing on its own.
-                        let built = ui::Designer::new(width_i as u32, height_i as u32);
-                        log::info!("design: built and painted {}x{}", width_i, height_i);
-                        built
+                        ui::Designer::new(width_i as u32, height_i as u32)
                     });
                     display.clear(Rgb565::BLACK).expect("panel write failed");
+                    // Timed, because "the panel feels slow" needs a number before a change to it can be
+                    // judged. This is the *full* paint -- build, clear and every widget -- and it happens
+                    // only on a calibration frame; a touch repaints just the damaged rectangles below.
+                    let painted_at = Instant::now();
                     screen.repaint(&mut display).expect("the design did not render");
+                    log::info!(
+                        "design: painted {}x{} in {} ms (full frame)",
+                        width_i,
+                        height_i,
+                        painted_at.elapsed().as_millis()
+                    );
                 } else {
 ` : ''}                // The graphics test screen, back again once the calibration is done: a frame around the
                 // whole panel, four coloured corner markers, five bars and a cross through the centre.
@@ -2626,8 +2637,17 @@ function espDesignerDisplayBody(display: EspDisplay): string {
     };
     let mut screen = ui::Designer::new(width_i, height_i);
     display.clear(Rgb565::BLACK).expect("panel write failed");
+    // Timed, like the diagnostics screen and for the same reason: the number is what turns "the panel is
+    // slow" into something a change can be compared against. The shapes draw in rows -- one canvas call
+    // each -- because on a panel with no framebuffer every call is an address window.
+    let drawn_at = Instant::now();
     screen.repaint(&mut display).expect("the design did not render");
-    log::info!("design drawn: {}x{}", width_i, height_i);
+    log::info!(
+        "design drawn: {}x{} in {} ms",
+        width_i,
+        height_i,
+        drawn_at.elapsed().as_millis()
+    );
 
     loop {
         log::info!("design alive");

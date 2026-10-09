@@ -6,7 +6,7 @@
 #![no_main]
 
 use embassy_executor::Spawner;
-use embassy_time::{Duration, Timer};
+use embassy_time::{Duration, Instant, Timer};
 use embedded_graphics::pixelcolor::Rgb565;
 use embedded_graphics::prelude::*;
 use embedded_hal_bus::spi::ExclusiveDevice;
@@ -127,8 +127,17 @@ async fn main(_spawner: Spawner) -> ! {
     };
     let mut screen = ui::Designer::new(width_i, height_i);
     display.clear(Rgb565::BLACK).expect("panel write failed");
+    // Timed, like the diagnostics screen and for the same reason: the number is what turns "the panel is
+    // slow" into something a change can be compared against. The shapes draw in rows -- one canvas call
+    // each -- because on a panel with no framebuffer every call is an address window.
+    let drawn_at = Instant::now();
     screen.repaint(&mut display).expect("the design did not render");
-    log::info!("design drawn: {}x{}", width_i, height_i);
+    log::info!(
+        "design drawn: {}x{} in {} ms",
+        width_i,
+        height_i,
+        drawn_at.elapsed().as_millis()
+    );
 
     loop {
         log::info!("design alive");

@@ -168,6 +168,9 @@ designer for the active project. Either way it works on a board that carries a p
 - **A created project is loaded** — the folder the wizard writes becomes part of the window whatever the
   notification's answer is, so the Explorer, Source Control and the terminal are already pointing at it. Loading
   a folder can restart the extension host, so a Designer asked for at that moment reopens on the other side.
+- **Shapes are cheap on the glass too** — they fill in rows, one display call per row, because a panel written
+  over SPI with no framebuffer charges for an address window whatever its size. A disc is `2r+1` calls rather
+  than about `pi·r²`, and the same pixels either way.
 - **Shapes are real on both sides** — a Circle, Rectangle, Line or Triangle is drawn as itself on the canvas and
   rendered on the glass by the vendored `rusty-gui-widgets` crate, from the same cell rectangle, so the two cannot
   disagree about geometry. A circle is edited by its centre and radius, which are derived from that rectangle
