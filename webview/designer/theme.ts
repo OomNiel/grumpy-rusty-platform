@@ -7,6 +7,10 @@
  * ignored all that and painted the user's choices would be confidently wrong about the one thing it exists
  * to show.
  *
+ * The shapes have since shipped board-side renderers in `rusty-gui-widgets`, so `rect`, `line` and the
+ * other shapes now paint their own colour on both the canvas and the glass -- but the rule is the same:
+ * `draws` is the source of truth for what the canvas paints, and every tag is drawn here according to it.
+ *
  * So every tag is drawn here according to `KDL_WIDGETS[].draws`, and the parts that are *not* what the
  * document says are drawn as such: nothing is a dashed outline, a theme panel is the theme's surface colour,
  * and a placeholder that needs an asset says so. Where a property does reach the pixels -- button labels,
@@ -18,7 +22,7 @@
  */
 
 import { widgetSpec } from '../../src/designer/catalog';
-import type { DesignerWidget } from '../../src/designer/model';
+import { type DesignerWidget, circleCentre, circleRadius } from '../../src/designer/model';
 
 export interface Palette {
     /** The screen behind everything. */
@@ -99,6 +103,135 @@ function labelOf(widget: DesignerWidget): string {
 }
 
 /**
+ * Marks the space a widget occupies when nothing of it is painted.
+ *
+ * A designer has to show a control it would not otherwise draw -- a spacer, or a shape filled with nothing and
+ * outlined with nothing -- or there is nothing to select. The dashes say "this is the designer talking, not the
+ * design", which is the same distinction the id label makes.
+ */
+function placeholderOutline(context: CanvasRenderingContext2D, x: number, y: number, width: number, height: number, palette: Palette): void {
+    context.save();
+    context.setLineDash([4, 3]);
+    context.strokeStyle = palette.placeholder;
+    context.lineWidth = 1;
+    context.strokeRect(x + 0.5, y + 0.5, Math.max(0, width - 1), Math.max(0, height - 1));
+    context.restore();
+}
+
+/** True when a property names a colour the board would actually paint. */
+function hasColor(value: string | number | boolean | undefined): boolean {
+    return typeof value === 'string' && /^#[0-9a-fA-F]{6}$/.test(value);
+}
+
+/** A colour pulled from a widget's property, falling back to a palette swatch when it is absent or malformed. */
+function colorProp(value: string | number | boolean | undefined, fallback: string): string {
+    return typeof value === 'string' && /^#[0-9a-fA-F]{6}$/.test(value) ? value : fallback;
+}
+
+/**
+ * Paints a designer-native circle from its bounding rect.
+ *
+ * The rect carries the shape's geometry (centre and radius are derived from it), and four appearance
+ * properties paint the arc: a fill the board has no equivalent for, and an outline of the chosen colour and
+ * thickness. `line_thickness` of zero means "no outline", which is the only case the fallback border is not
+ * needed.
+ */
+function paintCircle(context: CanvasRenderingContext2D, widget: DesignerWidget, palette: Palette): void {
+    const { cx, cy } = circleCentre(widget);
+    const radius = Math.max(0, circleRadius(widget));
+    context.beginPath();
+    context.arc(cx, cy, radius, 0, 2 * Math.PI);
+
+    // Not filled means *nothing painted there*, not the screen colour painted over what is behind it: the
+    // board passes `fill: None` and leaves the backdrop, so an erasing canvas would show a hole in an
+    // overlapping shape that the glass does not have.
+    const fill = widget.props.fill === true;
+    if (fill) {
+        context.fillStyle = colorProp(widget.props.fill_color, palette.themePanel);
+        context.fill();
+    }
+
+    const thickness = typeof widget.props.line_thickness === 'number' ? widget.props.line_thickness : 1;
+    if (thickness > 0) {
+        context.strokeStyle = colorProp(widget.props.line_color, palette.border);
+        context.lineWidth = thickness;
+        context.stroke();
+    } else if (!fill) {
+        placeholderOutline(context, widget.x, widget.y, widget.width, widget.height, palette);
+    }
+}
+
+/**
+ * Paints a designer rectangle: its own fill colour on the cell, a stroke of the
+ * chosen colour and thickness, and rounded corners from `radius`. Matches the
+ * board's `rusty_gui_widgets::Rectangle`, which derives every dimension from the
+ * cell rect.
+ */
+function paintRect(context: CanvasRenderingContext2D, widget: DesignerWidget, palette: Palette): void {
+    const radius = typeof widget.props.radius === 'number' ? widget.props.radius : 0;
+    context.fillStyle = colorProp(widget.props.fill, palette.widget);
+    roundedRect(context, widget.x, widget.y, widget.width, widget.height, radius);
+    context.fill();
+    const sw = typeof widget.props.stroke_width === 'number' ? widget.props.stroke_width : 0;
+    if (sw > 0) {
+        context.strokeStyle = colorProp(widget.props.stroke, palette.border);
+        context.lineWidth = sw;
+        context.stroke();
+    }
+    if (!hasColor(widget.props.fill) && sw <= 0) {
+        placeholderOutline(context, widget.x, widget.y, widget.width, widget.height, palette);
+    }
+}
+
+/**
+ * Paints a designer line: a single segment along the cell's longer axis, in the
+ * chosen colour and thickness. Matches `rusty_gui_widgets::Line`, which the board
+ * orients the same way from the rect.
+ */
+function paintLine(context: CanvasRenderingContext2D, widget: DesignerWidget, palette: Palette): void {
+    const sw = typeof widget.props.stroke_width === 'number' ? widget.props.stroke_width : 1;
+    const color = colorProp(widget.props.color, palette.border);
+    context.strokeStyle = color;
+    context.lineWidth = sw;
+    context.beginPath();
+    if (widget.width >= widget.height) {
+        const y = widget.y + widget.height / 2;
+        context.moveTo(widget.x, y);
+        context.lineTo(widget.x + widget.width, y);
+    } else {
+        const x = widget.x + widget.width / 2;
+        context.moveTo(x, widget.y);
+        context.lineTo(x, widget.y + widget.height);
+    }
+    context.stroke();
+}
+
+/**
+ * Paints a designer triangle inscribed in the cell: apex at the top edge centre,
+ * base on the bottom edge. Fill and stroke follow `rusty_gui_widgets::Triangle`,
+ * which derives the three vertices from the rect.
+ */
+function paintTriangle(context: CanvasRenderingContext2D, widget: DesignerWidget, palette: Palette): void {
+    const cx = widget.x + widget.width / 2;
+    context.beginPath();
+    context.moveTo(cx, widget.y);
+    context.lineTo(widget.x, widget.y + widget.height);
+    context.lineTo(widget.x + widget.width, widget.y + widget.height);
+    context.closePath();
+    context.fillStyle = colorProp(widget.props.fill, palette.widget);
+    context.fill();
+    const sw = typeof widget.props.stroke_width === 'number' ? widget.props.stroke_width : 1;
+    if (sw > 0) {
+        context.strokeStyle = colorProp(widget.props.stroke, palette.border);
+        context.lineWidth = sw;
+        context.stroke();
+    }
+    if (!hasColor(widget.props.fill) && sw <= 0) {
+        placeholderOutline(context, widget.x, widget.y, widget.width, widget.height, palette);
+    }
+}
+
+/**
  * Draws one widget at its document rectangle.
  *
  * `offsetX`/`offsetY` are the canvas origin in *device* pixels, so the panel can draw at whatever zoom the
@@ -114,23 +247,28 @@ export function drawWidget(
     const { x, y, width, height } = widget;
 
     if (draws === 'nothing') {
-        // A line or a spacer reserves its space and paints none of it: show the space, mark it as empty.
-        context.save();
-        context.setLineDash([4, 3]);
-        context.strokeStyle = palette.placeholder;
-        context.lineWidth = 1;
-        context.strokeRect(x + 0.5, y + 0.5, Math.max(0, width - 1), Math.max(0, height - 1));
-        context.restore();
+        // A spacer reserves its space and paints none of it: show the space, mark it as empty.
+        placeholderOutline(context, x, y, width, height, palette);
     } else {
-        const radius = typeof widget.props.corner_radius === 'number' ? widget.props.corner_radius : 2;
-        // A theme panel is what the engine paints for the shapes; everything else is a widget surface.
-        const background = draws === 'panel' ? palette.themePanel : palette.widget;
-        context.fillStyle = background;
-        roundedRect(context, x, y, width, height, radius);
-        context.fill();
-        context.strokeStyle = palette.border;
-        context.lineWidth = 1;
-        context.stroke();
+        if (draws === 'circle') {
+            paintCircle(context, widget, palette);
+        } else if (draws === 'rectangle') {
+            paintRect(context, widget, palette);
+        } else if (draws === 'line') {
+            paintLine(context, widget, palette);
+        } else if (draws === 'triangle') {
+            paintTriangle(context, widget, palette);
+        } else {
+            const radius = typeof widget.props.corner_radius === 'number' ? widget.props.corner_radius : 2;
+            // A theme panel is what the engine paints for the shapes; everything else is a widget surface.
+            const background = draws === 'panel' ? palette.themePanel : palette.widget;
+            context.fillStyle = background;
+            roundedRect(context, x, y, width, height, radius);
+            context.fill();
+            context.strokeStyle = palette.border;
+            context.lineWidth = 1;
+            context.stroke();
+        }
 
         if (width > 16 && height > 12) {
             context.save();

@@ -27,7 +27,14 @@ import {
     widgetSpec,
 } from '../../src/designer/catalog';
 import type { DesignerAssetKind } from '../../src/designer/protocol';
-import { type DesignerFont, type DesignerWidget, designCanvasSize } from '../../src/designer/model';
+import {
+    type DesignerFont,
+    type DesignerWidget,
+    circleCentre,
+    circleRadius,
+    circleRect,
+    designCanvasSize,
+} from '../../src/designer/model';
 import { NAMED_STYLES } from '../../src/designer/appearance';
 import { BUILT_IN_FONTS, type FontSupport } from '../../src/designer/fonts';
 import {
@@ -247,7 +254,7 @@ export function renderProperties(
         if (spec.note !== undefined) {
             root.append(element('p', 'panel-note', spec.note));
         }
-        root.append(geometryForm(state, widget, callbacks));
+        root.append(spec.draws === 'circle' ? circleGeometryForm(state, widget, callbacks) : geometryForm(state, widget, callbacks));
         if (spec.props.length > 0) {
             root.append(propertyForm(state, widget, spec, callbacks));
         }
@@ -287,6 +294,47 @@ function geometryForm(state: DesignerState, widget: DesignerWidget, callbacks: P
         field('Height', numberInput(widget.height, 1, undefined, (value) =>
             callbacks.onEdit(resizeWidget(state, widget.id, { x: widget.x, y: widget.y, width: widget.width, height: value })))),
     );
+    node.append(grid);
+    return node;
+}
+
+/**
+ * The Geometry form for a circle: centre and radius, rather than the rectangle's X/Y/W/H.
+ *
+ * A circle's rect is its bounding box, and its centre and radius are derived from that -- so the form edits the
+ * rect through the same move/resize operations the canvas uses, keeping the document and the geometry panel in
+ * step without a second pair of fields to fall out of sync.
+ */
+function circleGeometryForm(
+    state: DesignerState,
+    widget: DesignerWidget,
+    callbacks: PanelCallbacks,
+): HTMLElement {
+    const canvas = designCanvasSize(
+        state.document.panelWidth,
+        state.document.panelHeight,
+        state.document.rotation,
+    );
+    const { cx, cy } = circleCentre(widget);
+    const radius = circleRadius(widget);
+    const grid = element('div', 'field-grid');
+    grid.append(
+        field('Centre X', numberInput(cx, 0, canvas.width, (value) =>
+            callbacks.onEdit(moveWidget(state, widget.id, value - radius, widget.y)))),
+    );
+    grid.append(
+        field('Centre Y', numberInput(cy, 0, canvas.height, (value) =>
+            callbacks.onEdit(moveWidget(state, widget.id, widget.x, value - radius)))),
+    );
+    grid.append(
+        field(
+            'Radius',
+            numberInput(radius, 1, Math.floor(Math.min(canvas.width, canvas.height) / 2), (value) =>
+                callbacks.onEdit(resizeWidget(state, widget.id, circleRect(cx, cy, value))),
+            ),
+        ),
+    );
+    const node = section('Geometry');
     node.append(grid);
     return node;
 }

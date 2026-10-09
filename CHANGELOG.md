@@ -11,6 +11,55 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.60] - 2026-10-09
+
+### Added
+
+- **Shapes are now real on the canvas *and* on the board.** Circle, Rectangle, Line and a new **Triangle** are
+  drawn by the designer as themselves, and rendered on the glass by a vendored `rusty-gui-widgets` crate of
+  `CustomWidget`s together with a forked `embedded-gui-codegen` that emits `add_custom_widget` calls instead of
+  the `add_panel`/`add_spacer` stubs that made a circle a square. Every dimension comes from the cell rectangle
+  the engine lays out, so the canvas and the glass cannot disagree about geometry. Designer projects vendor both
+  crates under `codegen/`; nothing is fetched at build time.
+- A **Geometry** form for a circle — centre and radius, derived from its bounding rectangle — so the shape is
+  edited the way it is described.
+
+### Fixed
+
+- **Every non-Designer ESP template failed to resolve its dependencies.** The `[patch.crates-io]` that points at
+  the vendored codegen was written into *all* of them while the crates were only copied for the Designer
+  template, and cargo resolves a patch entry even when nothing uses it:
+  `failed to load source for dependency embedded-gui-codegen … No such file or directory`. The patch is now
+  written only where the crates are copied.
+- **A pen width of 0 drew a 1 px outline on the board** while the canvas drew none, for both the circle and the
+  rectangle. Zero now means no outline on both sides.
+- **A rounded rectangle's outline was square on the board** (and rounded on the canvas): the fill and the outline
+  are now the same shape, the outline's corners being integer mid-point arcs.
+- **A circle with Fill off erased what was behind it on the canvas** (it painted the screen colour) where the
+  board leaves the backdrop. An unfilled shape now paints nothing on both sides, and one that paints nothing at
+  all gets the designer's dashed placeholder outline so it is still visible and selectable.
+- Two `unused_must_use` warnings in the vendored widgets crate, one of which (`Line`) silently swallowed a
+  drawing error that every other shape propagates.
+
+### Changed — vendored code
+
+- The vendored `embedded-gui-codegen` fork now carries its upstream **licence texts and attribution**
+  (`LICENSE`, `LICENSE-MIT`, `LICENSE-APACHE`, a provenance `README.md`, and the `license`/`authors`/
+  `repository` fields restored in its manifest). It was redistributing MIT/Apache-2.0 code in every generated
+  project without them.
+
+### Verified
+
+- Shapes are now measured end-to-end on the host, not just compiled: the appearance check strips their ink in the
+  comparison render and requires every pixel inside their cells to change and nothing outside to.
+  `the appearances changed 33453 pixels inside their widgets (34, 78, 110, 2688, 20, 19073, 708, 4800, 4800, 822,
+  320 of their respective areas) and none of the 108500 outside them` — `708 of 1200` for a 40×30 cell is π·15²,
+  the disc to the pixel.
+- The vendored crate's tests grew to 10 (a zero-width pen paints nothing; a rounded outline has no sharp corner),
+  the host checks all pass, a generated Designer project builds for `xtensa-esp32-none-elf`, and a generated
+  non-Designer project resolves its dependencies again.
+- 795 hermetic tests pass; `tsc` clean on both sides.
+
 ## [0.0.59] - 2026-10-08
 
 ### Added

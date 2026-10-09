@@ -197,6 +197,32 @@
                 "text": "AB",
                 "text_color": "#ff0000"
             }
+        },
+        {
+            "_comment": "A triangle and a line, so the same codegen fork that renders the circle is exercised for every shape the crate supplies.",
+            "id": "trib",
+            "tag": "triangle",
+            "x": 300,
+            "y": 260,
+            "width": 40,
+            "height": 40,
+            "props": {
+                "stroke_width": 2,
+                "fill": "#ff0000",
+                "stroke": "#00ff00"
+            }
+        },
+        {
+            "id": "rule",
+            "tag": "line",
+            "x": 300,
+            "y": 305,
+            "width": 80,
+            "height": 4,
+            "props": {
+                "stroke_width": 2,
+                "color": "#0000ff"
+            }
         }
     ],
     "empty": {

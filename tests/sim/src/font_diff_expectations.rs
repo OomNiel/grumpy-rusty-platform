@@ -4,13 +4,17 @@ pub const CANVAS_W: u32 = 480;
 pub const CANVAS_H: u32 = 320;
 /// Every widget the design gave an appearance to: the regions the two renders must disagree about.
 ///
-/// Three routes, and they travel by different markup. A *declared* font is a BDF file the screen
+/// That includes the shapes: their ink is stripped in the second render, so a shape that painted
+/// nothing, or painted outside its cell, fails here rather than on someone's board.
+///
+/// Five routes, and they travel by different markup. A *declared* font is a BDF file the screen
 /// declares and a widget names with `font=`, which the crate reads for labels and carousels. A
 /// *built-in* one ships inside the crate and has no attribute at all, so it is asked for with a
 /// `style` expression. A *base style* gives an ordinary widget a look its own properties cannot,
-/// and a *text colour* on a label takes the same route. A build is the only thing that can prove
-/// any of them is honoured -- none of the four has an attribute the parser would read.
-pub const APPEARANCE_RECTS: [(i32, i32, u32, u32); 5] = [
+/// and a *text colour* on a label takes the same route. A *shape* is the sixth: its own
+/// fill/stroke attributes on a tag the codegen fork renders with `add_custom_widget`. A build is
+/// the only thing that can prove any of them is honoured.
+pub const APPEARANCE_RECTS: [(i32, i32, u32, u32); 11] = [
     // "fonted" (declared font "test")
     (200, 120, 90, 30),
     // "builtin" (built-in font "Scaled6x10")
@@ -21,4 +25,16 @@ pub const APPEARANCE_RECTS: [(i32, i32, u32, u32); 5] = [
     (200, 200, 90, 30),
     // "tinted" (text colour "#ff0000")
     (300, 200, 90, 30),
+    // "band" (shape rectangle)
+    (0, 0, 480, 40),
+    // "knob" (shape circle)
+    (100, 60, 40, 30),
+    // "foot" (shape rectangle)
+    (0, 300, 240, 20),
+    // "foot2" (shape rectangle)
+    (240, 300, 240, 20),
+    // "trib" (shape triangle)
+    (300, 260, 40, 40),
+    // "rule" (shape line)
+    (300, 305, 80, 4),
 ];

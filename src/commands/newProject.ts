@@ -1,4 +1,6 @@
 import * as vscode from 'vscode';
+import * as fs from 'fs';
+import * as path from 'path';
 import { BOARDS } from '../boards/catalog';
 import { BoardProfile } from '../boards/types';
 import {
@@ -301,6 +303,26 @@ export function registerNewProjectCommand(
             }
         }
 
+        // A Designer project pulls its shapes from `rusty-gui-widgets` and its KDL from the codegen fork that
+        // emits `add_custom_widget` calls for shapes; the `Cargo.toml` references them under `codegen/`, so the
+        // wizard copies both crates from the extension's `crates/` folder into the project. This mirrors the
+        // CYW43-blob copy just above: a runtime side effect, not a generated file, so the golden snapshots stay
+        // a faithful record of what the generator itself emits.
+        if (template === 'designer') {
+            const from = path.resolve(__dirname, '..', '..', 'crates');
+            const to = vscode.Uri.joinPath(target, 'codegen');
+            try {
+                await copyVendoredCrates(from, to, output);
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                output.appendLine(`Vendored crates failed: ${message}`);
+                output.show(true);
+                void vscode.window.showErrorMessage(
+                    `Project created, but its shapes crate could not be copied: ${message.split('\n')[0]}`,
+                );
+            }
+        }
+
         const crateName = crateNameFrom(projectName);
         // A Designer project's whole point is the canvas, so the prompt offers it first and passes the folder
         // that was just written, which may not be a workspace folder at all.
@@ -337,4 +359,16 @@ export function registerNewProjectCommand(
             runInTerminal(`Rusty: ${board.id}`, 'cargo build', target);
         }
     });
+}
+
+/** Copies the two vendored crates (`rusty-gui-widgets`, `embedded-gui-codegen`) from the extension's
+ * `crates/` folder into `<project>/codegen/`, where the generated `Cargo.toml` references them by path. */
+async function copyVendoredCrates(sourceDir: string, target: vscode.Uri, output: vscode.OutputChannel): Promise<void> {
+    await vscode.workspace.fs.createDirectory(target);
+    for (const crateName of ['rusty-gui-widgets', 'embedded-gui-codegen']) {
+        const source = path.join(sourceDir, crateName);
+        const destination = path.join(target.fsPath, crateName);
+        output.appendLine(`copying ${crateName} -> ${destination}`);
+        fs.cpSync(source, destination, { recursive: true });
+    }
 }

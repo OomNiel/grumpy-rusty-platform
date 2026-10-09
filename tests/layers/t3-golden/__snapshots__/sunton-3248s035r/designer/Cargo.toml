@@ -26,7 +26,13 @@ embedded-graphics = "0.8"
 embedded-hal-bus = "0.3.0"
 esp-storage = { version = "0.10.0", features = ["esp32"] }
 embedded-gui = { version = "0.2.7", default-features = false, features = ["rich-widgets", "embedded-graphics", "macros", "micromath"] }
+rusty-gui-widgets = { path = "codegen/rusty-gui-widgets", default-features = false }
 embedded-hal = "1.0.0"
+
+# Vendored alongside every Designer project (see crates/ in this extension): the shapes widget crate, and
+# the codegen fork that emits add_custom_widget calls for shapes instead of add_panel/add_spacer stubs.
+[patch.crates-io]
+embedded-gui-codegen = { path = "codegen/embedded-gui-codegen" }
 
 [profile.release]
 opt-level = "s"

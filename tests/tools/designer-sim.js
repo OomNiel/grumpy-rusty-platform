@@ -76,6 +76,9 @@ function documentFromFixture(fixture) {
     return document;
 }
 
+/** The `draws` values that mean "the crate paints this shape from the cell rect". */
+const SHAPE_DRAWS = new Set(['circle', 'rectangle', 'line', 'triangle']);
+
 /** The widgets the design gives a *declared* font to, which is the route the markup has an attribute for. */
 function declaredFontWidgets(document) {
     return document.widgets.filter(
@@ -321,6 +324,16 @@ function main() {
                 if (property.viaStyle === true) {
                     props[property.name] = '';
                 }
+                // A shape's ink is its own colours: strip them and the board paints nothing there, which is
+                // what lets the diff attribute every pixel inside the cell to the shape.
+                if (SHAPE_DRAWS.has(widgetSpec(widget.tag)?.draws)) {
+                    if (property.kind === 'color') {
+                        props[property.name] = '';
+                    }
+                    if (property.kind === 'bool') {
+                        props[property.name] = false;
+                    }
+                }
             }
             return { ...widget, props };
         }),
@@ -345,17 +358,25 @@ function main() {
             (property) => property.viaStyle === true && widget.props[property.name] !== '',
         ),
     );
+    // Shapes are measured by the same difference: strip their colours and they paint nothing, so every pixel
+    // that moves inside their cell is theirs. This is the only end-to-end assertion that the board really
+    // draws the primitive -- the crate's own tests use a mock canvas, not the engine's.
+    const shapes = document.widgets.filter((widget) => SHAPE_DRAWS.has(widgetSpec(widget.tag)?.draws));
     if (declared.length === 0 || builtIn.length === 0 || styled.length === 0 || tinted.length === 0) {
         throw new Error(
             'the fixture must show every appearance route: a font the screen declares, one the crate ships, ' +
                 'and a base style, since each reaches the pixels by different markup',
         );
     }
+    if (shapes.length === 0) {
+        throw new Error('the fixture must contain a shape, or nothing measures that the board paints one');
+    }
     const described = [
         ...declared.map((widget) => [widget, `declared font ${JSON.stringify(widget.props.font)}`]),
         ...builtIn.map((widget) => [widget, `built-in font ${JSON.stringify(widget.props.font)}`]),
         ...styled.map((widget) => [widget, `style ${JSON.stringify(widget.props.style)}`]),
         ...tinted.map((widget) => [widget, `text colour ${JSON.stringify(widget.props.text_color)}`]),
+        ...shapes.map((widget) => [widget, `shape ${widgetSpec(widget.tag).draws}`]),
     ];
     const rectList = described.map(
         ([widget, what]) =>
@@ -371,12 +392,16 @@ function main() {
             `pub const CANVAS_H: u32 = ${canvas.height};`,
             '/// Every widget the design gave an appearance to: the regions the two renders must disagree about.',
             '///',
-            '/// Three routes, and they travel by different markup. A *declared* font is a BDF file the screen',
+            '/// That includes the shapes: their ink is stripped in the second render, so a shape that painted',
+            '/// nothing, or painted outside its cell, fails here rather than on someone\'s board.',
+            '///',
+            '/// Five routes, and they travel by different markup. A *declared* font is a BDF file the screen',
             '/// declares and a widget names with `font=`, which the crate reads for labels and carousels. A',
             '/// *built-in* one ships inside the crate and has no attribute at all, so it is asked for with a',
             '/// `style` expression. A *base style* gives an ordinary widget a look its own properties cannot,',
-            '/// and a *text colour* on a label takes the same route. A build is the only thing that can prove',
-            '/// any of them is honoured -- none of the four has an attribute the parser would read.',
+            '/// and a *text colour* on a label takes the same route. A *shape* is the sixth: its own',
+            '/// fill/stroke attributes on a tag the codegen fork renders with `add_custom_widget`. A build is',
+            '/// the only thing that can prove any of them is honoured.',
             `pub const APPEARANCE_RECTS: [(i32, i32, u32, u32); ${described.length}] = [`,
             ...rectList,
             '];',

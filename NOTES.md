@@ -4632,3 +4632,88 @@ Measured on the host, all five routes in one run:
 change moves only the ink -- two glyphs at 3x5 are about that many pixels -- while the 2688 next to it is a
 label wearing `Style::panel()`, which fills its whole box. Two controls, the same expression machinery, and the
 counts say which one paints what.
+
+## 102. Shapes on glass, reviewed: one dangling patch, two missing licences, three kinds of drift (2026-10-09)
+
+The Designer's shapes were reworked — circle, rectangle, line and a new triangle became designer-native on the
+canvas and real primitives on the board, through a vendored `rusty-gui-widgets` (a `CustomWidget` crate) and a
+vendored fork of `embedded-gui-codegen` that emits `add_custom_widget` instead of the `add_panel`/`add_spacer`
+stubs. This is the review of that work, and the fixes that came out of it.
+
+### The one that would have shipped broken
+
+`src/generate/esp.ts` wrote `[patch.crates-io] embedded-gui-codegen = { path = "codegen/embedded-gui-codegen" }`
+into **every** ESP `Cargo.toml`, while the wizard copies `codegen/` only for the `designer` template. Cargo
+resolves a patch entry even when nothing depends on the patched crate, so every other template — blinky, wifi,
+bluetooth, display, touch, board, peripherals, sdcard — stopped before compiling:
+
+    error: failed to load source for dependency `embedded-gui-codegen`
+    Caused by: failed to read .../codegen/embedded-gui-codegen/Cargo.toml
+    Caused by: No such file or directory (os error 2)
+
+The golden snapshots had been regenerated for all of them, so 793 tests passed while recording the breakage —
+a snapshot is a faithful record of what the generator emits, not of whether the result builds. The patch is now
+written only where the crates are copied, and a generated `blinky` project resolves (`cargo metadata` exit 0).
+
+### Two things a vendored crate owes
+
+The fork redistributed MIT/Apache-2.0 code with **no licence text and no attribution** — the manifest had dropped
+`license`, `authors` and `repository`, and no `LICENSE*` files were copied — and that ships in the `.vsix` and is
+copied into every user's project. Both licences require the notice to travel with copies and substantial
+portions. The vendored crate now carries `LICENSE`, `LICENSE-MIT`, `LICENSE-APACHE` (the upstream texts, fetched
+from the upstream repository) and a `README.md` recording provenance, and its manifest declares what it is and
+whose it is. `rust-version` was restored too, and the version note is now explicit: the fork **must** stay at
+`0.2.7`, because a `[patch]` only applies to a matching requirement.
+
+### Three kinds of drift between the canvas and the glass
+
+The whole promise of the designer is that the canvas is the glass, so these matter more than their size.
+
+1. **A pen of zero drew a 1px line on the board.** `Circle` and `Rectangle` clamped with `.max(1)`, while the
+   canvas skips the outline when the thickness is 0 — and the catalogue offers `min: 0` for both. Zero now means
+   no outline, on both sides.
+2. **A rounded rectangle's outline was square on the board.** The fill used `fill_rounded_rect`, the outline used
+   `draw_rect`: two different shapes. The outline is now the four straight runs plus one quadrant of a mid-point
+   circle per corner, which is what the canvas strokes. (`CustomCanvas` has no rounded-outline primitive, so the
+   arcs are integer pixels — no floats, no allocation.)
+3. **A circle with `fill: false` erased on the canvas.** It painted `palette.screen` over whatever was behind it;
+   the board passes `fill: None` and leaves the backdrop. An unfilled shape now paints nothing on both sides,
+   and a shape that paints nothing at all gets the dashed placeholder outline the designer already uses for a
+   spacer — so it can still be seen and selected.
+
+Two `unused_must_use` warnings went with them: `Line::render` dropped the `Result` from `draw_thick_line` while
+every other call site propagated with `?`, so a drawing failure was silently swallowed. Every shape now
+propagates, and the vendored crates compile clean.
+
+### What now proves it
+
+The host appearance check gained the shapes as measured regions — their ink is stripped in the comparison render,
+so a shape that painted nothing, or painted outside its cell, fails there. All eleven regions, one run:
+
+    PASS: the appearances changed 33453 pixels inside their widgets
+          (34 of 2700, 78 of 2700, 110 of 2700, 2688 of 2700, 20 of 2700,
+           19073 of 19200, 708 of 1200, 4800 of 4800, 4800 of 4800, 822 of 1600, 320 of 320)
+          and none of the 108500 outside them
+
+Read the shape numbers and they are the geometry: `708 of 1200` for a 40×30 cell is π·15² — the disc, to the
+pixel; `822 of 1600` is ½·40·40 plus its pen; `320 of 320` is a line the width of its cell; the two 240×20
+footers fill completely. Nothing leaks, which is the assertion this harness exists to make.
+
+The probe also had a bug of its own that the shapes exposed: regions were attributed by *first* match, and the
+fixture puts a line across the footer, so the line's region was swallowed by the footer's and reported as
+"changed nothing". A pixel now counts for every region that contains it, and only pixels in none of them count
+as outside.
+
+Ten tests in the vendored crate now include a zero-width pen (no ink at all, disc still filled) and a rounded
+outline (the sharp corner is not ink, the arc points are), and a designer-side test pins the designer's property
+names against the fork's vocabulary — `line_thickness` → `stroke_width`, a circle's `fill` being a bool where a
+rectangle's is a colour — so the mapping cannot drift in silence.
+
+### Left as it is, deliberately
+
+Six builder arms in the fork are still upstream's (`slider`, `arc`, `chart`, `busy_wheel`, `status_bar`,
+`time_picker`, `number_picker`, `content_indicator`, `crumbs`, `path`), and the catalogue still marks them
+unavailable — the fork only changed the four shape arms. The shapes themselves over-draw by one pixel and rely
+on the engine clipping a custom widget to its rect; the crate's own test asserts the over-draw (a 40-wide cell
+draws to x=40), and an isolated probe confirmed the engine clips, so nothing bleeds today. Clamping in the
+widget would make that independent of the engine, and is worth doing when the shapes next change.

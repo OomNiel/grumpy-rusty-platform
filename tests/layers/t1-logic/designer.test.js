@@ -24,6 +24,9 @@ const {
     defaultChildren,
     designCanvasSize,
     placeWidget,
+    circleCentre,
+    circleRadius,
+    circleRect,
     rustFieldName,
     screenIdFrom,
     uniqueWidgetId,
@@ -124,6 +127,7 @@ const PARSER_TAGS = [
     'rect',
     'line',
     'circle',
+    'triangle',
     'table',
 ];
 
@@ -247,26 +251,34 @@ test('the only widget the parser cannot name is the spacer', () => {
     equal(unaddressable.join(','), 'spacer', 'exactly one widget has no id in codegen');
 });
 
-test('the shapes that do not paint themselves are marked, so a canvas cannot lie about them', () => {
-    // Measured from `emitter.rs`: a rect and a circle become `gui.add_panel(cells[i], Style::panel())` with
-    // their own radius and stroke width only in a trailing comment, and a line becomes `gui.add_spacer`. A
-    // designer that painted the fill the user picked would be showing something the board will not draw.
+test('the shapes the board now paints reach the markup, and the ones it cannot are still marked', () => {
+    // The board's own picture comes from `emitter.rs`. Shapes the crate renders paint themselves: a rect is a
+    // filled rectangle, a line is a segment, a circle an arc, a triangle an inscribed triangle -- each from
+    // the cell rect the layout engine laid out. The spacer still draws nothing, and a button/panel surface
+    // is still the crate's own look. A designer that painted a fill the board would not draw would be lying
+    // about the one thing it exists to show.
     const draws = (tag) => widgetSpec(tag).draws ?? 'widget';
-    equal(draws('rect'), 'panel', 'a rectangle is a theme panel');
-    equal(draws('circle'), 'panel', 'so is a circle');
-    equal(draws('line'), 'nothing', 'a line draws nothing');
-    equal(draws('spacer'), 'nothing', 'neither does a spacer');
+    equal(draws('rect'), 'rectangle', 'a rectangle is painted as a rectangle on the board');
+    equal(draws('line'), 'line', 'a line is painted as a segment on the board');
+    equal(draws('circle'), 'circle', 'a circle is painted as an arc on the board');
+    equal(draws('triangle'), 'triangle', 'a triangle is painted as a triangle on the board');
+    equal(draws('spacer'), 'nothing', 'a spacer still reserves its space and draws nothing');
     equal(draws('button'), 'widget', 'a button is drawn for real');
     equal(draws('panel'), 'widget', 'and so is a panel');
 
-    for (const tag of ['rect', 'circle', 'line']) {
-        for (const property of widgetSpec(tag).props) {
+    // Every board-painted shape carries its own colours to the markup now, so its properties are not ignored.
+    const expectedDraws = { rect: 'rectangle', line: 'line', circle: 'circle', triangle: 'triangle' };
+    for (const tag of ['rect', 'line', 'circle', 'triangle']) {
+        const spec = widgetSpec(tag);
+        equal(spec.draws, expectedDraws[tag], `${tag}'s canvas drawing matches its board drawing`);
+        ok(spec.native !== true, `${tag} is no longer a designer-native widget`);
+        for (const property of spec.props) {
             ok(
-                property.ignoredByCodegen === true,
-                `${tag}.${property.name} has no effect in codegen and should say so`,
+                property.ignoredByCodegen !== true,
+                `${tag}.${property.name} reaches the board, so it is not ignored`,
             );
         }
-        ok(typeof widgetSpec(tag).note === 'string', `${tag} should carry the caveat the UI shows`);
+        ok(typeof spec.note === 'string', `${tag} carries its note`);
     }
 });
 
@@ -631,7 +643,7 @@ test('floats are written without forcing a fractional part', () => {
 test('every widget gets an explicit span, so the markup explains its own layout', () => {
     const doc = document(0, [
         widget('band', 'rect', { x: 0, y: 0, width: 320, height: 40 }),
-        widget('knob', 'circle', { x: 10, y: 10, width: 20, height: 20 }),
+        widget('knob', 'panel', { x: 10, y: 10, width: 20, height: 20 }),
     ]);
     // Widget lines are the ones indented inside the grid; the screen line carries an id too.
     const lines = emitKdl(doc)
@@ -642,6 +654,116 @@ test('every widget gets an explicit span, so the markup explains its own layout'
         contains(line, 'col_span=', `${line} should carry a span`);
         contains(line, 'row_span=', `${line} should carry a row span`);
     }
+});
+
+test('a circle is emitted to the board with its designer props mapped onto codegen attributes', () => {
+    // A circle used to be skipped on the board (it had no crate builder); now `rusty-gui-widgets` renders an
+    // arc, so the circle reaches the markup. Its catalogue props are NOT passed through by name -- the
+    // codegen parser only reads `stroke_width`/`fill`/`stroke` -- so the emitter maps them and omits `radius`,
+    // which the board derives from the cell rect.
+    const doc = document(0, [
+        widget('band', 'rect', { x: 0, y: 0, width: 320, height: 40 }),
+        widget('ring', 'circle', { x: 10, y: 10, width: 64, height: 64 }),
+        // An explicit outline colour and thickness that differ from the defaults, to prove the mapping happens.
+        widget('rim', 'circle', {
+            x: 80,
+            y: 10,
+            width: 40,
+            height: 40,
+            props: { line_color: '#00ff00', line_thickness: 3, fill: true, fill_color: '#ff0000' },
+        }),
+    ]);
+    validateDocument(doc);
+    const kdl = emitKdl(doc);
+    contains(kdl, 'rect id=', 'the rectangle is still written');
+    contains(kdl, 'circle id="ring"', 'the circle is now emitted as markup');
+    contains(kdl, 'stroke_width=1', 'line_thickness is mapped to stroke_width');
+    contains(kdl, 'stroke="#ffffff"', 'line_color is mapped to the codegen stroke attribute');
+    contains(kdl, 'circle id="rim"', 'an explicitly-styled circle is emitted');
+    contains(
+        kdl,
+        'stroke_width=3 fill="#ff0000" stroke="#00ff00"',
+        'the designer colours are mapped onto stroke/fill as colour strings the crate RGB565-ifies',
+    );
+    notContains(kdl, 'line_color=', 'the catalogue property name is not emitted');
+    notContains(kdl, 'line_thickness=', 'the catalogue property name is not emitted');
+    // `radius` is a rectangle attribute (corner radius) carried on the `band` rect above, never on a circle:
+    // the board derives the circle's size from the cell rect, so the circle line must not carry one.
+    for (const line of kdl.split('\n').filter((l) => l.includes('circle id='))) {
+        notContains(line, 'radius', 'a circle does not emit radius');
+    }
+});
+
+test('rectangle, line and triangle are emitted with the codegen attributes their crate widget reads', () => {
+    // These shapes carry catalogue property names that already match the codegen tags (radius/stroke_width/
+    // fill/stroke for a rect, stroke_width/color for a line, stroke_width/fill/stroke for a triangle), so the
+    // generic emitter writes them straight through and the forked arms turn each into `add_custom_widget`.
+    const doc = document(0, [
+        widget('box', 'rect', { x: 0, y: 0, width: 40, height: 20 }, {
+            props: { radius: 4, stroke_width: 2, fill: '#ff0000', stroke: '#00ff00' },
+        }),
+        widget('slash', 'line', { x: 0, y: 30, width: 40, height: 8 }, {
+            props: { stroke_width: 3, color: '#0000ff' },
+        }),
+        widget('pyr', 'triangle', { x: 0, y: 40, width: 40, height: 40 }, {
+            props: { stroke_width: 1, fill: '#000000', stroke: '#ffffff' },
+        }),
+    ]);
+    validateDocument(doc);
+    const kdl = emitKdl(doc);
+    contains(
+        kdl,
+        'rect id="box" radius=4 stroke_width=2 fill="#ff0000" stroke="#00ff00"',
+        'a rectangle emits the attributes its crate widget reads',
+    );
+    contains(kdl, 'line id="slash" stroke_width=3 color="#0000ff"', 'a line emits its attributes as-is');
+    contains(
+        kdl,
+        'triangle id="pyr" stroke_width=1 fill="#000000" stroke="#ffffff"',
+        'a triangle emits the attributes its crate widget reads',
+    );
+});
+
+test('a circle\'s centre, radius and bounding box round-trip through its rect', () => {
+    const square = { ...widget('dial', 'circle'), x: 10, y: 20, width: 64, height: 64 };
+    equal(circleCentre(square), { cx: 42, cy: 52 }, 'centre is the rect centre');
+    equal(circleRadius(square), 32, 'radius is half the smaller side');
+    equal(circleRect(42, 52, 32), { x: 10, y: 20, width: 64, height: 64 }, 'radius -> box is the inverse');
+
+    // A non-square box still inscribes the circle from its smaller side.
+    const oval = { ...widget('dial', 'circle'), x: 0, y: 0, width: 60, height: 40 };
+    equal(circleRadius(oval), 20, 'radius is the smaller half');
+});
+
+test('a circle is a board shape with its own appearance properties', () => {
+    const spec = widgetSpec('circle');
+    equal(spec.draws, 'circle', 'the canvas paints an arc for editing');
+    ok(spec.native !== true, 'and it is emitted to the board now, not native');
+    equal(spec.category, 'shape', 'offered in the Shapes group');
+    equal(spec.events, [], 'shapes raise no events');
+    equal(spec.props.map((p) => p.name).join(','), 'line_color,line_thickness,fill,fill_color', 'four appearance properties');
+    const props = Object.fromEntries(spec.props.map((p) => [p.name, p.defaultValue]));
+    equal(props.line_color, '#ffffff', 'default line colour');
+    equal(props.line_thickness, 1, 'default line thickness');
+    equal(props.fill, true, 'filled by default');
+    equal(props.fill_color, '#3a6ea5', 'default fill colour');
+    const shapes = toolboxGroups().find((g) => g.category === 'shape');
+    ok(shapes?.widgets.some((w) => w.tag === 'circle'), 'circle is offered in Shapes');
+});
+
+test('a dropped circle starts square with the catalogue defaults', () => {
+    // The box a drop produces is square, its centre lands where the pointer did, and its props are the
+    // catalogue's -- nothing the geometry form derives is stored until the user changes it.
+    const canvas = designCanvasSize(320, 480, 0);
+    const placed = placeWidget('circle', 50, 50, canvas);
+    equal(placed.width, placed.height, 'the bounding box is square');
+    equal(placed.width, 64, 'at the catalogue default size');
+    equal(circleCentre(placed), { cx: 82, cy: 82 }, 'centre tracks the drop point');
+    equal(
+        defaultProps('circle'),
+        { line_color: '#ffffff', line_thickness: 1, fill: true, fill_color: '#3a6ea5' },
+        'appearance defaults',
+    );
 });
 
 test('the option list becomes option children', () => {
@@ -800,6 +922,55 @@ test('a widget with children gets a block, because KDL nests by braces and not b
     ok(iconLines[iconAt].endsWith('{'), 'an icon opens a block too');
     ok(iconLines[iconAt + 1].startsWith('part '), 'with its part inside');
     equal(iconLines[iconAt + 2], '}', 'and closed');
+});
+
+test('the shapes speak the attribute names the codegen fork parses', () => {
+    // The designer's property names and the fork's are not the same vocabulary -- `line_thickness` is
+    // `stroke_width`, a circle's `fill` is a *bool* where a rectangle's is a colour. The mapping lives in
+    // `widgetLine`, and if it drifts the shape silently stops painting on the board, so it is pinned here.
+    const kdl = (tag, props) => {
+        const doc = document(0, [
+            widget('shape', tag, { x: 0, y: 0, width: 40, height: 40 }, { props: { ...defaultProps(tag), ...props } }),
+        ]);
+        return emitKdl(doc).split('\n').find((line) => line.trim().startsWith(tag));
+    };
+
+    const circle = kdl('circle', { line_thickness: 2, line_color: '#ffffff', fill: true, fill_color: '#3a6ea5' });
+    contains(circle, 'stroke_width=2', 'the circle pen width');
+    contains(circle, 'stroke="#ffffff"', 'and its colour');
+    contains(circle, 'fill="#3a6ea5"', 'the fill colour, from the separate designer colour');
+    notContains(circle, 'line_thickness=', 'the designer-only name never reaches the markup');
+    notContains(circle, 'line_color=', 'nor this one');
+    notContains(circle, 'radius=', 'and the radius is derived from the cell rect, never written');
+    // An unfilled circle hands the fork no fill colour at all, which is the same as "leave the backdrop".
+    notContains(kdl('circle', { fill: false, fill_color: '#3a6ea5' }), 'fill=', 'no fill attribute when unfilled');
+
+    const rect = kdl('rect', { radius: 4, stroke_width: 2, fill: '#ff0000', stroke: '#00ff00' });
+    contains(rect, 'radius=4', 'a rectangle keeps its corner radius');
+    contains(rect, 'stroke_width=2', 'and its pen width');
+    contains(rect, 'fill="#ff0000"', 'and its fill colour');
+
+    const line = kdl('line', { stroke_width: 2, color: '#0000ff' });
+    contains(line, 'stroke_width=2', 'a line its pen width');
+    contains(line, 'color="#0000ff"', 'and its colour');
+
+    const triangle = kdl('triangle', { stroke_width: 2, fill: '#ffff00', stroke: '#ff00ff' });
+    contains(triangle, 'stroke_width=2', 'a triangle its pen width');
+    contains(triangle, 'fill="#ffff00"', 'its fill');
+    contains(triangle, 'stroke="#ff00ff"', 'and its stroke');
+});
+
+test('every shape is offered, and each declares how it is drawn', () => {
+    // The canvas paints from `draws`; a shape without one would fall back to the panel look and quietly lie.
+    const shapes = ['rect', 'line', 'circle', 'triangle'];
+    const offered = toolboxGroups().flatMap((group) => group.widgets.map((item) => item.tag));
+    for (const tag of shapes) {
+        ok(offered.includes(tag), `${tag} must be in the Toolbox`);
+        const spec = widgetSpec(tag);
+        ok(['rectangle', 'line', 'circle', 'triangle'].includes(spec.draws), `${tag} declares its own drawing`);
+        ok(spec.native !== true, `${tag} reaches the board, so it is not native-only`);
+        ok(spec.props.every((property) => property.ignoredByCodegen !== true), `${tag}'s properties reach the board`);
+    }
 });
 
 // ---------------------------------------------------------------- built-in fonts
@@ -1010,10 +1181,9 @@ test('every property and every widget has a hover description', () => {
     }
 });
 
-test('the two properties that mean something different per widget say so', () => {
-    // A shared name would otherwise describe the wrong thing: `radius` is a corner on a rectangle and the
-    // whole shape on a circle, and `mode` selects between quite different drawings.
-    ok(propertyHelp('rect', 'radius') !== propertyHelp('circle', 'radius'), 'radius differs');
+test('the properties that mean something different per widget say so', () => {
+    // A shared name would otherwise describe the wrong thing: `mode` selects between quite different
+    // drawings, and `scale` is a glyph's growth on an icon but the model's size on a mesh.
     ok(propertyHelp('scale', 'mode') !== propertyHelp('chart', 'mode'), 'mode differs');
     ok(propertyHelp('icon', 'scale') !== propertyHelp('mesh', 'scale'), 'scale differs');
     equal(propertyHelp('label', 'text'), propertyHelp('button', 'text'), 'and a shared one is shared');
