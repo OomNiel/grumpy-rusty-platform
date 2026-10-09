@@ -103,6 +103,17 @@ footer.className = 'footer';
 body.append(toolbox, stage, properties);
 root.append(toolbar, body, footer);
 
+/**
+ * The `Open Designer` command, reached from the panel's Toolbox.
+ *
+ * The panel's own button and the Command Palette entry have to be the same thing, so this posts the action and
+ * the extension runs the command -- rather than the panel opening a panel, which would be a second
+ * implementation to keep in step with the first.
+ */
+function openDesigner(): void {
+    host.postMessage({ type: 'action', action: 'openDesigner' });
+}
+
 // ---------------------------------------------------------------- messages
 
 const view = new CanvasView(canvasElement, {
@@ -162,7 +173,7 @@ window.addEventListener('message', (event: MessageEvent<DesignerInit | DesignerR
         view.select(undefined);
         view.setState(state);
         document.title = `${message.document.screenId} - ${canvasWidth}x${canvasHeight}`;
-        renderToolbox(toolbox, (tag) => drop(tag));
+        renderToolbox(toolbox, (tag) => drop(tag), openDesigner);
         refreshProperties();
         refreshToolbar();
         status(message.loadError === undefined ? `${message.paths.document} -> ${message.paths.kdl}` : message.loadError, message.loadError !== undefined);

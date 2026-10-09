@@ -183,9 +183,19 @@ function button(label: string, className: string, onClick: () => void): HTMLButt
  * path exists because dragging is not available to everyone: a keyboard or an assistive device can only reach
  * the button, and a designer that requires a drag shuts those users out.
  */
-export function renderToolbox(root: HTMLElement, onTag: (tag: string) => void): void {
+export function renderToolbox(
+    root: HTMLElement,
+    onTag: (tag: string) => void,
+    onOpenDesigner: () => void,
+): void {
     root.replaceChildren();
     root.append(element('h2', 'panel-title', 'Toolbox'));
+
+    // At the top of the Toolbox, above the categories: the one entry that is about the designer itself rather
+    // than about a widget to place. It is the Command Palette's `Open Designer`, reached from here.
+    const open = button('Open Designer', 'toolbox-open', onOpenDesigner);
+    open.title = 'The same as Open Designer in the Command Palette';
+    root.append(open);
 
     for (const group of toolboxGroups()) {
         const node = element('div', 'toolbox-group');

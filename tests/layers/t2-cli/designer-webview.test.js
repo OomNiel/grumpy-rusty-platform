@@ -155,6 +155,19 @@ test('the designer panel boots, builds itself from the catalogue, and posts its 
         'including the description of the text property',
     );
 
+    // The toolbar's `Open Designer` button is the palette command reached from inside the panel, so clicking
+    // it posts the action the panel host turns back into that command -- one implementation, two entry points.
+    const openDesigner = all().find(
+        (element) => element.tagName === 'BUTTON' && element.textContent === 'Open Designer',
+    );
+    ok(openDesigner !== undefined, 'the toolbar offers Open Designer');
+    ok(openDesigner.title.includes('Command Palette'), 'and says it is the same as the command');
+    messages.length = 0;
+    openDesigner.emit('click');
+    const action = messages.find((message) => message.type === 'action');
+    ok(action !== undefined, 'clicking it posts an action');
+    equal(action.action, 'openDesigner', 'and the action is the one the host routes to the command');
+
     // The Toolbox is generated from the catalogue, so it holds one entry per tag that can actually be built.
     // The tags the crate's codegen cannot produce are in the catalogue but not in the toolbox.
     const toolboxItems = all().filter((element) => element.classList.contains('toolbox-item'));
