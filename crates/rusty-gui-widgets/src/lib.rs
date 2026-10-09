@@ -47,36 +47,77 @@ impl CustomWidget for Circle {
         // A pen of zero means *no outline*, which is what the designer's canvas draws and what its
         // `line_thickness` of 0 promises: only the annulus is skipped, the disc still fills.
         let pen = self.stroke_width as i32;
-        let ring = if self.stroke.is_some() && pen > 0 {
-            let inner = (r - pen).max(0) as i64;
-            Some(inner * inner)
-        } else {
-            None
-        };
+        let ring = self.stroke.filter(|_| pen > 0);
+        let inner_radius = (r - pen).max(0);
+        let inner2 = inner_radius as i64 * inner_radius as i64;
 
-        for y in (cy - r)..=(cy + r) {
-            let dy = (y - cy) as i64;
-            let dy2 = dy * dy;
-            for x in (cx - r)..=(cx + r) {
-                let dx = (x - cx) as i64;
-                let d = dx * dx + dy2;
-                if d > r2 {
-                    continue;
+        // One run per row rather than one call per pixel. A board has no framebuffer: the panel is written
+        // over SPI, where a single pixel costs an address window just as a whole row does, so `fill_rect`
+        // (which the engine streams as one `fill_solid`) paints a row for roughly the price a pixel used to
+        // be. The spans cover exactly the pixels the distance test covered -- for integer `dx`,
+        // `dx*dx + dy*dy <= r*r` holds iff `|dx| <= floor(sqrt(r*r - dy*dy))` -- and both half-widths shrink
+        // monotonically as the row moves away from the centre, so they are *walked* down rather than
+        // computed with `sqrt`, a float this no_std crate does not have.
+        let mut half = r;
+        let mut ihalf = inner_radius;
+        for dy in 0..=r {
+            while half > 0 && (half as i64 * half as i64 + (dy * dy) as i64) > r2 {
+                half -= 1;
+            }
+            while ihalf > 0 && (ihalf as i64 * ihalf as i64 + (dy * dy) as i64) > inner2 {
+                ihalf -= 1;
+            }
+            // The row above the centre, and -- except at the centre -- the matching row below it.
+            for y in row_pair(cy, dy) {
+                if let Some(c) = ring {
+                    if dy <= inner_radius {
+                        // The annulus is this row's outer span minus its inner one: two short runs.
+                        run(canvas, cx - half, y, half - ihalf, c)?;
+                        run(canvas, cx + ihalf + 1, y, half - ihalf, c)?;
+                    } else {
+                        // Nothing to leave unpainted on this row: the whole span is ring.
+                        run(canvas, cx - half, y, 2 * half + 1, c)?;
+                    }
                 }
                 if let Some(c) = self.fill {
-                    canvas.draw_pixel(x, y, c)?;
-                }
-                if let Some(inner2) = ring {
-                    if d > inner2 {
-                        if let Some(c) = self.stroke {
-                            canvas.draw_pixel(x, y, c)?;
+                    if pen > 0 {
+                        if dy <= inner_radius {
+                            run(canvas, cx - ihalf, y, 2 * ihalf + 1, c)?;
                         }
+                    } else {
+                        run(canvas, cx - half, y, 2 * half + 1, c)?;
                     }
                 }
             }
         }
         Ok(())
     }
+}
+
+/// The one or two screen rows a shape row maps onto: `dy` above the centre, and `dy` below it.
+fn row_pair(cy: i32, dy: i32) -> impl Iterator<Item = i32> {
+    core::iter::once(cy - dy).chain((dy > 0).then_some(cy + dy))
+}
+
+/// Paints one horizontal run, if it has any length. Empty and zero-length runs draw nothing, so a shape
+/// never makes a call it would immediately clip away.
+///
+/// A run is a row of the shape, and it is deliberately *one* canvas call: on a display with no framebuffer
+/// each call is an address window over SPI, so this is where a shape's cost is decided, not in how many
+/// pixels it covers.
+fn run(canvas: &mut dyn CustomCanvas, x: i32, y: i32, len: i32, color: Rgb565) -> Result<(), GuiError> {
+    if len <= 0 {
+        return Ok(());
+    }
+    canvas.fill_rect(Rect::new(x, y, len as u32, 1), color)
+}
+
+/// Paints one vertical run, if it has any length. The column counterpart of [`run`].
+fn run_vertical(canvas: &mut dyn CustomCanvas, x: i32, y: i32, len: i32, color: Rgb565) -> Result<(), GuiError> {
+    if len <= 0 {
+        return Ok(());
+    }
+    canvas.fill_rect(Rect::new(x, y, 1, len as u32), color)
 }
 
 /// A rectangle: fill paints the whole cell, stroke paints concentric borders so the
@@ -140,12 +181,17 @@ impl CustomWidget for Line {
         if thick <= 0 {
             return Ok(());
         }
+        // The line is axis-aligned by construction (it follows the longer axis of the cell), so it is one
+        // rectangle -- one address window -- rather than a per-pixel segment stamped `thick` times, which is
+        // what a slanted line would need and what this shape never is. The centring matches the stamping it
+        // replaces: offsets `-thick/2 ..= thick/2` around the cell's centre row/column.
+        let offset = thick >> 1;
         if rect.w >= rect.h {
-            let y = rect.y + (rect.h as i32 >> 1);
-            draw_thick_line(canvas, (rect.x, y), (rect.right(), y), thick, color)?;
+            let y = rect.y + (rect.h as i32 >> 1) - offset;
+            canvas.fill_rect(Rect::new(rect.x, y, rect.w, thick as u32), color)?;
         } else {
-            let x = rect.x + (rect.w as i32 >> 1);
-            draw_thick_line(canvas, (x, rect.y), (x, rect.bottom()), thick, color)?;
+            let x = rect.x + (rect.w as i32 >> 1) - offset;
+            canvas.fill_rect(Rect::new(x, rect.y, thick as u32, rect.h), color)?;
         }
         Ok(())
     }
@@ -202,9 +248,9 @@ impl CustomWidget for Triangle {
                 }
                 if count >= 2 {
                     let (lo, hi) = (xs[0].min(xs[1]), xs[0].max(xs[1]));
-                    for x in lo..=hi {
-                        canvas.draw_pixel(x, y, c)?;
-                    }
+                    // One run per scanline: the same pixels the per-pixel loop covered, for the price of one
+                    // address window instead of one per pixel.
+                    run(canvas, lo, y, hi - lo + 1, c)?;
                 }
             }
         }
@@ -261,10 +307,12 @@ fn stroke_rounded_rect(
         } else {
             let (x0, y0) = (edge.x, edge.y);
             let (x1, y1) = (edge.x + w - 1, edge.y + h - 1);
-            canvas.draw_line((x0 + r, y0), (x1 - r, y0), color)?;
-            canvas.draw_line((x0 + r, y1), (x1 - r, y1), color)?;
-            canvas.draw_line((x0, y0 + r), (x0, y1 - r), color)?;
-            canvas.draw_line((x1, y0 + r), (x1, y1 - r), color)?;
+            // The four straight runs between the corners, each one rectangle: a run is the bulk of the
+            // outline, and `draw_line` would charge an address window per pixel for it.
+            run(canvas, x0 + r, y0, x1 - r - (x0 + r) + 1, color)?;
+            run(canvas, x0 + r, y1, x1 - r - (x0 + r) + 1, color)?;
+            run_vertical(canvas, x0, y0 + r, y1 - r - (y0 + r) + 1, color)?;
+            run_vertical(canvas, x1, y0 + r, y1 - r - (y0 + r) + 1, color)?;
             // `sx`/`sy` pick the quadrant, so one symmetric walk serves all four corners.
             draw_corner_arc(canvas, x0 + r, y0 + r, r, -1, -1, color)?;
             draw_corner_arc(canvas, x1 - r, y0 + r, r, 1, -1, color)?;

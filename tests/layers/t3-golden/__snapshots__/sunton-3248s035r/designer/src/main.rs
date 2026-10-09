@@ -9,6 +9,7 @@ use core::cell::RefCell;
 use core::fmt::Write as _;
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Timer};
+use embassy_time::Instant;
 use embedded_graphics::mono_font::{ascii::{FONT_6X10, FONT_10X20}, MonoTextStyle};
 use embedded_graphics::pixelcolor::Rgb565;
 use embedded_graphics::prelude::*;
@@ -482,12 +483,20 @@ async fn main(_spawner: Spawner) -> ! {
                         // Built once, on the first calibrated frame, and logged: when this project is flashed
                         // the log is what says whether the design exists at all, since a design that fails to
                         // build panics and a design that draws says nothing on its own.
-                        let built = ui::Designer::new(width_i as u32, height_i as u32);
-                        log::info!("design: built and painted {}x{}", width_i, height_i);
-                        built
+                        ui::Designer::new(width_i as u32, height_i as u32)
                     });
                     display.clear(Rgb565::BLACK).expect("panel write failed");
+                    // Timed, because "the panel feels slow" needs a number before a change to it can be
+                    // judged. This is the *full* paint -- build, clear and every widget -- and it happens
+                    // only on a calibration frame; a touch repaints just the damaged rectangles below.
+                    let painted_at = Instant::now();
                     screen.repaint(&mut display).expect("the design did not render");
+                    log::info!(
+                        "design: painted {}x{} in {} ms (full frame)",
+                        width_i,
+                        height_i,
+                        painted_at.elapsed().as_millis()
+                    );
                 } else {
                 // The graphics test screen, back again once the calibration is done: a frame around the
                 // whole panel, four coloured corner markers, five bars and a cross through the centre.

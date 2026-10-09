@@ -4717,3 +4717,79 @@ unavailable — the fork only changed the four shape arms. The shapes themselves
 on the engine clipping a custom widget to its rect; the crate's own test asserts the over-draw (a 40-wide cell
 draws to x=40), and an isolated probe confirmed the engine clips, so nothing bleeds today. Clamping in the
 widget would make that independent of the engine, and is worth doing when the shapes next change.
+
+## 103. Shapes that draw in rows: what the panel actually charges for (2026-10-09)
+
+"How fast does the design paint?" has a different answer on a board than it does on the canvas, and the shape
+code was written as though it did not.
+
+### The cost is address windows, not pixels
+
+A generated project draws straight to the panel through mipidsi -- **there is no framebuffer** (480x320x2 bytes
+would not fit, and the panel is written over SPI). So the price of a drawing call is not the number of pixels in
+it:
+
+| call | what mipidsi does | cost |
+|---|---|---|
+| `draw_pixel` | `draw_iter` -> `set_pixel` per pixel | one address window **per pixel** (about 12 bytes of command and address, then 2 bytes of colour) |
+| `fill_rect` (opaque, no radius) | the engine's fast path -> `fill_solid` | one address window **per row**, then the pixels stream |
+
+`embedded-gui`'s own `fill_rect` takes that fast path only for a plain, opaque, untransformed rectangle, and its
+rounded fill scans the corner boxes per pixel -- so "draw a disc as a rounded rectangle with radius = w/2" is
+*not* the shortcut it looks like; it would cost about w² per-pixel calls, worse than the disc's 0.79w². The
+engine does use per-row runs for text (`render/mod.rs` batches a glyph run with `fill_rect(.., len, 1)`), which
+is where the pattern came from.
+
+The shapes were the outlier: a circle was pi·r² `draw_pixel` calls, a triangle's interior one per pixel, a line
+`thickness` per-pixel segments, and a rounded rectangle's outline four per-pixel edges.
+
+### What changed
+
+Every fill is now a **run per row** -- one `fill_rect` of one-pixel height:
+
+* disc: `2r+1` runs, where it was about `pi·r²` pixels. For r=40 that is 81 calls instead of 5027.
+* ring: two short runs per row (the annulus's left and right arcs), or the whole span where the row is all ring.
+* disc + ring: the ring's two runs and the inner span, still at most three runs a row.
+* triangle interior: one run per scanline.
+* line: the line follows an axis by construction, so it is **one** rectangle rather than `thickness` stamped
+  per-pixel segments.
+* rounded rectangle outline: the four straight runs are rectangles now; only the corner arcs are still per pixel
+  (a few points each), because the canvas has no rounded-outline primitive and the arcs are the part that is
+  small.
+
+The spans cover **exactly** the pixels the distance test covered -- for integer `dx`, `dx*dx + dy*dy <= r*r`
+holds iff `|dx| <= floor(sqrt(r*r - dy*dy))` -- and both half-widths shrink monotonically as the row moves from
+the centre, so they are walked down rather than computed with `sqrt`, a float a no_std crate does not have.
+
+### Proving it is the same picture, and fewer calls
+
+Two different questions, and the tests answer them separately.
+
+*The same picture*: `circle_fills_its_disc` and `circle_strokes_only_the_annulus` compare the drawn pixels
+against the distance test **pixel for pixel**, exactly as before -- they just read the runs (`covered()`) instead
+of a pixel list. And the host appearance check, which measures the real engine's output through `include_gui!`,
+reports byte-for-byte the same numbers as before the rewrite:
+
+    708 of 1200 (the disc), 822 of 1600 (the triangle), 320 of 320 (the line), 4800 of 4800 (the footers),
+    none of the 108500 outside them
+
+*Fewer calls*: three new tests pin the call counts, because a regression back to per-pixel drawing would look
+identical and be an order of magnitude slower -- `a_filled_disc_is_one_run_per_row` (2r+1 runs, no per-pixel
+calls at all, and the runs cover exactly the disc), `a_ring_costs_at_most_two_runs_a_row`, and
+`a_filled_triangle_is_one_run_per_row`. The crate is at 13 tests.
+
+### Telling the truth about the timing
+
+The designer's generated `main.rs` now logs the *full* paint duration rather than claiming "built and painted"
+before it painted anything:
+
+    design: painted 480x320 in N ms (full frame)      # the touch path, once per full repaint
+
+and the touch-less board logs `design drawn: WxH in N ms`. `Instant` is imported only for the Designer template,
+because an unused import is a warning in a generated project.
+
+It is worth being precise about which paint that number is. A touch does **not** repaint the frame: the loop
+calls `pointer`/`pump` and then, only if the design is dirty, `render`, which paints the damaged rectangles. The
+full paint happens on a calibration frame and after the recalibration gesture. So the number to watch after
+touching a widget is the size of the dirty rectangles it causes -- and that is exactly where the runs pay off,
+because a shape overlapping a damaged rectangle is re-rendered through the same path.

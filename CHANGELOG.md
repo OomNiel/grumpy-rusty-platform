@@ -11,6 +11,31 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.61] - 2026-10-09
+
+### Changed
+
+- **Shapes draw in rows now, which is what the panel charges for.** A generated project writes to the display
+  over SPI with no framebuffer, so a pixel costs an address window and a whole row costs about the same. The
+  shape widgets filled pixel by pixel — a circle was about `pi·r²` individual pixel writes, a triangle's
+  interior one per pixel, a line `thickness` per-pixel segments — and they now emit one `fill_rect` per row: a
+  disc is `2r+1` calls (81 instead of about 5000 for r=40), a ring at most two runs a row, a triangle one run per
+  scanline, and an axis-aligned line a single rectangle. A rounded rectangle's outline is four rectangles plus
+  its corner arcs, where it was four per-pixel edges.
+- The same pixels, exactly: the spans cover precisely what the distance test covered, and the host check that
+  measures the real engine reports the identical counts as before (`708 of 1200` for the disc, `822 of 1600` for
+  the triangle, `320 of 320` for the line, nothing outside any cell).
+
+### Added
+
+- **The full paint is now timed in the log**, so a change to rendering can be judged on the glass rather than by
+  feel: `design: painted 480x320 in N ms (full frame)` on the touch path, `design drawn: WxH in N ms` on the
+  touch-less one. (`Instant` is imported only where it is used, because an unused import is a warning in a
+  generated project.)
+- Three tests pin the *call counts* — a filled disc makes `2r+1` runs and no per-pixel calls at all, a ring at
+  most two runs a row, a filled triangle one run per scanline — because a regression to per-pixel drawing would
+  look identical and be an order of magnitude slower.
+
 ## [0.0.60] - 2026-10-09
 
 ### Added
