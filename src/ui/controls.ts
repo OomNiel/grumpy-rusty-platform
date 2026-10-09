@@ -61,6 +61,25 @@ export const NEW_PROJECT_CONTROL: ControlDescriptor = {
         + 'board first), then which template, then the project name, and writes the workspace.',
 };
 
+/**
+ * Opening the designer, at the top of the Controls section.
+ *
+ * The designer is a webview panel with a palette command (`rustyPlatform.openDesigner`) that until now had one
+ * button in the interface -- a title-bar icon on the Project view, which is not where anyone looks for a
+ * command. The Controls section is where every other action lives, so the command gets a row there too.
+ *
+ * The row runs that command rather than opening the panel itself: one implementation behind both doors, and the
+ * question it asks when no project is open is asked once.
+ */
+export const OPEN_DESIGNER_CONTROL: ControlDescriptor = {
+    command: 'rustyPlatform.openDesigner',
+    icon: 'paintcan',
+    label: 'Open Designer',
+    detail: 'the canvas, Toolbox and properties',
+    tooltip: 'Open the designer for the project that is open: the canvas, the Toolbox and the properties. The '
+        + 'same as Open Designer in the Command Palette.',
+};
+
 /** In status-bar order; the sidebar section renders the same list in the same order. */
 const ACTIONS: readonly ControlDescriptor[] = [
     {
@@ -233,11 +252,15 @@ export function visibleControls(
 ): ControlDescriptor[] {
     // The side panel shows everything the status bar shows, plus the profile overrides and the
     // packaging controls.
-    // New Project leads the section: it is the one control that makes the others possible. It is deliberately
-    // not in CONTROLS, which is also the status-bar list.
-    const controls = [NEW_PROJECT_CONTROL, ...CONTROLS, ...FLASH_PROFILE_CONTROLS, ...PACKAGE_CONTROLS].filter(
-        (control) => control.sessionOnly !== true || sessionRunning,
-    );
+    // The two that lead the section are the ones that make the others possible -- the designer draws the
+    // project, and New Project makes one -- and neither is in CONTROLS, which is also the status-bar list.
+    const controls = [
+        OPEN_DESIGNER_CONTROL,
+        NEW_PROJECT_CONTROL,
+        ...CONTROLS,
+        ...FLASH_PROFILE_CONTROLS,
+        ...PACKAGE_CONTROLS,
+    ].filter((control) => control.sessionOnly !== true || sessionRunning);
     if (family !== 'esp') {
         return controls;
     }

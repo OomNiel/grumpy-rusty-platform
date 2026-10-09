@@ -15,6 +15,7 @@ const {
     CONTROLS,
     FLASH_PROFILE_CONTROLS,
     NEW_PROJECT_CONTROL,
+    OPEN_DESIGNER_CONTROL,
     HEALTH_CONTROL,
     healthSummary,
     iconText,
@@ -254,7 +255,7 @@ test('New Project is a control, and it opens the board list the wizard already h
 
     ok(declared.has('rustyPlatform.newProject'), 'the command has to be declared');
     ok(shown.includes('rustyPlatform.newProject'), 'and reachable from the Controls section');
-    equal(shown[0], 'rustyPlatform.newProject', 'where it leads: it is the first row');
+    equal(shown[1], 'rustyPlatform.newProject', 'near the top: the designer leads, this is the second row');
     ok(!statusBar.includes('rustyPlatform.newProject'), 'but not in the status bar, which keeps its six');
     contains(NEW_PROJECT_CONTROL.tooltip, 'boards', 'the tooltip says the dialog offers the boards');
 
@@ -264,4 +265,38 @@ test('New Project is a control, and it opens the board list the wizard already h
     contains(source, 'BOARDS', 'the wizard reads the board catalog');
     contains(source, 'showQuickPick', 'and asks with a quick pick');
     contains(source, 'templatesFor', 'then offers the templates that board actually has');
+});
+
+// Asked for on 2026-10-09: the designer's command had one button in the interface, a title-bar icon on the
+// Project view, which is not where anyone looks for a command. It is the first row of the Controls section now.
+test('Open Designer is the first control, and it runs the command the palette runs', () => {
+    const fs = require('fs');
+    const path = require('path');
+    const manifest = JSON.parse(fs.readFileSync(path.join(repoRoot(), 'package.json'), 'utf8'));
+    const declared = new Map(
+        manifest.contributes.commands.map((entry) => [entry.command, entry.title]),
+    );
+    const shown = visibleControls(false).map((control) => control.command);
+    const statusBar = CONTROLS.map((control) => control.command);
+
+    equal(shown[0], 'rustyPlatform.openDesigner', 'it leads the Controls section');
+    ok(declared.has('rustyPlatform.openDesigner'), 'the command has to be declared');
+    equal(
+        declared.get('rustyPlatform.openDesigner'),
+        'Open Designer',
+        'and the row is named after it, not after something only the sidebar knows',
+    );
+    equal(OPEN_DESIGNER_CONTROL.label, 'Open Designer', 'the label the row shows is the command\'s own name');
+    ok(!statusBar.includes('rustyPlatform.openDesigner'), 'sidebar only: the status bar keeps its six rows');
+
+    // The row carries what every other control row carries, or it renders differently from its neighbours.
+    ok(OPEN_DESIGNER_CONTROL.icon.length > 0, 'an icon');
+    ok(OPEN_DESIGNER_CONTROL.detail.length > 0, 'a one-line detail for beside the label');
+    contains(OPEN_DESIGNER_CONTROL.tooltip, 'Command Palette', 'and a tooltip saying which command it is');
+
+    // It reaches the designer through the command, not by opening a panel of its own: `openDesigner` is the one
+    // entry point, and `designerCommands.ts` is where it is registered.
+    const source = fs.readFileSync(path.join(repoRoot(), 'src/commands/designerCommands.ts'), 'utf8');
+    contains(source, "registerCommand('rustyPlatform.openDesigner'", 'the command exists in one place');
+    contains(source, 'showDesigner', 'and it is what opens the panel');
 });
