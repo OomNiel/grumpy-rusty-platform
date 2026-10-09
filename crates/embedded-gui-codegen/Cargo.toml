@@ -1,0 +1,25 @@
+[package]
+name = "embedded-gui-codegen"
+version = "0.2.7"
+edition = "2024"
+# The version must match the requirement `embedded-gui-macros` has on this crate, or `[patch.crates-io]`
+# silently does not apply and the shape arms below are never used.
+rust-version = "1.87"
+description = "KDL markup parser and Rust code generator for embedded-gui (vendored fork: real shape primitives)"
+license = "MIT OR Apache-2.0"
+authors = ["Gerzain Mata <leftger@gmail.com>"]
+repository = "https://github.com/leftger/embedded-gui"
+publish = false
+
+[lib]
+name = "embedded_gui_codegen"
+path = "src/lib.rs"
+
+# Vendored from crates.io to make `circle`/`rect`/`line` emit `add_custom_widget`
+# calls against `rusty-gui-widgets` instead of `add_panel` stubs. Everything else
+# is upstream verbatim. NOTE: this is a normal library (the `include_gui!` macro
+# lives in `embedded-gui-macros`, which calls `compile_kdl_to_rust`); it is NOT a
+# proc-macro crate, so it may re-export its parser/emitter and the convenience fn.
+[dependencies]
+kdl = { version = "6.7", features = ["v1-fallback"] }
+thiserror = "2.0"

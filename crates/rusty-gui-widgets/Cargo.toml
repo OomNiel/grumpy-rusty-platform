@@ -1,0 +1,18 @@
+[package]
+name = "rusty-gui-widgets"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+
+# `embedded-gui` is the runtime the generated project already compiles against. The
+# `micromath` feature is what satisfies the crate's maths-backend requirement on
+# no_std (see src/generate/esp.ts), and `embedded-graphics` brings the geometry.
+# `add_custom_widget` / `CustomWidget` / `CustomCanvas` are available without the
+# `rich_widgets` feature, so this crate does not pull it in.
+[dependencies]
+embedded-gui = { version = "0.2.7", default-features = false, features = ["embedded-graphics", "micromath"] }
+
+# The integration test exercises the `CustomWidget` trait against this same runtime.
+[dev-dependencies]
+embedded-gui = "0.2.7"

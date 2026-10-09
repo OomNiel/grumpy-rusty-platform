@@ -168,6 +168,11 @@ designer for the active project. Either way it works on a board that carries a p
 - **A created project is loaded** — the folder the wizard writes becomes part of the window whatever the
   notification's answer is, so the Explorer, Source Control and the terminal are already pointing at it. Loading
   a folder can restart the extension host, so a Designer asked for at that moment reopens on the other side.
+- **Shapes are real on both sides** — a Circle, Rectangle, Line or Triangle is drawn as itself on the canvas and
+  rendered on the glass by the vendored `rusty-gui-widgets` crate, from the same cell rectangle, so the two cannot
+  disagree about geometry. A circle is edited by its centre and radius, which are derived from that rectangle
+  rather than stored beside it. Designer projects vendor both that crate and the `embedded-gui-codegen` fork that
+  knows how to emit its widgets, under `codegen/`, so the build stays offline and self-contained.
 - **A Label's text** — its **font** (built-in or a declared BDF) and its **text colour** both come from the
   same place, because the markup has no attribute for either: they are written into the widget's `style`
   expression, together with the base look. A Button sets its own text colour with a real attribute; most other

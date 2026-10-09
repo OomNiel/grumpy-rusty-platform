@@ -92,6 +92,28 @@ function widgetLine(
                 : undefined,
     });
 
+    // A circle is not emitted with its catalogue property names: the codegen parser reads `stroke_width`,
+    // `fill` and `stroke` (colour strings, which it RGB565-ifies itself) and derives the radius from the cell
+    // rect, so the designer props are mapped onto those names and the generic property loop below is skipped.
+    if (spec?.draws === 'circle') {
+        const thickness = widget.props.line_thickness;
+        if (!isEmpty(thickness)) {
+            parts.push(`stroke_width=${literal(thickness as number)}`);
+        }
+        // `fill` is a designer bool: only a true one hands the codegen a fill colour, and only when the
+        // designer actually named one. `radius` is never emitted -- the board derives it from the rect.
+        if (widget.props.fill === true && !isEmpty(widget.props.fill_color)) {
+            parts.push(`fill=${literal(widget.props.fill_color as string)}`);
+        }
+        const outline = widget.props.line_color;
+        if (!isEmpty(outline)) {
+            parts.push(`stroke=${literal(outline as string)}`);
+        }
+        parts.push(`col=${placement.col}`, `row=${placement.row}`);
+        parts.push(`col_span=${placement.colSpan}`, `row_span=${placement.rowSpan}`);
+        return `${indent}${parts.join(' ')}`;
+    }
+
     for (const property of spec?.props ?? []) {
         const value = widget.props[property.name];
         if (isEmpty(value)) {
@@ -169,7 +191,15 @@ export function emitKdl(document: DesignerDocument): string {
     }
 
     const canvas = designCanvasSize(document.panelWidth, document.panelHeight, document.rotation);
-    const layout = layoutDocument(document);
+    // Designer-native widgets paint themselves on the canvas but have no crate builder yet, so they are not
+    // written into the board's markup: a valid design must still build even with a circle on it. They are
+    // filtered out before the grid is laid out, so the widgets that do follow keep their placements aligned.
+    const emittable = document.widgets.filter((widget) => widgetSpec(widget.tag)?.native !== true);
+    const layout = layoutToGrid(
+        emittable.map((widget) => ({ x: widget.x, y: widget.y, width: widget.width, height: widget.height })),
+        canvas.width,
+        canvas.height,
+    );
 
     const attributes = [
         `id=${quote(document.screenId)}`,
@@ -194,8 +224,8 @@ export function emitKdl(document: DesignerDocument): string {
         `    grid cols=${quote(trackSpec(layout.cols))} rows=${quote(trackSpec(layout.rows))} gap=0 padding=0 {`,
     );
 
-    for (let index = 0; index < document.widgets.length; index += 1) {
-        const widget = document.widgets[index];
+    for (let index = 0; index < emittable.length; index += 1) {
+        const widget = emittable[index];
         const placement = layout.placements[index];
         if (widget === undefined || placement === undefined) {
             throw new Error('internal: the layout and the widget list disagree');

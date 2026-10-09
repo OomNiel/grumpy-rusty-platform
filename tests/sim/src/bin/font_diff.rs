@@ -53,21 +53,24 @@ fn main() {
     for y in 0..CANVAS_H as i32 {
         for x in 0..CANVAS_W as i32 {
             let same = with.pixel_at(x, y) == without.pixel_at(x, y);
-            let region = APPEARANCE_RECTS.iter().position(|&(rx, ry, rw, rh)| {
-                x >= rx && x < rx + rw as i32 && y >= ry && y < ry + rh as i32
-            });
-            match region {
-                Some(index) => {
+            // A pixel can be inside more than one region: widgets may overlap in a design -- the fixture puts
+            // a line across the footer -- and attributing it to the *first* match would leave the later region
+            // with no pixels at all, reported as "changed nothing". So every matching region counts it, and
+            // only a pixel in none of them counts as outside.
+            let mut matched = false;
+            for (index, &(rx, ry, rw, rh)) in APPEARANCE_RECTS.iter().enumerate() {
+                if x >= rx && x < rx + rw as i32 && y >= ry && y < ry + rh as i32 {
+                    matched = true;
                     inside[index].1 += 1;
                     if !same {
                         inside[index].0 += 1;
                     }
                 }
-                None => {
-                    outside_total += 1;
-                    if !same {
-                        outside += 1;
-                    }
+            }
+            if !matched {
+                outside_total += 1;
+                if !same {
+                    outside += 1;
                 }
             }
         }

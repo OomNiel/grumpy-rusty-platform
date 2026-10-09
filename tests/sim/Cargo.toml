@@ -18,8 +18,16 @@ embedded-gui = { version = "0.2.7", features = ["embedded-graphics"] }
 # Declared because the *generated* `ui.rs` names it, exactly as a generated project does; without it the
 # dispatch harness would fail to compile for a reason that has nothing to do with the code under test.
 embedded-graphics = "0.8"
+# The generated `ui.rs` emits `rusty_gui_widgets::Circle { .. }`; the sim links the real crate so the
+# emitted code compiles verbatim, host-side.
+rusty-gui-widgets = { path = "../../crates/rusty-gui-widgets" }
 # Host-only: the `expand` bin prints what the crate's code generator makes of our markup.
 embedded-gui-codegen = "0.2.7"
+
+# The shapes fork codegen to emit `add_custom_widget(&rusty_gui_widgets::..)` rather than `add_panel`
+# stubs. The patch is scoped to this sim crate.
+[patch.crates-io]
+embedded-gui-codegen = { path = "../../crates/embedded-gui-codegen" }
 
 [[bin]]
 name = "designer-sim"

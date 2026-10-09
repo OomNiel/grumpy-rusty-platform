@@ -14,12 +14,13 @@
  */
 
 const path = require('path');
-const { test, ok, equal, contains, compiled } = require('../../lib/harness');
+const { test, ok, notOk, equal, contains, compiled } = require('../../lib/harness');
 const { repoRoot } = require('../../lib/harness');
 const dom = require('../../lib/dom');
 
 const { starterDocument } = compiled('designer/generate');
 const { KDL_WIDGETS } = compiled('designer/catalog');
+const { createDocument, defaultProps } = compiled('designer/model');
 
 const BUNDLE = path.join(repoRoot(), 'out', 'webview', 'designer.js');
 
@@ -352,4 +353,126 @@ test('the designer panel boots, builds itself from the catalogue, and posts its 
     ok(afterDuplicate !== undefined, 'duplicating posts a change');
     equal(afterDuplicate.document.widgets.length, before + 1, 'the design gained exactly one widget');
     equal(afterDuplicate.document.widgets[before].id, `${label.id}_2`, 'a copy of the one that was clicked');
+});
+
+test('a circle tool renders as an arc and edits through its own fields', () => {
+    const { root, messages, window } = dom.install();
+    // The bundle is cached by Node and binds its listeners to the window it first sees, so clear it so this
+    // case boots a fresh panel against this stub.
+    delete require.cache[require.resolve(BUNDLE)];
+    require(BUNDLE);
+
+    const doc = createDocument({
+        boardId: 'sunton-035r',
+        panelWidth: 320,
+        panelHeight: 480,
+        rotation: 3,
+        screenId: 'Panel',
+    });
+    doc.widgets = [
+        { id: 'dial', tag: 'circle', x: 100, y: 100, width: 64, height: 64, props: defaultProps('circle'), events: [] },
+    ];
+
+    const canvas = { width: 480, height: 320 };
+    window.emit('message', {
+        data: {
+            type: 'init',
+            document: doc,
+            canvas,
+            paths: { document: 'designer/panel.ui.json', kdl: 'src/ui.kdl' },
+            touchBoard: false,
+            touchEnabled: false,
+        },
+    });
+
+    const all = () => root.descendants();
+    const canvasElement = all().find((element) => element.tagName === 'CANVAS');
+    ok(
+        canvasElement.context.calls.some((call) => call.method === 'arc'),
+        'the circle is painted with an arc call, not a rectangle',
+    );
+
+    // Pressing the circle selects it and rebuilds the property panel around the circle's own fields: centre and
+    // radius geometry, then the four appearance properties -- and not the rectangle's X/Y/Width/Height.
+    canvasElement.emit('pointerdown', { clientX: 132, clientY: 132, pointerId: 1 });
+    const labels = all()
+        .filter((element) => element.classList.contains('field-label'))
+        .map((element) => String(element.textContent));
+    for (const name of ['Centre X', 'Centre Y', 'Radius', 'Line colour', 'Line thickness', 'Fill', 'Fill colour']) {
+        ok(labels.includes(name), `the property panel offers ${name}`);
+    }
+    for (const name of ['X', 'Y', 'Width', 'Height']) {
+        notOk(labels.includes(name), `the property panel does not offer ${name} for a circle`);
+    }
+});
+
+test('rectangle, line and triangle paint their own primitive and edit through their field sheets', () => {
+    const { root, messages, window } = dom.install();
+    // The bundle binds its listeners to the window it first sees, so clear it so this case boots a fresh panel.
+    delete require.cache[require.resolve(BUNDLE)];
+    require(BUNDLE);
+
+    const doc = createDocument({
+        boardId: 'sunton-035r',
+        panelWidth: 320,
+        panelHeight: 480,
+        rotation: 3,
+        screenId: 'Panel',
+    });
+    doc.widgets = [
+        { id: 'box', tag: 'rect', x: 100, y: 100, width: 64, height: 64, props: defaultProps('rect'), events: [] },
+        { id: 'slash', tag: 'line', x: 200, y: 100, width: 64, height: 8, props: defaultProps('line'), events: [] },
+        { id: 'pyr', tag: 'triangle', x: 300, y: 100, width: 48, height: 48, props: defaultProps('triangle'), events: [] },
+    ];
+
+    const canvas = { width: 480, height: 320 };
+    window.emit('message', {
+        data: {
+            type: 'init',
+            document: doc,
+            canvas,
+            paths: { document: 'designer/panel.ui.json', kdl: 'src/ui.kdl' },
+            touchBoard: false,
+            touchEnabled: false,
+        },
+    });
+
+    const all = () => root.descendants();
+    const canvasElement = all().find((element) => element.tagName === 'CANVAS');
+    const calls = () => canvasElement.context.calls;
+    // Each shape paints a call no other widget makes: a `rect` (radius-0 path) for the rectangle, a
+    // `closePath` for the triangle; guides and the background fill with `fillRect` and stroke with `stroke`,
+    // so none of those can stand in for a shape.
+    ok(calls().some((call) => call.method === 'rect'), 'the rectangle is painted with a rect call');
+    ok(calls().some((call) => call.method === 'closePath'), 'the triangle is painted as a closed path');
+    ok(calls().some((call) => call.method === 'lineTo'), 'the line is painted as a segment');
+    ok(!calls().some((call) => call.method === 'arc'), 'no circle is present, so no arc is painted');
+
+    // Pressing each shape selects it and rebuilds the panel around that shape's own fields. A rectangle, line
+    // and triangle all keep the ordinary geometry sheet (X/Y/Width/Height) and swap in their own colours and
+    // corners -- never the circle's Centre/Radius controls.
+    const labels = () =>
+        all()
+            .filter((element) => element.classList.contains('field-label'))
+            .map((element) => String(element.textContent));
+    const select = (x, y, label) => {
+        canvasElement.emit('pointerdown', { clientX: x, clientY: y, pointerId: 1 });
+        const seen = labels();
+        ok(seen.includes(label), `the panel offers ${label} for the selected shape`);
+        for (const name of ['Centre X', 'Centre Y', 'Radius']) {
+            notOk(seen.includes(name), `the panel does not offer ${name} for a non-circle shape`);
+        }
+    };
+    select(132, 132, 'Corner radius');
+    for (const name of ['Stroke width', 'Fill', 'Stroke', 'X', 'Y', 'Width', 'Height']) {
+        ok(labels().includes(name), `the rectangle sheet offers ${name}`);
+    }
+    select(232, 104, 'Colour');
+    for (const name of ['Stroke width', 'Colour', 'X', 'Y', 'Width', 'Height']) {
+        ok(labels().includes(name), `the line sheet offers ${name}`);
+    }
+    select(324, 124, 'Stroke');
+    for (const name of ['Stroke width', 'Fill', 'Stroke', 'X', 'Y', 'Width', 'Height']) {
+        ok(labels().includes(name), `the triangle sheet offers ${name}`);
+    }
 });

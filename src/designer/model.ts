@@ -281,6 +281,36 @@ export function placeWidget(
     };
 }
 
+/**
+ * The circle a shape widget stands for, derived from its bounding rect.
+ *
+ * A designer-native circle is carried as an ordinary rect -- its bounding box -- so every existing rule for
+ * moving, resizing, snapping and hitting it still applies. The centre and radius below are only a different
+ * view of that same rectangle, offered to the property panel and used to paint the arc. Keeping the rect as
+ * the single source of truth is what avoids a second pair of fields that a drag could leave out of step.
+ */
+export function circleCentre(widget: DesignerWidget): { cx: number; cy: number } {
+    return {
+        cx: widget.x + Math.floor(widget.width / 2),
+        cy: widget.y + Math.floor(widget.height / 2),
+    };
+}
+
+/** The radius of the circle inscribed in a widget's bounding box, in whole pixels. */
+export function circleRadius(widget: DesignerWidget): number {
+    return Math.floor(Math.min(widget.width, widget.height) / 2);
+}
+
+/** The square bounding box a circle of the given centre and radius would occupy. */
+export function circleRect(
+    centreX: number,
+    centreY: number,
+    radius: number,
+): { x: number; y: number; width: number; height: number } {
+    const r = Math.max(0, radius);
+    return { x: centreX - r, y: centreY - r, width: r * 2, height: r * 2 };
+}
+
 function isRustIdentifier(value: string): boolean {
     return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
 }

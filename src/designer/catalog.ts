@@ -204,9 +204,22 @@ export interface KdlWidgetSpec {
      *
      * `widget` is the honest case: the parser's properties reach the emitted widget. `panel` means the
      * generator emits a theme-styled panel regardless of the shape's own colours. `nothing` means the tag
-     * reserves its space and paints none of it. Measured from `emitter.rs`, not assumed.
+     * reserves its space and paints none of it. `circle`/`rectangle`/`line`/`triangle` mean the designer
+     * paints the shape on the canvas for editing *and* the board renders the same primitive from the cell
+     * rect (the designer prop names are mapped onto the codegen's `fill`/`stroke`/`stroke_width` attributes).
+     * Measured from `emitter.rs`, not assumed.
      */
-    draws?: 'widget' | 'panel' | 'nothing';
+    draws?: 'widget' | 'panel' | 'nothing' | 'circle' | 'rectangle' | 'line' | 'triangle';
+    /**
+     * True when this is a designer-native widget: the canvas paints it, but it is not emitted as KDL for the
+     * crate, because there is no crate builder for it yet. The generated project still builds; the widget
+     * simply does not reach the board until a widgets crate provides one.
+     *
+     * A `circle`, `rectangle`, `line` and `triangle` are no longer native: the `rusty-gui-widgets` crate
+     * renders them from the cell rect, so the designer both paints them for editing and emits markup the
+     * board draws. The flag now covers widgets that genuinely have no crate rendering at all.
+     */
+    native?: boolean;
     /** A caveat the properties panel shows, for tags whose behaviour is not obvious from their properties. */
     note?: string;
     /**
@@ -702,13 +715,15 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         label: 'Rectangle',
         category: 'shape',
         defaultSize: { width: 96, height: 48 },
-        draws: 'panel',
-        note: 'Drawn as a theme-styled panel: the generator ignores this shape\'s own fill, stroke and corners.',
+        // Board-side now: `rusty-gui-widgets` renders a filled/stroked rectangle from the cell rect, so the
+        // shape's own colours and corners reach the board the same way they do on the canvas.
+        draws: 'rectangle',
+        note: 'Drawn as a rectangle from its own fill, stroke and corner radius -- the same on the canvas and on the board.',
         props: [
-            { name: 'radius', kind: 'int', label: 'Corner radius', defaultValue: 0, min: 0, max: 64, ignoredByCodegen: true },
-            { name: 'stroke_width', kind: 'int', label: 'Stroke width', defaultValue: 0, min: 0, max: 32, ignoredByCodegen: true },
-            { name: 'fill', kind: 'color', label: 'Fill', defaultValue: '#3a6ea5', ignoredByCodegen: true },
-            { name: 'stroke', kind: 'color', label: 'Stroke', defaultValue: '#ffffff', ignoredByCodegen: true },
+            { name: 'radius', kind: 'int', label: 'Corner radius', defaultValue: 0, min: 0, max: 64 },
+            { name: 'stroke_width', kind: 'int', label: 'Stroke width', defaultValue: 0, min: 0, max: 32 },
+            { name: 'fill', kind: 'color', label: 'Fill', defaultValue: '#3a6ea5' },
+            { name: 'stroke', kind: 'color', label: 'Stroke', defaultValue: '#ffffff' },
         ],
         events: [],
     },
@@ -718,11 +733,13 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         label: 'Line',
         category: 'shape',
         defaultSize: { width: 96, height: 8 },
-        draws: 'nothing',
-        note: 'The generator emits a spacer: a line reserves its space and draws none of it.',
+        // Board-side now: the codegen fork emits `add_custom_widget(rusty_gui_widgets::Line)`, which the
+        // board orients along the cell's longer axis -- so the line is painted, not a spacer.
+        draws: 'line',
+        note: 'Drawn as a line along the longer axis of its cell, in its own colour and thickness.',
         props: [
-            { name: 'stroke_width', kind: 'int', label: 'Stroke width', defaultValue: 1, min: 1, max: 32, ignoredByCodegen: true },
-            { name: 'color', kind: 'color', label: 'Colour', defaultValue: '#ffffff', ignoredByCodegen: true },
+            { name: 'stroke_width', kind: 'int', label: 'Stroke width', defaultValue: 1, min: 1, max: 32 },
+            { name: 'color', kind: 'color', label: 'Colour', defaultValue: '#ffffff' },
         ],
         events: [],
     },
@@ -732,13 +749,39 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         label: 'Circle',
         category: 'shape',
         defaultSize: { width: 64, height: 64 },
-        draws: 'panel',
-        note: 'Drawn as a theme-styled panel: the generator ignores this shape\'s own fill, stroke and radius.',
+        // Designer-native: embedded-gui-codegen 0.2.7 has no circle builder -- it emits add_panel, which is a
+        // rectangle -- so a markup circle would be a square on the board. The canvas paints the arc itself
+        // from the bounding rect, and `native` keeps it out of the emitted KDL until a widgets crate renders
+        // it on the board. The shape's own colours reach the canvas, not the (panel-painting) generator.
+        draws: 'circle',
+        // Board-side now: `rusty-gui-widgets` renders a real arc from the cell rect, so the circle is written
+        // into the markup like every other shape. The canvas still paints its own arc for editing, but it no
+        // longer has to hide behind `native` to keep a design building.
+        note:
+            'Drawn by the designer as a circle; the board renders a real arc from the same rect, once a ' +
+            'widgets crate provides one. Its outline and fill colours reach the board through stroke/fill.',
         props: [
-            { name: 'radius', kind: 'int', label: 'Radius', defaultValue: 32, min: 1, max: 240, ignoredByCodegen: true },
-            { name: 'stroke_width', kind: 'int', label: 'Stroke width', defaultValue: 0, min: 0, max: 32, ignoredByCodegen: true },
-            { name: 'fill', kind: 'color', label: 'Fill', defaultValue: '#3a6ea5', ignoredByCodegen: true },
-            { name: 'stroke', kind: 'color', label: 'Stroke', defaultValue: '#ffffff', ignoredByCodegen: true },
+            { name: 'line_color', kind: 'color', label: 'Line colour', defaultValue: '#ffffff' },
+            { name: 'line_thickness', kind: 'int', label: 'Line thickness', defaultValue: 1, min: 0, max: 32 },
+            { name: 'fill', kind: 'bool', label: 'Fill', defaultValue: true },
+            { name: 'fill_color', kind: 'color', label: 'Fill colour', defaultValue: '#3a6ea5' },
+        ],
+        events: [],
+    },
+    {
+        tag: 'triangle',
+        aliases: [],
+        label: 'Triangle',
+        category: 'shape',
+        defaultSize: { width: 64, height: 56 },
+        // Board-side: `rusty-gui-widgets` renders a triangle inscribed in the cell rect (apex at the top
+        // centre, base on the bottom edge); the canvas paints the same one for editing.
+        draws: 'triangle',
+        note: 'Drawn as a triangle inscribed in its rectangle, from the cell rect.',
+        props: [
+            { name: 'stroke_width', kind: 'int', label: 'Stroke width', defaultValue: 1, min: 0, max: 32 },
+            { name: 'fill', kind: 'color', label: 'Fill', defaultValue: '#3a6ea5' },
+            { name: 'stroke', kind: 'color', label: 'Stroke', defaultValue: '#ffffff' },
         ],
         events: [],
     },
@@ -889,8 +932,11 @@ const TAG_PROPERTY_HELP: Record<string, string> = {
     'chart.mode': 'A line through the points, or bars',
     'image.mode': 'How the pixels are interpreted, e.g. colour or monochrome',
     'rect.radius': 'Corner radius in pixels',
-    'circle.radius': 'Radius in pixels',
     'icon.scale': 'How much to enlarge the glyph',
+    'circle.line_color': 'Colour of the circle\'s outline',
+    'circle.line_thickness': 'Width of the outline, in pixels',
+    'circle.fill': 'Whether the circle is filled',
+    'circle.fill_color': 'Colour inside the circle',
     'mesh.scale': 'Size of the model',
     'icon.align': 'Where the glyph sits inside the box',
     'mesh.color': 'Base colour of the model',
@@ -925,9 +971,10 @@ const WIDGET_HELP: Record<string, string> = {
     icon: 'A glyph drawn from one or more parts',
     mesh: 'A 3D model, which your own code draws',
     spacer: 'Reserves space and draws nothing at all',
-    rect: 'A theme-styled panel: its own colours are ignored by the generator',
-    line: 'Reserves space and draws nothing at all',
-    circle: 'A theme-styled panel: its own colours are ignored by the generator',
+    rect: 'A rectangle of its own fill and stroke, painted by the crate from the cell rect',
+    line: 'A line segment along the cell, in its own colour and thickness',
+    circle: 'A circle the crate paints from the cell rect',
+    triangle: 'A triangle the crate paints from the cell rect',
     path: 'A vector outline built from SVG path data',
 };
 
