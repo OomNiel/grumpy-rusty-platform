@@ -19,10 +19,17 @@
  * These colours are the designer's own approximation of the crate's dark theme so the canvas reads like the
  * board. They are not read from the crate: the point is what shapes are where, not an exact match of a
  * palette that the board decides for itself.
+ *
+ * The widgets the crate paints for real -- label, button, panel, toggle, checkbox, slider, progress,
+ * dropdown, roller, table, dialog and carousel -- are handed to `preview.ts`, which draws the crate's own
+ * arithmetic and colours (from `tests/tmp/preview-spec.md`) rather than this palette. The palette still
+ * dresses the editor-only chrome, the shapes that are the designer's own, and the fallback for everything
+ * else, so what is design and what is the tool stay visibly different.
  */
 
 import { widgetSpec } from '../../src/designer/catalog';
 import { type DesignerWidget, circleCentre, circleRadius } from '../../src/designer/model';
+import { previewWidget } from './preview';
 
 export interface Palette {
     /** The screen behind everything. */
@@ -245,11 +252,22 @@ export function drawWidget(
     const spec = widgetSpec(widget.tag);
     const draws = spec?.draws ?? 'widget';
     const { x, y, width, height } = widget;
+    // True when the crate's own paint was drawn, so the generic fallback's type-name text is skipped.
+    let previewed = false;
 
     if (draws === 'nothing') {
         // A spacer reserves its space and paints none of it: show the space, mark it as empty.
         placeholderOutline(context, x, y, width, height, palette);
     } else {
+        // The engine clips each widget to its own cell before painting it: `Block::render` does not clip
+        // itself and the caller's clip applies (preview-spec.md §3.1, §3.3). So a soft shadow or overflowing
+        // text is confined to the widget on the glass, and the canvas must confine it too or it shows
+        // something the board does not. This is the engine's clip, not a cosmetic choice.
+        context.save();
+        context.beginPath();
+        context.rect(x, y, width, height);
+        context.clip();
+
         if (draws === 'circle') {
             paintCircle(context, widget, palette);
         } else if (draws === 'rectangle') {
@@ -259,28 +277,28 @@ export function drawWidget(
         } else if (draws === 'triangle') {
             paintTriangle(context, widget, palette);
         } else {
-            const radius = typeof widget.props.corner_radius === 'number' ? widget.props.corner_radius : 2;
-            // A theme panel is what the engine paints for the shapes; everything else is a widget surface.
-            const background = draws === 'panel' ? palette.themePanel : palette.widget;
-            context.fillStyle = background;
-            roundedRect(context, x, y, width, height, radius);
-            context.fill();
-            context.strokeStyle = palette.border;
-            context.lineWidth = 1;
-            context.stroke();
+            previewed = previewWidget(context, widget, {});
+            if (!previewed) {
+                const radius = typeof widget.props.corner_radius === 'number' ? widget.props.corner_radius : 2;
+                // A theme panel is what the engine paints for the shapes; everything else is a widget surface.
+                const background = draws === 'panel' ? palette.themePanel : palette.widget;
+                context.fillStyle = background;
+                roundedRect(context, x, y, width, height, radius);
+                context.fill();
+                context.strokeStyle = palette.border;
+                context.lineWidth = 1;
+                context.stroke();
+            }
         }
 
-        if (width > 16 && height > 12) {
-            context.save();
-            context.beginPath();
-            context.rect(x, y, width, height);
-            context.clip();
+        if (!previewed && width > 16 && height > 12) {
             context.fillStyle = palette.text;
             context.font = '11px sans-serif';
             context.textBaseline = 'middle';
             context.fillText(labelOf(widget), x + LABEL_INSET + 2, y + height / 2, width - 8);
-            context.restore();
         }
+
+        context.restore();
     }
 
     // The widget's name, small, in the corner: the fastest way to find the one the property panel is showing.
