@@ -856,9 +856,19 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         aliases: ['bitmap'],
         label: 'Image',
         category: 'media',
+        note:
+            'A bitmap. A file in the project is embedded in the flash at build time; a `sd:` name such as ' +
+            '`sd:PIC1.BMP` is read from the card the firmware mounts, a row at a time as it draws, so a ' +
+            'full-screen image costs a row of RAM rather than a copy of the file.',
         defaultSize: { width: 96, height: 96 },
         props: [
-            { name: 'src', kind: 'asset', label: 'Asset', defaultValue: '', required: true },
+            {
+                name: 'src',
+                kind: 'asset',
+                label: 'Asset',
+                defaultValue: '',
+                required: true,
+            },
             {
                 name: 'fit',
                 kind: 'enum',
@@ -1209,7 +1219,9 @@ const TAG_PROPERTY_HELP: Record<string, string> = {
     'plotter.head': 'Which value is the newest one; the older ones wrap around behind it',
     'scale.start_angle': 'Degrees clockwise from the right, so 135 starts at the lower left and 270 at the top',
     'scale.mode': 'A dial, or a bar that runs down or across',
-    'chart.mode': 'A line through the points, or bars',
+    'image.src':
+        'A file in the project, which is embedded in the flash at build time, or `sd:NAME.BMP` to read it from ' +
+        'the SD card as it is drawn (the card is read with short 8.3 names, from its root)',
     'image.mode': 'How the pixels are interpreted, e.g. colour or monochrome',
     'rect.radius': 'Corner radius in pixels',
     'icon.scale': 'How much to enlarge the glyph',

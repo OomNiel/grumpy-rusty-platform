@@ -618,6 +618,18 @@ pub fn generate_rust_code(screen: &ScreenDef) -> String {
                     var_name, idx
                 );
             }
+            WidgetDef::SdImage { path, fit, .. } => {
+                // The pixels are on the card, so there is nothing to embed and no asset to replace: this is a
+                // custom widget over `rusty_gui_widgets::BmpImage`, which reads the file row by row as it draws.
+                // `crate::sd::with_file` is the function the project's own `src/sd.rs` provides; a project
+                // without one fails to compile, which is the honest answer for a board with no card wired.
+                let stretch = fit == "stretch";
+                let fields = format!(
+                    "path: \"{}\", stretch: {}, with_file: crate::sd::with_file",
+                    path, stretch
+                );
+                emit_custom_widget(&mut out, &var_name, idx, "BmpImage", &fields);
+            }
             WidgetDef::VectorPath {
                 stroke_width,
                 colour,

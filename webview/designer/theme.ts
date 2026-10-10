@@ -346,6 +346,16 @@ export function drawWidget(
             context.textBaseline = 'bottom';
             context.fillText('needs an asset', x + width / 2, y + height - 2);
             context.restore();
+        } else if (source.startsWith('sd:')) {
+            // The pixels are on a card the canvas cannot read, so it says what the widget is instead of drawing
+            // a picture that would be this machine's guess. The board reads the file; the canvas names it.
+            context.save();
+            context.fillStyle = palette.placeholder;
+            context.font = '9px sans-serif';
+            context.textAlign = 'center';
+            context.textBaseline = 'bottom';
+            context.fillText(`SD card: ${source.slice('sd:'.length)}`, x + width / 2, y + height - 2, width - 8);
+            context.restore();
         }
     }
 }

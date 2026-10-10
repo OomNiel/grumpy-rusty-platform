@@ -688,6 +688,17 @@ pub fn serialize_kdl_screen(screen: &ScreenDef) -> String {
                     id_attr, style_attr, span_attrs, p.col, p.row
                 );
             }
+            WidgetDef::SdImage { id, path, fit } => {
+                let id_attr = id
+                    .as_ref()
+                    .map(|s| format!(" id=\"{}\"", s))
+                    .unwrap_or_default();
+                let _ = writeln!(
+                    &mut out,
+                    "        image{} src=\"sd:{}\" fit=\"{}\"{} col={} row={}",
+                    id_attr, path, fit, span_attrs, p.col, p.row
+                );
+            }
             WidgetDef::Image {
                 id,
                 source,

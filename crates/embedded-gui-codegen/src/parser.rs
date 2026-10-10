@@ -725,6 +725,21 @@ pub fn parse_widget(node: &KdlNode) -> Result<(GridPlacementDef, WidgetDef), Cod
                 .to_string();
             let mode = get_string_prop(node, "mode").unwrap_or("color").to_string();
             let tint = get_string_prop(node, "tint").map(str::to_string);
+            // `sd:` is the design saying "this file is on the card the firmware mounts", which is a different
+            // thing from an asset: it must not be looked for on the build machine, and the pixels arrive at
+            // runtime. Everything after the prefix is the path the card driver is given.
+            if let Some(path) = source.strip_prefix("sd:") {
+                return Ok((
+                    placement,
+                    WidgetDef::SdImage {
+                        id,
+                        // The driver opens the root directory and then a bare short name, so `sd:/PIC1.BMP` and
+                        // `sd:PIC1.BMP` are the same file and neither is written with a leading slash.
+                        path: path.trim_start_matches('/').to_string(),
+                        fit,
+                    },
+                ));
+            }
             WidgetDef::Image {
                 id,
                 source,

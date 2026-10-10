@@ -34,6 +34,9 @@ use esp_backtrace as _;
 mod ui;
 mod ui_handlers;
 
+// The card a design's `sd:/NAME.BMP` images are read from.
+mod sd;
+
 /// This project draws the design, so the diagnostic screen the touch template can paint is folded
 /// away at compile time. Kept rather than deleted: it is what to fall back on when a panel comes up wrong.
 const DESIGNER: bool = true;
@@ -72,6 +75,16 @@ async fn main(_spawner: Spawner) -> ! {
     log::info!("board: ESP32-035 LCD Panel (ESP32), 4 MB flash");
 
 
+    // Mount the card before the panel and the design: a design can name `sd:/...` images, and the first
+    // frame should already have somewhere to read them from. A missing card is logged and leaves those
+    // images to draw nothing rather than stopping the firmware.
+    sd::init(
+        peripherals.SPI3,
+        peripherals.GPIO5, // card chip select
+        peripherals.GPIO18, // card SPI clock
+        peripherals.GPIO23, // card SPI data out
+        peripherals.GPIO19, // card SPI data in
+    );
     // Backlight first, and note the level: this board switches the transistor on with a HIGH level.
     let _backlight = Output::new(
         peripherals.GPIO27,

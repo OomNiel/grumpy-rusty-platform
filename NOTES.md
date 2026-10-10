@@ -5245,3 +5245,89 @@ across 27 measured regions and none of the 68312 outside them**. `--touch` still
 the same design as everything else.
 
 The `unavailable` channel in the catalogue is now empty: the Toolbox offers the whole catalogue.
+
+## 111. An image from the card instead of from the flash (2026-10-09)
+
+"*The Image widget currently gets it's content from the assets folder so it gets embedded in the flash memory. I
+also need it to be able to load content from the on-board SD card.*"
+
+Embedding is a build-time decision that cannot be revisited on the device: the macro reads the file on the
+machine that compiles the project, decodes it there, and writes the pixels into the firmware as a static array.
+A card file does not exist on that machine at all. So the two are not the same widget with a different path --
+one is a table in flash, the other is a file read while the glass is being painted.
+
+### The three answers that shaped it
+
+Asked before building: **BMP** on the card (every editor writes one, and the device can parse it without a
+decoder), the **driver generated** for boards whose catalog entry declares a card (the CYD, on its own SPI bus:
+CS 5, sclk 18, mosi 23, miso 19), and **streaming rows** rather than a whole-image buffer (a full-screen
+320x480 image would want 300 KB of RAM, which the ESP32 does not have to spare).
+
+### The widget
+
+`rusty_gui_widgets::BmpImage`, in the crate that already draws the shapes, reads the file as it draws:
+
+* **Uncompressed BMP**: 24- and 32-bit `BI_RGB`, and 16-bit with either the 5-5-5 layout `BI_RGB` means or the
+  5-6-5 one a bitfield header declares. Both row orders, because a BMP's height is signed and the sign is what
+  says which end the first row is.
+* **One pass, one row of memory.** Rows are visited in the order the *file* holds them, which is the only order
+  a stream can be read in, so the source row a destination row needs is always the same as the last one or
+  later; a single cached row is enough for the enlarged case where one source row feeds several destination
+  rows. There is no seeking backwards and no whole-image buffer.
+* **Runs, not pixels.** A destination row is painted as one `fill_rect` per run of the same colour, so a
+  photograph costs a few address windows per row rather than one per pixel.
+* **A pixel can straddle a read.** A row is longer than the read buffer for any real image, and the first
+  version of this lost the bytes that fell on a boundary: a 64-pixel row came out right for 42 pixels and
+  shifted after that. The carry is what fixes it, and the test that caught it is still there.
+
+### How it reaches a card without this crate knowing what a card is
+
+The crate links no filesystem and no driver. It has a `ByteSource` trait and one injected function:
+
+```rust
+pub type WithFile = fn(&str, &mut dyn FnMut(&mut dyn ByteSource) -> Result<(), ()>) -> Result<(), ()>;
+```
+
+A **callback** rather than open/read/close because the reader in a generated project borrows the mounted volume
+for as long as the file is open, and a borrowed file cannot be stored between calls; the widget runs its whole
+read inside that one call, which is what makes the borrow legal with no global state in this crate. The project
+supplies `crate::sd::with_file` from its own generated `src/sd.rs`, which owns the bus, the mount and the file
+handle -- and which exists only for boards with a card socket. `embedded-sdmmc` 0.8's **raw handles** are what
+make that possible: they are plain values, not borrows of the volume, so the mount can live in a static.
+
+### The generated module, and what esp-hal forced
+
+`src/sd.rs` is generated for Designer projects on boards with a socket (the CYD: its own SPI bus on CS 5,
+sclk 18, mosi 23, miso 19, which main.rs passes to `sd::init` before the panel comes up). It holds the mounted
+volume in a `critical_section::Mutex<RefCell<Option<(VolumeManager<..>, RawVolume)>>>` and hands the widget a
+`CardFile` that reads through the raw handle.
+
+Three things were found by **compiling a generated project**, not by reading documentation:
+
+* `Output::new` needs an `OutputPin`, not a `PeripheralOutput`: the chip select is a plain output pin while the
+  three bus lines are the interconnect traits, and the two live in different modules of `esp-hal`.
+* `Delay::new()` takes no argument, and the device and the card each want one, so `init` builds them.
+* The card gets **SPI3**, because `Spi` owns its peripheral and the panel owns SPI2.
+
+The proof for this half is a real cross-compile, because nothing on the host can exercise it: a Designer project
+generated for the CYD, with the three vendored crates copied in, `cargo check` under the ESP toolchain for
+`xtensa-esp32-none-elf` -- `Finished dev profile`, exit 0, artifacts under `tests/out/sd-project/`. The T-QT
+snapshots are byte-identical before and after: no module, no dependency, no `init` call.
+
+### What the designer says about it
+
+A design names a card file with a prefix: `src="sd:PIC1.BMP"`. The path is checked against what the card can
+actually be read with -- a **short 8.3 name in the root**, because a generated project has no allocator for long
+names and opens no subdirectories -- and two things the design cannot state are reported in the panel: a board
+with no socket, and a project with no `src/sd.rs` (which would fail to compile, since the generated markup names
+it). The canvas **names the file** rather than drawing a picture it cannot read, which is also how a typo is
+noticed before a build.
+
+Two consequences of the build-time pipeline being upstream's code, worth recording because they are not
+obvious: an `sd:` source had to become its **own AST variant**, since the `include_gui!` macro reads every
+`Image`'s file off the build machine and refuses paths outside the project -- the macro's matches have catch-alls,
+so a new variant is simply skipped; and the project's **asset check** had to learn that a card path is not a
+missing file, or every card image would have been reported as absent. `embedded-sdmmc` 0.8 turned out to have no
+`alloc` feature at all and to be short-name-only, which is what the designer's 8.3 check is mirroring; its
+ergonomic `File`/`Directory` types borrow the volume manager and could not be kept in a static, which is why the
+**raw handles** are what makes a mount that survives between draws possible at all.

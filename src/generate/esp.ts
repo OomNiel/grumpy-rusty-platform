@@ -13,6 +13,7 @@
 
 import type { AppTemplate, AppTemplateInfo, GeneratedFile } from './files';
 import { crateNameFrom } from './naming';
+import { DESIGNER_SD_PERIPHERAL, emitSdRs } from './esp-sd';
 import { BoardChoices, displayFor } from '../boards/esp';
 import { EspBoardProfile, EspDisplay, EspTouch } from '../boards/types';
 import { LCD_ROTATION_LABELS, LcdRotation, asLcdRotation, templateUsesPanel } from '../display/rotation';
@@ -48,6 +49,8 @@ export const ESP_CRATE_VERSIONS = {
     espStorage: '0.10.0',
     /** SD cards over SPI, with a FAT filesystem on top. */
     embeddedSdmmc: '0.8.2',
+    /** The no-interrupt lock around the mounted card in the Designer template's `sd.rs`. */
+    criticalSection: '1.2.0',
     embeddedGraphics: '0.8',
     /** The Bluetooth host stack on top of esp-radio's HCI controller (advertising + GATT). */
     troubleHost: '0.7.0',
@@ -251,6 +254,12 @@ export function generateEspProjectFiles(options: EspGenerateOptions): GeneratedF
             { path: DESIGNER_FILES.manifest, content: emitProjectKdl(starter) },
         );
     }
+    if (template === 'designer' && board.sd !== undefined) {
+        // The card reader a design's `sd:` image controls call. Generated with the board's socket pins, and
+        // only where the catalog declares a card: a board without one gets no module, no dependency and no
+        // call in `main`, so nothing about its project changes.
+        files.push({ path: 'src/sd.rs', content: emitSdRs(board) });
+    }
     return files;
 }
 
@@ -325,11 +334,17 @@ panel-gc9a01 = []
         // The board template already declares this for its panel; declaring it twice is a duplicate key.
         dependencies.push(`embedded-hal-bus = "${ESP_CRATE_VERSIONS.embeddedHalBus}"`);
     }
-    if (template === 'sdcard' || template === 'board') {
+    if (template === 'sdcard' || template === 'board' || (template === 'designer' && board.sd !== undefined)) {
         // The correct way to talk to a card: the ecosystem's own SD/SPI plus FAT implementation rather than
         // a hand-rolled CMD0/CMD8/ACMD41 sequence. It is the maintained crate that filesystems are tested
         // against, and getting the SD init handshake subtly wrong is a classic way to lose a day.
         dependencies.push(`embedded-sdmmc = "${ESP_CRATE_VERSIONS.embeddedSdmmc}"`);
+    }
+    if (template === 'designer' && board.sd !== undefined) {
+        // The mounted card has to survive between calls, so it lives in a critical-section Mutex. The crate
+        // itself is already in the tree (esp-hal implements it), but a transitive dependency is not nameable,
+        // so it is declared here too -- the same version line, so there is only ever one of it.
+        dependencies.push(`critical-section = "${ESP_CRATE_VERSIONS.criticalSection}"`);
     }
     if (template === 'touch' || template === 'board' || (template === 'designer' && board.touch !== undefined)) {
         // The calibration is kept in flash, so the project needs the NOR-flash crate. Its chip feature is
@@ -852,12 +867,30 @@ function espMainRs(board: EspBoardProfile, template: AppTemplate, choices: Board
                     ? espRgbLedBody(led.red, led.green, led.blue)
                     : espHeartbeatBody();
 
+    // The modules a Designer project is made of, and the constants that describe it. The card is only named
+    // where the catalog says the board has one, so the T-QT's project is byte-for-byte what it was.
+    const designerModules =
+        template !== 'designer'
+            ? ''
+            : "\n\n// The design's own module, and the code-behind it calls.\nmod ui;\nmod ui_handlers;\n" +
+              (board.sd === undefined
+                  ? ''
+                  : "\n// The card a design's `sd:/NAME.BMP` images are read from.\nmod sd;\n") +
+              (board.touch === undefined
+                  ? ''
+                  : "\n/// This project draws the design, so the diagnostic screen the touch template can paint is folded\n/// away at compile time. Kept rather than deleted: it is what to fall back on when a panel comes up wrong.\nconst DESIGNER: bool = true;\n\n/// Whether touch is wanted, read at compile time so the driver, the calibration and the sampling fold\n/// away when it is off: no SPI traffic to a controller nobody asked for. Only \"0\" is off, so a project\n/// generated before the setting existed keeps the touchscreen it had.\nconst TOUCH: bool = match option_env!(\"TOUCH_ENABLED\") {\n    Some(value) => !(value.len() == 1 && value.as_bytes()[0] == b'0'),\n    None => true,\n};\n");
+
+    // The card is mounted once, from main, before the panel and the design come up. `src/main.rs` is written
+    // once at project creation and never regenerated, so this call has to be right the first time.
+    const designerSdInit =
+        template === 'designer' && board.sd !== undefined ? espDesignerSdInit(board) : '';
+
     return `${espMainHeader(board, template)}
 #![no_std]
 #![no_main]
 
 ${espImports(board, template)}
-use esp_backtrace as _;${template === 'designer' ? "\n\n// The design's own module, and the code-behind it calls.\nmod ui;\nmod ui_handlers;\n" + (board.touch === undefined ? '' : "\n/// This project draws the design, so the diagnostic screen the touch template can paint is folded\n/// away at compile time. Kept rather than deleted: it is what to fall back on when a panel comes up wrong.\nconst DESIGNER: bool = true;\n\n/// Whether touch is wanted, read at compile time so the driver, the calibration and the sampling fold\n/// away when it is off: no SPI traffic to a controller nobody asked for. Only \"0\" is off, so a project\n/// generated before the setting existed keeps the touchscreen it had.\nconst TOUCH: bool = match option_env!(\"TOUCH_ENABLED\") {\n    Some(value) => !(value.len() == 1 && value.as_bytes()[0] == b'0'),\n    None => true,\n};\n") : ''}
+use esp_backtrace as _;${designerModules}
 
 // The ESP-IDF bootloader expects an application descriptor in the image. Without it the
 // bootloader refuses to start the image, so this line is not decoration.
@@ -866,9 +899,34 @@ esp_bootloader_esp_idf::esp_app_desc!();
 #[esp_rtos::main]
 async fn main(${template === 'wifi' ? 'spawner' : '_spawner'}: Spawner) -> ! {
 ${espBootBlock(board, template)}
-${body}
+${designerSdInit}${body}
 }
 ${template === 'bluetooth' ? espBluetoothSupport() : template === 'wifi' ? espWifiSupport() : template === 'display' && display !== undefined ? espPanelSupport(display, board) : ''}`;
+}
+
+/**
+ * The `sd::init` call a Designer project gets on a board with a card.
+ *
+ * `src/main.rs` is written once at project creation and never regenerated, so the call is spelled out with
+ * the socket's pins and their labels: a project generated before the card existed can be fixed by hand from
+ * what is printed here, and the designer tells its user what to add.
+ */
+function espDesignerSdInit(board: EspBoardProfile): string {
+    const sd = board.sd;
+    if (sd === undefined) {
+        return '';
+    }
+    return `
+    // Mount the card before the panel and the design: a design can name \`sd:/...\` images, and the first
+    // frame should already have somewhere to read them from. A missing card is logged and leaves those
+    // images to draw nothing rather than stopping the firmware.
+    sd::init(
+        peripherals.${DESIGNER_SD_PERIPHERAL},
+        peripherals.GPIO${sd.cs}, // card chip select
+        peripherals.GPIO${sd.spi.sclk}, // card SPI clock
+        peripherals.GPIO${sd.spi.mosi}, // card SPI data out
+        peripherals.GPIO${sd.spi.miso}, // card SPI data in
+    );`;
 }
 
 /**
@@ -2824,8 +2882,8 @@ function espReadme(
     choices: BoardChoices,
     rotation: LcdRotation,
 ): string {
-    // Only the pins the generated firmware actually drives are listed: the SD socket is still
-    // described in the notes rather than claimed, because no template touches it yet.
+    // Only the pins the generated firmware actually drives are listed. A Designer project on a board with a
+    // card drives the socket too (its `sd:` images are read from it), so those pins are claimed here as well.
     // Asked rather than re-listed. This was a second copy of the rule, and the designer was added to the
     // shared helper without reaching here -- which generated a Designer project whose body was the RGB LED
     // heartbeat. Found by generating one, 2026-10-08.
@@ -2835,6 +2893,9 @@ function espReadme(
     // not: the T-QT has a panel and no touch controller.
     const touch =
         template === 'touch' || template === 'board' || template === 'designer' ? board.touch : undefined;
+    // The card is claimed by a Designer project only: the sdcard and board templates mount it too, but they
+    // are diagnostic and describe it in their own log rather than in this table.
+    const designerCard = template === 'designer' ? board.sd : undefined;
     const pinRows: string[] = [];
     if (display) {
         pinRows.push(`| ${display.cs} | panel chip select |`);
@@ -2852,6 +2913,12 @@ function espReadme(
     if (touch) {
         pinRows.push(`| ${touch.cs} | ${touch.controller} touch chip select |`);
         pinRows.push(`| ${touch.irq} | ${touch.controller} touch interrupt (active low) |`);
+    }
+    if (designerCard !== undefined) {
+        pinRows.push(`| ${designerCard.cs} | TF card chip select |`);
+        pinRows.push(`| ${designerCard.spi.sclk} | TF card SPI clock |`);
+        pinRows.push(`| ${designerCard.spi.mosi} | TF card SPI data out |`);
+        pinRows.push(`| ${designerCard.spi.miso} | TF card SPI data in |`);
     }
 
     // The Wi-Fi template shares the Pico's credentials contract, so the same prompt serves it. What it
@@ -2944,6 +3011,19 @@ the glass within the first two seconds after a reset - the stored calibration is
 screen comes back.` : ''}
 `
         : '';
+    // The card is a Designer feature here: an image whose source the design writes as `sd:/PIC1.BMP` is
+    // streamed off the card at draw time instead of being compiled into flash.
+    const cardNote =
+        designerCard === undefined
+            ? ''
+            : `
+## Reading images from the card
+
+An image control whose source is written as \`sd:/PIC1.BMP\` is read from the TF card when it is drawn,
+not compiled into flash. The file must be on a FAT-formatted card under a short 8.3 name
+(\`PIC1.BMP\`, not \`holiday photo.bmp\`: the filesystem library has no long-name support), and the card
+is mounted once at boot. A missing or unreadable card is logged and leaves the image blank.
+`;
     const pinSection =
         pinRows.length === 0
             ? ''
@@ -2967,7 +3047,7 @@ for VS Code.
 - Chip: \`${board.espChip}\` (${board.flashSize} flash)
 - Template: \`${template}\`
 - Flashed with: \`espflash\` over USB serial — **no debug probe**
-${wifiNote}${bluetoothNote}${rotationSection}
+${wifiNote}${bluetoothNote}${rotationSection}${cardNote}
 ## First-time setup
 
 The Xtensa targets are not in released Rust, so one extra toolchain is needed:

@@ -287,6 +287,19 @@ pub enum WidgetDef {
         mode: String,
         tint: Option<String>,
     },
+    /// An image the *device* reads at runtime -- a file on a mounted card -- rather than one embedded at build
+    /// time.
+    ///
+    /// Its own variant because the build-time asset pipeline is not ours: the `include_gui!` macro reads every
+    /// `Image`'s file off disk, refuses paths outside the project, and decodes them with the `image` crate. A
+    /// card path does not exist on the build machine at all, so an `SdImage` must be something the macro's
+    /// `let ... else { continue }` skips -- and it is, because it is not an `Image`.
+    SdImage {
+        id: Option<String>,
+        /// The path as the driver wants it, without the `sd:` prefix the design writes.
+        path: String,
+        fit: String,
+    },
     /// Wrap-around scrolling list with slot falloff, edge fade, and chrome masks.
     Carousel {
         id: Option<String>,
@@ -419,6 +432,7 @@ impl WidgetDef {
             | WidgetDef::CrumbsIndicator { id, .. }
             | WidgetDef::Panel { id, .. }
             | WidgetDef::Image { id, .. }
+            | WidgetDef::SdImage { id, .. }
             | WidgetDef::Carousel { id, .. }
             | WidgetDef::CompositeIcon { id, .. }
             | WidgetDef::Mesh3d { id, .. }

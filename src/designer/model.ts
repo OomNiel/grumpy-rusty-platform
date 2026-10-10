@@ -510,6 +510,10 @@ export function validateDocument(document: DesignerDocument): string[] {
     for (const widget of document.widgets) {
         const where = widget.id === '' ? '(unnamed widget)' : `"${widget.id}"`;
 
+        for (const complaint of sdImageSourceProblems(widget)) {
+            problems.push(`${where}: ${complaint}`);
+        }
+
         if (!isRustIdentifier(widget.id)) {
             problems.push(`${where}: the id must start with a letter and contain only letters, digits and underscores`);
         } else {
@@ -747,6 +751,54 @@ function propertyProblem(
         default:
             return undefined;
     }
+}
+
+/**
+ * What is wrong with an image that names a file on the SD card, if anything.
+ *
+ * The card is reached with a **short 8.3 name** and from its root, because `embedded-sdmmc` in a generated
+ * project is built without an allocator and so cannot assemble long names, and because opening a subdirectory
+ * is a second handle this version does not keep. Both are worth refusing here: a name the driver cannot open
+ * is an image that silently never appears on the glass.
+ */
+export function sdImageSourceProblems(widget: DesignerWidget): string[] {
+    const source = widget.props.src;
+    if (typeof source !== 'string' || !source.startsWith('sd:')) {
+        return [];
+    }
+    const path = source.slice('sd:'.length).replace(/^\//, '');
+    if (path === '') {
+        return ['the SD card path is empty, so there is no file to read'];
+    }
+    if (path.includes('/')) {
+        return [
+            `"${path}" is in a subdirectory, and cards are read from their root: use sd:NAME.BMP`,
+        ];
+    }
+    if (!/^[A-Za-z0-9_]{1,8}(\.[A-Za-z0-9_]{1,3})?$/.test(path)) {
+        return [
+            `"${path}" is not a short file name, and the card is read without long-name support: use something ` +
+                'like sd:PIC1.BMP',
+        ];
+    }
+    return [];
+}
+
+/**
+ * The images whose pixels come from the SD card, by widget id.
+ *
+ * Separate from the validation above because whether the *card* exists is a property of the board rather than
+ * of the design, and this module deliberately knows nothing about boards. The caller decides what to say.
+ */
+export function sdImagesNeedingCard(widgets: readonly DesignerWidget[]): string[] {
+    return widgets
+        .filter(
+            (widget) =>
+                widget.tag === 'image' &&
+                typeof widget.props.src === 'string' &&
+                widget.props.src.startsWith('sd:'),
+        )
+        .map((widget) => widget.id);
 }
 
 /** The tags the Toolbox offers, in catalogue order, for a board whose panel this is. */

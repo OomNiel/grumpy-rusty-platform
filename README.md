@@ -160,6 +160,12 @@ designer for the active project. Either way it works on a board that carries a p
   honour a style — Label, Button and Carousel — while a *declared* BDF is read for Label and Carousel only. A
   Table is given no Font field at all, because the crate's table arm hard-codes its style and would drop one in
   silence.
+- **Images from the microSD card** — an Image control reads a file in the project (embedded in the flash at
+  build time) *or* a file on the card: name it `sd:PIC1.BMP` and the board reads it as it draws, a row at a
+  time, so a full-screen picture costs a row of RAM instead of a copy in the firmware. Uncompressed BMP is what
+  the card holds. Projects on boards with a card socket (the ESP32-035) get a generated `src/sd.rs` that mounts
+  it; the panel says so if the board has no socket, if the project predates the module, or if the name is not
+  one the driver can look up (FAT short names, 8.3, from the root).
 - **Only buildable controls are offered** — the Toolbox lists the tags whose generated code compiles against
   `embedded-gui` 0.2.7. Ten of the crate's own tags (`slider`, `arc`, `busy_wheel`, `chart`, `status_bar`,
   `time_picker`, `number_picker`, `content_indicator`, `crumbs`, `path`) are parsed by its code generator but
