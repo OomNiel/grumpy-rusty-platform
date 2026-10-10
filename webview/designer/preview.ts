@@ -19,9 +19,11 @@
  *     spec "Cannot be replicated" #1). A label whose `font=` names a declared BDF -- which the crate draws
  *     as `FontId::Bitmap` -- is approximated with the packed default font; the comment at the one place it
  *     happens says so rather than pretending.
- *   * No `Vector` polylines: `glyphs.ts` carries only the packed 3x5 rows, so a `Vector(n)` glyph is the
- *     3x5 bitmap scaled by `n`, clearly marked as an approximation (spec "Uncertain"/"Cannot be replicated"
- *     #2). It is not the crate's vector path.
+ *   * `Vector(n)` is drawn from the crate's own polylines: `glyphs.ts` carries `vectorGlyph`, the points the
+ *     crate strokes. Each coordinate is multiplied by `n` and consecutive points are stroked as 1px canvas
+ *     segments, with the pen-up marker breaking a glyph into strokes. The crate's stroke pixel is dithered at
+ *     opacity 220 while a canvas stroke blends, so the two are close but not pixel-identical (spec
+ *     "Cannot be replicated" #2); the comment at the routine says so.
  *
  * The canvas is 1:1 in device pixels (see `canvas.ts`), so `widget.x/y/width/height` are already board
  * pixels and no zoom arithmetic belongs in here.
@@ -29,7 +31,7 @@
 
 import { isBuiltInFont } from '../../src/designer/fonts';
 import { type DesignerWidget } from '../../src/designer/model';
-import { glyphMetrics, glyphRows, GLYPH_COLUMNS, GLYPH_ROWS } from './glyphs';
+import { glyphMetrics, glyphRows, GLYPH_COLUMNS, GLYPH_ROWS, vectorGlyph, VECTOR_PEN_UP } from './glyphs';
 
 // ---------------------------------------------------------------------------
 // Colour
@@ -725,27 +727,23 @@ function charCount(text: string): number {
     return Array.from(text).length;
 }
 
-/**
- * The per-variant block size for a set glyph pixel (spec 1.4).
- *
- * `Tiny3x5`/`Medium4x7` draw one canvas pixel per set bit. `Scaled6x10` draws a 2x2 block. `Vector(n)` is
- * *approximated* by an `n x n` block of the 3x5 bitmap: the table has no vector polylines (spec
- * "Cannot be replicated" #2), so this is not the crate's stroke path. A named font that is not one of the
- * crate's built-ins is a declared BDF, drawn by the crate as `FontId::Bitmap` (external data, spec #1); it
- * too falls back to the 1x1 packed walk.
- */
-function glyphBlockSize(font: string): number {
-    if (font === 'Scaled6x10') {
-        return 2;
-    }
-    const vector = /^Vector\((\d+)\)$/.exec(font);
-    if (vector?.[1] !== undefined) {
-        return Math.max(1, parseInt(vector[1], 10));
-    }
-    return 1;
+/** The `n` of a `Vector(n)` font, or 0 for a packed bitmap font (spec 1.2/1.6). */
+function vectorScale(font: string): number {
+    const match = /^Vector\((\d+)\)$/.exec(font);
+    return match?.[1] !== undefined ? Math.max(1, parseInt(match[1], 10)) : 0;
 }
 
-/** `draw_char_with_font` for the packed fonts (spec 1.3-1.4, `render/mod.rs:1880-1928`). */
+/**
+ * The block size for a packed glyph's set bit (spec 1.4): one canvas pixel for `Tiny3x5`/`Medium4x7`, a 2x2
+ * block for `Scaled6x10`. A named font that is not one of the crate's built-ins is a declared BDF, drawn by
+ * the crate as `FontId::Bitmap` (external data, spec "Cannot be replicated" #1); it falls back to the 1x1
+ * packed walk.
+ */
+function glyphBlockSize(font: string): number {
+    return font === 'Scaled6x10' ? 2 : 1;
+}
+
+/** `draw_char_with_font` for the bitmap fonts (spec 1.3-1.4, `render/mod.rs:1897-1928`). */
 function drawGlyph(
     context: CanvasRenderingContext2D,
     x: number,
@@ -755,6 +753,11 @@ function drawGlyph(
     colour: Rgb565,
     opacity: number,
 ): void {
+    const scale = vectorScale(font);
+    if (scale > 0) {
+        drawVectorGlyph(context, x, y, ch, scale, colour, opacity);
+        return;
+    }
     const rows = glyphRows(font, ch);
     const block = glyphBlockSize(font);
     for (let row = 0; row < GLYPH_ROWS; row += 1) {
@@ -777,6 +780,51 @@ function drawGlyph(
             }
         }
     }
+}
+
+/**
+ * `FontId::Vector(scale)` (spec 1.4, `render/mod.rs:1929-1951`): the crate's own polyline, scaled by `n`.
+ *
+ * `vectorGlyph` is the flat `(x,y)` list the crate strokes; `(VECTOR_PEN_UP, VECTOR_PEN_UP)` lifts the pen
+ * and breaks the glyph into strokes. Each coordinate is `x + px*scale` (the crate multiplies the `u8` by the
+ * scale as `f32` and truncates; for an integer scale the product is exact). One-pixel canvas segments are the
+ * closest honest match for `draw_line_styled(..., width 1, antialias true)`; the crate draws each stroke
+ * pixel at opacity 220 through its ordered-dither compositor, so the canvas blends where the crate dithers
+ * and the result is not pixel-identical (spec "Render quality", "Cannot be replicated" #2).
+ */
+function drawVectorGlyph(
+    context: CanvasRenderingContext2D,
+    x: number,
+    y: number,
+    ch: string,
+    scale: number,
+    colour: Rgb565,
+    opacity: number,
+): void {
+    const points = vectorGlyph(ch);
+    context.save();
+    context.strokeStyle = css(colour);
+    context.lineWidth = 1;
+    // `stroke_opacity` is 220 at High quality (spec "Render quality", `render/mod.rs:2102-2113`).
+    context.globalAlpha = (220 / 255) * (opacity / 255);
+    let last: readonly [number, number] | undefined;
+    for (let i = 0; i + 1 < points.length; i += 2) {
+        const px = points[i] ?? 0;
+        const py = points[i + 1] ?? 0;
+        if (px === VECTOR_PEN_UP && py === VECTOR_PEN_UP) {
+            last = undefined;
+            continue;
+        }
+        const current: readonly [number, number] = [x + px * scale, y + py * scale];
+        if (last !== undefined) {
+            context.beginPath();
+            context.moveTo(last[0], last[1]);
+            context.lineTo(current[0], current[1]);
+            context.stroke();
+        }
+        last = current;
+    }
+    context.restore();
 }
 
 /**

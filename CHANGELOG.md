@@ -13,6 +13,32 @@ _Nothing yet._
 
 ## [0.0.64] - 2026-10-09
 
+### Added
+
+- **The canvas is WYSIWYG: it draws what the board draws.** Labels, buttons, panels, toggles, checkboxes,
+  sliders, progress bars, dropdowns, rollers, tables, dialogs and carousels are no longer rounded rectangles with
+  their type name in them. Each is drawn with the crate's own arithmetic and colours — `Block`'s background,
+  gradient, border, corner radius, shadow and padding, then the widget's own content — using the style the code
+  generator actually gives that tag, and clipped to the widget's own rect the way the engine clips it.
+- **Text is drawn in the crate's own fonts.** `webview/designer/glyphs.ts` is generated from
+  `embedded_gui::font::glyph_rows` (and, for the vector face, from `get_vector_glyph`'s polylines — `Vector(n)`
+  is not a bitmap), so what the canvas measures is the font the board will use rather than one that looks like it.
+
+### Changed
+
+- The canvas draws shadows with the crate's ordered dither and gradients at the crate's per-row quantisation,
+  instead of a canvas alpha shadow and a smooth `createLinearGradient`: the board's default compositor does not
+  alpha-blend, so the smoother version would have been darker than the glass.
+- `Progress`, `Slider`, `Toggle` and `Checkbox` are drawn with the style the emitter hard-codes for them
+  (`Style::default()` — no background, no border). They previously looked like themed panels, which was prettier
+  than the board and therefore a lie.
+
+### Verified
+
+- 800 hermetic tests pass; `tsc` clean on both sides; all four host checks pass.
+
+## [0.0.64] - 2026-10-09
+
 ### Fixed
 
 - **A Table's cells now reach the board.** The KDL parser has always collected a table's `headers` and `row`

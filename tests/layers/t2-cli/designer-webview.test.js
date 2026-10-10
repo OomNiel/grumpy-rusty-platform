@@ -19,8 +19,8 @@ const { repoRoot } = require('../../lib/harness');
 const dom = require('../../lib/dom');
 
 const { starterDocument } = compiled('designer/generate');
-const { KDL_WIDGETS } = compiled('designer/catalog');
-const { createDocument, defaultProps } = compiled('designer/model');
+const { KDL_WIDGETS, widgetSpec } = compiled('designer/catalog');
+const { createDocument, defaultChildren, defaultProps } = compiled('designer/model');
 
 const BUNDLE = path.join(repoRoot(), 'out', 'webview', 'designer.js');
 
@@ -476,3 +476,211 @@ test('rectangle, line and triangle paint their own primitive and edit through th
         ok(labels().includes(name), `the triangle sheet offers ${name}`);
     }
 });
+
+// ---------------------------------------------------------------------------
+// The WYSIWYG preview: the crate's paint, not the generic rounded rectangle.
+//
+// These drive the same real bundle, but read the canvas context's recorded calls. The stub records *method*
+// calls only (`tests/lib/dom.js`), and a colour is delivered by a `fillStyle = …` assignment, so `boot`
+// wraps the context once to record those assignments as `{method:'fillStyle', args:[colour]}` too -- which
+// is what lets the gradient and accent assertions below read the colour that was in effect. The panel draws
+// synchronously inside the init message, so the wrapper is removed again immediately.
+// ---------------------------------------------------------------------------
+
+/** Boots the built bundle against a fresh stub and returns the canvas and every recorded context call. */
+function boot(doc) {
+    const env = dom.install();
+    const proto = dom.Element.prototype;
+    const originalGetContext = proto.getContext;
+    proto.getContext = function getContext(kind) {
+        const context = originalGetContext.call(this, kind);
+        if (kind !== '2d' || context === null) {
+            return context;
+        }
+        return new Proxy(context, {
+            set(target, property, value) {
+                target.calls.push({ method: String(property), args: [value] });
+                target[property] = value;
+                return true;
+            },
+        });
+    };
+    try {
+        delete require.cache[require.resolve(BUNDLE)];
+        require(BUNDLE);
+        env.window.emit('message', {
+            data: {
+                type: 'init',
+                document: doc,
+                canvas: { width: 480, height: 320 },
+                paths: { document: 'designer/panel.ui.json', kdl: 'src/ui.kdl' },
+                touchBoard: false,
+                touchEnabled: false,
+            },
+        });
+    } finally {
+        proto.getContext = originalGetContext;
+    }
+    const canvas = env.root.descendants().find((element) => element.tagName === 'CANVAS');
+    ok(canvas !== undefined, 'the panel made a canvas');
+    return { ...env, canvas, calls: canvas.context.calls };
+}
+
+/** One widget at a fixed origin, sized as the catalogue sizes it. */
+function widgetOf(tag, overrides = {}, children = undefined) {
+    const size = widgetSpec(tag)?.defaultSize ?? { width: 96, height: 24 };
+    return {
+        id: 'probe',
+        tag,
+        x: 40,
+        y: 60,
+        width: size.width,
+        height: size.height,
+        props: { ...defaultProps(tag), ...overrides },
+        events: [],
+        children,
+    };
+}
+
+/** A one-widget document, so every recorded call belongs to that widget. */
+function documentWith(widget) {
+    const doc = createDocument({
+        boardId: 'sunton-035r',
+        panelWidth: 320,
+        panelHeight: 480,
+        rotation: 3,
+        screenId: 'Panel',
+    });
+    doc.widgets = [widget];
+    return doc;
+}
+
+/** Every `fillRect` the calls contain. */
+function fillRects(calls) {
+    return calls.filter((call) => call.method === 'fillRect');
+}
+
+/** The colour of the `fillStyle` in effect at the given call index. */
+function fillColourAt(calls, index) {
+    for (let i = index; i >= 0; i -= 1) {
+        if (calls[i].method === 'fillStyle') {
+            return calls[i].args[0];
+        }
+    }
+    return undefined;
+}
+
+test('a slider knob sits at the left track end at min, the right end at max, and moves with value', () => {
+    // The knob is a 3x5 accent rectangle (preview-spec.md §4.6); the one-pixel track is 160x1. The default
+    // slider style is `Style::default()`, so the block paints nothing and `inner == rect`.
+    const knobX = (value) => {
+        const { calls } = boot(documentWith(widgetOf('slider', { min: 0, max: 100, value })));
+        const knob = fillRects(calls).filter((call) => call.args[2] === 3 && call.args[3] === 5);
+        equal(knob.length, 1, `exactly one knob at value ${value}`);
+        return knob[0].args[0];
+    };
+    equal(knobX(0), 40, 'at min the knob is at the inner left edge');
+    equal(knobX(100), 40 + 160 - 3, 'at max the knob reaches the right track end');
+    equal(knobX(50), 40 + Math.trunc((160 - 3) / 2), 'and at the midpoint it is halfway along');
+    ok(knobX(50) > knobX(0) && knobX(50) < knobX(100), 'it moves with the value rather than sitting still');
+});
+
+test('a progress bar fills in proportion to value, and not at all at zero', () => {
+    // `render_progress` fills `inner` with `style.foreground` (WHITE in Normal) to `w * clamp(value)`
+    // (preview-spec.md §4.7). The default progress style paints no block, so this is the only bar.
+    const fillWidths = (value) => {
+        const { calls } = boot(documentWith(widgetOf('progress', { value })));
+        return fillRects(calls)
+            .filter((call) => call.args[3] === 20 && call.args[2] > 0)
+            .map((call) => call.args[2]);
+    };
+    equal(fillWidths(0), [], 'nothing is filled at zero');
+    equal(fillWidths(0.25), [40], 'a quarter of 160 is 40');
+    equal(fillWidths(0.5), [80], 'half is 80');
+    equal(fillWidths(1), [160], 'and the whole width at one');
+});
+
+test('a toggle track uses the accent when checked and the dark track when not', () => {
+    // `render_toggle` draws a fixed track at the right whose colour is the state (preview-spec.md §4.4):
+    // accent new(0,42,31) when on, new(7,10,10) when off.
+    const trackColour = (checked) => {
+        const { calls } = boot(documentWith(widgetOf('toggle', { checked })));
+        const index = calls.findIndex((call) => call.method === 'fillRect' && call.args[2] === 16 && call.args[3] === 26);
+        ok(index !== -1, `the toggle draws its 16x26 track (checked: ${checked})`);
+        return fillColourAt(calls, index);
+    };
+    equal(trackColour(true), 'rgb(0,170,255)', 'checked is the accent from Style::new()');
+    equal(trackColour(false), 'rgb(57,40,82)', 'unchecked is the crate\'s own dark track');
+    notOk(trackColour(false) === trackColour(true), 'the knob follows checked rather than staying one colour');
+});
+
+test('a button draws the crate gradient and its own text', () => {
+    const { calls } = boot(documentWith(widgetOf('button', { text: 'Ok' })));
+    const colours = calls.filter((call) => call.method === 'fillStyle').map((call) => call.args[0]);
+    // Style::button()'s vertical gradient new(6,12,16) -> new(2,4,8) (preview-spec.md §2.2, §4.3), expanded
+    // to 24-bit the way the packed pixel is.
+    ok(colours.includes('rgb(49,48,132)'), 'the gradient\'s first stop is painted');
+    ok(colours.includes('rgb(16,16,66)'), 'and its last stop');
+    // Medium4x7 is a bitmap font: one canvas pixel per set bit (preview-spec.md §1.4).
+    const glyphs = fillRects(calls).filter((call) => call.args[2] === 1 && call.args[3] === 1);
+    ok(glyphs.length > 0, 'the button text is drawn, even though no glyph table row is 0b111');
+    ok(
+        glyphs.every((call) => call.args[0] >= 40 && call.args[0] < 40 + 96 && call.args[1] >= 60 && call.args[1] < 60 + 32),
+        'and its pixels are inside the button',
+    );
+});
+
+test('a label draws no block background, only its text', () => {
+    const { calls } = boot(documentWith(widgetOf('label', { text: 'Hi' })));
+    const fills = fillRects(calls);
+    notOk(
+        fills.some((call) => call.args[0] === 40 && call.args[1] === 60 && call.args[2] === 96 && call.args[3] === 24),
+        'Style::label() has no background, so the whole rect is not filled',
+    );
+    const glyphs = fills.filter(
+        (call) =>
+            call.args[2] === 1 &&
+            call.args[3] === 1 &&
+            call.args[0] >= 40 &&
+            call.args[0] < 40 + 96 &&
+            call.args[1] >= 60 &&
+            call.args[1] < 60 + 24,
+    );
+    ok(glyphs.length > 0, 'the label text is drawn');
+    ok(glyphs.length < 40, 'as glyph pixels, not a painted block');
+});
+
+test('a table draws the header row as the first row, then the body rows', () => {
+    // The corrected emitter passes the design's header row first and then the body rows, and the renderer has
+    // no separate header concept (preview-spec.md §4.10 + the follow-up correction). The default table has
+    // two headers and two body rows; every cell is stroked and its text drawn.
+    const { calls } = boot(documentWith(widgetOf('table', {}, defaultChildren('table'))));
+    const textRowsAt = (top) =>
+        fillRects(calls).filter(
+            (call) =>
+                call.args[2] === 1 &&
+                call.args[3] === 1 &&
+                call.args[1] >= top &&
+                call.args[1] < top + 5,
+        );
+    // `Style::panel()` insets the rect by padding 2 + border 1, so the first row's text starts at y = 63;
+    // three rows share the 114-pixel inner height at 38 pixels each.
+    ok(textRowsAt(63).length > 0, 'the header row is drawn first');
+    ok(textRowsAt(63 + 38).length > 0, 'then the first body row');
+    ok(textRowsAt(63 + 76).length > 0, 'then the second');
+});
+
+test('a Vector font draws the crate\'s own polylines, not bitmap pixels', () => {
+    // Vector(n) uses `vectorGlyph`'s points, scaled by n and stroked as one-pixel segments (preview-spec.md
+    // §1.4). A bitmap font would emit fillRects inside the glyph box instead; the vector path must not.
+    const { calls } = boot(documentWith(widgetOf('label', { text: 'A', font: 'Vector(2)' })));
+    ok(
+        calls.some((call) => call.method === 'lineTo'),
+        'the vector glyph is stroked as a polyline',
+    );
+    const glyphBox = fillRects(calls).filter(
+        (call) => call.args[0] >= 40 && call.args[0] < 40 + 96 && call.args[1] >= 60 && call.args[1] < 60 + 24,
+    );
+    equal(glyphBox.length, 0, 'and no bitmap pixel of it is filled');
+});
+
