@@ -11,6 +11,21 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.65] - 2026-10-09
+
+### Fixed
+
+- **A circle no longer has its top and bottom edges clipped.** The disc was measured from a centre of `x + w/2`
+  with a radius of `min/2`, which on an even-sized box puts its extreme pixels one pixel *outside* the box —
+  where the board's clip to the widget's cell, and the canvas's clip to the same rect, shaved them flat. The
+  disc is now the one inscribed in the box, measured in half-pixels (a pixel's centre is `2i + 1`, the box's
+  centre is `w`) because an even-sized box has no whole-pixel centre; the canvas draws the same circle and its
+  outline as the annulus *inside* the radius, rather than a pen straddling the edge and being clipped there.
+  The host measurement shows the disc regaining its clipped row and column: `708` of `1200` pixels in its cell
+  became `716`, and nothing is painted outside any cell.
+- The Geometry panel's Centre/Radius numbers are unchanged: they are whole pixels for editing, and the box a
+  radius produces still has exactly that radius back.
+
 ## [0.0.64] - 2026-10-09
 
 ### Added

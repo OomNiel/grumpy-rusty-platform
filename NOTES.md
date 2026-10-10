@@ -4950,3 +4950,47 @@ asset -- the next slice -- and `mesh` has no renderer at all, because its codege
 
 Every one of those is a comment in `preview.ts` beside the code that does it, and a line in the changelog, rather
 than a gap a user has to discover.
+
+
+## 107. A circle with flat edges: measuring a disc in whole pixels (2026-10-09)
+
+Reported: *"the circle shape clips some pixels at its top and bottom edges."*
+
+It did, on both sides, and for the same reason. The disc was defined as "centre `x + w/2`, radius `min(w,h)/2`,
+pixel in iff `dx² + dy² <= r²`". On an **even**-sized box that centre is a whole pixel *offset by half a pixel
+from the box's centre*, so the disc's extremes land on `x + w` and `y + h` -- one pixel past the last row and
+column -- and both the board's clip to the widget's cell and the canvas's clip to the same rect shaved them flat.
+
+### The fix is the measurement, not the clip
+
+The disc wanted is the one *inscribed in the box*, and an even-sized box has no whole-pixel centre to measure
+from. So the arithmetic moved to half-pixels: pixel `i`'s centre is `2i + 1`, the box's centre is `w`, and a
+pixel belongs to the disc when `(2i + 1 - w)² + (2j + 1 - h)² <= min(w,h)²`. The same disc the canvas draws with
+`arc(x + w/2, y + h/2, min/2)` -- for both parities, and nothing outside the box.
+
+Two details worth keeping:
+
+* **The extreme pixels come out right.** A 64px box gets a disc 64 pixels wide, its outermost columns included,
+  because the test is satisfied at `2i + 1 - w = ±w`. The whole-pixel version reached the same extremes but
+  *outside* the cell, which is why the clip ate them.
+* **The row loop is no longer monotone.** The old walk shrank the span from the centre outwards; with
+  half-pixels the row's `|dy|` sequence is `h-1, h-3, …, 1, 1, 3, …, h-1`, so the spans are computed per row with
+  an integer `isqrt` (a bit at a time -- the platform's `sqrt` is a float and the crate is `no_std`) instead of a
+  walk that would have needed re-starting at both ends.
+
+The canvas needed its own half of this: its *outline* was a 1px stroke centred on the circle's path, which hangs
+half outside the box and was clipped there. It is now the annulus *inside* the radius -- which is what the
+board's ring is (`inner < d <= r`) -- drawn as two arcs with an even-odd fill.
+
+### What the tests pin now
+
+The crate's disc tests compare the drawn pixels against the inscribed-disc rule written independently (half-pixel
+test and all) and assert that **nothing is drawn outside the box** -- the regression this bug was. The canvas
+keeps the Geometry panel's whole-pixel numbers, which are a different thing: they round-trip exactly
+(`circleRect(31)` gives a 62px box whose `circleRadius` is 31), and the renderer, not the panel, is what inscribes
+the disc.
+
+Measured on the host: the fixture's circle regains the row and column the clip had taken, `708` of its `1200`
+pixels becoming `716`, with nothing painted outside any cell. The bug had been in every circle the designer ever
+drew, and the earlier "the engine clips each widget to its cell" note (§106) is what made it visible rather than
+mysterious: the clip is real, so a shape that reaches outside its box *will* be cut.
