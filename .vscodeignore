@@ -4,7 +4,9 @@ tests/**
 **/*.ts
 **/*.map
 tsconfig.json
+# Developer notes: the working log and the plans for work that is not in the extension yet.
 NOTES.md
+plans/**
 .gitignore
 sidecar/target/**
 sidecar/.cargo-home/**

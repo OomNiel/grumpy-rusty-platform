@@ -610,7 +610,15 @@ function rustString(text: string): string {
     return text.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
-/** The common prologue: HAL init, the esp-rtos scheduler, and a boot marker. */
+/**
+ * The common prologue: HAL init, the esp-rtos scheduler, and a boot marker.
+ *
+ * Single core, deliberately and for now: `esp_rtos::start` pins the scheduler and this context to the first
+ * core, and the second one is started only by an explicit `esp_rtos::start_second_core`. Using it is deferred
+ * work with a plan -- moving the *touch sampling* there is what it is for, since a long draw blocks the finger
+ * while the card and panel buses (which a second core cannot split) are what makes a draw slow. See
+ * `plans/touch-on-core1.md` for the API, the bus-sharing constraint and how to verify it.
+ */
 function espBootBlock(board: EspBoardProfile, template: AppTemplate): string {
     // The radio stacks allocate at runtime, and esp-radio's own quick start installs the heap between
     // `esp_hal::init` and the scheduler start. The order is not cosmetic: the first block is memory the

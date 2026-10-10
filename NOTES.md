@@ -5823,3 +5823,36 @@ Suite: **866 passed, 0 skipped**; the runtime fork is at **239** tests, the vend
 codegen fork at 23. The generated project still cross-checks for `xtensa-esp32-none-elf` (exit 0). Both halves
 live in the vendored crates, so an existing project picks this up from *Update Crates* -- no generated file
 changes.
+
+---
+
+## 118. The second core, noted rather than used (2026-10-09)
+
+"*Are we using more than one core for the boards that have dual core processors?*" -- and then, on the answer,
+"*Note the option to move touch to core1. We will get to it later.*"
+
+**No, one core**, on every board this platform generates for, all of which are dual core. The evidence, so it
+does not have to be re-derived:
+
+* **ESP32 / ESP32-S3**: `espBootBlock` emits `#[esp_rtos::main]` and `esp_rtos::start(timg0.timer0,
+  peripherals.FROM_CPU_INTR0)`. esp-rtos 0.4.0 pins that context to the first core, traces "Starting scheduler
+  for the first core" and asserts `Cpu::current() == Cpu::ProCpu` (`src/lib.rs:375-405`); the second core runs
+  only after an explicit `esp_rtos::start_second_core(CPU_CTRL, FROM_CPU_INTR1, STACK.take(), …)`
+  (`src/lib.rs:452`), which nothing calls.
+* **RP2040 / RP2350**: `#[embassy_executor::main(executor = "embassy_rp::executor::Executor", entry =
+  "cortex_m_rt::entry")]` is core 0; core 1 needs `embassy_rp::multicore::spawn_core1`, which nothing calls --
+  the only mention of "multicore" in the repository is the comment explaining why the RP executor type is named
+  explicitly.
+
+So core 1 (`AppCpu`) is parked in the boot ROM while core 0 runs the panel, the touch, the GUI, the card reader
+and the radio glue.
+
+**Worth knowing before it is used:** a second core does *not* make a draw faster. The measured cost is
+single-bus I/O (§113's card reads on SPI3, the panel's pixels on SPI2) and one SPI bus cannot be split. What it
+buys is responsiveness during a long draw -- the touch sampling and the radio glue share the drawing task's
+core, so a full-frame repaint stalls them, which is the "everything freezes while the picture is read" case that
+0.0.74 reduced to a full repaint only.
+
+**Deferred**: the plan, with the API, the stack size, the bus-sharing constraint (`RefCellDevice` must become a
+`CriticalSectionDevice` because the panel/touch bus is shared), the calibration wrinkle and the hardware test, is
+`plans/touch-on-core1.md`. Nothing about the generated firmware changed for this note.
