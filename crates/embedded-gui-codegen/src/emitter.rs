@@ -577,11 +577,28 @@ pub fn generate_rust_code(screen: &ScreenDef) -> String {
                 );
                 emit_custom_widget(&mut out, &var_name, idx, "Triangle", &fields);
             }
-            WidgetDef::Table { .. } => {
+            WidgetDef::Table { headers, rows, .. } => {
+                // The parser collects the design's header row and body rows; this arm used to pass `&[]` and
+                // drop both, so a table painted its panel and nothing else however carefully it was written.
+                // `add_table` takes `&[&[&str]]` and the renderer has no separate header concept -- a header is
+                // simply the first row -- so the header goes first.
+                //
+                // `{:?}` rather than a raw `"{}"`: it produces a correctly escaped Rust string literal. The
+                // other arms interpolate their text raw, which a quote in the design would break; this one does
+                // not add to that.
+                let all: Vec<&Vec<String>> = headers.iter().chain(rows.iter()).collect();
+                let joined = all
+                    .iter()
+                    .map(|cols| {
+                        let cells = cols.iter().map(|cell| format!("{cell:?}")).collect::<Vec<_>>().join(", ");
+                        format!("&[{cells}]")
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 let _ = writeln!(
                     &mut out,
-                    "        let {} = gui.add_table(cells[{}], &[], Style::panel())?;",
-                    var_name, idx
+                    "        let {} = gui.add_table(cells[{}], &[{}], Style::panel())?;",
+                    var_name, idx, joined
                 );
             }
             WidgetDef::Carousel {

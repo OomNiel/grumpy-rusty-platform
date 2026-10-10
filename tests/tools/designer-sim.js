@@ -71,7 +71,17 @@ function documentFromFixture(fixture) {
         height: entry.height,
         props: { ...defaultProps(entry.tag), ...(entry.props ?? {}) },
         events: entry.events ?? [],
-        children: defaultChildren(entry.tag),
+        // A widget whose content is a list -- a table's header and rows, a dropdown's options -- can say so in
+        // the fixture; everything else takes the catalogue's default children.
+        children: entry.children === undefined
+            ? defaultChildren(entry.tag)
+            : {
+                kind: entry.children.kind,
+                ...(entry.children.headers === undefined ? {} : { headers: entry.children.headers }),
+                ...(entry.children.rows === undefined ? {} : { rows: entry.children.rows }),
+                ...(entry.children.values === undefined ? {} : { values: entry.children.values }),
+                ...(entry.children.parts === undefined ? {} : { parts: entry.children.parts }),
+            },
     }));
     return document;
 }

@@ -186,6 +186,20 @@
             }
         },
         {
+            "_comment": "A table with a header and two rows: the cells are the one thing the KDL emitter used to drop, so this is what proves they reach add_table and compile.",
+            "id": "grid",
+            "tag": "table",
+            "x": 0,
+            "y": 234,
+            "width": 200,
+            "height": 44,
+            "children": {
+                "kind": "table",
+                "headers": ["Name", "Value"],
+                "rows": [["A", "1"], ["B", "2"]]
+            }
+        },
+        {
             "_comment": "A label given a text colour: the crate paints text from style.text and the markup has no colour attribute for a label, so this is the third thing that has to reach the pixels through one style expression.",
             "id": "tinted",
             "tag": "label",

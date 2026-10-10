@@ -319,3 +319,37 @@ screen id="MenuScreen" width=240 height=320 {
     assert!(code.contains("gui.set_theme(theme)"));
     assert!(code.contains("gui.set_translation_table(table)"));
 }
+
+#[test]
+fn test_table_cells_reach_the_generated_code() {
+    // The emitter used to pass `&[]` for every table, so the rows a design declares were parsed and then
+    // dropped: the board painted the table's panel and none of its contents. The header becomes the first row,
+    // because the renderer has no separate header concept.
+    let kdl = r#"
+screen id="T" width=200 height=120 theme="dark" {
+    grid cols="180px 1fr" rows="100px 1fr" gap=0 padding=0 {
+        table id="Grid" col=0 row=0 col_span=1 row_span=1 {
+            headers "Name" "Value"
+            row "A" "1"
+            row "B" "2"
+        }
+    }
+}
+"#;
+    let rust_code = compile_kdl_to_rust(kdl).unwrap();
+    assert!(
+        rust_code.contains(r#"gui.add_table(cells[0], &[&["Name", "Value"], &["A", "1"], &["B", "2"]], Style::panel())"#),
+        "the header and rows reach add_table; got:\n{rust_code}"
+    );
+
+    // A table with no cells still compiles, exactly as it used to.
+    let empty = r#"
+screen id="T" width=200 height=120 theme="dark" {
+    grid cols="180px 1fr" rows="100px 1fr" gap=0 padding=0 {
+        table id="Grid" col=0 row=0 col_span=1 row_span=1
+    }
+}
+"#;
+    let rust_code = compile_kdl_to_rust(empty).unwrap();
+    assert!(rust_code.contains("gui.add_table(cells[0], &[], Style::panel())"));
+}
