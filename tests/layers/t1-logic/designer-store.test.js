@@ -121,6 +121,7 @@ test('an image read from the card is not looked for in the project', () => {
     const onCard = document([
         widget('photo', 'image', { x: 0, y: 0, width: 96, height: 96 }, { src: 'sd:PIC1.BMP' }),
         widget('icon', 'icon', { x: 0, y: 96, width: 48, height: 48 }, { src: 'sd:LOGO.BMP' }),
+        widget('shouted', 'image', { x: 0, y: 144, width: 96, height: 96 }, { src: 'SD:PHOTO.BMP' }),
     ]);
     equal(missingAssets(onCard, () => false).length, 0, 'a card path is not a project asset');
 });

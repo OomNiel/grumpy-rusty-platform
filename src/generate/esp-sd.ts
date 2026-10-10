@@ -59,12 +59,20 @@ use esp_hal::gpio::{Level, Output, OutputConfig, OutputPin};
 use esp_hal::spi::master::{Config as SpiConfig, Instance, Spi};
 use esp_hal::time::Rate;
 
-/// The card's clock, in kHz.
+/// The clock a card is \`init\`ialised at, in kHz.
 ///
-/// The SD specification requires a card to initialise at or below 400 kHz, and this stays there for the data
-/// phase too: a correct slow read beats a fast one that corrupts a sector. embedded-sdmmc 0.8 has a
-/// clock-controller hook (\`new_with_options\`) for raising it after the handshake, but nothing here needs it.
+/// The SD specification requires the handshake to happen at or below 400 kHz, so this is where every read
+/// starts. It is not where they stay: see \`SD_DATA_CLOCK_KHZ\`.
 const SD_CLOCK_KHZ: u32 = 400;
+
+/// The clock the card is read at once it has answered, in kHz.
+///
+/// A card must be *initialised* at 400 kHz, and nothing says its data has to be read that slowly: SPI mode
+/// allows 25 MHz. An image is read through this bus a row at a time, so at 400 kHz a three-megabyte photo is
+/// about a minute of screen that does not answer, and at this clock it is a few seconds. 10 MHz is deliberately
+/// below the limit -- a marginal read fails as "nothing to draw" rather than as an error anyone sees -- so the
+/// margin is worth more here than the last few megabytes a second.
+const SD_DATA_CLOCK_KHZ: u32 = 10_000;
 
 /// The clock the filesystem stamps on anything it writes. This module only ever reads, so a fixed timestamp
 /// is honest rather than a pretended wall clock; it is also what the crate's own example does.
@@ -120,7 +128,7 @@ pub fn init(
 ) {
     let spi = Spi::new(
         spi,
-        // 400 kHz: the clock a card is specified to initialise at, and what it is read at here.
+        // 400 kHz: the clock a card is specified to initialise at. The reads that follow are re-clocked below.
         SpiConfig::default().with_frequency(Rate::from_khz(SD_CLOCK_KHZ)),
     )
     .expect("SPI configuration")
@@ -140,6 +148,22 @@ pub fn init(
         Ok(bytes) => log::info!("sd: card reports {} bytes ({} MiB)", bytes, bytes / (1024 * 1024)),
         Err(error) => log::error!("sd: the card did not answer ({:?})", error),
     }
+
+    // The handshake is over, so the bus is re-clocked for the reads that follow. \`spi\` is the crate's hook for
+    // exactly this -- it hands the closure the device the driver holds -- and \`apply_config\` recalibrates the
+    // peripheral around the card, which needs no telling. If it is refused the card is still readable, just
+    // slowly, so this is a log line rather than a failure.
+    card.spi(|device| {
+        let config = SpiConfig::default().with_frequency(Rate::from_khz(SD_DATA_CLOCK_KHZ));
+        match device.bus_mut().apply_config(&config) {
+            Ok(()) => log::info!("sd: reading at {} kHz", SD_DATA_CLOCK_KHZ),
+            Err(error) => log::error!(
+                "sd: keeping the card at {} kHz ({:?})",
+                SD_CLOCK_KHZ,
+                error
+            ),
+        }
+    });
 
     let mut volumes = VolumeManager::new(card, FixedClock);
     match volumes.open_raw_volume(VolumeIdx(0)) {

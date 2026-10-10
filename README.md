@@ -174,9 +174,12 @@ designer for the active project. Either way it works on a board that carries a p
   Table is given no Font field at all, because the crate's table arm hard-codes its style and would drop one in
   silence.
 - **Images from the microSD card** — an Image control reads a file in the project (embedded in the flash at
-  build time) *or* a file on the card: name it `sd:PIC1.BMP` and the board reads it as it draws, a row at a
-  time, so a full-screen picture costs a row of RAM instead of a copy in the firmware. Uncompressed BMP is what
-  the card holds. Projects on boards with a card socket (the ESP32-035) get a generated `src/sd.rs` that mounts
+  build time) *or* a file on the card: name it `sd:PIC1.BMP` (the case of the prefix is not checked, so `SD:` is
+  the same card) and the board reads it as it draws, a row at a time, so a full-screen picture costs a row of RAM
+  instead of a copy in the firmware. Uncompressed BMP is what the card holds — 24- and 32-bit, and 16-bit in
+  either the 5-5-5 layout `BI_RGB` means or the 5-6-5 one a bitfield header declares — and a file larger than the
+  cell is reduced to it as it is read, so a photo straight off a phone draws without being resized first.
+  Projects on boards with a card socket (the ESP32-035) get a generated `src/sd.rs` that mounts
   it; the panel says so if the board has no socket, if the project predates the module, or if the name is not
   one the driver can look up (FAT short names, 8.3, from the root).
 - **Only buildable controls are offered** — the Toolbox lists the tags whose generated code compiles against

@@ -11,6 +11,34 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.71] - 2026-10-09
+
+### Fixed
+
+- **A photo on the card draws, whatever its size.** The card reader refused any BMP wider than 480 pixels — the
+  widest panel the platform drives — because it held one converted row of the whole source on the stack, and a
+  refused file draws *nothing*: a 1122 × 1402 photo from a phone left the cell as it was, which looks exactly
+  like a card that was never mounted. A source wider than the cell is now **reduced as its row is read**, in one
+  forward pass, so any file size draws with the same 960 bytes of stack and only the colours the cell shows are
+  kept. Proved against the real 3 MB file: every sampled colour matches an independent decode of the same BMP.
+- **A BMP written by a modern editor is read.** A 124-byte `BITMAPV5HEADER` (the masks 54 bytes in, the pixels
+  starting at 138) parses like the 40-byte one, and the offsets are pinned by a test that builds that header.
+- **A corrupt header is refused instead of multiplied.** A width beyond a million pixels would wrap the stride
+  arithmetic; it is now rejected.
+- **`SD:` is the same card as `sd:`.** The prefix is matched without regard to case — in the generated parser and
+  in every designer check (the short-name rule, the board-has-a-socket report, the missing-asset report) — so a
+  name spelled the way a file manager shows it is not quietly treated as a file to embed in the flash, which is a
+  different feature that fails a different way.
+
+### Changed
+
+- **The card is read at 10 MHz after it has answered, not 400 kHz.** The handshake stays at 400 kHz as the
+  specification requires, and the bus is re-clocked through `SdCard::spi` afterwards: a 3 MB photo streamed at
+  400 kHz is about a minute of a screen that does not answer, and a few seconds at 10 MHz. A refused re-clock is
+  logged and leaves the card readable, just slowly. This lives in the **generated** `src/sd.rs`, so an existing
+  project picks the reader fix up from *Update Crates* (the widget is vendored) but keeps its old, slower module
+  until that module is regenerated.
+
 ## [0.0.70] - 2026-10-09
 
 ### Added

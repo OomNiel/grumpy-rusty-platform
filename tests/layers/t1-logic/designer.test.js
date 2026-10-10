@@ -1460,6 +1460,8 @@ test('an image can name a file on the card, and the name is checked against what
     equal(sdImageSourceProblems(image('sd:PIC1.BMP')).length, 0, 'a short name is fine');
     equal(sdImageSourceProblems(image('sd:/PIC1.BMP')).length, 0, 'and a leading slash is just a habit');
     equal(sdImageSourceProblems(image('sd:PIC1')).length, 0, 'a name with no extension is fine too');
+    equal(sdImageSourceProblems(image('SD:PIC1.BMP')).length, 0, 'and the prefix is not case-sensitive');
+    equal(sdImageSourceProblems(image('Sd:/PIC1.BMP')).length, 0, 'in any spelling a file manager writes');
 
     contains(sdImageSourceProblems(image('sd:'))[0], 'empty', 'an empty path says so');
     contains(sdImageSourceProblems(image('sd:/sub/PIC1.BMP'))[0], 'root', 'a subdirectory is refused');
@@ -1472,8 +1474,10 @@ test('a design with a card image in it is reported when the board has no card', 
     // adds the sentence. A board without a socket has no src/sd.rs either, so a project that cannot read the
     // card is a build failure waiting to happen -- the panel is where it should be found.
     const card = widget('pic', 'image', { x: 0, y: 0, width: 64, height: 64 }, { props: { src: 'sd:PIC1.BMP' } });
+    const upper = widget('upper', 'image', { x: 0, y: 0, width: 64, height: 64 }, { props: { src: 'SD:PIC2.BMP' } });
     const asset = widget('logo', 'image', { x: 0, y: 64, width: 64, height: 64 }, { props: { src: 'assets/logo.bmp' } });
     equal(sdImagesNeedingCard([card, asset]).join(','), 'pic', 'only the card image is listed');
+    equal(sdImagesNeedingCard([upper, asset]).join(','), 'upper', 'and a card written as SD: is one too');
     equal(sdImagesNeedingCard([asset]).length, 0, 'and an embedded one needs no socket');
     equal(sdImagesNeedingCard([]).length, 0, 'an empty design needs nothing');
 });

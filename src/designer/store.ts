@@ -19,6 +19,7 @@ import {
     type DesignerDocument,
     DESIGNER_FILE_VERSION,
     type DesignerFont,
+    cardSourcePath,
     validateDocument,
 } from './model';
 import { emitKdl } from './kdl';
@@ -141,8 +142,8 @@ export function missingAssets(
     for (const widget of document.widgets) {
         const source = widget.props.src;
         // A `sd:` source is a file on the card the firmware mounts, not one in the project: looking for it here
-        // would report every card image as missing, which is the opposite of the truth.
-        const onCard = typeof source === 'string' && source.startsWith('sd:');
+        // would report every card image as missing, which is the opposite of the truth. `SD:` counts too.
+        const onCard = cardSourcePath(source) !== undefined;
         if (typeof source === 'string' && source !== '' && !onCard && !exists(source)) {
             problems.push(`"${widget.id}": the asset "${source}" is not in the project`);
         }

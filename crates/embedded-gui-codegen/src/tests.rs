@@ -693,6 +693,7 @@ fn an_image_on_the_card_is_read_at_runtime_rather_than_embedded() {
     grid cols="1fr" rows="1fr" {
         image id="pic" src="sd:/PIC1.BMP" fit="stretch" col=0 row=0
         image id="fitted" src="sd:/PIC2.BMP" fit="center" col=0 row=0
+        image id="shouted" src="SD:PIC3.BMP" fit="stretch" col=0 row=0
     }
 }
 "##;
@@ -708,6 +709,14 @@ fn an_image_on_the_card_is_read_at_runtime_rather_than_embedded() {
             "rusty_gui_widgets::BmpImage { path: \"PIC2.BMP\", stretch: false, with_file: crate::sd::with_file }"
         ),
         "and a centred image is not stretched: {generated}"
+    );
+    // A card's name in a file manager is upper case, and a prefix that missed this would ask the build machine
+    // for a file that only exists on the card: a different feature with a different failure.
+    assert!(
+        generated.contains(
+            "rusty_gui_widgets::BmpImage { path: \"PIC3.BMP\", stretch: true, with_file: crate::sd::with_file }"
+        ),
+        "and the prefix is matched without regard to case: {generated}"
     );
     assert!(
         generated.contains("gui.add_custom_widget(cells[0], &__shape_pic, Style::default())?"),
