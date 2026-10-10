@@ -5172,3 +5172,76 @@ background (`block.rs:177-186`): without that, a flat colour chosen on a panel-b
   focused *digit* (`10^focused_digit`), so `step` is a field nothing reads. `digits` and `decimals` were offered
   in the panel all along and were being dropped by the builder, which this release also fixed -- a six-digit
   spinbox now formats six digits on the glass, and the canvas draws the same number.
+
+## 110. The ten tags that were refused, and why each one was (2026-10-09)
+
+The designer documented ten markup tags and refused to hand them out, with a reason quoted from a failed build:
+"add_slider ... is called with three i32 fields in the order (min, max, value)", "add_sweeping_arc takes ten
+arguments and is called with four", "there is no add_busy_wheel", and so on. Two of those turned out to be one
+kind of problem and five of them quite another.
+
+### Six that were bugs in the generator
+
+Read against the runtime's real builders, these were never missing widgets -- the generated call was wrong:
+
+* **slider** -- `add_slider(rect, value, min, max, style)` wants floats in the order *value, min, max*; the
+  emitter passed three `i32`s in the order min, max, value. It compiled nowhere, and would have set the wrong
+  value if it had.
+* **arc** -- `add_sweeping_arc` takes ten arguments, and its design is not angles at all: it is a *pie sweep*
+  around an opaque card, with `progress`, `clockwise`, `arc_radius`, `frame_inset`, `corner_radius` and three
+  colours. The old tag offered `start_angle`/`end_angle`, which the runtime has never had. The tag's properties
+  were replaced with the widget's.
+* **busy_wheel** -- there is no `add_busy_wheel`; the widget is `add_spinner(rect, phase, style)`. `phase` is a
+  number, not the `active` boolean the tag offered, because the application turns the wheel rather than the
+  widget animating itself.
+* **chart** and **plotter** -- one tag with a `mode`, two different widgets: `add_chart(rect, values, min, max,
+  style)` draws a filled graph, `add_plotter(rect, values, head, min, max, style)` a scrolling trace with a head
+  index. They are two tags now, each carrying a starting series (`values="2,5,3,8,6"`), and a plotter's head.
+* **path** -- `VectorPath` is a *shape*, not a widget kind: the generated code named a `Point` that was never
+  imported and built `PathVerb::QuadTo` as a tuple variant where the runtime declares a struct variant. It is
+  now a real widget in `rusty-gui-widgets`, emitted through `add_custom_widget` like Circle and Triangle, with
+  its own verb enum (struct variants, so the two can never disagree again), the curves flattened into a fixed
+  twelve segments each, and every segment stroked through the canvas's own `draw_line` so the board and the
+  replica walk the same line. `Close` strokes back to the subpath's start; a zero-width pen floors at one pixel,
+  because a path has no fill to fall back on and an invisible path is never what a design means.
+
+### Five the runtime shipped as drawings the engine could not reach
+
+`StatusBarWidget`, `TimePickerWidget`, `NumberPickerWidget`, `ContentIndicatorWidget` and
+`CrumbsIndicatorWidget` all exist in `embedded-gui` 0.2.7 with a `new(..)` and a `render(..)` -- and none of
+them has a `WidgetKind` variant, a builder or a render arm, so the engine could neither create nor draw one.
+This is why the runtime is vendored: they now have all three, plus property access where the type has any (a
+status bar's text, a number picker's value/min/max, an indicator's selected item). One latent panic came out of
+it: `TimePickerWidget::render` underflowed on a rect shorter than 24 pixels, because it floors its cell height
+at 24 and then subtracts it from the bounds.
+
+### What reading them properly changed
+
+* **The number picker offers no colours at all.** Its renderer paints its own rounded card and reads nothing
+  from the style, so every colour field the panel offered it with was a lie. The properties are gone and the
+  Toolbox description says why. (The chart, plotter and time picker, by contrast, *do* draw with the style's
+  accent -- so each of them gained an `accent` property rather than keeping a colour nobody could set.)
+* **The content indicator is a chevron, not dots.** The crate draws one arrow, up or down, and picks the
+  direction from whether the active item is the last of the count; `Crumbs` is the widget that draws dots. The
+  description said "dots showing where you are in a set", which was simply wrong.
+* **The arc's frame hid the arc.** `render_sweeping_arc` fills the sector and *then* paints an opaque rounded
+  card inset by `frame_inset`, so at the old default of four pixels in a 96-pixel widget the card covered the
+  sweep entirely: a freshly dropped arc showed nothing happening. The default is fourteen now, in the catalogue
+  and in the parser, which leaves a visible ring at the default radius.
+* **The toggle's track can have an outline.** `border_color`/`border_width` frame the widget; the switch inside
+  it had no outline and no way to get one. The runtime gained `track_border`/`track_border_width` for it.
+
+### Tests that came out of it
+
+`rusty-gui-widgets` is **19**: five for the path (segment counts, the cell origin, the pen's stamping, the fixed
+flattening, the hairline floor). The runtime is **232**, four more for the new widgets and the track outline.
+The fork is **22**. The hermetic suite is **845**, including eleven canvas cases that paint every one of these
+tags and assert a number that a wrong implementation would get wrong -- the arc's progress, the wheel's phase,
+the plotter's head, the chart's series, the path's segment count, the toggle's three outline states.
+
+The simulator's fixture grew all eleven, which is the only end-to-end statement available: the generated call
+compiles inside a real `include_gui!` build against the vendored runtime, and painting it changes **67854 pixels
+across 27 measured regions and none of the 68312 outside them**. `--touch` still passes, and the eleven are in
+the same design as everything else.
+
+The `unavailable` channel in the catalogue is now empty: the Toolbox offers the whole catalogue.

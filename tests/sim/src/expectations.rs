@@ -57,6 +57,17 @@ pub fn check(
     one("spin", widgets.spin, 0, 185, 150, 26);
     one("roll", widgets.roll, 0, 215, 150, 18);
     one("gauge", widgets.gauge, 390, 120, 90, 90);
+    one("sld", widgets.sld, 150, 120, 50, 18);
+    one("arc", widgets.arc, 150, 140, 50, 38);
+    one("whl", widgets.whl, 150, 180, 24, 24);
+    one("ind", widgets.ind, 150, 206, 40, 12);
+    one("crm", widgets.crm, 150, 220, 40, 12);
+    one("cht", widgets.cht, 200, 236, 46, 36);
+    one("plt", widgets.plt, 248, 236, 46, 36);
+    one("pth", widgets.pth, 440, 212, 40, 40);
+    one("stb", widgets.stb, 390, 266, 90, 13);
+    one("tme", widgets.tme, 390, 212, 45, 26);
+    one("num", widgets.num, 390, 240, 45, 22);
     one("trib", widgets.trib, 300, 260, 40, 40);
     one("rule", widgets.rule, 300, 305, 80, 4);
     problems
@@ -125,13 +136,13 @@ pub fn touch_checks<const N: usize, const E: usize, const D: usize>(
     }
     {
         // Nothing is under this point, so nothing may claim it.
-        let events = tap(gui, 250, 240);
+        let events = tap(gui, 360, 250);
         let claimed = events
             .iter()
             .filter(|event| matches!(event, UiEvent::Clicked(_) | UiEvent::ValueChanged(_)))
             .count();
         if claimed != 0 {
-            problems.push(format!("a tap at (250, 240), where no widget is, was claimed by {} widget event(s)", claimed));
+            problems.push(format!("a tap at (360, 250), where no widget is, was claimed by {} widget event(s)", claimed));
         }
     }
     problems

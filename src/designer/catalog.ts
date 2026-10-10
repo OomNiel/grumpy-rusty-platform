@@ -225,12 +225,12 @@ export interface KdlWidgetSpec {
      *
      * `widget` is the honest case: the parser's properties reach the emitted widget. `panel` means the
      * generator emits a theme-styled panel regardless of the shape's own colours. `nothing` means the tag
-     * reserves its space and paints none of it. `circle`/`rectangle`/`line`/`triangle` mean the designer
-     * paints the shape on the canvas for editing *and* the board renders the same primitive from the cell
-     * rect (the designer prop names are mapped onto the codegen's `fill`/`stroke`/`stroke_width` attributes).
-     * Measured from `emitter.rs`, not assumed.
+     * reserves its space and paints none of it. `circle`/`rectangle`/`line`/`triangle`/`path` mean the
+     * designer paints the shape on the canvas for editing *and* the board renders the same primitive from the
+     * cell rect (the designer prop names are mapped onto the codegen's attributes, and a path becomes a
+     * `rusty-gui-widgets::VectorPath`). Measured from `emitter.rs`, not assumed.
      */
-    draws?: 'widget' | 'panel' | 'nothing' | 'circle' | 'rectangle' | 'line' | 'triangle';
+    draws?: 'widget' | 'panel' | 'nothing' | 'circle' | 'rectangle' | 'line' | 'triangle' | 'path';
     /**
      * True when this is a designer-native widget: the canvas paints it, but it is not emitted as KDL for the
      * crate, because there is no crate builder for it yet. The generated project still builds; the widget
@@ -276,8 +276,6 @@ export interface KdlWidgetSpec {
  * Written once here because the ten vary only in which method and which error, and because the day the crate is
  * fixed all ten are deleted together.
  */
-const CRATE_DEFECT = 'embedded-gui-codegen 0.2.7 emits a call the runtime crate does not accept: ';
-
 /**
  * The crate's named base styles, for the widgets whose emitter honours one.
  *
@@ -448,6 +446,17 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
             // `#rrggbb` this field takes: the 5/6/5 reduction of it is exactly (7, 10, 10) again, so a design
             // that never touches this field renders the colour the crate always used.
             { name: 'off_color', kind: 'color', label: 'Off track', defaultValue: '#392852' },
+            // The switch itself, as opposed to the frame `border_color` draws. A width of one by default, so
+            // naming a colour is enough to see it; the runtime draws nothing while the colour is unset.
+            { name: 'track_border', kind: 'color', label: 'Track outline', defaultValue: '' },
+            {
+                name: 'track_border_width',
+                kind: 'int',
+                label: 'Track outline width',
+                defaultValue: 1,
+                min: 0,
+                max: 8,
+            },
             ...APPEARANCE_BLOCK,
             TEXT_COLOUR_PROPERTY,
         ],
@@ -485,12 +494,17 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         aliases: [],
         label: 'Slider',
         category: 'input',
-        unavailable: CRATE_DEFECT + "add_slider is declared (value: f32, min: f32, max: f32) but is called with three i32 fields in the order (min, max, value) -- error[E0308] and, once it compiles, the wrong value",
+        note: 'A track with a knob. The track is the widget\'s text colour and the knob its accent.',
         defaultSize: { width: 160, height: 28 },
         props: [
-            { name: 'min', kind: 'int', label: 'Minimum', defaultValue: 0 },
-            { name: 'max', kind: 'int', label: 'Maximum', defaultValue: 100 },
-            { name: 'value', kind: 'int', label: 'Value', defaultValue: 0 },
+            // Floats, because the crate's slider is a float widget and its value is what it reports back:
+            // whole numbers only was a limit of the markup, not of the widget.
+            { name: 'min', kind: 'float', label: 'Minimum', defaultValue: 0 },
+            { name: 'max', kind: 'float', label: 'Maximum', defaultValue: 100 },
+            { name: 'value', kind: 'float', label: 'Value', defaultValue: 0 },
+            TEXT_COLOUR_PROPERTY,
+            APPEARANCE_ACCENT,
+            ...APPEARANCE_BLOCK,
         ],
         events: ['valueChanged', 'pressed', 'released'],
     },
@@ -520,6 +534,25 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         events: ['valueChanged', 'scroll'],
     },
     {
+        tag: 'plotter',
+        aliases: [],
+        label: 'Plotter',
+        category: 'value',
+        note:
+            'A scrolling trace: the newest value goes in at `head` and the older ones wrap around behind it. ' +
+            'The crate gives it a head index of its own, which is why it is not the same widget as a chart.',
+        defaultSize: { width: 160, height: 96 },
+        props: [
+            { name: 'values', kind: 'text', label: 'Values', defaultValue: '1,2,3,4,5,6' },
+            { name: 'head', kind: 'int', label: 'Head index', defaultValue: 0, min: 0, max: 255 },
+            { name: 'min', kind: 'float', label: 'Minimum', defaultValue: 0 },
+            { name: 'max', kind: 'float', label: 'Maximum', defaultValue: 10 },
+            APPEARANCE_ACCENT,
+            ...APPEARANCE_BLOCK,
+        ],
+        events: [],
+    },
+    {
         tag: 'spinbox',
         aliases: [],
         label: 'Spinbox',
@@ -545,7 +578,9 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         aliases: [],
         label: 'Number picker',
         category: 'input',
-        unavailable: CRATE_DEFECT + "there is no add_number_picker -- error[E0599]",
+        note:
+            'A number with a unit beside it. The crate\'s picker paints its own rounded card and reads no ' +
+            'colours at all, so this one offers none: a colour field here would change nothing on the glass.',
         defaultSize: { width: 96, height: 28 },
         props: [
             { name: 'min', kind: 'int', label: 'Minimum', defaultValue: 0 },
@@ -560,13 +595,18 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         aliases: [],
         label: 'Time picker',
         category: 'input',
-        unavailable: CRATE_DEFECT + "there is no add_time_picker -- error[E0599]",
+        note: 'A clock face showing an hour and a minute, on either a 12- or 24-hour dial.',
         defaultSize: { width: 120, height: 32 },
         props: [
             { name: 'hour', kind: 'int', label: 'Hour', defaultValue: 12, min: 0, max: 23 },
             { name: 'minute', kind: 'int', label: 'Minute', defaultValue: 0, min: 0, max: 59 },
             { name: 'is_12h', kind: 'bool', label: '12-hour clock', defaultValue: true },
             { name: 'is_pm', kind: 'bool', label: 'PM', defaultValue: false },
+            // The crate's clock paints the field being edited in its accent, which is the one colour of its
+            // own that its renderer reads from the style.
+            APPEARANCE_ACCENT,
+            TEXT_COLOUR_PROPERTY,
+            ...APPEARANCE_BLOCK,
         ],
         events: ['valueChanged'],
     },
@@ -628,11 +668,34 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         aliases: ['sweeping_arc'],
         label: 'Sweeping arc',
         category: 'value',
-        unavailable: CRATE_DEFECT + "add_sweeping_arc takes ten arguments and is called with four -- error[E0061]",
+        note:
+            'A pie sweep around an opaque card: the card is what the value would be drawn on, and the arc shows ' +
+            'in the ring the card leaves. It is not anchored to angles -- the sweep starts at twelve o\'clock ' +
+            'and covers `Progress` of the circle -- so `Arc radius` and `Frame inset` are what decide how much ' +
+            'of it is visible.',
         defaultSize: { width: 96, height: 96 },
         props: [
-            { name: 'start_angle', kind: 'int', label: 'Start angle', defaultValue: 0, min: -32768, max: 32767 },
-            { name: 'end_angle', kind: 'int', label: 'End angle', defaultValue: 270, min: -32768, max: 32767 },
+            // The widget takes these eight values and has no builder that defaults any of them, so every one is
+            // a property with a sensible default rather than something the markup can leave out.
+            { name: 'progress', kind: 'float', label: 'Progress', defaultValue: 0.5, min: 0, max: 1 },
+            { name: 'clockwise', kind: 'bool', label: 'Clockwise', defaultValue: true },
+            {
+                name: 'arc_radius',
+                kind: 'int',
+                label: 'Arc radius',
+                defaultValue: 0,
+                min: 0,
+                max: 480,
+            },
+            // The frame is an opaque rounded card in the *middle* of the widget and it is painted after the
+            // sweep, so the ring the design sees is whatever the card does not cover. At an inset of four the
+            // card hides the sweep almost entirely; fourteen leaves a visible ring at the default radius.
+            { name: 'frame_inset', kind: 'int', label: 'Frame inset', defaultValue: 14, min: 0, max: 64 },
+            { name: 'corner_radius', kind: 'int', label: 'Corner radius', defaultValue: 4, min: 0, max: 64 },
+            { name: 'bg_color', kind: 'color', label: 'Background', defaultValue: '#101010' },
+            { name: 'arc_color', kind: 'color', label: 'Arc colour', defaultValue: '#00a0ff' },
+            { name: 'frame_color', kind: 'color', label: 'Frame colour', defaultValue: '#404040' },
+            ...APPEARANCE_BLOCK,
         ],
         events: [],
     },
@@ -641,20 +704,33 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         aliases: ['spinner'],
         label: 'Busy wheel',
         category: 'value',
-        unavailable: CRATE_DEFECT + "there is no add_busy_wheel -- error[E0599]",
+        note: 'A turning wheel. Turn it by feeding its phase from the animation clock: 0 to 1 is one turn.',
         defaultSize: { width: 48, height: 48 },
-        props: [{ name: 'active', kind: 'bool', label: 'Spinning', defaultValue: true }],
+        props: [
+            // The crate's spinner is a `phase`, not an on/off switch: it draws where you tell it to, and the
+            // application is what moves it. A boolean could not express a quarter turn.
+            { name: 'phase', kind: 'float', label: 'Phase', defaultValue: 0, min: 0, max: 1 },
+            APPEARANCE_ACCENT,
+            ...APPEARANCE_BLOCK,
+        ],
         events: [],
     },
     {
         tag: 'chart',
-        aliases: ['plotter'],
+        aliases: [],
         label: 'Chart',
         category: 'value',
-        unavailable: CRATE_DEFECT + "add_plotter takes (values, head, min, max) and is called with a ChartMode -- error[E0061]",
+        note:
+            'A filled graph of a series. The design carries the values it starts with, and the application can ' +
+            'replace them as they change.',
         defaultSize: { width: 160, height: 96 },
         props: [
-            { name: 'mode', kind: 'enum', label: 'Mode', defaultValue: 'line', options: ['line', 'bar'] },
+            { name: 'values', kind: 'text', label: 'Values', defaultValue: '2,5,3,8,6' },
+            { name: 'min', kind: 'float', label: 'Minimum', defaultValue: 0 },
+            { name: 'max', kind: 'float', label: 'Maximum', defaultValue: 10 },
+            // The crate draws the series with the resolved style's accent, so this is the series colour.
+            APPEARANCE_ACCENT,
+            ...APPEARANCE_BLOCK,
         ],
         events: [],
     },
@@ -663,9 +739,13 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         aliases: [],
         label: 'Status bar',
         category: 'value',
-        unavailable: CRATE_DEFECT + "there is no add_status_bar -- error[E0599]",
+        note: 'A strip with the time on it, drawn from its own style.',
         defaultSize: { width: 240, height: 24 },
-        props: [{ name: 'time', kind: 'text', label: 'Time', defaultValue: '12:00' }],
+        props: [
+            { name: 'time', kind: 'text', label: 'Time', defaultValue: '12:00' },
+            TEXT_COLOUR_PROPERTY,
+            ...APPEARANCE_BLOCK,
+        ],
         events: [],
     },
     {
@@ -673,11 +753,15 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         aliases: [],
         label: 'Content indicator',
         category: 'value',
-        unavailable: CRATE_DEFECT + "there is no add_content_indicator -- error[E0599]",
+        note:
+            'A chevron rather than dots: the crate draws one arrow, up or down, and which way it points comes ' +
+            'from whether the active item is the last of the count. `Crumbs` is the widget that draws dots.',
         defaultSize: { width: 72, height: 16 },
         props: [
             { name: 'count', kind: 'int', label: 'Count', defaultValue: 3, min: 1, max: 255 },
             { name: 'active', kind: 'int', label: 'Active index', defaultValue: 0, min: 0, max: 255 },
+            APPEARANCE_ACCENT,
+            ...APPEARANCE_BLOCK,
         ],
         events: [],
     },
@@ -686,11 +770,15 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         aliases: ['crumbs_indicator'],
         label: 'Crumbs indicator',
         category: 'value',
-        unavailable: CRATE_DEFECT + "there is no add_crumbs_indicator -- error[E0599]",
+        note:
+            'A row of dots, one per item, with the active one larger and in the accent. The inactive dots use a ' +
+            'colour of the crate\'s own, so they are not part of the design.',
         defaultSize: { width: 72, height: 16 },
         props: [
             { name: 'count', kind: 'int', label: 'Count', defaultValue: 3, min: 1, max: 255 },
             { name: 'active', kind: 'int', label: 'Active index', defaultValue: 0, min: 0, max: 255 },
+            APPEARANCE_ACCENT,
+            ...APPEARANCE_BLOCK,
         ],
         events: [],
     },
@@ -941,12 +1029,18 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         aliases: ['vector_path'],
         label: 'Vector path',
         category: 'shape',
-        unavailable: CRATE_DEFECT + "the generated path code names Point, which is never imported, and builds PathVerb::QuadTo as a tuple variant where the runtime declares a struct variant -- error[E0433]",
+        // Board-side now: `rusty-gui-widgets` flattens the commands and strokes them through the canvas, so a
+        // path is drawn rather than making the generated file fail to compile.
+        draws: 'path',
+        note:
+            'An outline from SVG-style path commands, in pixels from the widget\'s top-left corner. It is ' +
+            'stroked, not filled, and curves are drawn as a fixed number of straight segments.',
         defaultSize: { width: 96, height: 96 },
         props: [
-            { name: 'stroke_width', kind: 'int', label: 'Stroke width', defaultValue: 1, min: 1, max: 32 },
             // The SVG path data the parser turns into verbs; free text, since it is a mini-language.
             { name: 'd', kind: 'text', label: 'Path data', defaultValue: 'M 0 0 L 32 32 Z' },
+            { name: 'stroke_width', kind: 'int', label: 'Stroke width', defaultValue: 1, min: 1, max: 32 },
+            { name: 'colour', kind: 'color', label: 'Colour', defaultValue: '#ffffff' },
         ],
         events: [],
     },
@@ -1010,15 +1104,27 @@ const PROPERTY_HELP: Record<string, string> = {
     accent: 'Colour of the part that shows the control is on, chosen or focused',
     accent_color: 'Colour of the underline under the digit being changed',
     active: 'Whether the spinner is turning',
+    arc_color: 'Colour of the sweeping part of the arc',
+    arc_radius: 'Radius of the arc in pixels. Zero fits it to the widget',
+    bg_color: 'Colour of the disc behind the arc',
+    frame_color: 'Colour of the arc\'s frame',
     border_width: 'How thick the border is, in pixels. A border colour asks for a border; this thickens it',
     box_color: 'Colour of the checkbox\'s own box outline',
     box_size: 'How big the checkbox\'s box is, in pixels. Zero keeps the crate\'s own eight-pixel rule',
     chevron_color: 'Colour of the outline around the minus and plus buttons',
+    clockwise: 'Which way the arc sweeps',
+    colour: 'Colour to stroke the path in',
     needle_color: 'Colour of the gauge\'s needle',
     off_color: 'Colour of a switch\'s track while it is off',
+    phase: 'How far round the wheel has turned, 0 to 1',
+    progress: 'How full the arc is, 0 to 1',
+    track_border: 'Colour of the outline around the switch itself, not the frame',
+    track_border_width: 'How thick that outline is; zero leaves the switch bare',
     show_labels: 'Whether the numbers beside the gauge\'s major ticks are drawn',
     show_needle: 'Whether the gauge\'s needle is drawn at all',
     tick_color: 'Colour of the gauge\'s ticks',
+    head: 'Which value is the newest one; the older ones wrap around behind it',
+    values: 'The numbers to draw, separated by commas',
     align: 'Where the parts sit inside the widget',
     bg: 'Background colour, drawn instead of the base style\'s fill',
     border_color: 'Colour of the border',
@@ -1034,6 +1140,7 @@ const PROPERTY_HELP: Record<string, string> = {
     disabled_fg: 'Foreground while it cannot be used',
     end_angle: 'Where the arc stops, in degrees clockwise from the top',
     fade: 'Whether the items fade out towards the edges',
+    frame_inset: 'Pixels between the arc\'s frame and the arc itself',
     fg: 'Colour of the part that fills or moves: a progress bar\'s fill, a slider\'s knob',
     fill: 'Fill colour',
     fit: 'How the image is fitted into its box',
@@ -1097,6 +1204,9 @@ const PROPERTY_HELP: Record<string, string> = {
 /** The properties whose meaning depends on the widget they belong to. */
 const TAG_PROPERTY_HELP: Record<string, string> = {
     'checkbox.box_size': 'Zero keeps the crate\'s own rule: the row height, up to eight pixels',
+    'arc.arc_radius': 'Zero fits the arc to the widget\'s shorter side',
+    'busy_wheel.phase': 'One full turn is 0 to 1; feed it from your animation clock',
+    'plotter.head': 'Which value is the newest one; the older ones wrap around behind it',
     'scale.start_angle': 'Degrees clockwise from the right, so 135 starts at the lower left and 270 at the top',
     'scale.mode': 'A dial, or a bar that runs down or across',
     'chart.mode': 'A line through the points, or bars',
@@ -1129,7 +1239,7 @@ const WIDGET_HELP: Record<string, string> = {
     scale: 'A gauge, as a dial or a bar',
     arc: 'A sweeping arc',
     busy_wheel: 'A spinner for work in progress',
-    chart: 'A line or bar plot',
+    chart: 'A filled graph of a series of values',
     status_bar: 'A strip with a clock',
     content_indicator: 'Dots showing where you are in a set',
     crumbs: 'A trail of position markers',
@@ -1146,6 +1256,7 @@ const WIDGET_HELP: Record<string, string> = {
     circle: 'A circle the crate paints from the cell rect',
     triangle: 'A triangle whose three points you can drag anywhere in its box',
     path: 'A vector outline built from SVG path data',
+    plotter: 'A scrolling trace of a series of values',
 };
 
 /** The help for one property of one widget, or `undefined` if it has none. */

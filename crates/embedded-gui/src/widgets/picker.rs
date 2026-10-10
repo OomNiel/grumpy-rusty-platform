@@ -220,7 +220,9 @@ impl TimePickerWidget {
 
         let start_x =
             bounds.x + (bounds.w as i32 - (cell_w as i32 * num_fields as i32 + total_spacing)) / 2;
-        let cell_y = bounds.y + ((bounds.h - cell_h) / 2) as i32;
+        // `cell_h` floors at 24, so a rect shorter than that used to underflow `bounds.h - cell_h` and panic
+        // in debug builds. A widget that a design can resize must not do that.
+        let cell_y = bounds.y + ((bounds.h.saturating_sub(cell_h)) / 2) as i32;
 
         let fields = if self.format == TimeFormat::Hour12 {
             [

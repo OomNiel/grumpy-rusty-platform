@@ -11,6 +11,53 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.68] - 2026-10-09
+
+### Added
+
+- **Every tag the markup supports can be built now.** Ten tags were documented but refused — the Toolbox would
+  not hand out a control whose generated code did not compile, and the validator explained why if a design
+  already contained one. Six were generator bugs (a **Slider** whose float value arrived in the wrong order and
+  the wrong type; a **Sweeping arc** that was not the widget the runtime has; a **Busy wheel** calling a builder
+  that does not exist; a **Chart** and a **Plotter** sharing one tag with a mode neither has; a **Vector path**
+  that generated code naming types that do not exist), and five were widgets the runtime shipped as drawings the
+  engine could not reach (**Status bar**, **Time picker**, **Number picker**, **Content indicator**, **Crumbs**).
+  All ten generate compiling code and are offered again; the `unavailable` list is empty.
+- **A Vector path is a real shape now**, drawn by `rusty-gui-widgets` through `add_custom_widget`: SVG-style
+  commands in pixels from the widget's corner, stroked in its own colour, with curves flattened into a fixed
+  twelve segments each so the board and the canvas walk the same line.
+- **A Toggle's switch can have an outline of its own** — `Track outline` and `Track outline width` — separate
+  from the frame that `Border colour`/`Border width` draw.
+
+### Changed
+
+- **A Chart and a Plotter are two widgets, not one.** A chart is a filled graph of a series; a plotter is a
+  scrolling trace with a head index where the newest value goes in. Each carries the series it starts with
+  (`Values`, e.g. `2,5,3,8,6`), and each gained an `Accent` — the colour the crate draws the series in.
+- **A Slider's value is a decimal**, not a whole number: the crate's slider is a float widget, and its whole
+  numbers were a limit of the markup rather than of the widget.
+- **A Sweeping arc's parameters are the widget's own**: `Progress`, `Clockwise`, `Arc radius`, `Frame inset`,
+  `Corner radius` and its three colours, replacing the start/end angles the runtime never had. `Frame inset`
+  now defaults to 14 rather than 4, because the frame is an opaque card painted over the sweep and the old
+  default hid the arc completely in a freshly dropped widget.
+- **The Number picker offers no colours**, because the crate's picker paints its own card and reads none: a
+  colour field there would have changed nothing on the glass.
+- The **Content indicator** is described as what it is — a chevron pointing up or down — rather than as a row of
+  dots, which is the Crumbs widget.
+
+### Fixed
+
+- A latent panic in the crate's time picker: it floors its cell height at 24 pixels and then subtracted it from
+  the bounds, so any time picker shorter than that underflowed. The default size was taller, which is why it had
+  never been hit.
+
+### Notes
+
+- The hermetic suite is at 845, the vendored runtime's own tests at 232, the codegen fork's at 22 and the shapes
+  crate's at 19. The host simulator now carries all eleven tags in its fixture: the generated calls compile
+  against the vendored runtime and painting them changes 67854 pixels inside 27 measured regions and none
+  outside them.
+
 ## [0.0.67] - 2026-10-09
 
 ### Added

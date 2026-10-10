@@ -351,3 +351,206 @@ test('a spinbox draws its chevrons only when the inner width reaches eighty', ()
     const narrow = boot(documentWith({ ...widgetOf('spinbox', { value: 7, chevron_color: '#0000ff' }), width: 70 }));
     equal(fillsWithColour(narrow.calls, css565('#0000ff')).length, 0, 'a 70-pixel one draws none');
 });
+
+// ---------------------------------------------------------------------------
+// The eleven tags whose painters are new, and the toggle's track outline
+//
+// Every colour below is deliberately one no other property or crate default uses, so a colour assertion
+// cannot pass because something else happened to share it.
+// ---------------------------------------------------------------------------
+
+/** The pixel positions a colour is painted at, as an `x,y` set, so two shapes can be compared. */
+function pixelSet(calls, colour) {
+    return new Set(
+        calls
+            .filter((call, index) => call.method === 'fillRect' && fillColourAt(calls, index) === colour)
+            .map((call) => `${call.args[0]},${call.args[1]}`),
+    );
+}
+
+/** The `rgb(...)` `preview.ts`'s `css` makes of raw 5/6/5 components, for a colour with no hex property. */
+function css565Raw(r, g, b) {
+    return `rgb(${((r << 3) | (r >> 2)) & 0xff},${((g << 2) | (g >> 4)) & 0xff},${((b << 3) | (b >> 2)) & 0xff})`;
+}
+
+/** `Style::panel()`'s accent (`style.rs`), which a chart, plotter and time picker draw with: none of the three
+ * exposes an `accent` property, so this is the colour their own contents always wear. */
+const PANEL_ACCENT = css565Raw(0, 42, 31);
+
+function sameSet(a, b) {
+    if (a.size !== b.size) {
+        return false;
+    }
+    for (const value of a) {
+        if (!b.has(value)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+test('the slider is previewed and its float range and style colours reach the track and knob', () => {
+    const at = (props) => boot(documentWith(widgetOf('slider', { text_color: '#12ab34', accent: '#45cd67', ...props })));
+    const low = at({ value: 0, min: 0, max: 100 });
+    notOk(fillTextArgs(low.calls).includes('Slider'), 'the slider is not the fallback outline');
+    const track = fillsWithColour(low.calls, css565('#12ab34'));
+    ok(track.some((call) => call.args[3] === 1 && call.args[2] > 1), 'the track is a one-pixel line in text_color');
+    const knobLeft = (calls) =>
+        Math.min(...fillsWithColour(calls, css565('#45cd67')).filter((call) => call.args[2] === 3 && call.args[3] === 5).map((call) => call.args[0]));
+    const lowX = knobLeft(low.calls);
+    ok(Number.isFinite(lowX), 'the knob is a three-by-five block in the accent');
+    const highX = knobLeft(at({ value: 100, min: 0, max: 100 }).calls);
+    ok(highX > lowX, `a full value moves the knob right (${highX} > ${lowX})`);
+    // A fractional value lands between the ends, which the old int-only markup could not express.
+    const midX = knobLeft(at({ value: 12.5, min: 0, max: 100 }).calls);
+    ok(midX > lowX && midX < highX, `a fractional value lands between the ends (${lowX} < ${midX} < ${highX})`);
+});
+
+test('the sweeping arc is previewed and its progress fills more of the ring', () => {
+    const at = (progress) =>
+        boot(
+            documentWith(
+                widgetOf('arc', {
+                    progress,
+                    clockwise: true,
+                    arc_radius: 60,
+                    frame_inset: 4,
+                    corner_radius: 4,
+                    bg_color: '#101010',
+                    arc_color: '#12ab34',
+                    frame_color: '#404040',
+                }),
+            ),
+        );
+    const quarter = at(0.25);
+    notOk(fillTextArgs(quarter.calls).includes('Sweeping arc'), 'the arc is not the fallback outline');
+    const quarterPixels = pixelSet(quarter.calls, css565('#12ab34'));
+    const threeQuarterPixels = pixelSet(at(0.75).calls, css565('#12ab34'));
+    ok(quarterPixels.size > 0, 'a quarter turn paints some of the arc');
+    ok(
+        threeQuarterPixels.size > quarterPixels.size,
+        `three quarters paints more (${threeQuarterPixels.size} > ${quarterPixels.size})`,
+    );
+});
+
+test('the busy wheel is previewed and its phase moves the spokes', () => {
+    const at = (phase) => boot(documentWith(widgetOf('busy_wheel', { phase, accent: '#12ab34' })));
+    const zero = at(0);
+    notOk(fillTextArgs(zero.calls).includes('Busy wheel'), 'the wheel is not the fallback outline');
+    const zeroPixels = pixelSet(zero.calls, css565('#12ab34'));
+    const halfPixels = pixelSet(at(0.5).calls, css565('#12ab34'));
+    ok(zeroPixels.size > 0, 'phase zero paints a spoke');
+    ok(halfPixels.size > 0, 'phase a half paints a spoke');
+    notOk(sameSet(zeroPixels, halfPixels), 'the two phases paint different pixels');
+});
+
+test('the chart is previewed and a different series draws a different shape', () => {
+    const at = (values) => boot(documentWith(widgetOf('chart', { values, min: 0, max: 10 })));
+    const rising = at('1,2,3,4,5,6');
+    notOk(fillTextArgs(rising.calls).includes('Chart'), 'the chart is not the fallback outline');
+    const risingPixels = pixelSet(rising.calls, PANEL_ACCENT);
+    ok(risingPixels.size > 0, 'the chart draws its line');
+    notOk(sameSet(risingPixels, pixelSet(at('1,9,1,9,1,9').calls, PANEL_ACCENT)), 'a different series draws a different shape');
+    // No parseable values is the crate's empty case: the block, and no series.
+    equal(pixelSet(at('nope, also-nope').calls, PANEL_ACCENT).size, 0, 'a chart with no parseable values draws no series');
+});
+
+test('the plotter is previewed and honours its head index', () => {
+    const at = (overrides) =>
+        boot(documentWith(widgetOf('plotter', { values: '1,2,3,4,5,6', min: 0, max: 10, ...overrides })));
+    const zero = at({ head: 0 });
+    notOk(fillTextArgs(zero.calls).includes('Plotter'), 'the plotter is not the fallback outline');
+    const zeroPixels = pixelSet(zero.calls, PANEL_ACCENT);
+    ok(zeroPixels.size > 0, 'the plotter draws its trace');
+    notOk(sameSet(zeroPixels, pixelSet(at({ head: 3 }).calls, PANEL_ACCENT)), 'a different head draws a different trace');
+    equal(pixelSet(at({ values: '' }).calls, PANEL_ACCENT).size, 0, 'no values draws no trace');
+});
+
+test('the vector path is previewed and strokes the segments its d commands describe', () => {
+    const at = (overrides) => boot(documentWith(widgetOf('path', { colour: '#12ab34', ...overrides })));
+    const thin = at({ d: 'M 10 10 L 40 10', stroke_width: 1 });
+    notOk(fillTextArgs(thin.calls).includes('Vector path'), 'the path is not the fallback outline');
+    const thinPixels = pixelSet(thin.calls, css565('#12ab34'));
+    ok(thinPixels.has(`${40 + 10},${60 + 10}`), 'the segment starts at the widget origin plus M 10 10');
+    ok(thinPixels.has(`${40 + 40},${60 + 10}`), 'and ends at the origin plus L 40 10');
+    const thickPixels = pixelSet(at({ d: 'M 10 10 L 40 10', stroke_width: 3 }).calls, css565('#12ab34'));
+    ok(thickPixels.size > thinPixels.size, `stroke_width 3 stamps more lines (${thickPixels.size} > ${thinPixels.size})`);
+});
+
+test('the toggle track outline appears only with a colour and a width above zero', () => {
+    const outline = css565('#12ab34');
+    const outlined = boot(documentWith(widgetOf('toggle', { track_border: '#12ab34', track_border_width: 1 })));
+    ok(fillsWithColour(outlined.calls, outline).length > 0, 'a colour and a width draw the track outline');
+    const zeroWidth = boot(documentWith(widgetOf('toggle', { track_border: '#12ab34', track_border_width: 0 })));
+    equal(fillsWithColour(zeroWidth.calls, outline).length, 0, 'a zero width draws no outline');
+    const noColour = boot(documentWith(widgetOf('toggle', { track_border: '', track_border_width: 2 })));
+    equal(fillsWithColour(noColour.calls, outline).length, 0, 'an unset colour draws no outline');
+});
+
+test('the status bar is previewed and shows its time', () => {
+    const at = (time) => boot(documentWith(widgetOf('status_bar', { time, text_color: '#12ab34' })));
+    const eleven = at('11:11');
+    notOk(fillTextArgs(eleven.calls).includes('11:11'), 'the time is glyph pixels, not the fallback fillText');
+    const elevenPixels = pixelSet(eleven.calls, css565('#12ab34'));
+    ok(elevenPixels.size > 0, 'the clock is painted in the design text colour');
+    notOk(sameSet(elevenPixels, pixelSet(at('00:00').calls, css565('#12ab34'))), 'a different time paints different digits');
+});
+
+test('the time picker is previewed and shows its hour, minute and 12/24-hour form', () => {
+    const at = (overrides) => boot(documentWith(widgetOf('time_picker', { text_color: '#45cd67', ...overrides })));
+    const base = at({ hour: 9, minute: 45, is_12h: true, is_pm: true });
+    notOk(fillTextArgs(base.calls).includes('Time picker'), 'the picker is not the fallback outline');
+    // No `accent` property exists on the tag, so the focused cell wears the base style's own accent.
+    const accent = PANEL_ACCENT;
+    const text = css565('#45cd67');
+    ok(pixelSet(base.calls, accent).size > 0, 'the focused hour cell paints the style accent');
+    notOk(
+        sameSet(pixelSet(base.calls, accent), pixelSet(at({ hour: 10, minute: 45, is_12h: true, is_pm: true }).calls, accent)),
+        'a different hour paints different hour digits',
+    );
+    notOk(
+        sameSet(pixelSet(base.calls, text), pixelSet(at({ hour: 9, minute: 46, is_12h: true, is_pm: true }).calls, text)),
+        'a different minute paints different minute digits',
+    );
+    ok(
+        pixelSet(at({ hour: 9, minute: 45, is_12h: false, is_pm: true }).calls, text).size < pixelSet(base.calls, text).size,
+        '12-hour mode adds the AM/PM segment the 24-hour form does not have',
+    );
+});
+
+test('the number picker is previewed and shows its value and unit', () => {
+    const at = (overrides) => boot(documentWith(widgetOf('number_picker', { min: 0, max: 100, ...overrides })));
+    const white = css565('#ffffff');
+    const bpm = at({ value: 42, unit: 'BPM' });
+    notOk(fillTextArgs(bpm.calls).includes('BPM'), 'the unit is glyph pixels, not the fallback fillText');
+    ok(pixelSet(bpm.calls, white).size > 0, 'the picker paints its value');
+    notOk(sameSet(pixelSet(bpm.calls, white), pixelSet(at({ value: 43, unit: 'BPM' }).calls, white)), 'a different value paints different digits');
+    notOk(sameSet(pixelSet(bpm.calls, white), pixelSet(at({ value: 42, unit: '' }).calls, white)), 'a different unit paints different text');
+});
+
+test('the content indicator shows its direction and the crumbs their dots', () => {
+    const accent = css565('#12ab34');
+
+    const down = boot(documentWith(widgetOf('content_indicator', { count: 3, active: 0, accent: '#12ab34' })));
+    notOk(fillTextArgs(down.calls).includes('Content indicator'), 'the indicator is not the fallback outline');
+    const downPixels = pixelSet(down.calls, accent);
+    ok(downPixels.size > 0, 'the indicator paints its arrow in the accent');
+    const up = boot(documentWith(widgetOf('content_indicator', { count: 3, active: 2, accent: '#12ab34' })));
+    notOk(sameSet(downPixels, pixelSet(up.calls, accent)), 'the active index flips the arrow direction');
+    // `count` 0 is the widget's own empty case: `count > 1` is false, so the hint still points down.
+    const none = boot(documentWith(widgetOf('content_indicator', { count: 0, active: 0, accent: '#12ab34' })));
+    ok(sameSet(downPixels, pixelSet(none.calls, accent)), 'count 0 is treated as "more below", like the widget');
+
+    const crumbs = boot(documentWith(widgetOf('crumbs', { count: 4, active: 1, accent: '#12ab34' })));
+    notOk(fillTextArgs(crumbs.calls).includes('Crumbs indicator'), 'the crumbs are not the fallback outline');
+    const activeRows = fillsWithColour(crumbs.calls, accent).filter((call) => call.args[3] === 1 && call.args[2] === 7);
+    equal(activeRows.length, 1, 'exactly one accent dot is three pixels in radius');
+    const inactiveRows = fillsWithColour(crumbs.calls, css565('#505050')).filter((call) => call.args[3] === 1 && call.args[2] === 5);
+    equal(inactiveRows.length, 3, 'the other three dots are the crate\'s smaller radius');
+    // Start = x + (72-22)/2 + 2 = x+27; dot 1 centre = start+6; the widest row starts three to its left.
+    equal(activeRows[0].args[0], 40 + 27 + 6 - 3, 'the accented dot is the one the active index names');
+
+    // A zero count is the crumbs widget's empty case: it returns before painting any dot.
+    const empty = boot(documentWith(widgetOf('crumbs', { count: 0, active: 0, accent: '#12ab34' })));
+    equal(fillsWithColour(empty.calls, accent).length, 0, 'a zero-count crumbs paints no dots');
+});

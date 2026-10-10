@@ -456,3 +456,195 @@ fn draw_thick_line(
 
 // NOTE: `VectorPath` is deferred. Its codegen arm still emits `add_panel` (a stub
 // panel) until a `Path` CustomWidget replays `PathVerb`s through `draw_line`.
+
+/// One command in a [`VectorPath`], in design pixels relative to the widget's top-left corner.
+///
+/// The variants are **struct** variants with named fields, and that is the point: the runtime's own
+/// `render::stroke::PathVerb` is declared the same way, and a generated file that built a tuple variant would
+/// not compile. This enum exists rather than reusing the runtime's so that the shape of a path is this crate's
+/// business -- the code generator writes these literals, and the two now agree by construction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PathVerb {
+    MoveTo { x: i32, y: i32 },
+    LineTo { x: i32, y: i32 },
+    /// A quadratic curve: one control point, then the end point.
+    QuadTo { cx: i32, cy: i32, x: i32, y: i32 },
+    /// A cubic curve: two control points, then the end point.
+    CubicTo { c1x: i32, c1y: i32, c2x: i32, c2y: i32, x: i32, y: i32 },
+    /// A straight line back to the point the current subpath started at.
+    Close,
+}
+
+/// How many straight segments a curve is flattened into, per command.
+///
+/// A fixed count rather than an adaptive one, because the glass pays for each segment with an address window:
+/// a design should be able to predict what a curve costs, and 12 is enough for a widget-sized curve at this
+/// screen resolution. It is also what makes the canvas replica and the board agree -- both flatten the same
+/// way, from the same verbs, with the same number.
+pub const CURVE_STEPS: i32 = 12;
+
+/// A vector outline: an SVG-like list of path commands, stroked in the design's colour.
+///
+/// Coordinates are pixels relative to the widget's top-left, which is what an SVG path is and what the designer
+/// writes. The path is *not* scaled to its cell: a 32x32 path in a 96x96 widget draws 32x32 in its corner, and
+/// resizing the widget moves the path with it rather than magnifying it. Curves are flattened to straight
+/// segments (`CURVE_STEPS` each); everything is stroked through the canvas's own `draw_line`, so the board and
+/// the canvas show the same segments rather than two rasterisers that agree only sometimes.
+///
+/// A `stroke_width` above one stamps the same segment several times with small offsets, the way the crate's own
+/// pen does, because `CustomCanvas` has a one-pixel line and no pen width.
+pub struct VectorPath {
+    pub stroke_width: u8,
+    pub colour: Option<Rgb565>,
+    pub verbs: &'static [PathVerb],
+}
+
+impl VectorPath {
+    /// Strokes one segment, with the pen's width spread symmetrically around it.
+    fn stroke(
+        canvas: &mut dyn CustomCanvas,
+        rect: Rect,
+        from: (i32, i32),
+        to: (i32, i32),
+        colour: Rgb565,
+        half: i32,
+    ) -> Result<(), GuiError> {
+        // The cell's origin is added here rather than in the design's coordinates, so a path is written
+        // relative to its widget and the widget can be moved without touching the path.
+        let (ax, ay) = (rect.x + from.0, rect.y + from.1);
+        let (bx, by) = (rect.x + to.0, rect.y + to.1);
+        for oy in -half..=half {
+            for ox in -half..=half {
+                canvas.draw_line((ax + ox, ay + oy), (bx + ox, by + oy), colour)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// One quadratic curve, as straight segments through the de Casteljau construction.
+    fn quad(
+        canvas: &mut dyn CustomCanvas,
+        rect: Rect,
+        from: (i32, i32),
+        control: (i32, i32),
+        to: (i32, i32),
+        colour: Rgb565,
+        half: i32,
+    ) -> Result<(), GuiError> {
+        let mut previous = from;
+        for step in 1..=CURVE_STEPS {
+            let t = step;
+            let inv = CURVE_STEPS - step;
+            // (1-t)^2 p0 + 2(1-t)t c + t^2 p1, in integer arithmetic scaled by CURVE_STEPS^2.
+            let denominator = CURVE_STEPS * CURVE_STEPS;
+            let x = (inv * inv * from.0 + 2 * inv * t * control.0 + t * t * to.0) / denominator;
+            let y = (inv * inv * from.1 + 2 * inv * t * control.1 + t * t * to.1) / denominator;
+            Self::stroke(canvas, rect, previous, (x, y), colour, half)?;
+            previous = (x, y);
+        }
+        Ok(())
+    }
+
+    /// One cubic curve, flattened the same way.
+    fn cubic(
+        canvas: &mut dyn CustomCanvas,
+        rect: Rect,
+        from: (i32, i32),
+        first: (i32, i32),
+        second: (i32, i32),
+        to: (i32, i32),
+        colour: Rgb565,
+        half: i32,
+    ) -> Result<(), GuiError> {
+        let mut previous = from;
+        for step in 1..=CURVE_STEPS {
+            let t = step;
+            let inv = CURVE_STEPS - step;
+            let denominator = CURVE_STEPS * CURVE_STEPS * CURVE_STEPS;
+            let x = (inv * inv * inv * from.0
+                + 3 * inv * inv * t * first.0
+                + 3 * inv * t * t * second.0
+                + t * t * t * to.0)
+                / denominator;
+            let y = (inv * inv * inv * from.1
+                + 3 * inv * inv * t * first.1
+                + 3 * inv * t * t * second.1
+                + t * t * t * to.1)
+                / denominator;
+            Self::stroke(canvas, rect, previous, (x, y), colour, half)?;
+            previous = (x, y);
+        }
+        Ok(())
+    }
+}
+
+impl CustomWidget for VectorPath {
+    fn render(
+        &self,
+        canvas: &mut dyn CustomCanvas,
+        rect: Rect,
+        _style: &WidgetStyle,
+        _state: VisualState,
+    ) -> Result<(), GuiError> {
+        let colour = match self.colour {
+            Some(colour) => colour,
+            None => return Ok(()),
+        };
+        if self.verbs.is_empty() || rect.w == 0 || rect.h == 0 {
+            return Ok(());
+        }
+        let half = (self.stroke_width.max(1) as i32) >> 1;
+
+        let mut pen = (0i32, 0i32);
+        let mut start = (0i32, 0i32);
+        let mut open = false;
+        for verb in self.verbs {
+            match *verb {
+                PathVerb::MoveTo { x, y } => {
+                    pen = (x, y);
+                    start = (x, y);
+                    open = true;
+                }
+                PathVerb::LineTo { x, y } => {
+                    // A `LineTo` before any `MoveTo` starts a subpath at the origin, which is what the SVG
+                    // grammar means by it: the pen is already there.
+                    if !open {
+                        start = pen;
+                        open = true;
+                    }
+                    Self::stroke(canvas, rect, pen, (x, y), colour, half)?;
+                    pen = (x, y);
+                }
+                PathVerb::QuadTo { cx, cy, x, y } => {
+                    if !open {
+                        start = pen;
+                        open = true;
+                    }
+                    Self::quad(canvas, rect, pen, (cx, cy), (x, y), colour, half)?;
+                    pen = (x, y);
+                }
+                PathVerb::CubicTo {
+                    c1x,
+                    c1y,
+                    c2x,
+                    c2y,
+                    x,
+                    y,
+                } => {
+                    if !open {
+                        start = pen;
+                        open = true;
+                    }
+                    Self::cubic(canvas, rect, pen, (c1x, c1y), (c2x, c2y), (x, y), colour, half)?;
+                    pen = (x, y);
+                }
+                PathVerb::Close => {
+                    Self::stroke(canvas, rect, pen, start, colour, half)?;
+                    pen = start;
+                    open = false;
+                }
+            }
+        }
+        Ok(())
+    }
+}

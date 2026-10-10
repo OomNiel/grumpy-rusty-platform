@@ -136,6 +136,8 @@ pub enum WidgetDef {
         label: String,
         checked: bool,
         off_color: Option<String>,
+        track_border: Option<String>,
+        track_border_width: u8,
         style: Option<String>,
     },
     Checkbox {
@@ -148,9 +150,10 @@ pub enum WidgetDef {
     },
     Slider {
         id: Option<String>,
-        min: i32,
-        max: i32,
-        value: i32,
+        min: f32,
+        max: f32,
+        value: f32,
+        style: Option<String>,
     },
     Dropdown {
         id: Option<String>,
@@ -202,20 +205,42 @@ pub enum WidgetDef {
     },
     SweepingArc {
         id: Option<String>,
-        start_angle: i16,
-        end_angle: i16,
+        progress: f32,
+        clockwise: bool,
+        arc_radius: u32,
+        frame_inset: u16,
+        corner_radius: u8,
+        bg_color: String,
+        arc_color: String,
+        frame_color: String,
+        style: Option<String>,
     },
     BusyWheel {
         id: Option<String>,
-        active: bool,
+        phase: f32,
+        style: Option<String>,
     },
+    /// A line chart over a fixed series of points.
+    Chart {
+        id: Option<String>,
+        values: Vec<f32>,
+        min: f32,
+        max: f32,
+        style: Option<String>,
+    },
+    /// A streaming plotter over a fixed series with a moving head.
     Plotter {
         id: Option<String>,
-        mode: String,
+        values: Vec<f32>,
+        head: usize,
+        min: f32,
+        max: f32,
+        style: Option<String>,
     },
     StatusBar {
         id: Option<String>,
         time: String,
+        style: Option<String>,
     },
     TimePicker {
         id: Option<String>,
@@ -223,6 +248,7 @@ pub enum WidgetDef {
         minute: u8,
         is_12h: bool,
         is_pm: bool,
+        style: Option<String>,
     },
     NumberPicker {
         id: Option<String>,
@@ -230,6 +256,7 @@ pub enum WidgetDef {
         max: i32,
         value: i32,
         unit: String,
+        style: Option<String>,
     },
     Dialog {
         id: Option<String>,
@@ -241,11 +268,13 @@ pub enum WidgetDef {
         id: Option<String>,
         count: u8,
         active: u8,
+        style: Option<String>,
     },
     CrumbsIndicator {
         id: Option<String>,
         count: u8,
         active: u8,
+        style: Option<String>,
     },
     Panel {
         id: Option<String>,
@@ -301,6 +330,7 @@ pub enum WidgetDef {
     VectorPath {
         id: Option<String>,
         stroke_width: u8,
+        colour: Option<String>,
         verbs: Vec<PathVerbDef>,
     },
     RectShape {
@@ -379,6 +409,7 @@ impl WidgetDef {
             | WidgetDef::ProgressBar { id, .. }
             | WidgetDef::SweepingArc { id, .. }
             | WidgetDef::BusyWheel { id, .. }
+            | WidgetDef::Chart { id, .. }
             | WidgetDef::Plotter { id, .. }
             | WidgetDef::StatusBar { id, .. }
             | WidgetDef::TimePicker { id, .. }

@@ -217,13 +217,15 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
     where
         S: Into<WidgetStyle>,
     {
-        self.add_toggle_colored(rect, label, on, Rgb565::new(7, 10, 10), style)
+        self.add_toggle_colored(rect, label, on, Rgb565::new(7, 10, 10), None, 0, style)
     }
 
-    /// A toggle whose track colour while *off* is the design's.
+    /// A toggle whose track colour while *off* is the design's, with an optional outline on that track.
     ///
     /// Upstream's `add_toggle` passes a near-black literal for that one colour, so an off switch was invisible
     /// on a dark panel and no markup could change it. The colour when *on* is `style.accent`, as upstream.
+    /// `track_border`/`track_border_width` outline the track: `None` and `0` draw nothing, which is what
+    /// `add_toggle` passes, so its output is unchanged.
     #[cfg(feature = "rich-widgets")]
     pub fn add_toggle_colored<S>(
         &mut self,
@@ -231,6 +233,8 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
         label: &'a str,
         on: bool,
         off_color: Rgb565,
+        track_border: Option<Rgb565>,
+        track_border_width: u8,
         style: S,
     ) -> Result<WidgetId, GuiError>
     where
@@ -242,6 +246,8 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
                 label,
                 on,
                 off_color,
+                track_border,
+                track_border_width,
             },
             style,
         )?;
@@ -929,6 +935,104 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
         S: Into<WidgetStyle>,
     {
         self.add_widget(rect, WidgetKind::Spinner { phase }, style)
+    }
+
+    /// A wearable status bar showing the given clock string.
+    #[cfg(feature = "rich-widgets")]
+    pub fn add_status_bar<S>(
+        &mut self,
+        rect: Rect,
+        time: &'a str,
+        style: S,
+    ) -> Result<WidgetId, GuiError>
+    where
+        S: Into<WidgetStyle>,
+    {
+        self.add_widget(rect, WidgetKind::StatusBar { time }, style)
+    }
+
+    /// A 12- or 24-hour time picker.
+    #[cfg(feature = "rich-widgets")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_time_picker<S>(
+        &mut self,
+        rect: Rect,
+        hour: u8,
+        minute: u8,
+        is_12h: bool,
+        is_pm: bool,
+        style: S,
+    ) -> Result<WidgetId, GuiError>
+    where
+        S: Into<WidgetStyle>,
+    {
+        self.add_widget(
+            rect,
+            WidgetKind::TimePicker {
+                hour,
+                minute,
+                is_12h,
+                is_pm,
+            },
+            style,
+        )
+    }
+
+    /// A numeric range picker with a unit suffix.
+    #[cfg(feature = "rich-widgets")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_number_picker<S>(
+        &mut self,
+        rect: Rect,
+        min: i32,
+        max: i32,
+        value: i32,
+        unit: &'a str,
+        style: S,
+    ) -> Result<WidgetId, GuiError>
+    where
+        S: Into<WidgetStyle>,
+    {
+        self.add_widget(
+            rect,
+            WidgetKind::NumberPicker {
+                value: value.clamp(min.min(max), min.max(max)),
+                min,
+                max,
+                unit,
+            },
+            style,
+        )
+    }
+
+    /// An arrow hinting at scrollable content beyond the edge.
+    #[cfg(feature = "rich-widgets")]
+    pub fn add_content_indicator<S>(
+        &mut self,
+        rect: Rect,
+        count: usize,
+        active: usize,
+        style: S,
+    ) -> Result<WidgetId, GuiError>
+    where
+        S: Into<WidgetStyle>,
+    {
+        self.add_widget(rect, WidgetKind::ContentIndicator { count, active }, style)
+    }
+
+    /// Pagination dots showing position in a set.
+    #[cfg(feature = "rich-widgets")]
+    pub fn add_crumbs_indicator<S>(
+        &mut self,
+        rect: Rect,
+        count: usize,
+        active: usize,
+        style: S,
+    ) -> Result<WidgetId, GuiError>
+    where
+        S: Into<WidgetStyle>,
+    {
+        self.add_widget(rect, WidgetKind::Crumbs { count, active }, style)
     }
 
     #[cfg(feature = "rich-widgets")]
@@ -1732,11 +1836,27 @@ mod fork_tests {
     fn the_switches_track_colours_come_from_the_design() {
         let style = Style::new();
         let mut off = gui();
-        off.add_toggle_colored(Rect::new(0, 0, 80, 20), "x", false, Rgb565::CSS_BLUE, style)
-            .unwrap();
+        off.add_toggle_colored(
+            Rect::new(0, 0, 80, 20),
+            "x",
+            false,
+            Rgb565::CSS_BLUE,
+            None,
+            0,
+            style,
+        )
+        .unwrap();
         let mut on = gui();
-        on.add_toggle_colored(Rect::new(0, 0, 80, 20), "x", true, Rgb565::CSS_BLUE, style)
-            .unwrap();
+        on.add_toggle_colored(
+            Rect::new(0, 0, 80, 20),
+            "x",
+            true,
+            Rgb565::CSS_BLUE,
+            None,
+            0,
+            style,
+        )
+        .unwrap();
         let has_blue = |gui: &GuiContext<'static, 32, 16, 32>| {
             let buffer = render(gui);
             (0..20)
@@ -1881,5 +2001,227 @@ mod fork_tests {
         assert!(drawn(Rgb565::CSS_ORANGE), "the ticks are the design's colour");
         assert!(drawn(Rgb565::CSS_BLUE), "and the needle is too");
         assert!(!drawn(Rgb565::CSS_GRAY), "not upstream's grey ticks");
+    }
+
+    /// Whether any pixel of `rect` is not the buffer's background, i.e. the widget drew in its own cell.
+    fn cell_has_ink(buffer: &TestBuffer, rect: Rect) -> bool {
+        (rect.y..rect.bottom())
+            .flat_map(|y| (rect.x..rect.right()).map(move |x| (x, y)))
+            .any(|(x, y)| buffer.pixel_at(x, y).is_some_and(|pixel| pixel != Rgb565::BLACK))
+    }
+
+    fn cell_has_colour(buffer: &TestBuffer, rect: Rect, colour: Rgb565) -> bool {
+        (rect.y..rect.bottom())
+            .flat_map(|y| (rect.x..rect.right()).map(move |x| (x, y)))
+            .any(|(x, y)| buffer.pixel_at(x, y) == Some(colour))
+    }
+
+    #[test]
+    fn a_toggles_track_outline_is_drawn_only_when_asked_for() {
+        let red = Rgb565::CSS_RED;
+        let has_red = |gui: &GuiContext<'static, 32, 16, 32>| {
+            let buffer = render(gui);
+            cell_has_colour(&buffer, Rect::new(0, 0, 80, 20), red)
+        };
+        let mut outlined = gui();
+        outlined
+            .add_toggle_colored(
+                Rect::new(0, 0, 80, 20),
+                "x",
+                false,
+                Rgb565::CSS_BLUE,
+                Some(red),
+                1,
+                Style::new(),
+            )
+            .unwrap();
+        assert!(has_red(&outlined), "the track outlines in the colour asked for");
+
+        // Neither a missing colour nor a zero width may draw an outline: `add_toggle` passes `None, 0`, so
+        // its output has to stay exactly what upstream drew.
+        let mut absent = gui();
+        absent
+            .add_toggle_colored(
+                Rect::new(0, 0, 80, 20),
+                "x",
+                false,
+                Rgb565::CSS_BLUE,
+                None,
+                1,
+                Style::new(),
+            )
+            .unwrap();
+        assert!(!has_red(&absent), "no colour means no outline");
+
+        let mut zero = gui();
+        zero
+            .add_toggle_colored(
+                Rect::new(0, 0, 80, 20),
+                "x",
+                false,
+                Rgb565::CSS_BLUE,
+                Some(red),
+                0,
+                Style::new(),
+            )
+            .unwrap();
+        assert!(!has_red(&zero), "a zero width means no outline");
+    }
+
+    #[test]
+    fn each_new_widget_paints_inside_its_cell() {
+        let mut design = gui();
+        let status = Rect::new(0, 0, 120, 18);
+        let time = Rect::new(0, 20, 120, 24);
+        let number = Rect::new(0, 46, 120, 18);
+        let content = Rect::new(140, 0, 40, 30);
+        let crumbs = Rect::new(140, 40, 40, 20);
+        design.add_status_bar(status, "10:42", Style::new()).unwrap();
+        design
+            .add_time_picker(time, 10, 30, true, false, Style::new())
+            .unwrap();
+        design
+            .add_number_picker(number, 0, 100, 42, "BPM", Style::new())
+            .unwrap();
+        design
+            .add_content_indicator(content, 3, 1, Style::new())
+            .unwrap();
+        design
+            .add_crumbs_indicator(crumbs, 5, 2, Style::new())
+            .unwrap();
+
+        let buffer = render(&design);
+        assert!(cell_has_ink(&buffer, status), "a status bar paints its strip");
+        assert!(cell_has_ink(&buffer, time), "a time picker paints its cells");
+        assert!(
+            cell_has_ink(&buffer, number),
+            "a number picker paints its card"
+        );
+        assert!(
+            cell_has_ink(&buffer, content),
+            "a content indicator paints its arrow"
+        );
+        assert!(cell_has_ink(&buffer, crumbs), "crumbs paint their dots");
+    }
+
+    #[test]
+    fn the_new_widgets_properties_can_be_read_and_written() {
+        let mut gui = gui();
+        let bar = gui
+            .add_status_bar(Rect::new(0, 0, 120, 18), "10:42", Style::new())
+            .unwrap();
+        assert_eq!(
+            gui.get_widget_property(bar, PropertyKey::Text),
+            Some(PropertyValue::Str("10:42"))
+        );
+        gui.set_widget_property(bar, PropertyKey::Text, PropertyValue::Str("07:15"))
+            .expect("a status bar's clock string can be set");
+        assert_eq!(
+            gui.get_widget_property(bar, PropertyKey::Text),
+            Some(PropertyValue::Str("07:15"))
+        );
+
+        let picker = gui
+            .add_number_picker(Rect::new(0, 20, 120, 18), 0, 100, 42, "BPM", Style::new())
+            .unwrap();
+        assert_eq!(
+            gui.get_widget_property(picker, PropertyKey::Value),
+            Some(PropertyValue::Int(42))
+        );
+        assert_eq!(
+            gui.get_widget_property(picker, PropertyKey::Min),
+            Some(PropertyValue::Int(0))
+        );
+        assert_eq!(
+            gui.get_widget_property(picker, PropertyKey::Max),
+            Some(PropertyValue::Int(100))
+        );
+        gui.set_widget_property(picker, PropertyKey::Value, PropertyValue::Int(7))
+            .expect("a number picker's value can be set");
+        assert_eq!(
+            gui.get_widget_property(picker, PropertyKey::Value),
+            Some(PropertyValue::Int(7))
+        );
+        // Out of range clamps against the range the design named, as the spinbox and the gauge do.
+        gui.set_widget_property(picker, PropertyKey::Value, PropertyValue::Int(500))
+            .unwrap();
+        assert_eq!(
+            gui.get_widget_property(picker, PropertyKey::Value),
+            Some(PropertyValue::Int(100))
+        );
+
+        let content = gui
+            .add_content_indicator(Rect::new(140, 0, 40, 30), 4, 0, Style::new())
+            .unwrap();
+        assert_eq!(
+            gui.get_widget_property(content, PropertyKey::Selected),
+            Some(PropertyValue::Usize(0))
+        );
+        gui.set_widget_property(content, PropertyKey::Selected, PropertyValue::Usize(3))
+            .expect("a content indicator's active step can be set");
+        assert_eq!(
+            gui.get_widget_property(content, PropertyKey::Selected),
+            Some(PropertyValue::Usize(3))
+        );
+
+        let crumbs = gui
+            .add_crumbs_indicator(Rect::new(140, 40, 40, 20), 5, 1, Style::new())
+            .unwrap();
+        let first = render(&gui);
+        gui.set_widget_property(crumbs, PropertyKey::Selected, PropertyValue::Usize(4))
+            .expect("a crumbs indicator's active dot can be set");
+        assert_eq!(
+            gui.get_widget_property(crumbs, PropertyKey::Selected),
+            Some(PropertyValue::Usize(4))
+        );
+        assert_ne!(
+            first,
+            render(&gui),
+            "moving the selection moves the highlighted dot"
+        );
+        // Selecting beyond the set lands on the last dot rather than on none of them.
+        gui.set_widget_property(crumbs, PropertyKey::Selected, PropertyValue::Usize(99))
+            .unwrap();
+        assert_eq!(
+            gui.get_widget_property(crumbs, PropertyKey::Selected),
+            Some(PropertyValue::Usize(4))
+        );
+    }
+
+    #[test]
+    fn a_new_widgets_style_reaches_the_glass() {
+        let accent = Rgb565::CSS_ORANGE;
+        let has_accent = |gui: &GuiContext<'static, 32, 16, 32>| {
+            let buffer = render(gui);
+            cell_has_colour(&buffer, Rect::new(0, 0, 120, 30), accent)
+        };
+        let mut styled = gui();
+        styled
+            .add_time_picker(
+                Rect::new(0, 0, 120, 30),
+                10,
+                30,
+                true,
+                false,
+                Style::label().with_accent(accent),
+            )
+            .unwrap();
+        assert!(
+            has_accent(&styled),
+            "the time picker's focused cell uses the style's accent"
+        );
+
+        let mut plain = gui();
+        plain
+            .add_time_picker(
+                Rect::new(0, 0, 120, 30),
+                10,
+                30,
+                true,
+                false,
+                Style::label(),
+            )
+            .unwrap();
+        assert!(!has_accent(&plain), "the default accent is not that colour");
     }
 }
