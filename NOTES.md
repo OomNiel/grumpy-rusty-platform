@@ -5331,3 +5331,67 @@ missing file, or every card image would have been reported as absent. `embedded-
 `alloc` feature at all and to be short-name-only, which is what the designer's 8.3 check is mirroring; its
 ergonomic `File`/`Directory` types borrow the volume manager and could not be kept in a static, which is why the
 **raw handles** are what makes a mount that survives between draws possible at all.
+
+## 112. The AI assistant gets a switch (2026-10-09)
+
+"*Add a On/Off switch to the extension AI Assistant. When Off (default) all models are to be unloaded and the
+llama-server is to be stopped. When the user turns it on, those services must start.*"
+
+The pieces existed -- `assistant.backend` could already be `off`, `lms unload --all` had a command, and
+`stopLlamaServerConfirmed` could stop a unit, a plain process or this window's own child -- but nothing tied
+them together, and "off" meant only *this window will not start anything*. A running `llama-server` and loaded
+models stayed exactly where they were, which on this machine was 17 GiB of cgroup charge.
+
+### What the switch is
+
+`rustyPlatform.assistant.enabled` is a setting of its own rather than a reuse of `backend`, because "which
+backend" and "on or off" are two questions: turning the switch off has to remember what to turn back on.
+`assistantEnabled` now reads the switch first, so an assistant that is off does not answer whatever is
+configured. It defaults to **off**, which is what the request asked for and also what the README had always
+claimed.
+
+The panel's `enabled` snapshot and its "pinned" line were derived from `backend !== 'off'`, so they had to
+learn the same thing: with the switch down the panel says so instead of looking ready to answer.
+
+### The decision is data, not a chain of ifs
+
+`ai/assistantSwitchPlan.ts` has no `vscode` import: it turns "what should off do?" into a list of steps from
+the facts — which models are held, whether this window has a server of its own, and who answers the endpoint.
+The three rules it encodes:
+
+* **models are unloaded and this window's own server is stopped, always** -- there is nobody else to ask;
+* **a server this window did not start is stopped only after the user says so, once per window.** The answer is
+  remembered either way: consent to stop a pid is about the process running now, and asking again after a
+  "leave it running" is a nag rather than a safeguard;
+* **what cannot be stopped honestly is named, never guessed at** -- a system unit needs root, so the step says
+  which `sudo systemctl stop` to run; an inspector that cannot see who owns a port says that instead of
+  signalling a process it cannot identify.
+
+The dialog offers a third button, "Stop asking at startup", which writes the option below off -- the setting is
+in the panel, and the dialog points at the feature rather than hiding it in JSON.
+
+### The two settings
+
+* `rustyPlatform.assistant.enabled` (off) -- the switch.
+* `rustyPlatform.assistant.stopServersAtStartup` (on) -- whether a window that opens with the switch off
+  enforces that. Asked for explicitly: "*this should be an option for the user to select*", placed next to the
+  switch in the AI Assist panel, because someone who runs their own `llama-server` for other work does not want
+  an editor stopping it at every launch.
+
+Only an explicit `true` switches on (junk must never look like consent to start a server), and only an
+explicit `false` turns the startup enforcement off (a missing value keeps the meaning the switch implies) --
+the same asymmetry `showDiff` already uses.
+
+### What turning it on does, and what it refuses to do
+
+On: a server already answering the endpoint is adopted; a pinned model is started on the bundled runtime; the
+configured `llama-server` unit is started for an external backend -- but **only if one actually exists**.
+Without that gate the switch would spawn a llama-server nobody asked for when the endpoint is, say, LM Studio's
+and LM Studio is closed. A completely unpinned setup opens the model picker, because starting nothing and
+calling that "on" would be a lie.
+
+### Tests
+
+Nine in the t1 layer (`ai-assistant-switch.test.js`) over the plan, the consent memory, the refusal reasons and
+the two settings' defaults and tolerance; two existing `assistantEnabled` tests were updated to the new
+semantics (the switch is the first gate). The suite is at 859.

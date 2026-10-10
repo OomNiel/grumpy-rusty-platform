@@ -109,11 +109,16 @@ test('normalizeEndpoint appends /v1 once and never twice', () => {
     equal(normalizeEndpoint(''), DEFAULT_ENDPOINT);
 });
 
-test('assistantEnabled needs a backend and somewhere to send the request', () => {
-    equal(assistantEnabled({ backend: 'off', endpoint: 'http://x' }), false);
-    equal(assistantEnabled({ backend: 'bundled', endpoint: '' }), true);
-    equal(assistantEnabled({ backend: 'external', endpoint: 'http://x/v1' }), true);
-    equal(assistantEnabled({ backend: 'external', endpoint: '' }), false);
+test('assistantEnabled needs the switch on, a backend, and somewhere to send the request', () => {
+    // The switch is the first gate: a configured server and an answering endpoint mean nothing while the
+    // assistant is off, which is its default (asked 2026-10-09 — "when off, all models are to be unloaded and
+    // the llama-server is to be stopped").
+    equal(assistantEnabled({ enabled: false, backend: 'external', endpoint: 'http://x/v1' }), false);
+    equal(assistantEnabled({ enabled: false, backend: 'bundled', endpoint: '' }), false);
+    equal(assistantEnabled({ enabled: true, backend: 'off', endpoint: 'http://x' }), false);
+    equal(assistantEnabled({ enabled: true, backend: 'bundled', endpoint: '' }), true);
+    equal(assistantEnabled({ enabled: true, backend: 'external', endpoint: 'http://x/v1' }), true);
+    equal(assistantEnabled({ enabled: true, backend: 'external', endpoint: '' }), false);
 });
 
 test('looksLikeEmbeddingModel flags the obvious embedding names only', () => {
@@ -291,7 +296,7 @@ test('describeLoadedNow speaks only for an external server and compares short na
 // function needs `vscode`, so what is pinned here is the fact that makes it necessary.
 test('a bundled config carries no usable endpoint until the runtime is started', () => {
     const assistant = compiled('ai/assistant');
-    const cfg = assistant.normalizeAssistantConfig({ backend: 'bundled' });
+    const cfg = assistant.normalizeAssistantConfig({ enabled: true, backend: 'bundled' });
     equal(cfg.endpoint, assistant.DEFAULT_ENDPOINT, 'the settings default is LM Studio, not the bundled runtime');
     ok(assistant.assistantEnabled(cfg), 'and bundled still counts as "on" without one');
 });

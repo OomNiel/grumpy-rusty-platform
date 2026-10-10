@@ -342,7 +342,9 @@ export async function panelState(fresh = false): Promise<PanelState> {
     const context = extensionContext();
 
     return {
-        enabled: backend !== 'off',
+        // The switch, not merely "a backend is configured": with the assistant off the panel must not look
+        // ready to answer, because a request would have nowhere to go.
+        enabled: cfg.get<boolean>('enabled', false) === true && backend !== 'off',
         endpoint,
         host: await hostGate(),
         showDiff: cfg.get<boolean>('showDiff', true),
@@ -373,7 +375,14 @@ export async function panelState(fresh = false): Promise<PanelState> {
         hint: ownServer.running && ownServer.info
             ? `${hint} · your own llama-server is running on port ${ownServer.info.port}`
             : hint,
-        pinned: describePin(backend, cfg.get<string>('model', ''), cfg.get<string>('modelPath', ''), endpoint, found)
+        pinned: describePin(
+            backend,
+            cfg.get<string>('model', ''),
+            cfg.get<string>('modelPath', ''),
+            endpoint,
+            found,
+            cfg.get<boolean>('enabled', false) === true
+        )
     };
 }
 
@@ -389,9 +398,11 @@ function describePin(
     model: string,
     modelPath: string,
     endpoint: string,
-    found: Discovery
+    found: Discovery,
+    switchOn = true
 ): string {
-    if (backend === 'off') return 'AI assist is off — nothing is pinned.';
+    if (!switchOn) return 'AI assist is switched off — turn it on in the panel to start the model.';
+    if (backend === 'off') return 'No backend has been chosen yet — pick a model in the settings.';
     // A `llama-server` this window started: named by the file it was started with and the port it got, since
     // both come from the process rather than from a setting the user typed (2026-09-16).
     const own = ownLlamaServerStatus();

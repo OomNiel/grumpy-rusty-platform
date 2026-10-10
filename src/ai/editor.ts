@@ -94,6 +94,8 @@ type OptionalFacts = Omit<RewritePromptInput, 'description' | 'func'>;
 export function assistantConfig(): AssistantConfig {
     const cfg = configView(SETTINGS);
     return normalizeAssistantConfig({
+        enabled: cfg.get('enabled'),
+        stopServersAtStartup: cfg.get('stopServersAtStartup'),
         backend: cfg.get('backend'),
         endpoint: cfg.get('endpoint'),
         model: cfg.get('model'),

@@ -40,6 +40,19 @@ Rusty Platform can carry its own coding assistant, so a generated project can be
 with no Copilot and no cloud key. It is **off by default**: nothing is downloaded or started until you turn
 it on.
 
+- **The switch** is at the top of the AI Assist panel (and in the palette as `Rusty AI: Toggle On/Off`,
+  so it can be bound to a key). Turning it **on** starts what the settings say to start — a server already
+  answering the endpoint is adopted, the configured `llama-server` unit is started, or the bundled runtime is
+  started with the model the settings name. Turning it **off** unloads every model it can find (LM Studio's
+  `lms unload --all`) and stops the `llama-server`; a server this window did **not** start is stopped only
+  after it tells you what it is and what stopping it costs, and that answer is remembered for the rest of the
+  window.
+- **`Stop the local servers when a window starts with the assist off`** is the checkbox under the switch
+  (`rustyPlatform.assistant.stopServersAtStartup`, on by default). Off is what the switch says, so a window
+  that opens with it down unloads and stops; the option is there because someone who runs their own
+  `llama-server` for other work does not want an editor stopping it at launch. The same question in the
+  startup dialog offers "Stop asking at startup", which turns this option off for you.
+
 - **Three ways to get a model.** Point it at a server you already run (LM Studio, Ollama, or your own
   `llama-server`) with `rustyPlatform.assistant.backend: "external"`, or let the extension build and run its
   own runtime (`"bundled"`) from `sidecar/` — a small Rust program that links llama.cpp and downloads one
