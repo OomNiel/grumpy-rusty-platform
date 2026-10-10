@@ -12,7 +12,7 @@
 //!
 //! Each entry is five row bytes; bit `1 << (2 - col)` is set when the pixel at column `col` (0 = left) is ink.
 
-use embedded_gui::font::glyph_rows;
+use embedded_gui::font::{get_vector_glyph, glyph_rows};
 use embedded_gui::prelude::FontId;
 
 /// The fonts a design can ask for, in the order the picker offers them. `Vector` carries its scale in the
@@ -26,6 +26,23 @@ const FONTS: [(&str, FontId); 5] = [
 ];
 
 fn main() {
+    // The vector face is not a bitmap at all: the engine strokes a polyline through these points, scaled by
+    // `Vector(n)`'s scale, and breaks the line at the crate's own `(255, 255)` pen-up marker
+    // (`render/mod.rs`, the `FontId::Vector(scale)` arm). The points do not depend on the scale, so they are
+    // printed once rather than per variant.
+    let vector = || {
+        println!("vector");
+        for code in 32u32..=126 {
+            let ch = char::from_u32(code).unwrap_or('?');
+            let mut line = format!("v {code}");
+            for (x, y) in get_vector_glyph(ch) {
+                line.push_str(&format!(" {x} {y}"));
+            }
+            println!("{line}");
+        }
+    };
+
+    vector();
     for (name, font) in FONTS {
         println!("font {name} advance={} line_height={}", font.advance(), font.line_height());
         for code in 32u32..=126 {

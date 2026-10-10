@@ -71,3 +71,17 @@ test('a character the crate has no glyph for falls back the way the crate does',
     contains(SOURCE, 'export const GLYPH_FIRST_CHAR = 32;', 'printable ASCII starts at 32');
     contains(SOURCE, 'export const GLYPH_LAST_CHAR = 126;', 'and ends at 126');
 });
+
+test('the vector face is the crate\'s polylines, not the bitmap scaled', () => {
+    // `Vector(n)` is not a bitmap: the engine strokes a polyline through these points, multiplying each
+    // coordinate by the variant's scale, and lifting the pen at the crate's `(255, 255)` sentinel. Without this
+    // data a replica could only approximate the vector face, which is the kind of nearly that makes a WYSIWYG
+    // canvas untrustworthy -- so it is generated from `get_vector_glyph` rather than guessed.
+    contains(SOURCE, 'export const VECTOR_PEN_UP = 255;', 'the pen-up marker is named');
+    contains(SOURCE, 'export function vectorGlyph(', 'and there is a lookup for a character');
+    contains(SOURCE, 'const VECTOR_GLYPHS: readonly (readonly number[])[]', 'over a table of point lists');
+    // A space is an empty stroke and a digit is not; both are in the crate's own data.
+    contains(SOURCE, '    [],', 'a glyph with no strokes is an empty entry');
+    contains(SOURCE, '2, 0, 6, 0, 6, 10, 2, 10, 2, 0, 255, 255, 2, 10, 6, 0', "the crate's `0`: a box, a pen-up, then a slash");
+    contains(SOURCE, 'GLYPH_FIRST_CHAR', 'and the table is indexed like the bitmap one');
+});

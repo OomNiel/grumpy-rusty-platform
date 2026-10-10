@@ -45,7 +45,24 @@ function readFonts() {
     }
 
     const fonts = [];
+    const vectors = new Map();
+    let inVector = false;
     for (const line of run.stdout.split('\n')) {
+        if (line.trim() === 'vector') {
+            inVector = true;
+            continue;
+        }
+        const point = /^v (\d+)((?: \d+ \d+)*)$/.exec(line.trim());
+        if (point !== null) {
+            vectors.set(Number(point[1]), (point[2] ?? '').trim().split(/\s+/).filter((p) => p !== '').map(Number));
+            continue;
+        }
+        if (inVector && line.trim() !== '' && !line.startsWith('font')) {
+            continue;
+        }
+        if (line.startsWith('font')) {
+            inVector = false;
+        }
         const header = /^font (\S+) advance=(\d+) line_height=(\d+)$/.exec(line.trim());
         if (header !== null) {
             fonts.push({ name: header[1], advance: Number(header[2]), lineHeight: Number(header[3]), rows: [] });
@@ -65,11 +82,14 @@ function readFonts() {
             throw new Error(`${font.name}: ${font.rows.length} glyphs, expected ${expected}`);
         }
     }
-    return fonts;
+    if (vectors.size !== LAST_CHAR - FIRST_CHAR + 1) {
+        throw new Error(`the vector table has ${vectors.size} glyphs, expected ${LAST_CHAR - FIRST_CHAR + 1}`);
+    }
+    return { fonts, vectors };
 }
 
 /** The file, as text, so `--check` can compare without writing. */
-function render(fonts) {
+function render(fonts, vectors) {
     // The fonts share a glyph table almost exactly, but not quite: `Medium4x7` has its own spelling of `*` and
     // `@`. So the tables are stored as they come and deduped by content -- identical fonts point at one copy,
     // and a font whose table changes gets its own without the generator having to be told.
@@ -101,6 +121,11 @@ function render(fonts) {
                     .join('\n')}\n];`,
         )
         .join('\n\n');
+
+    const vectorRows = [...vectors.entries()]
+        .sort((a, b) => a[0] - b[0])
+        .map(([, points]) => `    [${points.join(', ')}],`)
+        .join('\n');
 
     return `/**
  * The crate's own glyphs, and its per-font metrics -- GENERATED, DO NOT EDIT.
@@ -170,11 +195,37 @@ export function glyphRows(font: string, ch: string): readonly number[] {
 export function glyphMetrics(font: string): GlyphMetrics {
     return GLYPH_FONTS[font] ?? DEFAULT_FONT;
 }
+
+/**
+ * The crate's pen-up marker in a vector glyph: a point of \`(255, 255)\` lifts the pen rather than drawing
+ * (\`draw_char_with_font\`'s \`FontId::Vector(scale)\` arm), so a glyph can be more than one stroke.
+ */
+export const VECTOR_PEN_UP = 255;
+
+/** One vector glyph's points, flat pairs interleaved with \`VECTOR_PEN_UP\` where the pen lifts. */
+const VECTOR_GLYPHS: readonly (readonly number[])[] = [
+${vectorRows}
+];
+
+/**
+ * The points of one character's vector glyph, for the crate's \`Vector(n)\` fonts.
+ *
+ * The points do not depend on \`n\`: the engine scales each coordinate by the variant's scale as it strokes the
+ * polyline, so a canvas replicating it must multiply by the same scale and draw one-pixel segments between
+ * consecutive points (breaking wherever the pen-up marker appears).
+ */
+export function vectorGlyph(ch: string): readonly number[] {
+    const code = ch.codePointAt(0) ?? 0;
+    const index = code >= GLYPH_FIRST_CHAR && code <= GLYPH_LAST_CHAR
+        ? code - GLYPH_FIRST_CHAR
+        : ('?'.codePointAt(0) ?? 0) - GLYPH_FIRST_CHAR;
+    return VECTOR_GLYPHS[index] ?? [];
+}
 `;
 }
 
-const fonts = readFonts();
-const source = render(fonts);
+const { fonts, vectors } = readFonts();
+const source = render(fonts, vectors);
 
 if (process.argv.includes('--check')) {
     const existing = fs.existsSync(TARGET) ? fs.readFileSync(TARGET, 'utf8') : '';
@@ -182,8 +233,11 @@ if (process.argv.includes('--check')) {
         console.error('webview/designer/glyphs.ts is out of step with the crate: run node tests/tools/glyph-table.js');
         process.exit(1);
     }
-    console.log(`the glyph table matches the crate (${fonts.length} fonts)`);
+    console.log(`the glyph table matches the crate (${fonts.length} fonts, ${vectors.size} vector glyphs)`);
 } else {
     fs.writeFileSync(TARGET, source);
-    console.log(`wrote ${path.relative(repoRoot(), TARGET)}: ${fonts.length} fonts, ${LAST_CHAR - FIRST_CHAR + 1} glyphs each`);
+    console.log(
+        `wrote ${path.relative(repoRoot(), TARGET)}: ${fonts.length} fonts, ` +
+            `${LAST_CHAR - FIRST_CHAR + 1} bitmap glyphs each, ${vectors.size} vector glyphs`,
+    );
 }
