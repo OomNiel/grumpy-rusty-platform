@@ -348,6 +348,13 @@ UPDATE_SNAPSHOTS=1 node tests/runner.js --layer t3-golden   # re-record golden f
 | `t4-e2e` | The generated firmware really compiles and links, and the designer's pixel tracks land where the canvas placed them (opt-in, slow, needs network) |
 | `t5-hil` | The firmware really flashes and logs over RTT (opt-in, needs a probe) |
 
+Two checks are run by hand, because they need something the suite does not have. `node
+tests/tools/designer-sim.js` draws a design with the host renderer, next to the mapping the canvas places. And
+`node tests/tools/designer-layout.js` opens the Designer in a real browser -- the suite's DOM has no widths, so
+nothing else can see a setting that does not fit its pane -- and reports any pane whose content is wider than
+the pane itself, at four window widths. It needs `npm install puppeteer` and a browser; the file's header says
+how.
+
 ## Supported boards
 
 ### Raspberry Pi
