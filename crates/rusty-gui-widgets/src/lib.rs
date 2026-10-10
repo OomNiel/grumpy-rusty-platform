@@ -907,12 +907,19 @@ fn mask_of(pattern: u32) -> ChannelMask {
 }
 
 impl BmpImage {
-    /// Draws the file into `rect`, one row at a time.
+    /// Draws the file into `rect`, one row at a time, for the part of it `visible` says is being repainted.
+    ///
+    /// Only that part is *read*, which matters more than it sounds: a touch repaints the rectangle it damaged,
+    /// the engine walks every widget whose cell it visits, and a card read is the one cost here that is not a
+    /// few instructions. The rows outside `visible` are stepped over -- a jump along the FAT, not a transfer --
+    /// and the first row that is wanted is reached by the same jump, so a partial repaint of a large file costs
+    /// what it shows rather than what it is.
     fn draw(
         &self,
         source: &mut dyn ByteSource,
         canvas: &mut dyn CustomCanvas,
         rect: Rect,
+        visible: Rect,
     ) -> Result<(), ()> {
         let mut stream = Stream { source };
         let header = BmpHeader::parse(&mut stream)?;
@@ -933,6 +940,14 @@ impl BmpImage {
         if area.w == 0 || area.h == 0 {
             return Ok(());
         }
+        // The destination rows that will be seen, as a band of the cell's own coordinates. Rows outside it are
+        // neither read nor painted.
+        let shown = visible.intersection(area);
+        if shown.is_empty() {
+            return Ok(());
+        }
+        let first_dy = (shown.y - area.y).max(0) as u32;
+        let last_dy = first_dy + shown.h;
 
         // Skip whatever precedes the pixels (the colour table, usually).
         stream.skip(header.data_offset.saturating_sub(header_bytes_read(&header)))?;
@@ -954,6 +969,11 @@ impl BmpImage {
         let mut cached: Option<u32> = None;
         for step in 0..area.h {
             let dy = if ascending { step } else { area.h - 1 - step };
+            if dy < first_dy || dy >= last_dy {
+                // Not being repainted: the row is passed over below, and the source row it would have needed is
+                // skipped with it (the file order is still increasing, so one jump covers them all).
+                continue;
+            }
             let visual = (dy as u64 * header.height as u64 / area.h as u64) as u32;
             let file_row = if ascending {
                 visual
@@ -1098,10 +1118,17 @@ impl CustomWidget for BmpImage {
         if rect.w == 0 || rect.h == 0 {
             return Ok(());
         }
+        // Nothing of the image is on the part of the screen being repainted, so there is nothing to read. This is
+        // the whole reason the canvas is asked first: the engine renders every widget whose cell it walks, and a
+        // touch elsewhere used to open the file and stream it again for a frame that paints none of it.
+        let visible = canvas.visible_rect(rect);
+        if visible.is_empty() {
+            return Ok(());
+        }
         // The reader owns the file handle for this whole call; the closure is the drawing pass inside it. A
         // failure is not an error the engine has to carry: an image that is missing or not a BMP leaves the
         // cell as it was, which is what a placeholder does on the glass.
-        let mut sink = |source: &mut dyn ByteSource| self.draw(source, canvas, rect);
+        let mut sink = |source: &mut dyn ByteSource| self.draw(source, canvas, rect, visible);
         let _ = (self.with_file)(self.path, &mut sink);
         Ok(())
     }

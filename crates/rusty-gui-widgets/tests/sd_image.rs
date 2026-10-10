@@ -296,6 +296,63 @@ impl CustomCanvas for RowMock {
     }
 }
 
+/// A canvas that says only a band of a widget is being repainted, the way the engine's does after a touch.
+///
+/// `visible_rect` is the whole point: the engine renders every widget whose cell it walks, so a widget asks this
+/// before doing anything it would rather not repeat -- and for a picture on a card, "rather not repeat" is the
+/// whole file.
+struct BandMock {
+    visible: Rect,
+    rects: Vec<(Rect, Rgb565)>,
+    rows: Vec<(Rect, Vec<Rgb565>)>,
+}
+
+impl BandMock {
+    fn new(visible: Rect) -> Self {
+        Self {
+            visible,
+            rects: Vec::new(),
+            rows: Vec::new(),
+        }
+    }
+}
+
+impl CustomCanvas for BandMock {
+    fn visible_rect(&self, _rect: Rect) -> Rect {
+        self.visible
+    }
+    fn fill_rect(&mut self, rect: Rect, color: Rgb565) -> Result<(), GuiError> {
+        self.rects.push((rect, color));
+        Ok(())
+    }
+    fn fill_row(&mut self, rect: Rect, pixels: &[Rgb565]) -> Result<(), GuiError> {
+        self.rows.push((rect, pixels.to_vec()));
+        Ok(())
+    }
+    fn fill_rounded_rect(&mut self, _rect: Rect, _radius: u8, _color: Rgb565) -> Result<(), GuiError> {
+        Ok(())
+    }
+    fn draw_rect(&mut self, _rect: Rect, _color: Rgb565) -> Result<(), GuiError> {
+        Ok(())
+    }
+    fn draw_line(&mut self, _p1: (i32, i32), _p2: (i32, i32), _color: Rgb565) -> Result<(), GuiError> {
+        Ok(())
+    }
+    fn draw_pixel(&mut self, _x: i32, _y: i32, _color: Rgb565) -> Result<(), GuiError> {
+        Ok(())
+    }
+    fn draw_text(
+        &mut self,
+        _text: &str,
+        _x: i32,
+        _y: i32,
+        _color: Rgb565,
+        _font: embedded_gui::FontId,
+    ) -> Result<(), GuiError> {
+        Ok(())
+    }
+}
+
 /// The colour one pixel of a mock's output, or `None` when nothing was painted over it.
 fn pixel_at(mock: &Mock, x: i32, y: i32) -> Option<Rgb565> {
     mock.rects
@@ -511,6 +568,53 @@ fn a_row_of_destination_colours_is_offered_to_the_canvas_in_one_piece() {
     );
     assert_eq!(canvas.rows[3].0, Rect::new(0, 0, 4, 1), "and the last call is the top row");
     assert_eq!(canvas.rows[3].1, vec![BLUE, BLUE, BLUE, BLUE], "of the file's top row");
+}
+
+#[test]
+fn an_image_the_repaint_does_not_touch_is_never_read() {
+    // The regression this exists for: the engine walks every widget whose cell it visits and clips the *painting*
+    // to the damaged rectangle, so a touch on a button used to open the card file and stream the whole picture
+    // again for a frame that painted none of it -- every touch, several times a second. The canvas is asked
+    // first now, and an empty answer means the file is never opened: not one read.
+    install(build_24_bit(2, 2, &[vec![RED_BYTES, GREEN_BYTES], vec![BLUE_BYTES, BLUE_BYTES]]));
+    let mut canvas = BandMock::new(Rect::new(0, 0, 0, 0));
+    image("/PIC.BMP", true)
+        .render(&mut canvas, Rect::new(0, 0, 2, 2), &WidgetStyle::default(), VisualState::default())
+        .unwrap();
+
+    assert_eq!(read_count(), 0, "nothing visible, nothing read");
+    assert!(canvas.rows.is_empty(), "and nothing painted");
+}
+
+#[test]
+fn only_the_rows_being_repainted_are_read() {
+    // Half the cell is being repainted, so half the file is worth reading -- and the half that is *later* in the
+    // file, which is the top of the cell: a bottom-up BMP stores it last, so the rows before it are jumped over
+    // rather than transferred. Four rows of 8 bytes: two are jumped, and the two that are shown are the file's
+    // last two.
+    install(build_24_bit(2, 4, &[
+        vec![RED_BYTES, RED_BYTES],
+        vec![GREEN_BYTES, GREEN_BYTES],
+        vec![BLUE_BYTES, BLUE_BYTES],
+        vec![RED_BYTES, RED_BYTES],
+    ]));
+    let mut canvas = BandMock::new(Rect::new(0, 0, 2, 2));
+    BmpImage {
+        path: "/PIC.BMP",
+        stretch: true,
+        with_file: with_seeking_file,
+    }
+    .render(&mut canvas, Rect::new(0, 0, 2, 4), &WidgetStyle::default(), VisualState::default())
+    .unwrap();
+
+    // Rows are offered in the order the file holds them, bottom first, so the lower of the two repainted rows
+    // arrives first.
+    assert_eq!(canvas.rows.len(), 2, "one row offered per repainted row");
+    assert_eq!(canvas.rows[0].0, Rect::new(0, 1, 2, 1), "the lower row of the repainted band");
+    assert_eq!(canvas.rows[0].1, vec![BLUE, BLUE], "which the file holds third");
+    assert_eq!(canvas.rows[1].0, Rect::new(0, 0, 2, 1), "then the top row of the cell");
+    assert_eq!(canvas.rows[1].1, vec![RED, RED], "which the file holds last");
+    assert_eq!(skips(), vec![16], "the two rows above the band were jumped, not read");
 }
 
 #[test]
