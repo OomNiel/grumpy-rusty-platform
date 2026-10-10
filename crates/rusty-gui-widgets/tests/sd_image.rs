@@ -11,18 +11,20 @@ use std::cell::RefCell;
 
 use embedded_gui::prelude::{CustomCanvas, CustomWidget, GuiError, Rect, Rgb565};
 use embedded_gui::style::{VisualState, WidgetStyle};
-use rusty_gui_widgets::{BmpImage, ByteSource, MAX_ROW_PIXELS, MAX_SOURCE_PIXELS};
+use rusty_gui_widgets::{BmpImage, ByteSource, MAX_SOURCE_PIXELS};
 
 // The file the stub reader serves, per test thread: `#[test]` runs each case on its own thread, so a
 // thread-local file cannot leak from one case into another the way a shared static would.
 thread_local! {
     static FILE: RefCell<Option<Vec<u8>>> = const { RefCell::new(None) };
     static READS: RefCell<usize> = const { RefCell::new(0) };
+    static SKIPS: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
 }
 
 fn install(bytes: Vec<u8>) {
     FILE.with(|file| *file.borrow_mut() = Some(bytes));
     READS.with(|reads| *reads.borrow_mut() = 0);
+    SKIPS.with(|skips| skips.borrow_mut().clear());
 }
 
 struct SliceSource<'a> {
@@ -39,6 +41,64 @@ impl ByteSource for SliceSource<'_> {
         self.position += take;
         Ok(take)
     }
+}
+
+/// The same file, read through a source that can move its position the way a card can.
+///
+/// `skip` here is what the generated project's reader does over the FAT: the bytes are never transferred. The
+/// counts are recorded so a test can assert the rows nobody sees were jumped over rather than read.
+struct SeekingSource<'a> {
+    data: &'a [u8],
+    position: usize,
+}
+
+impl ByteSource for SeekingSource<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, ()> {
+        READS.with(|reads| *reads.borrow_mut() += 1);
+        let available = self.data.len().saturating_sub(self.position);
+        let take = available.min(buf.len());
+        buf[..take].copy_from_slice(&self.data[self.position..self.position + take]);
+        self.position += take;
+        Ok(take)
+    }
+
+    fn skip(&mut self, count: u32) -> Result<(), ()> {
+        SKIPS.with(|skips| skips.borrow_mut().push(count));
+        self.position += count as usize;
+        if self.position > self.data.len() {
+            return Err(());
+        }
+        Ok(())
+    }
+}
+
+/// `with_file` over the seeking source, the way the generated project hands the card over.
+fn with_seeking_file(
+    _path: &str,
+    use_file: &mut dyn FnMut(&mut dyn ByteSource) -> Result<(), ()>,
+) -> Result<(), ()> {
+    FILE.with(|file| match file.borrow().as_ref() {
+        Some(data) => {
+            let mut source = SeekingSource { data, position: 0 };
+            use_file(&mut source)
+        }
+        None => Err(()),
+    })
+}
+
+/// The moves a source was asked for, without the zero-length ones.
+///
+/// A reader that has just consumed exactly the row it needed asks to move nothing, which is the ordinary case
+/// and says nothing; what a test wants to name is the rows that were jumped *over*.
+fn skips() -> Vec<u32> {
+    SKIPS.with(|skips| {
+        skips
+            .borrow()
+            .iter()
+            .copied()
+            .filter(|count| *count > 0)
+            .collect()
+    })
 }
 
 /// Stands in for the generated project's `sd::with_file`: opens the installed file, hands it over, closes.
@@ -193,6 +253,47 @@ fn paint(stretch: bool, rect: Rect) -> Mock {
         .render(&mut mock, rect, &WidgetStyle::default(), VisualState::default())
         .unwrap();
     mock
+}
+
+/// A canvas that takes the whole row, the way the engine's does: one call per row instead of one per run.
+///
+/// The trait's default is the run loop, so a canvas has to opt in -- this one records what it is offered, which
+/// is how a test can see that the widget offers the row rather than walking colours itself.
+#[derive(Default)]
+struct RowMock {
+    rows: Vec<(Rect, Vec<Rgb565>)>,
+}
+
+impl CustomCanvas for RowMock {
+    fn fill_rect(&mut self, _rect: Rect, _color: Rgb565) -> Result<(), GuiError> {
+        panic!("a row was offered, so nothing should have been drawn run by run");
+    }
+    fn fill_row(&mut self, rect: Rect, pixels: &[Rgb565]) -> Result<(), GuiError> {
+        self.rows.push((rect, pixels.to_vec()));
+        Ok(())
+    }
+    fn fill_rounded_rect(&mut self, _rect: Rect, _radius: u8, _color: Rgb565) -> Result<(), GuiError> {
+        Ok(())
+    }
+    fn draw_rect(&mut self, _rect: Rect, _color: Rgb565) -> Result<(), GuiError> {
+        Ok(())
+    }
+    fn draw_line(&mut self, _p1: (i32, i32), _p2: (i32, i32), _color: Rgb565) -> Result<(), GuiError> {
+        Ok(())
+    }
+    fn draw_pixel(&mut self, _x: i32, _y: i32, _color: Rgb565) -> Result<(), GuiError> {
+        Ok(())
+    }
+    fn draw_text(
+        &mut self,
+        _text: &str,
+        _x: i32,
+        _y: i32,
+        _color: Rgb565,
+        _font: embedded_gui::FontId,
+    ) -> Result<(), GuiError> {
+        Ok(())
+    }
 }
 
 /// The colour one pixel of a mock's output, or `None` when nothing was painted over it.
@@ -352,6 +453,64 @@ fn a_file_that_is_missing_broken_or_absurd_draws_nothing() {
         paint(true, Rect::new(0, 0, 8, 1)).rects.is_empty(),
         "a corrupt width is not believed"
     );
+}
+
+#[test]
+fn the_rows_nobody_will_see_are_jumped_over_rather_than_read() {
+    // Four source rows into a two-row cell: the destination samples every second row, so two of the four are
+    // never shown. A card can move its read position for the price of a few FAT sectors, and the widget asks it
+    // to -- which is what makes a photograph larger than its cell cheap. The colours also pin the order: the
+    // file is bottom-up, so the top of the cell is the file's *last* row.
+    install(build_24_bit(2, 4, &[
+        vec![RED_BYTES, RED_BYTES],
+        vec![GREEN_BYTES, GREEN_BYTES],
+        vec![BLUE_BYTES, BLUE_BYTES],
+        vec![RED_BYTES, RED_BYTES],
+    ]));
+    let mut mock = Mock::default();
+    BmpImage {
+        path: "/PIC.BMP",
+        stretch: true,
+        with_file: with_seeking_file,
+    }
+    .render(&mut mock, Rect::new(0, 0, 2, 2), &WidgetStyle::default(), VisualState::default())
+    .unwrap();
+
+    // Destination rows are visited bottom first, which is the order the file holds them in: the file's second
+    // row (green) is the lower half of the cell and its last row (red) is the top, and the two rows between them
+    // are jumped -- 8 bytes of stride each -- rather than transferred.
+    assert_eq!(pixel_at(&mock, 0, 1), Some(GREEN), "the lower half samples the file's second row");
+    assert_eq!(pixel_at(&mock, 0, 0), Some(RED), "and the top of the cell is the file's last row");
+    assert_eq!(
+        skips(),
+        vec![8, 8],
+        "the rows between the sampled ones were jumped, not read"
+    );
+}
+
+#[test]
+fn a_row_of_destination_colours_is_offered_to_the_canvas_in_one_piece() {
+    // The engine emits one address window per canvas call, so a picture that arrives as one row per call costs a
+    // few hundred windows instead of one per run of colour -- for a phone photo that is the difference between
+    // hundreds and tens of thousands. The row buffer already holds a colour per destination column, so this is
+    // the whole row, stretched.
+    install(build_24_bit(2, 2, &[vec![RED_BYTES, GREEN_BYTES], vec![BLUE_BYTES, BLUE_BYTES]]));
+    let mut canvas = RowMock::default();
+    image("/PIC.BMP", true)
+        .render(&mut canvas, Rect::new(0, 0, 4, 4), &WidgetStyle::default(), VisualState::default())
+        .unwrap();
+
+    assert_eq!(canvas.rows.len(), 4, "one call per destination row");
+    // Rows are drawn in the order the file holds them -- bottom first, for a bottom-up BMP -- and each arrives
+    // already stretched to the cell's width.
+    assert_eq!(canvas.rows[0].0, Rect::new(0, 3, 4, 1), "the first call is the bottom row");
+    assert_eq!(
+        canvas.rows[0].1,
+        vec![RED, RED, GREEN, GREEN],
+        "with the file's bottom row stretched across it"
+    );
+    assert_eq!(canvas.rows[3].0, Rect::new(0, 0, 4, 1), "and the last call is the top row");
+    assert_eq!(canvas.rows[3].1, vec![BLUE, BLUE, BLUE, BLUE], "of the file's top row");
 }
 
 #[test]

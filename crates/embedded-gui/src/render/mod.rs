@@ -498,6 +498,47 @@ where
         self.fill_rect_alpha(rect, color, 255)
     }
 
+    /// Fills one row from a slice of colours, `pixels[i]` being the colour of `rect.x + i`.
+    ///
+    /// The same pixels through the same clip and layer rules as [`Self::fill_rect`]; what changes is that the
+    /// whole row reaches the target in one call, so a display that sets an address window per call pays for one
+    /// window instead of one per run of equal colour. A row this cannot blit in one piece -- a transform, or a
+    /// layer that is not opaque and normal -- falls back to the per-pixel path a non-solid fill uses, which is
+    /// what keeps it honest rather than merely fast.
+    pub fn fill_row(&mut self, rect: impl Into<Rect>, pixels: &[Rgb565]) -> Result<(), D::Error> {
+        let rect = rect.into();
+        let draw = self.visible_rect(rect);
+        if draw.is_empty() || pixels.is_empty() || rect.w == 0 {
+            return Ok(());
+        }
+        // The slice starts at `rect.x`, so the visible columns are an offset into it. A rectangle that starts
+        // left of the slice, or a slice that stops short of it, contributes nothing rather than wrapping.
+        let first = (draw.x - rect.x).max(0) as usize;
+        let Some(row) = pixels.get(first..first + draw.w as usize) else {
+            return Ok(());
+        };
+        if row.is_empty() {
+            return Ok(());
+        }
+
+        let layer = self.current_layer();
+        if layer.opacity == 255
+            && self.current_transform().is_identity()
+            && layer.blend == BlendMode::Normal
+        {
+            let eg_rect = embedded_graphics_core::primitives::Rectangle::new(
+                embedded_graphics_core::geometry::Point::new(draw.x, draw.y),
+                embedded_graphics_core::geometry::Size::new(draw.w, 1),
+            );
+            return self.target.fill_contiguous(&eg_rect, row.iter().copied());
+        }
+
+        for (offset, colour) in row.iter().enumerate() {
+            self.pixel(draw.x + offset as i32, draw.y, *colour, 255)?;
+        }
+        Ok(())
+    }
+
     pub fn fill_rect_alpha(
         &mut self,
         rect: impl Into<Rect>,
@@ -2695,6 +2736,13 @@ where
             .draw_text_with_font(x, y, text, color, font)
             .map_err(|_| crate::GuiError::Drawing)
     }
+
+    /// The row goes to the target in one window rather than one per run of colour: see [`RenderCtx::fill_row`].
+    fn fill_row(&mut self, rect: Rect, pixels: &[Rgb565]) -> Result<(), crate::GuiError> {
+        self.ctx
+            .fill_row(rect, pixels)
+            .map_err(|_| crate::GuiError::Drawing)
+    }
 }
 
 #[cfg(test)]
@@ -2830,5 +2878,71 @@ mod tests {
                 );
             }
         }
+    }
+    #[test]
+    fn test_fill_row_paints_one_colour_per_column() {
+        // A row handed over in one piece must land on exactly the pixels the run loop would have drawn: this is
+        // the fast path a picture decoded from a card uses, and an off-by-one in the slice offset would show up
+        // as a picture shifted sideways rather than as an error.
+        let mut buf = crate::test_buffer::TestBuffer::new(8, 3);
+        let mut ctx = RenderCtx::new(&mut buf, Rect::new(0, 0, 8, 3));
+        let row = [
+            Rgb565::RED,
+            Rgb565::RED,
+            Rgb565::GREEN,
+            Rgb565::GREEN,
+            Rgb565::GREEN,
+            Rgb565::BLUE,
+            Rgb565::BLUE,
+            Rgb565::RED,
+        ];
+        ctx.fill_row(Rect::new(0, 1, 8, 1), &row).unwrap();
+
+        for (x, expected) in row.iter().enumerate() {
+            assert_eq!(
+                buf.pixel_at(x as i32, 1),
+                Some(*expected),
+                "column {x} of the row"
+            );
+        }
+        assert_eq!(buf.pixel_at(0, 0), Some(Rgb565::BLACK), "the row above is untouched");
+        assert_eq!(buf.pixel_at(0, 2), Some(Rgb565::BLACK), "and the row below");
+    }
+
+    #[test]
+    fn test_fill_row_offset_by_the_clip_keeps_its_columns_aligned() {
+        // The visible part of a row is an offset into the slice, not into the rectangle: a row drawn two columns
+        // off the left of the clip must start with the *third* colour, not the first.
+        let mut buf = crate::test_buffer::TestBuffer::new(4, 1);
+        let mut ctx = RenderCtx::new(&mut buf, Rect::new(2, 0, 4, 1));
+        let row = [Rgb565::RED, Rgb565::GREEN, Rgb565::BLUE, Rgb565::WHITE];
+        ctx.fill_row(Rect::new(0, 0, 4, 1), &row).unwrap();
+
+        assert_eq!(buf.pixel_at(0, 0), Some(Rgb565::BLACK), "left of the clip is not drawn");
+        assert_eq!(buf.pixel_at(1, 0), Some(Rgb565::BLACK), "nor is column one");
+        assert_eq!(buf.pixel_at(2, 0), Some(Rgb565::BLUE), "the clip starts at the slice's third colour");
+        assert_eq!(buf.pixel_at(3, 0), Some(Rgb565::WHITE), "and carries on in order");
+    }
+
+    #[test]
+    fn test_fill_row_clipped_from_the_right_draws_only_what_fits() {
+        let mut buf = crate::test_buffer::TestBuffer::new(6, 1);
+        let mut ctx = RenderCtx::new(&mut buf, Rect::new(0, 0, 3, 1));
+        let row = [Rgb565::RED, Rgb565::GREEN, Rgb565::BLUE, Rgb565::WHITE];
+        ctx.fill_row(Rect::new(0, 0, 4, 1), &row).unwrap();
+
+        assert_eq!(buf.pixel_at(2, 0), Some(Rgb565::BLUE), "inside the clip");
+        assert_eq!(buf.pixel_at(3, 0), Some(Rgb565::BLACK), "outside it, and not painted");
+    }
+
+    #[test]
+    fn test_fill_row_shorter_than_its_rectangle_draws_nothing() {
+        // A slice that does not cover the row is a caller's mistake; painting the part that exists would put a
+        // picture's left edge where its middle belongs, so nothing is painted and the draw carries on.
+        let mut buf = crate::test_buffer::TestBuffer::new(8, 1);
+        let mut ctx = RenderCtx::new(&mut buf, Rect::new(0, 0, 8, 1));
+        ctx.fill_row(Rect::new(0, 0, 8, 1), &[Rgb565::RED, Rgb565::GREEN]).unwrap();
+        assert_eq!(buf.pixel_at(0, 0), Some(Rgb565::BLACK), "the row is left alone");
+        assert_eq!(buf.pixel_at(7, 0), Some(Rgb565::BLACK), "all of it");
     }
 }

@@ -11,6 +11,33 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.72] - 2026-10-09
+
+### Changed
+
+- **An image from the card draws in a fraction of the time.** Three things were making one photograph cost
+  seconds, and each is measured and fixed:
+  - **A read of the card is one 512-byte block transfer whatever is asked for.** `embedded-sdmmc` 0.8 moves a
+    whole block per call and caches nothing between calls, so the reader's 128-byte requests fetched the same
+    block four times over. Requests are now exactly one block, for **4× fewer transfers** on any file.
+  - **Rows nobody will see were transferred anyway.** The card reader now *seeks*: the source rows between the
+    ones a shrunken image samples are jumped over, and a jump walks the FAT — a handful of sectors — instead of
+    the data. For a three-megabyte phone photo drawn into a 244 × 440 cell, the transfer falls from 3 146 154
+    bytes to 987 426 — **12.7× fewer blocks** — with 2 158 728 bytes stepped over.
+  - **Every run of colour was its own address window on the display.** The canvas gained `fill_row`, so a decoded
+    row reaches the glass in one call: the same picture costs **440 display windows instead of 80 762**.
+- **The card is read at 10 MHz once it has answered**, 25× the 400 kHz the handshake must use. With that clock,
+  the measured reductions put a 160 × 200 image from the card at roughly **a tenth of a second** instead of
+  something like six seconds, and a three-megabyte photo at roughly **a second** instead of minutes. (The
+  traffic and window counts are measured; the seconds are that traffic at the two clock rates.)
+
+### Note
+
+- The seek and the clock live in the generated `src/sd.rs`, the reader in the vendored `rusty-gui-widgets`, and
+  the row blit in the vendored runtime. A project made by an older version gets all of it by being recreated, or
+  by *Update Crates* plus the new move in its `src/sd.rs` — the module still compiles without it, because a
+  stream that cannot move is simply read past.
+
 ## [0.0.71] - 2026-10-09
 
 ### Fixed

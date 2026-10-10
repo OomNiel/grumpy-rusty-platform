@@ -16,3 +16,13 @@ embedded-gui = { version = "0.2.7", default-features = false, features = ["embed
 # The integration test exercises the `CustomWidget` trait against this same runtime.
 [dev-dependencies]
 embedded-gui = "0.2.7"
+
+# This crate is *not* built against the published runtime on its own: a Designer project patches `embedded-gui`
+# to the vendored fork (`codegen/embedded-gui`), and the fork is what carries the parts a custom widget needs
+# that upstream 0.2.7 does not have -- `CustomCanvas::fill_row`, which lets one row of pixels reach the display
+# as one address window. The patch below only applies when this crate is the root of a build (its own test run,
+# a check of this repository); inside a project the root manifest's patch does the same thing. Without it the
+# standalone build would compile against upstream and fail on a method upstream does not have, which is exactly
+# the kind of difference the vendored-crate marker exists to make visible.
+[patch.crates-io]
+embedded-gui = { path = "../embedded-gui" }
