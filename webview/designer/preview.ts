@@ -675,8 +675,9 @@ function fillGradient(
  * `stroke_rounded_rect_alpha` (spec 3.4, `render/mod.rs:806-934`).
  *
  * A zero-width border, an empty rect or zero opacity draws nothing. Otherwise: straight strips for the
- * edges, then the four `radius x radius` corner boxes scanned with the exact `in_rounded_rect` test against
- * the outer rect and an innermost inset.
+ * edges, then the four `radius x radius` corner boxes scanned per pixel -- painted where the pixel is inside
+ * the outer rounded rect and outside the one inset by the border's own width, which is the ring the crate
+ * draws (`render/mod.rs`, `stroke_rounded_rect_alpha`).
  */
 function strokeRounded(
     context: CanvasRenderingContext2D,
@@ -724,22 +725,20 @@ function strokeRounded(
                 if (!inRoundedRect(x, y, rect, clamped)) {
                     continue;
                 }
-                let innerHit = false;
-                for (let i = 1; i < border.width; i += 1) {
-                    const inner: Rect = {
-                        x: rect.x + i,
-                        y: rect.y + i,
-                        w: Math.max(0, rect.w - 2 * i),
-                        h: Math.max(0, rect.h - 2 * i),
-                    };
-                    if (!rectEmpty(inner) && inRoundedRect(x, y, inner, clamped - i)) {
-                        innerHit = true;
-                        break;
-                    }
+                // Inside the outer rounded rect and outside the one inset by the border's width: the ring. Not a
+                // loop over every inset below the width -- that skipped a pixel as soon as the smallest inset
+                // contained it, which made every border a hairline and left a one-pixel border testing nothing,
+                // so the whole corner came out in the border colour.
+                const inner: Rect = {
+                    x: rect.x + b,
+                    y: rect.y + b,
+                    w: Math.max(0, rect.w - 2 * b),
+                    h: Math.max(0, rect.h - 2 * b),
+                };
+                if (!rectEmpty(inner) && inRoundedRect(x, y, inner, Math.max(0, clamped - b))) {
+                    continue;
                 }
-                if (!innerHit) {
-                    pixel(context, x, y, border.color, opacity);
-                }
+                pixel(context, x, y, border.color, opacity);
             }
         }
     }
