@@ -487,6 +487,41 @@ test('the toggle track outline appears only with a colour and a width above zero
     equal(fillsWithColour(noColour.calls, outline).length, 0, 'an unset colour draws no outline');
 });
 
+test('a rounded border is drawn as a ring, not as a block in each corner', () => {
+    // The bug this exists for: a border's corners were scanned with an inset loop that tested every inset *below*
+    // the border's width -- which for a one-pixel border, the ordinary case, tested nothing at all. Every pixel
+    // inside the corner's arc then came out in the border colour: four blocks, invisible at the crate's default
+    // radius of 2 and unmistakable on a button given `corner_radius=10`. The preview draws what the crate draws,
+    // so this is where it can be counted without hardware; the same measurement is in the crate's own suite.
+    const border = css565('#ff0000');
+    const widget = widgetOf('button', { text: 'AB', bg: '#0000ff', border_color: '#ff0000', corner_radius: 12 });
+    const { calls } = boot(documentWith(widget));
+    const red = pixelSet(calls, border);
+    const inBox = (x0, y0, size) => {
+        let painted = 0;
+        for (let y = y0; y < y0 + size; y += 1) {
+            for (let x = x0; x < x0 + size; x += 1) {
+                if (red.has(`${x},${y}`)) {
+                    painted += 1;
+                }
+            }
+        }
+        return painted;
+    };
+
+    const corner = inBox(widget.x, widget.y, 12);
+    ok(corner > 0, 'the corner arc is drawn');
+    ok(corner < 40, `a 12-pixel corner holds an arc, not a block: ${corner} border pixels`);
+    notOk(red.has(`${widget.x},${widget.y}`), 'the corner itself is outside the arc and stays unpainted');
+    notOk(red.has(`${widget.x + 6},${widget.y + 6}`), 'the inside of the corner is fill, not border');
+    // The straight edges are single strips rather than a fill per pixel, so this asks whether anything was
+    // painted along the top row rather than at one exact pixel.
+    ok(
+        [...red].some((point) => point.split(',')[1] === String(widget.y)),
+        'while the straight top edge is drawn',
+    );
+});
+
 test('the status bar is previewed and shows its time', () => {
     const at = (time) => boot(documentWith(widgetOf('status_bar', { time, text_color: '#12ab34' })));
     const eleven = at('11:11');

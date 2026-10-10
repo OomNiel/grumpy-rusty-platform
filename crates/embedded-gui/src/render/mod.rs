@@ -946,27 +946,24 @@ where
                             continue;
                         }
 
-                        let mut inner_hit = false;
-                        let mut i = 1u8;
-                        while i < border.width {
-                            let inset = i as i32;
-                            let inner = Rect::new(
-                                rect.x + inset,
-                                rect.y + inset,
-                                rect.w.saturating_sub((i as u32) * 2),
-                                rect.h.saturating_sub((i as u32) * 2),
-                            );
-                            let inner_radius = radius.saturating_sub(i);
-                            if !inner.is_empty() && in_rounded_rect(x, y, inner, inner_radius) {
-                                inner_hit = true;
-                                break;
-                            }
-                            i += 1;
+                        // Border pixels are the ones inside the rounded rectangle but *outside* the one inset by
+                        // the border's own width, whose radius shrinks with it. The first version tested every
+                        // inset from 1 upwards instead, which skipped a pixel as soon as the smallest inset
+                        // contained it -- so every border came out a hairline, and a one-pixel border tested
+                        // nothing at all, leaving the whole corner in the border colour: four blocks, invisible at
+                        // the default radius of 2 and obvious the moment a button asked for `corner_radius=10`.
+                        let inset = b as i32;
+                        let inner = Rect::new(
+                            rect.x + inset,
+                            rect.y + inset,
+                            rect.w.saturating_sub(b * 2),
+                            rect.h.saturating_sub(b * 2),
+                        );
+                        let inner_radius = radius.saturating_sub(b as u8);
+                        if !inner.is_empty() && in_rounded_rect(x, y, inner, inner_radius) {
+                            continue;
                         }
-
-                        if !inner_hit {
-                            self.pixel(x, y, border.color, opacity)?;
-                        }
+                        self.pixel(x, y, border.color, opacity)?;
                     }
                 }
             }
@@ -3049,5 +3046,54 @@ mod tests {
             "and is told that none of it is visible: {:?}",
             recording.last.get()
         );
+    }
+    #[test]
+    fn test_a_rounded_border_is_a_ring_and_not_a_block_in_the_corners() {
+        // A hairline border on a big radius: the corner is an arc a few pixels wide, not a filled block. The
+        // first version tested every inset *below* the border's width, so a one-pixel border tested nothing at
+        // all and every pixel inside the corner's arc came out in the border colour -- four blocks, invisible at
+        // the default radius of 2 and obvious the moment a button was given `corner_radius=10`.
+        use crate::style::Border;
+
+        let corner_count = |buf: &crate::test_buffer::TestBuffer, x0: i32, y0: i32, size: i32| {
+            let mut painted = 0;
+            for y in y0..y0 + size {
+                for x in x0..x0 + size {
+                    if buf.pixel_at(x, y) == Some(Rgb565::RED) {
+                        painted += 1;
+                    }
+                }
+            }
+            painted
+        };
+
+        let mut thin = crate::test_buffer::TestBuffer::new(40, 40);
+        let mut ctx = RenderCtx::new(&mut thin, Rect::new(0, 0, 40, 40));
+        ctx.stroke_rounded_rect(Rect::new(0, 0, 40, 40), 12, Border { color: Rgb565::RED, width: 1 })
+            .unwrap();
+
+        let hairline = corner_count(&thin, 0, 0, 12);
+        assert!(
+            hairline < 40,
+            "a 12-pixel corner holds an arc, not a block: {hairline} pixels painted in the corner box"
+        );
+        assert_eq!(thin.pixel_at(6, 6), Some(Rgb565::BLACK), "inside the arc is not border");
+        assert_eq!(thin.pixel_at(3, 3), Some(Rgb565::BLACK), "nor is anything outside it");
+        assert_eq!(thin.pixel_at(20, 0), Some(Rgb565::RED), "the straight edge is still drawn");
+        assert_eq!(thin.pixel_at(20, 1), Some(Rgb565::BLACK), "one pixel thick");
+
+        let mut thick = crate::test_buffer::TestBuffer::new(40, 40);
+        let mut ctx = RenderCtx::new(&mut thick, Rect::new(0, 0, 40, 40));
+        ctx.stroke_rounded_rect(Rect::new(0, 0, 40, 40), 12, Border { color: Rgb565::RED, width: 2 })
+            .unwrap();
+
+        let two_pixel = corner_count(&thick, 0, 0, 12);
+        assert!(
+            two_pixel > hairline && two_pixel < 80,
+            "a two-pixel border is a thicker arc and still not a block: {two_pixel} against {hairline}"
+        );
+        assert_eq!(thick.pixel_at(20, 1), Some(Rgb565::RED), "two pixels thick on the straight edge");
+        assert_eq!(thick.pixel_at(20, 2), Some(Rgb565::BLACK), "and no more");
+        assert_eq!(thick.pixel_at(7, 7), Some(Rgb565::BLACK), "the inside of the corner is left alone");
     }
 }

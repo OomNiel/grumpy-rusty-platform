@@ -5751,3 +5751,75 @@ Suite: **865 passed, 0 skipped**; the vendored widget crate is at **33** tests, 
 codegen fork at 23. The generated project still cross-checks under the ESP toolchain for
 `xtensa-esp32-none-elf` (exit 0), with no change to `src/sd.rs` -- this fix is entirely inside the vendored
 crates, so an existing project gets it from *Update Crates* alone.
+
+---
+
+## 117. Four blocks in the corners of a rounded border (2026-10-09)
+
+"*When applying rounded corners to widgits like Buttons and Busy wheels, 4 square blocks are drawn in each corner
+in the border colour.*"
+
+Introduced in 0.0.67 with the appearance work (`3a9406f`, the commit that gave six controls colours and wrote
+`stroke_rounded_rect_alpha`), and invisible until a radius big enough to show it: the crate's default radius is
+**2**, where the "block" is a 2x2 square that reads as a corner pixel. A button with `corner_radius=10`, or a
+busy wheel with the same, makes it four blocks.
+
+### The loop that ran zero times
+
+The straight edges of a rounded border were always right: `b`-thick strips along the four sides. The corners were
+scanned per pixel, and a pixel was skipped if it was inside an *inner* rounded rectangle:
+
+```rust
+let mut i = 1u8;
+while i < border.width {          // for a one-pixel border: 1 < 1 is false, so this never runs
+    let inner_radius = radius.saturating_sub(i);
+    if in_rounded_rect(x, y, inner, inner_radius) { inner_hit = true; break; }
+    i += 1;
+}
+if !inner_hit { self.pixel(x, y, border.color, opacity)?; }
+```
+
+With `border.width == 1` the loop body never executes, `inner_hit` stays false, and **every pixel inside the
+corner's arc** is painted: the whole corner, not the ring. Two bugs in one line, in fact -- for `width > 1` the
+loop also breaks at the *smallest* inset that contains the pixel, which leaves a one-pixel ring where two or
+three were asked for, so no border had ever been its stated thickness in a corner.
+
+The ring is simply the outer rounded rectangle minus the one inset by the border's width (radius shrinking with
+it), so the loop is not needed at all:
+
+```rust
+let inset = b as i32;                                     // the clamped border width
+let inner = Rect::new(rect.x + inset, rect.y + inset, rect.w.saturating_sub(b * 2), rect.h.saturating_sub(b * 2));
+if !inner.is_empty() && in_rounded_rect(x, y, inner, radius.saturating_sub(b as u8)) { continue; }
+self.pixel(x, y, border.color, opacity)?;
+```
+
+### Reproducing it without hardware, and the numbers
+
+The designer's canvas draws the same pixels as the crate -- `preview.ts`'s `strokeRounded` is a line-for-line
+mirror -- so the bug could be *counted* rather than reasoned about. `tests/tmp/corner-probe.js` (scratch, ignored)
+boots the real webview bundle against the stub DOM and counts the `fillRect` calls in a widget's corner boxes,
+with the colours: the stub records method calls but not property assignments, so `getContext` is wrapped once
+(the trick `t2-cli/designer-preview-controls.test.js` already uses) to record `fillStyle = ...` too.
+
+| | before | after |
+|---|---|---|
+| crate, 12x12 corner of a hairline border | **98** painted pixels | **19** |
+| preview, all four corners of a `corner_radius=12` button | **392** border pixels, 2052 canvas calls | **60**, 1388 |
+| busy wheel (`corner_radius=12`, its own 2-pixel border) | -- | 42, a thicker arc |
+
+The two implementations agreeing on 98 pixels per corner was itself the confirmation that the mirror is faithful.
+
+### The tests
+
+* **The crate**: `test_a_rounded_border_is_a_ring_and_not_a_block_in_the_corners` -- a hairline border on radius
+  12 keeps the corner box under 40 pixels, the corner itself and the inside of the arc are untouched while the
+  straight edge stays one pixel thick, and a two-pixel border is thicker but still not a block.
+* **The preview**: `a rounded border is drawn as a ring, not as a block in each corner`,
+  `t2-cli/designer-preview-controls.test.js`, the same measurement on the recorded calls -- the first test of the
+  *shape* of a stroke rather than of a colour reaching the canvas.
+
+Suite: **866 passed, 0 skipped**; the runtime fork is at **239** tests, the vendored widget crate at 33, the
+codegen fork at 23. The generated project still cross-checks for `xtensa-esp32-none-elf` (exit 0). Both halves
+live in the vendored crates, so an existing project picks this up from *Update Crates* -- no generated file
+changes.

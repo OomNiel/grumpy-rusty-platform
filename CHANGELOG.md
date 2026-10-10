@@ -11,6 +11,22 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.75] - 2026-10-09
+
+### Fixed
+
+- **A rounded border is a ring, not a block in each corner.** The corner of a stroked rounded rectangle was
+  scanned with an inset loop that tested every inset *below* the border's width -- which for a one-pixel border,
+  the ordinary case, tested nothing at all, so every pixel inside the corner's arc came out in the border colour.
+  At the crate's default radius of 2 that is a two-pixel square nobody notices; on a button or a busy wheel given
+  `corner_radius=10` it is four visible blocks. The ring is now the outer rounded rectangle minus the one inset
+  by the border's own width, with the radius shrinking with it -- which is also the first time a border thicker
+  than one pixel has been the thickness it was asked for. Measured: the corner of a hairline border went from
+  **98 painted pixels to 19** in the crate, and from **392 border-coloured corner pixels to 60** on the designer's
+  canvas. Introduced in 0.0.67 with the appearance work, and invisible until a radius large enough to show it.
+- The same arithmetic in the designer's canvas (`preview.ts`), which mirrors the crate stroke for stroke, so the
+  preview and the board agree.
+
 ## [0.0.74] - 2026-10-09
 
 ### Fixed
