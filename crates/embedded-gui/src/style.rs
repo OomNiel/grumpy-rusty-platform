@@ -1,0 +1,1836 @@
+use embedded_graphics_core::pixelcolor::{Rgb565, RgbColor};
+
+use crate::{font::FontId, geometry::EdgeInsets};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Border {
+    pub color: Rgb565,
+    pub width: u8,
+}
+
+impl Border {
+    pub const fn none() -> Self {
+        Self {
+            color: Rgb565::BLACK,
+            width: 0,
+        }
+    }
+
+    pub const fn one(color: Rgb565) -> Self {
+        Self { color, width: 1 }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Shadow {
+    pub color: Rgb565,
+    pub opacity: u8,
+    pub offset_x: i8,
+    pub offset_y: i8,
+    pub spread: u8,
+}
+
+impl Shadow {
+    pub const fn none() -> Option<Self> {
+        None
+    }
+
+    pub const fn soft() -> Self {
+        Self {
+            color: Rgb565::BLACK,
+            opacity: 96,
+            offset_x: 1,
+            offset_y: 2,
+            spread: 2,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GradientDirection {
+    Vertical,
+    Horizontal,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LinearGradient {
+    pub start: Rgb565,
+    pub end: Rgb565,
+    pub direction: GradientDirection,
+}
+
+impl LinearGradient {
+    pub const fn vertical(start: Rgb565, end: Rgb565) -> Self {
+        Self {
+            start,
+            end,
+            direction: GradientDirection::Vertical,
+        }
+    }
+
+    pub const fn horizontal(start: Rgb565, end: Rgb565) -> Self {
+        Self {
+            start,
+            end,
+            direction: GradientDirection::Horizontal,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AlphaLinearGradient {
+    pub start_color: Rgb565,
+    pub start_alpha: u8,
+    pub end_color: Rgb565,
+    pub end_alpha: u8,
+    pub direction: GradientDirection,
+}
+
+impl AlphaLinearGradient {
+    pub const fn new(
+        start_color: Rgb565,
+        start_alpha: u8,
+        end_color: Rgb565,
+        end_alpha: u8,
+        direction: GradientDirection,
+    ) -> Self {
+        Self {
+            start_color,
+            start_alpha,
+            end_color,
+            end_alpha,
+            direction,
+        }
+    }
+
+    pub const fn vertical(
+        start_color: Rgb565,
+        start_alpha: u8,
+        end_color: Rgb565,
+        end_alpha: u8,
+    ) -> Self {
+        Self::new(
+            start_color,
+            start_alpha,
+            end_color,
+            end_alpha,
+            GradientDirection::Vertical,
+        )
+    }
+
+    pub const fn horizontal(
+        start_color: Rgb565,
+        start_alpha: u8,
+        end_color: Rgb565,
+        end_alpha: u8,
+    ) -> Self {
+        Self::new(
+            start_color,
+            start_alpha,
+            end_color,
+            end_alpha,
+            GradientDirection::Horizontal,
+        )
+    }
+
+    pub fn sample(&self, t: u8) -> (Rgb565, u8) {
+        let color = lerp_rgb565_public(self.start_color, self.end_color, t);
+        let alpha = lerp_u8(self.start_alpha, self.end_alpha, t);
+        (color, alpha)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AlphaRadialGradient {
+    pub center_x: f32,
+    pub center_y: f32,
+    pub radius: f32,
+    pub start_color: Rgb565,
+    pub start_alpha: u8,
+    pub end_color: Rgb565,
+    pub end_alpha: u8,
+}
+
+impl AlphaRadialGradient {
+    pub fn new(
+        center_x: f32,
+        center_y: f32,
+        radius: f32,
+        start_color: Rgb565,
+        start_alpha: u8,
+        end_color: Rgb565,
+        end_alpha: u8,
+    ) -> Self {
+        Self {
+            center_x,
+            center_y,
+            radius: if radius <= 0.0 { 1.0 } else { radius },
+            start_color,
+            start_alpha,
+            end_color,
+            end_alpha,
+        }
+    }
+
+    pub fn sample_at_dist(&self, dist: f32) -> (Rgb565, u8) {
+        let t = (dist / self.radius).clamp(0.0, 1.0);
+        let t_u8 = (t * 255.0) as u8;
+        let color = lerp_rgb565_public(self.start_color, self.end_color, t_u8);
+        let alpha = lerp_u8(self.start_alpha, self.end_alpha, t_u8);
+        (color, alpha)
+    }
+}
+
+#[inline]
+pub fn lerp_u8(a: u8, b: u8, t: u8) -> u8 {
+    let t = t as u32;
+    let inv = 255u32 - t;
+    (((a as u32 * inv) + (b as u32 * t)) / 255) as u8
+}
+
+#[inline]
+pub fn lerp_rgb565_public(a: Rgb565, b: Rgb565, t: u8) -> Rgb565 {
+    let t = t as u16;
+    let inv = 255u16.saturating_sub(t);
+    let r = ((a.r() as u16 * inv) + (b.r() as u16 * t)) / 255;
+    let g = ((a.g() as u16 * inv) + (b.g() as u16 * t)) / 255;
+    let bb = ((a.b() as u16 * inv) + (b.b() as u16 * t)) / 255;
+    Rgb565::new(r as u8, g as u8, bb as u8)
+}
+
+/// Blends `color` toward white by `amount` (0 leaves it unchanged, 255 yields pure white).
+///
+/// Used to derive shades (e.g. card backgrounds from a screen background) procedurally
+/// instead of hand-authoring every tint as a separate constant.
+#[inline]
+pub fn lighten(color: Rgb565, amount: u8) -> Rgb565 {
+    lerp_rgb565_public(color, Rgb565::WHITE, amount)
+}
+
+/// Blends `color` toward black by `amount` (0 leaves it unchanged, 255 yields pure black).
+#[inline]
+pub fn darken(color: Rgb565, amount: u8) -> Rgb565 {
+    lerp_rgb565_public(color, Rgb565::BLACK, amount)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Style {
+    pub background: Option<Rgb565>,
+    pub gradient: Option<LinearGradient>,
+    pub font: FontId,
+    pub foreground: Rgb565,
+    pub text: Rgb565,
+    pub accent: Rgb565,
+    pub opacity: u8,
+    pub corner_radius: u8,
+    pub shadow: Option<Shadow>,
+    pub border: Border,
+    pub padding: EdgeInsets,
+}
+
+impl Style {
+    pub const fn new() -> Self {
+        Self {
+            background: None,
+            gradient: None,
+            font: FontId::Tiny3x5,
+            foreground: Rgb565::WHITE,
+            text: Rgb565::WHITE,
+            accent: Rgb565::new(0, 42, 31),
+            opacity: 255,
+            corner_radius: 0,
+            shadow: Shadow::none(),
+            border: Border::none(),
+            padding: EdgeInsets::all(0),
+        }
+    }
+
+    pub const fn panel() -> Self {
+        Self {
+            background: Some(Rgb565::new(2, 4, 8)),
+            gradient: Some(LinearGradient::vertical(
+                Rgb565::new(4, 8, 12),
+                Rgb565::new(1, 2, 5),
+            )),
+            font: FontId::Tiny3x5,
+            foreground: Rgb565::WHITE,
+            text: Rgb565::WHITE,
+            accent: Rgb565::new(0, 42, 31),
+            opacity: 255,
+            corner_radius: 2,
+            shadow: Some(Shadow::soft()),
+            border: Border::one(Rgb565::new(8, 16, 20)),
+            padding: EdgeInsets::all(2),
+        }
+    }
+
+    pub const fn label() -> Self {
+        Self {
+            background: None,
+            gradient: None,
+            font: FontId::Tiny3x5,
+            foreground: Rgb565::WHITE,
+            text: Rgb565::WHITE,
+            accent: Rgb565::new(0, 42, 31),
+            opacity: 255,
+            corner_radius: 0,
+            shadow: Shadow::none(),
+            border: Border::none(),
+            padding: EdgeInsets::all(0),
+        }
+    }
+
+    pub const fn button() -> Self {
+        Self {
+            background: Some(Rgb565::new(4, 8, 12)),
+            gradient: Some(LinearGradient::vertical(
+                Rgb565::new(6, 12, 16),
+                Rgb565::new(2, 4, 8),
+            )),
+            font: FontId::Medium4x7,
+            foreground: Rgb565::WHITE,
+            text: Rgb565::WHITE,
+            accent: Rgb565::new(0, 48, 40),
+            opacity: 255,
+            corner_radius: 2,
+            shadow: Some(Shadow {
+                color: Rgb565::BLACK,
+                opacity: 88,
+                offset_x: 1,
+                offset_y: 1,
+                spread: 1,
+            }),
+            border: Border::one(Rgb565::new(12, 24, 28)),
+            padding: EdgeInsets::symmetric(3, 2),
+        }
+    }
+
+    pub const fn progress() -> Self {
+        Self {
+            background: Some(Rgb565::new(3, 4, 5)),
+            gradient: Some(LinearGradient::horizontal(
+                Rgb565::new(3, 5, 6),
+                Rgb565::new(1, 2, 3),
+            )),
+            font: FontId::Tiny3x5,
+            foreground: Rgb565::new(0, 50, 18),
+            text: Rgb565::WHITE,
+            accent: Rgb565::new(0, 50, 18),
+            opacity: 255,
+            corner_radius: 1,
+            shadow: Shadow::none(),
+            border: Border::one(Rgb565::new(9, 14, 14)),
+            padding: EdgeInsets::all(1),
+        }
+    }
+
+    pub const fn selected(mut self, selected: bool) -> Self {
+        if selected {
+            self.background = Some(self.accent);
+            self.border = Border::one(Rgb565::WHITE);
+        }
+        self
+    }
+
+    pub const fn with_background(mut self, background: Option<Rgb565>) -> Self {
+        self.background = background;
+        self
+    }
+
+    pub const fn with_bg(mut self, bg: Rgb565) -> Self {
+        self.background = Some(bg);
+        self
+    }
+
+    pub const fn with_gradient(mut self, gradient: Option<LinearGradient>) -> Self {
+        self.gradient = gradient;
+        self
+    }
+
+    pub const fn with_foreground(mut self, foreground: Rgb565) -> Self {
+        self.foreground = foreground;
+        self
+    }
+
+    pub const fn with_fg(mut self, fg: Rgb565) -> Self {
+        self.foreground = fg;
+        self
+    }
+
+    pub const fn with_text(mut self, text: Rgb565) -> Self {
+        self.text = text;
+        self
+    }
+
+    pub const fn with_text_color(mut self, text: Rgb565) -> Self {
+        self.text = text;
+        self
+    }
+
+    pub const fn with_accent(mut self, accent: Rgb565) -> Self {
+        self.accent = accent;
+        self
+    }
+
+    pub const fn with_opacity(mut self, opacity: u8) -> Self {
+        self.opacity = opacity;
+        self
+    }
+
+    pub const fn with_corner_radius(mut self, corner_radius: u8) -> Self {
+        self.corner_radius = corner_radius;
+        self
+    }
+
+    pub const fn with_shadow(mut self, shadow: Option<Shadow>) -> Self {
+        self.shadow = shadow;
+        self
+    }
+
+    pub const fn with_border(mut self, border: Border) -> Self {
+        self.border = border;
+        self
+    }
+
+    pub const fn with_border_color(mut self, color: Rgb565) -> Self {
+        self.border = Border::one(color);
+        self
+    }
+
+    pub const fn with_padding(mut self, padding: EdgeInsets) -> Self {
+        self.padding = padding;
+        self
+    }
+
+    pub const fn with_font_id(mut self, font: FontId) -> Self {
+        self.font = font;
+        self
+    }
+
+    pub fn with_font(mut self, font: impl Into<FontId>) -> Self {
+        self.font = font.into();
+        self
+    }
+}
+
+impl Default for Style {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StateStyle {
+    pub style: Style,
+}
+
+impl StateStyle {
+    pub const fn new(style: Style) -> Self {
+        Self { style }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WidgetStyle {
+    pub normal: Style,
+    pub focused: Style,
+    pub pressed: Style,
+    pub disabled: Style,
+}
+
+impl WidgetStyle {
+    pub const fn new(normal: Style) -> Self {
+        Self {
+            normal,
+            focused: normal.selected(true),
+            pressed: normal.selected(true),
+            disabled: Style {
+                background: normal.background,
+                gradient: normal.gradient,
+                font: normal.font,
+                foreground: Rgb565::new(8, 12, 12),
+                text: Rgb565::new(12, 18, 18),
+                accent: normal.accent,
+                opacity: 170,
+                corner_radius: normal.corner_radius,
+                shadow: normal.shadow,
+                border: normal.border,
+                padding: normal.padding,
+            },
+        }
+    }
+
+    pub const fn button() -> Self {
+        Self::new(Style::button())
+    }
+
+    pub const fn label() -> Self {
+        Self::new(Style::label())
+    }
+
+    pub const fn panel() -> Self {
+        Self::new(Style::panel())
+    }
+
+    pub const fn progress() -> Self {
+        Self::new(Style::progress())
+    }
+
+    pub const fn with_normal(mut self, normal: Style) -> Self {
+        self.normal = normal;
+        self
+    }
+
+    pub const fn with_bg(mut self, bg: Rgb565) -> Self {
+        self.normal.background = Some(bg);
+        self
+    }
+
+    pub const fn with_fg(mut self, fg: Rgb565) -> Self {
+        self.normal.foreground = fg;
+        self
+    }
+
+    pub const fn with_text(mut self, text: Rgb565) -> Self {
+        self.normal.text = text;
+        self
+    }
+
+    pub const fn with_pressed_bg(mut self, bg: Rgb565) -> Self {
+        self.pressed.background = Some(bg);
+        self
+    }
+
+    pub const fn with_pressed_fg(mut self, fg: Rgb565) -> Self {
+        self.pressed.foreground = fg;
+        self
+    }
+
+    pub const fn with_pressed_text(mut self, text: Rgb565) -> Self {
+        self.pressed.text = text;
+        self
+    }
+
+    pub const fn with_focused_bg(mut self, bg: Rgb565) -> Self {
+        self.focused.background = Some(bg);
+        self
+    }
+
+    pub const fn with_focused_fg(mut self, fg: Rgb565) -> Self {
+        self.focused.foreground = fg;
+        self
+    }
+
+    pub const fn with_focused_text(mut self, text: Rgb565) -> Self {
+        self.focused.text = text;
+        self
+    }
+
+    pub const fn with_disabled_bg(mut self, bg: Rgb565) -> Self {
+        self.disabled.background = Some(bg);
+        self
+    }
+
+    pub const fn with_disabled_fg(mut self, fg: Rgb565) -> Self {
+        self.disabled.foreground = fg;
+        self
+    }
+
+    pub const fn with_disabled_text(mut self, text: Rgb565) -> Self {
+        self.disabled.text = text;
+        self
+    }
+
+    pub const fn with_border(mut self, border: Border) -> Self {
+        self.normal.border = border;
+        self.focused.border = border;
+        self.pressed.border = border;
+        self.disabled.border = border;
+        self
+    }
+
+    pub const fn with_border_color(self, color: Rgb565) -> Self {
+        self.with_border(Border::one(color))
+    }
+
+    pub const fn with_corner_radius(mut self, radius: u8) -> Self {
+        self.normal.corner_radius = radius;
+        self.focused.corner_radius = radius;
+        self.pressed.corner_radius = radius;
+        self.disabled.corner_radius = radius;
+        self
+    }
+
+    pub const fn with_font(mut self, font: FontId) -> Self {
+        self.normal.font = font;
+        self.focused.font = font;
+        self.pressed.font = font;
+        self.disabled.font = font;
+        self
+    }
+
+    pub const fn with_focused(mut self, focused: Style) -> Self {
+        self.focused = focused;
+        self
+    }
+
+    pub const fn with_pressed(mut self, pressed: Style) -> Self {
+        self.pressed = pressed;
+        self
+    }
+
+    pub const fn with_disabled(mut self, disabled: Style) -> Self {
+        self.disabled = disabled;
+        self
+    }
+
+    pub const fn resolve(self, state: VisualState) -> Style {
+        match state {
+            VisualState::Normal => self.normal,
+            VisualState::Focused => self.focused,
+            VisualState::Pressed => self.pressed,
+            VisualState::Disabled => self.disabled,
+        }
+    }
+
+    pub const fn with_state_override(mut self, state: VisualState, style: Style) -> Self {
+        match state {
+            VisualState::Normal => self.normal = style,
+            VisualState::Focused => self.focused = style,
+            VisualState::Pressed => self.pressed = style,
+            VisualState::Disabled => self.disabled = style,
+        }
+        self
+    }
+
+    pub fn resolve_interpolated(self, from: VisualState, to: VisualState, t: f32) -> Style {
+        let a = self.resolve(from);
+        let b = self.resolve(to);
+        lerp_style(a, b, t)
+    }
+}
+
+impl Default for WidgetStyle {
+    fn default() -> Self {
+        Self::new(Style::default())
+    }
+}
+
+impl From<Style> for WidgetStyle {
+    fn from(style: Style) -> Self {
+        Self::new(style)
+    }
+}
+
+impl From<StateStyle> for WidgetStyle {
+    fn from(style: StateStyle) -> Self {
+        Self::new(style.style)
+    }
+}
+
+impl crate::geometry::FluentBuilder for Style {}
+impl crate::geometry::FluentBuilder for WidgetStyle {}
+
+/// Centralized Design Token System (inspired by Bevy Feathers).
+///
+/// Encapsulates semantic design tokens (spacing scales, radii scales, typography,
+/// and semantic color roles) so entire UI themes can be generated consistently.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ThemeTokens {
+    pub surface: Rgb565,
+    pub surface_variant: Rgb565,
+    pub on_surface: Rgb565,
+    pub primary: Rgb565,
+    pub on_primary: Rgb565,
+    pub accent: Rgb565,
+    pub outline: Rgb565,
+    pub focus_ring: Rgb565,
+
+    pub radius_sm: u8,
+    pub radius_md: u8,
+    pub radius_lg: u8,
+
+    pub space_xs: u8,
+    pub space_sm: u8,
+    pub space_md: u8,
+    pub space_lg: u8,
+
+    pub font_body: FontId,
+    pub font_title: FontId,
+}
+
+impl ThemeTokens {
+    pub const fn dark() -> Self {
+        Self {
+            surface: Rgb565::new(3, 6, 8),
+            surface_variant: Rgb565::new(6, 12, 16),
+            on_surface: Rgb565::WHITE,
+            primary: Rgb565::new(0, 48, 63),
+            on_primary: Rgb565::WHITE,
+            accent: Rgb565::new(31, 48, 0),
+            outline: Rgb565::new(10, 20, 26),
+            focus_ring: Rgb565::new(31, 63, 0),
+
+            radius_sm: 2,
+            radius_md: 4,
+            radius_lg: 8,
+
+            space_xs: 2,
+            space_sm: 4,
+            space_md: 8,
+            space_lg: 16,
+
+            font_body: FontId::Scaled6x10,
+            font_title: FontId::Vector(2),
+        }
+    }
+
+    pub const fn light() -> Self {
+        Self {
+            surface: Rgb565::new(28, 58, 28),
+            surface_variant: Rgb565::new(24, 50, 24),
+            on_surface: Rgb565::BLACK,
+            primary: Rgb565::new(0, 32, 28),
+            on_primary: Rgb565::WHITE,
+            accent: Rgb565::new(28, 20, 0),
+            outline: Rgb565::new(18, 36, 18),
+            focus_ring: Rgb565::new(0, 48, 31),
+
+            radius_sm: 2,
+            radius_md: 4,
+            radius_lg: 8,
+
+            space_xs: 2,
+            space_sm: 4,
+            space_md: 8,
+            space_lg: 16,
+
+            font_body: FontId::Scaled6x10,
+            font_title: FontId::Vector(2),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Theme {
+    pub panel: Style,
+    pub label: Style,
+    pub button: Style,
+    pub progress: Style,
+    pub toggle: Style,
+    pub checkbox: Style,
+    pub slider: Style,
+    pub value_label: Style,
+    pub icon_button: Style,
+    pub list: Style,
+    pub dialog: Style,
+    pub toast: Style,
+    pub tabs: Style,
+    pub meter: Style,
+    pub focus_ring: Rgb565,
+}
+
+impl Theme {
+    /// Construct a complete widget theme from centralized design tokens.
+    pub fn from_tokens(tokens: &ThemeTokens) -> Self {
+        let panel_style = Style {
+            background: Some(tokens.surface),
+            foreground: tokens.on_surface,
+            text: tokens.on_surface,
+            accent: tokens.accent,
+            font: tokens.font_body,
+            corner_radius: tokens.radius_md,
+            border: Border::one(tokens.outline),
+            padding: EdgeInsets::all(tokens.space_sm as i16),
+            opacity: 255,
+            gradient: None,
+            shadow: None,
+        };
+
+        let button_style = Style {
+            background: Some(tokens.primary),
+            foreground: tokens.on_primary,
+            text: tokens.on_primary,
+            accent: tokens.accent,
+            font: tokens.font_body,
+            corner_radius: tokens.radius_sm,
+            border: Border::none(),
+            padding: EdgeInsets::symmetric(tokens.space_xs as i16, tokens.space_sm as i16),
+            opacity: 255,
+            gradient: None,
+            shadow: Some(Shadow::soft()),
+        };
+
+        let label_style = Style {
+            background: None,
+            foreground: tokens.on_surface,
+            text: tokens.on_surface,
+            accent: tokens.accent,
+            font: tokens.font_body,
+            corner_radius: 0,
+            border: Border::none(),
+            padding: EdgeInsets::zero(),
+            opacity: 255,
+            gradient: None,
+            shadow: None,
+        };
+
+        Self {
+            panel: panel_style,
+            label: label_style,
+            button: button_style,
+            progress: Style {
+                background: Some(tokens.surface_variant),
+                foreground: tokens.accent,
+                accent: tokens.accent,
+                corner_radius: tokens.radius_sm,
+                border: Border::one(tokens.outline),
+                ..panel_style
+            },
+            toggle: button_style,
+            checkbox: button_style,
+            slider: button_style,
+            value_label: panel_style,
+            icon_button: button_style,
+            list: button_style,
+            dialog: Style {
+                background: Some(tokens.surface_variant),
+                corner_radius: tokens.radius_lg,
+                border: Border::one(tokens.outline),
+                padding: EdgeInsets::all(tokens.space_md as i16),
+                ..panel_style
+            },
+            toast: Style {
+                background: Some(tokens.surface_variant),
+                corner_radius: tokens.radius_sm,
+                border: Border::one(tokens.accent),
+                padding: EdgeInsets::all(tokens.space_sm as i16),
+                ..panel_style
+            },
+            tabs: button_style,
+            meter: panel_style,
+            focus_ring: tokens.focus_ring,
+        }
+    }
+
+    pub const fn dark() -> Self {
+        Self {
+            panel: Style::panel(),
+            label: Style::label(),
+            button: Style::button(),
+            progress: Style::progress(),
+            toggle: Style::button(),
+            checkbox: Style::button(),
+            slider: Style::button(),
+            value_label: Style::panel(),
+            icon_button: Style::button(),
+            list: Style::button(),
+            dialog: Style {
+                background: Some(Rgb565::new(5, 8, 14)),
+                gradient: Some(LinearGradient::vertical(
+                    Rgb565::new(7, 12, 18),
+                    Rgb565::new(2, 4, 8),
+                )),
+                font: FontId::Scaled6x10,
+                foreground: Rgb565::WHITE,
+                text: Rgb565::WHITE,
+                accent: Rgb565::new(31, 44, 0),
+                opacity: 255,
+                corner_radius: 3,
+                shadow: Some(Shadow {
+                    color: Rgb565::BLACK,
+                    opacity: 120,
+                    offset_x: 2,
+                    offset_y: 2,
+                    spread: 3,
+                }),
+                border: Border::one(Rgb565::WHITE),
+                padding: EdgeInsets::all(4),
+            },
+            toast: Style {
+                background: Some(Rgb565::new(8, 10, 2)),
+                gradient: Some(LinearGradient::vertical(
+                    Rgb565::new(10, 14, 4),
+                    Rgb565::new(5, 6, 1),
+                )),
+                font: FontId::Medium4x7,
+                foreground: Rgb565::WHITE,
+                text: Rgb565::WHITE,
+                accent: Rgb565::new(31, 48, 0),
+                opacity: 255,
+                corner_radius: 2,
+                shadow: Some(Shadow {
+                    color: Rgb565::BLACK,
+                    opacity: 72,
+                    offset_x: 1,
+                    offset_y: 1,
+                    spread: 1,
+                }),
+                border: Border::one(Rgb565::new(18, 22, 6)),
+                padding: EdgeInsets::symmetric(4, 2),
+            },
+            tabs: Style::button(),
+            meter: Style::progress(),
+            focus_ring: Rgb565::new(31, 56, 0),
+        }
+    }
+
+    pub const fn light() -> Self {
+        Self {
+            panel: Style {
+                background: Some(Rgb565::new(28, 58, 28)),
+                gradient: None,
+                font: FontId::Scaled6x10,
+                foreground: Rgb565::BLACK,
+                text: Rgb565::BLACK,
+                accent: Rgb565::new(0, 32, 28),
+                opacity: 255,
+                corner_radius: 2,
+                shadow: None,
+                border: Border::one(Rgb565::new(20, 40, 20)),
+                padding: EdgeInsets::all(2),
+            },
+            label: Style {
+                background: None,
+                gradient: None,
+                font: FontId::Scaled6x10,
+                foreground: Rgb565::BLACK,
+                text: Rgb565::BLACK,
+                accent: Rgb565::new(0, 32, 28),
+                opacity: 255,
+                corner_radius: 0,
+                shadow: None,
+                border: Border::none(),
+                padding: EdgeInsets::zero(),
+            },
+            button: Style {
+                background: Some(Rgb565::new(26, 54, 26)),
+                gradient: None,
+                font: FontId::Scaled6x10,
+                foreground: Rgb565::BLACK,
+                text: Rgb565::BLACK,
+                accent: Rgb565::new(0, 36, 31),
+                opacity: 255,
+                corner_radius: 3,
+                shadow: None,
+                border: Border::one(Rgb565::new(16, 34, 16)),
+                padding: EdgeInsets::symmetric(4, 2),
+            },
+            progress: Style {
+                background: Some(Rgb565::new(24, 48, 24)),
+                gradient: None,
+                font: FontId::Medium4x7,
+                foreground: Rgb565::BLACK,
+                text: Rgb565::WHITE,
+                accent: Rgb565::new(0, 40, 31),
+                opacity: 255,
+                corner_radius: 2,
+                shadow: None,
+                border: Border::one(Rgb565::new(18, 38, 18)),
+                padding: EdgeInsets::zero(),
+            },
+            toggle: Style::button(),
+            checkbox: Style::button(),
+            slider: Style::button(),
+            value_label: Style::label(),
+            icon_button: Style::button(),
+            list: Style::button(),
+            dialog: Style::panel(),
+            toast: Style::panel(),
+            tabs: Style::button(),
+            meter: Style::progress(),
+            focus_ring: Rgb565::new(0, 40, 31),
+        }
+    }
+
+    pub const fn amber_crt() -> Self {
+        let amber = Rgb565::new(31, 44, 0); // Warm amber
+        let dim_amber = Rgb565::new(18, 24, 0);
+        Self {
+            panel: Style {
+                background: Some(Rgb565::BLACK),
+                gradient: None,
+                font: FontId::Scaled6x10,
+                foreground: amber,
+                text: amber,
+                accent: amber,
+                opacity: 255,
+                corner_radius: 0,
+                shadow: None,
+                border: Border::one(dim_amber),
+                padding: EdgeInsets::all(2),
+            },
+            label: Style {
+                background: None,
+                gradient: None,
+                font: FontId::Scaled6x10,
+                foreground: amber,
+                text: amber,
+                accent: amber,
+                opacity: 255,
+                corner_radius: 0,
+                shadow: None,
+                border: Border::none(),
+                padding: EdgeInsets::zero(),
+            },
+            button: Style {
+                background: Some(Rgb565::BLACK),
+                gradient: None,
+                font: FontId::Scaled6x10,
+                foreground: amber,
+                text: amber,
+                accent: amber,
+                opacity: 255,
+                corner_radius: 0,
+                shadow: None,
+                border: Border::one(amber),
+                padding: EdgeInsets::symmetric(4, 2),
+            },
+            progress: Style {
+                background: Some(Rgb565::BLACK),
+                gradient: None,
+                font: FontId::Medium4x7,
+                foreground: amber,
+                text: amber,
+                accent: amber,
+                opacity: 255,
+                corner_radius: 0,
+                shadow: None,
+                border: Border::one(dim_amber),
+                padding: EdgeInsets::zero(),
+            },
+            toggle: Style::button(),
+            checkbox: Style::button(),
+            slider: Style::button(),
+            value_label: Style::label(),
+            icon_button: Style::button(),
+            list: Style::button(),
+            dialog: Style::panel(),
+            toast: Style::panel(),
+            tabs: Style::button(),
+            meter: Style::progress(),
+            focus_ring: amber,
+        }
+    }
+
+    pub const fn emerald_matrix() -> Self {
+        let green = Rgb565::new(0, 60, 10);
+        let dim_green = Rgb565::new(0, 24, 4);
+        Self {
+            panel: Style {
+                background: Some(Rgb565::BLACK),
+                gradient: None,
+                font: FontId::Scaled6x10,
+                foreground: green,
+                text: green,
+                accent: green,
+                opacity: 255,
+                corner_radius: 0,
+                shadow: None,
+                border: Border::one(dim_green),
+                padding: EdgeInsets::all(2),
+            },
+            label: Style {
+                background: None,
+                gradient: None,
+                font: FontId::Scaled6x10,
+                foreground: green,
+                text: green,
+                accent: green,
+                opacity: 255,
+                corner_radius: 0,
+                shadow: None,
+                border: Border::none(),
+                padding: EdgeInsets::zero(),
+            },
+            button: Style {
+                background: Some(Rgb565::BLACK),
+                gradient: None,
+                font: FontId::Scaled6x10,
+                foreground: green,
+                text: green,
+                accent: green,
+                opacity: 255,
+                corner_radius: 0,
+                shadow: None,
+                border: Border::one(green),
+                padding: EdgeInsets::symmetric(4, 2),
+            },
+            progress: Style {
+                background: Some(Rgb565::BLACK),
+                gradient: None,
+                font: FontId::Medium4x7,
+                foreground: green,
+                text: green,
+                accent: green,
+                opacity: 255,
+                corner_radius: 0,
+                shadow: None,
+                border: Border::one(dim_green),
+                padding: EdgeInsets::zero(),
+            },
+            toggle: Style::button(),
+            checkbox: Style::button(),
+            slider: Style::button(),
+            value_label: Style::label(),
+            icon_button: Style::button(),
+            list: Style::button(),
+            dialog: Style::panel(),
+            toast: Style::panel(),
+            tabs: Style::button(),
+            meter: Style::progress(),
+            focus_ring: green,
+        }
+    }
+
+    pub const fn monochrome_oled() -> Self {
+        Self {
+            panel: Style {
+                background: Some(Rgb565::BLACK),
+                gradient: None,
+                font: FontId::Scaled6x10,
+                foreground: Rgb565::WHITE,
+                text: Rgb565::WHITE,
+                accent: Rgb565::WHITE,
+                opacity: 255,
+                corner_radius: 0,
+                shadow: None,
+                border: Border::one(Rgb565::WHITE),
+                padding: EdgeInsets::all(2),
+            },
+            label: Style {
+                background: None,
+                gradient: None,
+                font: FontId::Scaled6x10,
+                foreground: Rgb565::WHITE,
+                text: Rgb565::WHITE,
+                accent: Rgb565::WHITE,
+                opacity: 255,
+                corner_radius: 0,
+                shadow: None,
+                border: Border::none(),
+                padding: EdgeInsets::zero(),
+            },
+            button: Style {
+                background: Some(Rgb565::BLACK),
+                gradient: None,
+                font: FontId::Scaled6x10,
+                foreground: Rgb565::WHITE,
+                text: Rgb565::WHITE,
+                accent: Rgb565::WHITE,
+                opacity: 255,
+                corner_radius: 0,
+                shadow: None,
+                border: Border::one(Rgb565::WHITE),
+                padding: EdgeInsets::symmetric(4, 2),
+            },
+            progress: Style {
+                background: Some(Rgb565::BLACK),
+                gradient: None,
+                font: FontId::Medium4x7,
+                foreground: Rgb565::WHITE,
+                text: Rgb565::WHITE,
+                accent: Rgb565::WHITE,
+                opacity: 255,
+                corner_radius: 0,
+                shadow: None,
+                border: Border::one(Rgb565::WHITE),
+                padding: EdgeInsets::zero(),
+            },
+            toggle: Style::button(),
+            checkbox: Style::button(),
+            slider: Style::button(),
+            value_label: Style::label(),
+            icon_button: Style::button(),
+            list: Style::button(),
+            dialog: Style::panel(),
+            toast: Style::panel(),
+            tabs: Style::button(),
+            meter: Style::progress(),
+            focus_ring: Rgb565::WHITE,
+        }
+    }
+
+    /// Light, rounded-card look with soft drop shadows and generous padding —
+    /// closer to what most desktop/mobile design systems ship as their default,
+    /// versus this crate's other retro/CRT-leaning presets.
+    ///
+    /// Shades are derived procedurally from two seed colors via [`lighten`]/[`darken`]
+    /// rather than hand-authored per state, trading exact color-step parity with any
+    /// particular reference theme for far less code.
+    pub fn soft_ui() -> Self {
+        let screen_bg = Rgb565::new(29, 60, 30);
+        let primary = Rgb565::new(7, 31, 26);
+        let ink = Rgb565::new(4, 9, 5);
+
+        let card_bg = lighten(screen_bg, 250);
+        let border = darken(card_bg, 30);
+        let shadow_color = darken(card_bg, 235);
+        let track_bg = darken(card_bg, 15);
+
+        let button_shadow = Some(Shadow {
+            color: shadow_color,
+            opacity: 110,
+            offset_x: 0,
+            offset_y: 2,
+            spread: 2,
+        });
+
+        let button = Style {
+            background: Some(card_bg),
+            gradient: None,
+            font: FontId::Scaled6x10,
+            foreground: ink,
+            text: ink,
+            accent: primary,
+            opacity: 255,
+            corner_radius: 10,
+            shadow: button_shadow,
+            border: Border::one(border),
+            padding: EdgeInsets::symmetric(10, 6),
+        };
+
+        let panel = Style {
+            background: Some(card_bg),
+            gradient: None,
+            font: FontId::Scaled6x10,
+            foreground: ink,
+            text: ink,
+            accent: primary,
+            opacity: 255,
+            corner_radius: 8,
+            shadow: None,
+            border: Border::one(border),
+            padding: EdgeInsets::all(8),
+        };
+
+        let label = Style {
+            background: None,
+            gradient: None,
+            font: FontId::Scaled6x10,
+            foreground: ink,
+            text: ink,
+            accent: primary,
+            opacity: 255,
+            corner_radius: 0,
+            shadow: None,
+            border: Border::none(),
+            padding: EdgeInsets::zero(),
+        };
+
+        let progress = Style {
+            background: Some(track_bg),
+            gradient: None,
+            font: FontId::Medium4x7,
+            foreground: primary,
+            text: ink,
+            accent: primary,
+            opacity: 255,
+            corner_radius: 8,
+            shadow: None,
+            border: Border::one(border),
+            padding: EdgeInsets::all(2),
+        };
+
+        let dialog = Style {
+            background: Some(card_bg),
+            gradient: None,
+            font: FontId::Scaled6x10,
+            foreground: ink,
+            text: ink,
+            accent: primary,
+            opacity: 255,
+            corner_radius: 12,
+            shadow: Some(Shadow {
+                color: shadow_color,
+                opacity: 140,
+                offset_x: 0,
+                offset_y: 3,
+                spread: 4,
+            }),
+            border: Border::one(border),
+            padding: EdgeInsets::all(10),
+        };
+
+        Self {
+            panel,
+            label,
+            button,
+            progress,
+            toggle: button,
+            checkbox: button,
+            slider: button,
+            value_label: label,
+            icon_button: button,
+            list: button,
+            dialog,
+            toast: dialog,
+            tabs: button,
+            meter: progress,
+            focus_ring: primary,
+        }
+    }
+
+    /// Returns the corresponding `WidgetStyle` for a given `WidgetKind` under this theme.
+    pub fn widget_style_for_kind(&self, kind: &crate::widgets::WidgetKind) -> WidgetStyle {
+        match kind {
+            crate::widgets::WidgetKind::Panel => WidgetStyle::new(self.panel),
+            crate::widgets::WidgetKind::Label(_) => WidgetStyle::new(self.label),
+            crate::widgets::WidgetKind::Button(_) => WidgetStyle::new(self.button),
+            crate::widgets::WidgetKind::ProgressBar { .. } => WidgetStyle::new(self.progress),
+            #[cfg(feature = "rich-widgets")]
+            crate::widgets::WidgetKind::Toggle { .. } => WidgetStyle::new(self.toggle),
+            #[cfg(feature = "rich-widgets")]
+            crate::widgets::WidgetKind::Checkbox { .. } => WidgetStyle::new(self.checkbox),
+            #[cfg(feature = "rich-widgets")]
+            crate::widgets::WidgetKind::Slider { .. } => WidgetStyle::new(self.slider),
+            #[cfg(feature = "rich-widgets")]
+            crate::widgets::WidgetKind::ValueLabel { .. } => WidgetStyle::new(self.value_label),
+            #[cfg(feature = "rich-widgets")]
+            crate::widgets::WidgetKind::IconButton { .. } => WidgetStyle::new(self.icon_button),
+            #[cfg(feature = "rich-widgets")]
+            crate::widgets::WidgetKind::List { .. } => WidgetStyle::new(self.list),
+            #[cfg(feature = "rich-widgets")]
+            crate::widgets::WidgetKind::Dialog { .. } => WidgetStyle::new(self.dialog),
+            #[cfg(feature = "rich-widgets")]
+            crate::widgets::WidgetKind::Toast { .. } => WidgetStyle::new(self.toast),
+            #[cfg(feature = "rich-widgets")]
+            crate::widgets::WidgetKind::Tabs { .. } => WidgetStyle::new(self.tabs),
+            _ => WidgetStyle::new(self.panel),
+        }
+    }
+}
+
+impl Default for Theme {
+    fn default() -> Self {
+        Self::dark()
+    }
+}
+
+pub fn lerp_style(a: Style, b: Style, t: f32) -> Style {
+    let t = t.clamp(0.0, 1.0);
+    let blend = |c1: Rgb565, c2: Rgb565| {
+        let lerp = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t) as u8;
+        Rgb565::new(
+            lerp(c1.r(), c2.r()),
+            lerp(c1.g(), c2.g()),
+            lerp(c1.b(), c2.b()),
+        )
+    };
+    Style {
+        background: Some(blend(
+            a.background.unwrap_or(Rgb565::BLACK),
+            b.background.unwrap_or(Rgb565::BLACK),
+        )),
+        gradient: a.gradient.or(b.gradient),
+        font: a.font,
+        foreground: blend(a.foreground, b.foreground),
+        text: blend(a.text, b.text),
+        accent: blend(a.accent, b.accent),
+        opacity: (a.opacity as f32 + (b.opacity as f32 - a.opacity as f32) * t) as u8,
+        corner_radius: (a.corner_radius as f32
+            + (b.corner_radius as f32 - a.corner_radius as f32) * t) as u8,
+        shadow: a.shadow.or(b.shadow),
+        border: Border {
+            color: blend(a.border.color, b.border.color),
+            width: (a.border.width as f32 + (b.border.width as f32 - a.border.width as f32) * t)
+                as u8,
+        },
+        padding: a.padding,
+    }
+}
+
+pub fn lerp_theme(a: Theme, b: Theme, t: f32) -> Theme {
+    let t = t.clamp(0.0, 1.0);
+    let blend_color = |c1: Rgb565, c2: Rgb565| {
+        let lerp = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t) as u8;
+        Rgb565::new(
+            lerp(c1.r(), c2.r()),
+            lerp(c1.g(), c2.g()),
+            lerp(c1.b(), c2.b()),
+        )
+    };
+    Theme {
+        panel: lerp_style(a.panel, b.panel, t),
+        label: lerp_style(a.label, b.label, t),
+        button: lerp_style(a.button, b.button, t),
+        progress: lerp_style(a.progress, b.progress, t),
+        toggle: lerp_style(a.toggle, b.toggle, t),
+        checkbox: lerp_style(a.checkbox, b.checkbox, t),
+        slider: lerp_style(a.slider, b.slider, t),
+        value_label: lerp_style(a.value_label, b.value_label, t),
+        icon_button: lerp_style(a.icon_button, b.icon_button, t),
+        list: lerp_style(a.list, b.list, t),
+        dialog: lerp_style(a.dialog, b.dialog, t),
+        toast: lerp_style(a.toast, b.toast, t),
+        tabs: lerp_style(a.tabs, b.tabs, t),
+        meter: lerp_style(a.meter, b.meter, t),
+        focus_ring: blend_color(a.focus_ring, b.focus_ring),
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StyleTransition {
+    pub from: VisualState,
+    pub to: VisualState,
+    pub animation: crate::Animation,
+}
+
+impl StyleTransition {
+    pub const fn new(
+        from: VisualState,
+        to: VisualState,
+        duration_ms: u32,
+        easing: crate::Easing,
+    ) -> Self {
+        Self {
+            from,
+            to,
+            animation: crate::Animation::new(0.0, 1.0, duration_ms, easing),
+        }
+    }
+
+    pub fn tick(&mut self, dt_ms: u32) {
+        self.animation.tick(dt_ms);
+    }
+
+    pub fn style(&self, styles: WidgetStyle) -> Style {
+        styles.resolve_interpolated(self.from, self.to, self.animation.value())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum VisualState {
+    #[default]
+    Normal,
+    Focused,
+    Pressed,
+    Disabled,
+}
+
+/// Targetable sub-component part of a widget.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WidgetPart {
+    Main,
+    Indicator,
+    Knob,
+    Scrollbar,
+    Custom(u8),
+}
+
+/// Bitmask representing active visual states (supports combining states like CHECKED | PRESSED).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct VisualStateMask(pub u8);
+
+impl VisualStateMask {
+    pub const NORMAL: Self = Self(1 << 0);
+    pub const FOCUSED: Self = Self(1 << 1);
+    pub const PRESSED: Self = Self(1 << 2);
+    pub const DISABLED: Self = Self(1 << 3);
+    pub const CHECKED: Self = Self(1 << 4);
+
+    pub const fn empty() -> Self {
+        Self(0)
+    }
+
+    pub const fn contains(self, other: Self) -> bool {
+        (self.0 & other.0) == other.0
+    }
+
+    pub const fn with(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    pub const fn from_visual_state(state: VisualState) -> Self {
+        match state {
+            VisualState::Normal => Self::NORMAL,
+            VisualState::Focused => Self::FOCUSED,
+            VisualState::Pressed => Self::PRESSED,
+            VisualState::Disabled => Self::DISABLED,
+        }
+    }
+}
+
+/// A cascading rule that applies a style to a specific widget part under matching visual states.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PartStyleRule {
+    pub part: WidgetPart,
+    pub state_mask: VisualStateMask,
+    pub style: Style,
+}
+
+/// A multi-part style descriptor managing distinct visual rules for parts of a compound widget.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MultiPartStyle<const RULES: usize = 4> {
+    pub base_style: Style,
+    rules: [Option<PartStyleRule>; RULES],
+}
+
+impl<const RULES: usize> Default for MultiPartStyle<RULES> {
+    fn default() -> Self {
+        Self::new(Style::new())
+    }
+}
+
+impl<const RULES: usize> MultiPartStyle<RULES> {
+    pub const fn new(base_style: Style) -> Self {
+        Self {
+            base_style,
+            rules: [None; RULES],
+        }
+    }
+
+    pub const fn with_part_rule(
+        mut self,
+        part: WidgetPart,
+        state_mask: VisualStateMask,
+        style: Style,
+    ) -> Self {
+        let mut i = 0;
+        while i < RULES {
+            if self.rules[i].is_none() {
+                self.rules[i] = Some(PartStyleRule {
+                    part,
+                    state_mask,
+                    style,
+                });
+                return self;
+            }
+            i += 1;
+        }
+        self
+    }
+
+    pub fn resolve(&self, part: WidgetPart, state: VisualState) -> Style {
+        let mask = VisualStateMask::from_visual_state(state);
+        self.resolve_mask(part, mask)
+    }
+
+    pub fn resolve_mask(&self, part: WidgetPart, state_mask: VisualStateMask) -> Style {
+        for rule in self.rules.iter().flatten() {
+            if rule.part == part && (rule.state_mask.0 == 0 || rule.state_mask.contains(state_mask))
+            {
+                return rule.style;
+            }
+        }
+        self.base_style
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use embedded_graphics_core::pixelcolor::WebColors;
+
+    #[test]
+    fn test_border_and_shadow_presets() {
+        let none_border = Border::none();
+        assert_eq!(none_border.width, 0);
+
+        let one_border = Border::one(Rgb565::CSS_RED);
+        assert_eq!(one_border.width, 1);
+        assert_eq!(one_border.color, Rgb565::CSS_RED);
+
+        assert_eq!(Shadow::none(), None);
+        let soft_shadow = Shadow::soft();
+        assert_eq!(soft_shadow.opacity, 96);
+        assert_eq!(soft_shadow.offset_x, 1);
+    }
+
+    #[test]
+    fn test_style_resolution_and_state_overrides() {
+        let base_style = Style {
+            background: Some(Rgb565::CSS_BLUE),
+            gradient: None,
+            font: FontId::Tiny3x5,
+            foreground: Rgb565::CSS_WHITE,
+            text: Rgb565::CSS_WHITE,
+            accent: Rgb565::CSS_RED,
+            opacity: 255,
+            corner_radius: 0,
+            shadow: Shadow::none(),
+            border: Border::none(),
+            padding: EdgeInsets::all(4),
+        };
+
+        let focused_style = Style {
+            background: Some(Rgb565::CSS_YELLOW),
+            ..base_style
+        };
+
+        let widget_style =
+            WidgetStyle::new(base_style).with_state_override(VisualState::Focused, focused_style);
+
+        assert_eq!(widget_style.resolve(VisualState::Normal), base_style);
+        assert_eq!(widget_style.resolve(VisualState::Focused), focused_style);
+        assert_eq!(
+            widget_style.resolve(VisualState::Pressed),
+            base_style.selected(true)
+        );
+    }
+
+    #[test]
+    fn test_style_lerp_and_transition() {
+        let s1 = Style {
+            background: Some(Rgb565::new(0, 0, 0)),
+            gradient: None,
+            font: FontId::Tiny3x5,
+            foreground: Rgb565::new(0, 0, 0),
+            text: Rgb565::new(0, 0, 0),
+            accent: Rgb565::new(0, 0, 0),
+            opacity: 0,
+            corner_radius: 0,
+            shadow: Shadow::none(),
+            border: Border::none(),
+            padding: EdgeInsets::all(0),
+        };
+
+        let s2 = Style {
+            background: Some(Rgb565::new(31, 63, 31)),
+            gradient: None,
+            font: FontId::Tiny3x5,
+            foreground: Rgb565::new(31, 63, 31),
+            text: Rgb565::new(31, 63, 31),
+            accent: Rgb565::new(31, 63, 31),
+            opacity: 255,
+            corner_radius: 8,
+            shadow: Shadow::none(),
+            border: Border::one(Rgb565::new(31, 63, 31)),
+            padding: EdgeInsets::all(10),
+        };
+
+        let mid = lerp_style(s1, s2, 0.5);
+        assert!((mid.background.unwrap().r() as i32 - 15).abs() <= 1);
+        assert_eq!(mid.corner_radius, 4);
+
+        let widget_style = WidgetStyle::new(s1).with_state_override(VisualState::Focused, s2);
+
+        let mut transition = StyleTransition::new(
+            VisualState::Normal,
+            VisualState::Focused,
+            100,
+            crate::Easing::Linear,
+        );
+
+        transition.tick(50);
+        let current_style = transition.style(widget_style);
+        assert_eq!(current_style.corner_radius, 4);
+    }
+
+    #[test]
+    fn test_lighten_darken() {
+        let color = Rgb565::new(10, 20, 10);
+        assert_eq!(lighten(color, 0), color);
+        assert_eq!(darken(color, 0), color);
+        assert_eq!(lighten(color, 255), Rgb565::WHITE);
+        assert_eq!(darken(color, 255), Rgb565::BLACK);
+    }
+
+    #[test]
+    fn test_soft_ui_theme() {
+        let theme = Theme::soft_ui();
+        assert!(theme.button.corner_radius > 0);
+        assert!(theme.button.shadow.is_some());
+        assert!(theme.panel.border.width > 0);
+        // Card background should be lighter than the screen background it's derived from.
+        assert!(theme.panel.background.unwrap().g() > 30);
+    }
+
+    #[test]
+    fn test_multipart_style_resolution() {
+        let base_style = Style::new();
+        let knob_style = Style {
+            corner_radius: 10,
+            ..base_style
+        };
+        let indicator_pressed_style = Style {
+            corner_radius: 5,
+            ..base_style
+        };
+
+        let multipart = MultiPartStyle::<4>::new(base_style)
+            .with_part_rule(WidgetPart::Knob, VisualStateMask::empty(), knob_style)
+            .with_part_rule(
+                WidgetPart::Indicator,
+                VisualStateMask::PRESSED,
+                indicator_pressed_style,
+            );
+
+        // Knob gets knob_style regardless of normal state because state_mask is empty/wildcard
+        assert_eq!(
+            multipart.resolve(WidgetPart::Knob, VisualState::Normal),
+            knob_style
+        );
+
+        // Indicator in Normal state falls back to base_style
+        assert_eq!(
+            multipart.resolve(WidgetPart::Indicator, VisualState::Normal),
+            base_style
+        );
+
+        // Indicator in Pressed state resolves to indicator_pressed_style
+        assert_eq!(
+            multipart.resolve(WidgetPart::Indicator, VisualState::Pressed),
+            indicator_pressed_style
+        );
+    }
+
+    #[test]
+    fn test_theme_tokens() {
+        let tokens = ThemeTokens::dark();
+        let theme = Theme::from_tokens(&tokens);
+
+        assert_eq!(theme.panel.background, Some(tokens.surface));
+        assert_eq!(theme.panel.corner_radius, tokens.radius_md);
+        assert_eq!(theme.button.background, Some(tokens.primary));
+        assert_eq!(theme.focus_ring, tokens.focus_ring);
+
+        let light_tokens = ThemeTokens::light();
+        let light_theme = Theme::from_tokens(&light_tokens);
+        assert_eq!(light_theme.panel.background, Some(light_tokens.surface));
+    }
+
+    #[test]
+    fn widget_style_builders_and_conversions() {
+        let base = Style::new().with_bg(Rgb565::CSS_BLUE);
+        let ws = WidgetStyle::new(base)
+            .with_bg(Rgb565::CSS_RED)
+            .with_fg(Rgb565::CSS_WHITE)
+            .with_text(Rgb565::CSS_YELLOW)
+            .with_pressed_bg(Rgb565::CSS_GREEN)
+            .with_pressed_fg(Rgb565::CSS_WHITE)
+            .with_pressed_text(Rgb565::CSS_BLACK)
+            .with_focused_bg(Rgb565::CSS_CYAN)
+            .with_focused_fg(Rgb565::CSS_BLACK)
+            .with_focused_text(Rgb565::CSS_BLACK)
+            .with_disabled_bg(Rgb565::CSS_GRAY)
+            .with_disabled_fg(Rgb565::CSS_BLACK)
+            .with_disabled_text(Rgb565::CSS_BLACK)
+            .with_border_color(Rgb565::CSS_WHITE)
+            .with_corner_radius(4)
+            .with_font(FontId::Medium4x7)
+            .with_focused(Style::new().with_bg(Rgb565::CSS_MAGENTA))
+            .with_pressed(Style::new().with_bg(Rgb565::CSS_LIME))
+            .with_disabled(Style::new().with_bg(Rgb565::CSS_NAVY))
+            .with_normal(Style::new().with_bg(Rgb565::CSS_MAROON));
+
+        assert_eq!(
+            ws.resolve(VisualState::Normal).background,
+            Some(Rgb565::CSS_MAROON)
+        );
+        assert_eq!(
+            ws.resolve(VisualState::Focused).background,
+            Some(Rgb565::CSS_MAGENTA)
+        );
+        assert_eq!(
+            ws.resolve(VisualState::Pressed).background,
+            Some(Rgb565::CSS_LIME)
+        );
+        assert_eq!(
+            ws.resolve(VisualState::Disabled).background,
+            Some(Rgb565::CSS_NAVY)
+        );
+
+        let _ = WidgetStyle::button();
+        let _ = WidgetStyle::label();
+        let _ = WidgetStyle::panel();
+        let _ = WidgetStyle::progress();
+        let _ = WidgetStyle::default();
+        let _ = WidgetStyle::from(base);
+        let _ = WidgetStyle::from(StateStyle::new(base));
+
+        let mid = ws.resolve_interpolated(VisualState::Normal, VisualState::Focused, 0.5);
+        let _ = mid;
+    }
+
+    #[test]
+    fn gradients_visual_state_and_multipart_masks() {
+        let v = AlphaLinearGradient::vertical(Rgb565::CSS_BLACK, 0, Rgb565::CSS_WHITE, 255);
+        let sample = v.sample(128);
+        assert!(sample.0 != Rgb565::BLACK || sample.1 > 0);
+        let h = AlphaLinearGradient::horizontal(Rgb565::CSS_RED, 10, Rgb565::CSS_BLUE, 200);
+        let _ = h.sample(0);
+        let radial =
+            AlphaRadialGradient::new(10.0, 10.0, 0.0, Rgb565::CSS_RED, 0, Rgb565::CSS_BLUE, 255);
+        assert_eq!(radial.radius, 1.0);
+        let _ = radial.sample_at_dist(0.0);
+        let _ = radial.sample_at_dist(100.0);
+
+        assert!(VisualStateMask::FOCUSED.contains(VisualStateMask::FOCUSED));
+        assert!(!VisualStateMask::FOCUSED.contains(VisualStateMask::PRESSED));
+        let combined = VisualStateMask::PRESSED.with(VisualStateMask::CHECKED);
+        assert!(combined.contains(VisualStateMask::PRESSED));
+        assert!(combined.contains(VisualStateMask::CHECKED));
+        assert_eq!(
+            VisualStateMask::from_visual_state(VisualState::Normal),
+            VisualStateMask::NORMAL
+        );
+        assert_eq!(
+            VisualStateMask::from_visual_state(VisualState::Disabled),
+            VisualStateMask::DISABLED
+        );
+
+        let base = Style::new();
+        let custom_style = Style {
+            corner_radius: 3,
+            ..base
+        };
+        let m = MultiPartStyle::<2>::new(base)
+            .with_part_rule(
+                WidgetPart::Custom(7),
+                VisualStateMask::PRESSED,
+                custom_style,
+            )
+            .with_part_rule(
+                WidgetPart::Scrollbar,
+                VisualStateMask::FOCUSED,
+                custom_style,
+            );
+        assert_eq!(
+            m.resolve(WidgetPart::Custom(7), VisualState::Pressed),
+            custom_style
+        );
+        assert_eq!(m.resolve(WidgetPart::Custom(8), VisualState::Pressed), base);
+        let mask = VisualStateMask::FOCUSED;
+        assert_eq!(m.resolve_mask(WidgetPart::Scrollbar, mask), custom_style);
+        assert_eq!(
+            m.resolve_mask(WidgetPart::Indicator, VisualStateMask::NORMAL),
+            base
+        );
+        let _ = MultiPartStyle::<2>::default();
+    }
+
+    #[test]
+    fn test_style_builders_and_all_theme_variants() {
+        let style = Style::new()
+            .with_background(Some(Rgb565::new(1, 2, 3)))
+            .with_bg(Rgb565::new(4, 5, 6))
+            .with_gradient(Some(LinearGradient::vertical(
+                Rgb565::new(1, 1, 1),
+                Rgb565::new(2, 2, 2),
+            )))
+            .with_foreground(Rgb565::new(7, 8, 9))
+            .with_fg(Rgb565::new(10, 11, 12))
+            .with_text(Rgb565::new(13, 14, 15))
+            .with_text_color(Rgb565::new(16, 17, 18))
+            .with_accent(Rgb565::new(19, 20, 21))
+            .with_opacity(100)
+            .with_corner_radius(2)
+            .with_shadow(Some(Shadow::soft()))
+            .with_border(Border::one(Rgb565::new(22, 23, 24)))
+            .with_border_color(Rgb565::new(25, 26, 27))
+            .with_padding(EdgeInsets::all(2))
+            .with_font_id(FontId::Medium4x7)
+            .with_font(FontId::Tiny3x5)
+            .selected(true);
+        assert_eq!(style.opacity, 100);
+        assert_eq!(style.corner_radius, 2);
+        assert_eq!(style.font, FontId::Tiny3x5);
+        assert!(style.border.width > 0);
+
+        let _ = Theme::light();
+        let _ = Theme::amber_crt();
+        let _ = Theme::emerald_matrix();
+        let _ = Theme::soft_ui();
+    }
+}

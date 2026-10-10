@@ -1,0 +1,191 @@
+# Upstream `embedded-gui` 0.2.7, vendored (see README.md). The package name and version are unchanged and
+# must stay that way: the generated project redirects the crates.io dependency with `[patch.crates-io]`, and a
+# patch only applies to a matching requirement.
+
+[package]
+edition = "2024"
+rust-version = "1.87"
+name = "embedded-gui"
+version = "0.2.7"
+authors = ["Gerzain Mata <leftger@gmail.com>"]
+build = "build.rs"
+publish = false
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
+description = "no_std GUI and HUD primitives for embedded-graphics displays"
+homepage = "https://github.com/leftger/embedded-gui"
+documentation = "https://docs.rs/embedded-gui"
+readme = "README.md"
+keywords = [
+    "embedded-graphics",
+    "gui",
+    "hud",
+    "embedded",
+    "no_std",
+]
+categories = [
+    "embedded",
+    "gui",
+    "no-std",
+]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/leftger/embedded-gui"
+resolver = "2"
+
+[features]
+color-gray8 = []
+color-rgb888 = []
+default = [
+    "std",
+    "rich-widgets",
+    "macros",
+]
+embassy = [
+    "embassy-time",
+    "dep:embassy-sync",
+]
+embassy-time = ["dep:embassy-time"]
+embedded-3dgfx = [
+    "dep:embedded-3dgfx",
+    "embedded-graphics",
+    "dep:nalgebra",
+]
+embedded-dsp = [
+    "dep:embedded-dsp",
+    "embedded-dsp/filtering",
+    "embedded-dsp/statistics",
+    "embedded-dsp/fast-math",
+]
+embedded-graphics = ["dep:embedded-graphics"]
+embedded-layout = [
+    "dep:embedded-layout",
+    "dep:embedded-graphics",
+]
+embedded-text = [
+    "dep:embedded-text",
+    "dep:embedded-graphics",
+]
+image-decode = ["std"]
+libm = [
+    "dep:libm",
+    "embedded-dsp?/libm",
+]
+macros = ["dep:embedded-gui-macros"]
+micromath = ["dep:micromath"]
+rich-widgets = []
+std = ["embedded-dsp?/std"]
+triple-buffering = []
+
+[lib]
+name = "embedded_gui"
+path = "src/lib.rs"
+
+[dependencies.critical-section]
+version = "1.1"
+
+[dependencies.embassy-sync]
+version = "0.8"
+optional = true
+default-features = false
+
+[dependencies.embassy-time]
+version = "0.5"
+optional = true
+default-features = false
+
+[dependencies.embedded-3dgfx]
+version = "0.6.2"
+features = [
+    "lighting",
+    "gizmos",
+    "scene",
+    "aabb-cull",
+]
+optional = true
+
+[dependencies.embedded-draw-target]
+version = "0.1.1"
+
+[dependencies.embedded-dsp]
+version = "0.5.1"
+optional = true
+default-features = false
+
+[dependencies.embedded-graphics]
+version = "0.8"
+optional = true
+
+[dependencies.embedded-graphics-core]
+version = "0.4.1"
+
+[dependencies.embedded-graphics-framebuf]
+version = "0.5"
+
+[dependencies.embedded-gui-macros]
+version = "0.2.7"
+optional = true
+
+[dependencies.embedded-layout]
+version = "0.4.2"
+optional = true
+
+[dependencies.embedded-text]
+version = "0.7.3"
+optional = true
+
+[dependencies.heapless]
+version = "0.9"
+
+[dependencies.libm]
+version = "0.2"
+optional = true
+
+[dependencies.micromath]
+version = "2.1"
+optional = true
+
+[dependencies.nalgebra]
+version = "0.35"
+features = ["libm"]
+optional = true
+default-features = false
+
+[dev-dependencies.criterion]
+version = "0.8"
+features = ["html_reports"]
+
+[dev-dependencies.critical-section]
+version = "1.1"
+features = ["std"]
+
+[dev-dependencies.embassy-sync]
+version = "0.8"
+default-features = false
+
+[dev-dependencies.embassy-time]
+version = "0.5"
+features = ["std"]
+default-features = false
+
+[dev-dependencies.embedded-3dgfx]
+version = "0.6.2"
+
+[dev-dependencies.embedded-graphics]
+version = "0.8"
+
+[dev-dependencies.embedded-graphics-framebuf]
+version = "0.5"
+
+[dev-dependencies.embedded-graphics-simulator]
+version = "0.8"
+
+[dev-dependencies.embedded-gui-macros]
+version = "0.2.7"
+
+[dev-dependencies.nalgebra]
+version = "0.35"
+features = ["std"]
+default-features = false
