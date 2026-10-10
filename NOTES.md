@@ -5663,3 +5663,91 @@ width looks right on a wide window and runs off a narrow one). Six tests; the su
 
 Suite: **865 passed, 0 skipped**. The manual measurement: **0 of 132 states** overflow, at 640, 820, 1000 and
 1280 px wide.
+
+---
+
+## 116. A touch that re-read the whole picture (2026-10-09)
+
+"*The change to the image rendering affects the performance of the other widgets on the glass. e.g. all touch
+events very laggy and slow to the point where it is unacceptable.*"
+
+A regression from §114, and the mechanism is in the engine's render walk rather than in anything the image does
+differently. Two readings first, because both rule something out:
+
+* The card is **not** on the bus the touch controller shares. `testV69`'s `main.rs` says it plainly --
+  "the touch controller shares this bus" (the panel's, re-clocked to 1 MHz around every touch burst) -- while
+  `sd::init` is handed `peripherals.SPI3`, a bus of its own. The 10 MHz re-clock of §113 cannot reach the touch.
+* The application does **not** repaint the whole screen per touch: its loop calls `is_dirty()` and then
+  `render`, which is `GuiContext::render_dirty` once the first frame has been painted.
+
+### What it was
+
+`GuiContext::render_into` walks every widget and skips one only when its rectangle misses its **clip**
+(`render/mod.rs:413`). The damaged region is applied *inside* the render context, where `visible_rect` intersects
+it, so it clips the painting -- the `fill_rect` calls, the blits -- and nothing else. The widget's `render` is
+still called, and a widget that only fills rectangles pays nothing for that. `BmpImage` is not that widget: its
+`render` opens the card file and streams it. So every dirty frame walked over the image and read it again in
+full, painting none of it. A touch that runs at ten samples a second therefore re-read the file ten times a
+second, and the whole application waited for the card.
+
+That also explains the shape of the report -- "the other widgets" -- because the cost lands on whatever is being
+touched, not on the image: the image is not what the finger is on, and it is what makes the finger slow.
+
+### The fix: ask the canvas what is left of the rectangle
+
+The engine cannot know which custom widgets are expensive, so it now says what is left and lets the widget
+decide:
+
+```rust
+pub trait CustomCanvas {
+    /// The part of `rect` that can still reach the display, after the clip and the damaged region.
+    /// The default is `rect` itself, which is what a canvas without damage tracking can honestly say.
+    fn visible_rect(&self, rect: Rect) -> Rect { rect }
+}
+```
+
+`RenderCtxCanvas` answers with `RenderCtx::visible_rect` -- the same function its own fills are clipped by, so
+the two can never disagree. `BmpImage::render` asks *before* opening anything:
+
+```rust
+let visible = canvas.visible_rect(rect);
+if visible.is_empty() {
+    return Ok(());
+}
+```
+
+and `BmpImage::draw` takes that band and paints (and reads) only the destination rows inside it. The rows
+outside are stepped over by the `skip` of §113, and because the file rows wanted are a contiguous range that is
+later in the file, the first one is reached by the same jump: a repaint of a band now costs what the band shows.
+The row cache, the ordering and the seek all keep working untouched -- the loop simply `continue`s over rows
+nothing will see, and the first row that is read is reached by the `ahead` arithmetic that was already there.
+
+### The tests
+
+Two levels, because either half alone could pass while the pair was broken:
+
+* **The engine**: `test_a_widget_off_to_the_side_is_told_nothing_when_another_is_repainted` builds a
+  `GuiContext` with a recording custom widget and a button, renders a whole frame (the widget is told its whole
+  rectangle), then presses the button and renders dirty -- and asserts the recording widget is still walked and
+  is told **nothing** is visible. Plus `test_visible_rect_is_what_the_clip_and_the_damage_leave` for the
+  arithmetic: outside, overlapping and inside.
+* **The widget**: `an_image_the_repaint_does_not_touch_is_never_read` asserts `read_count() == 0` for an empty
+  visible rectangle -- the file is never opened -- and `only_the_rows_being_repainted_are_read` asserts a band
+  read jumps over the rows above it (16 bytes for two 8-byte rows) and paints only the band's rows.
+
+The recording uses `Cell`, not `Vec`: the runtime is `no_std` and its tests have no allocator, which is also why
+the widget was declared before the context that borrows it.
+
+### What is left
+
+A **full** repaint still reads the image: the first frame, a screen switch, a calibration return. That is
+correct -- the pixel really is being repainted -- and it is now the only time the card is touched. It is about
+20 ms for an 80x100 BMP, about 70 ms for a 160x200 one, and about a second for the three-megabyte photo of
+§113, once. The decoded-pixel cache §114 left out is the next step if that second ever matters; the measured
+reason it was left out (214 KB for a 244x440 cell against ~300 KB of DRAM, redraws limited to whole-frame
+repaints) has not changed.
+
+Suite: **865 passed, 0 skipped**; the vendored widget crate is at **33** tests, the runtime fork at **238**, the
+codegen fork at 23. The generated project still cross-checks under the ESP toolchain for
+`xtensa-esp32-none-elf` (exit 0), with no change to `src/sd.rs` -- this fix is entirely inside the vendored
+crates, so an existing project gets it from *Update Crates* alone.

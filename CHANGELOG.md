@@ -11,6 +11,23 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.74] - 2026-10-09
+
+### Fixed
+
+- **A touch no longer re-reads the whole image from the card.** The engine renders every widget whose cell it
+  walks and clips only the *painting* to the damaged rectangle -- free for a widget that fills rectangles, and
+  ruinous for one that reads a file while drawing. So a touch anywhere on the glass re-opened the card file and
+  streamed the picture again, several times a second: with an image on the screen every tap took about as long as
+  the picture took to read. A custom widget can now ask the canvas what is left of its rectangle
+  (`CustomCanvas::visible_rect`), and `BmpImage` asks before it opens anything -- nothing visible, nothing read.
+- **A partly repainted image reads only the rows being repainted.** Rows outside the damaged band are jumped
+  over along the FAT rather than transferred, and the first wanted row is reached by the same jump, so a repaint
+  of a band costs what the band shows rather than what the file holds.
+
+Both halves are in the vendored crates, so an existing project picks them up with **Update Crates** -- no
+generated file changes and no project to recreate.
+
 ## [0.0.73] - 2026-10-09
 
 ### Fixed

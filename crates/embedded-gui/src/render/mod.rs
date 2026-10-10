@@ -2743,6 +2743,15 @@ where
             .fill_row(rect, pixels)
             .map_err(|_| crate::GuiError::Drawing)
     }
+
+    /// What is left of the widget's rectangle after the clip and the region being repainted.
+    ///
+    /// A picture read from a card costs the same whatever is left of it, so this is the difference between a
+    /// touch somewhere else repainting its own rectangle and re-reading the whole file: the widget asks, gets
+    /// nothing, and returns. See [`crate::widget::CustomCanvas::visible_rect`].
+    fn visible_rect(&self, rect: Rect) -> Rect {
+        self.ctx.visible_rect(rect)
+    }
 }
 
 #[cfg(test)]
@@ -2944,5 +2953,101 @@ mod tests {
         ctx.fill_row(Rect::new(0, 0, 8, 1), &[Rgb565::RED, Rgb565::GREEN]).unwrap();
         assert_eq!(buf.pixel_at(0, 0), Some(Rgb565::BLACK), "the row is left alone");
         assert_eq!(buf.pixel_at(7, 0), Some(Rgb565::BLACK), "all of it");
+    }
+    #[test]
+    fn test_visible_rect_is_what_the_clip_and_the_damage_leave() {
+        // What a custom widget asks before doing expensive work. A widget the repaint does not touch has nothing
+        // left of it; one the repaint partly covers has exactly the overlap; one inside it has all of itself.
+        let mut buf = crate::test_buffer::TestBuffer::new(40, 20);
+        let mut ctx = RenderCtx::with_dirty(&mut buf, Rect::new(0, 0, 40, 20), Rect::new(30, 0, 10, 20));
+
+        assert!(
+            ctx.visible_rect(Rect::new(0, 0, 20, 20)).is_empty(),
+            "a widget clear of the damage is told nothing is visible"
+        );
+        assert_eq!(
+            ctx.visible_rect(Rect::new(25, 5, 20, 10)),
+            Rect::new(30, 5, 10, 10),
+            "one the damage partly covers is told the overlap"
+        );
+        assert_eq!(
+            ctx.visible_rect(Rect::new(32, 5, 6, 5)),
+            Rect::new(32, 5, 6, 5),
+            "and one inside it is told all of itself"
+        );
+    }
+
+    #[test]
+    fn test_a_widget_off_to_the_side_is_told_nothing_when_another_is_repainted() {
+        // The regression this pair exists for: `render_dirty` walks every widget whose cell it visits and clips
+        // the *painting* to the damaged rectangle, which is free for a widget that only fills rectangles -- and
+        // ruinous for one that reads a file while drawing. A picture from a card was re-read in full for every
+        // touch anywhere on the glass. The engine cannot know which widgets are expensive, so it says what is
+        // left of the rectangle and lets the widget decide; this is that sentence being correct.
+        use crate::input::{InputEvent, PointerButton, PointerState};
+        use crate::widget::{CustomCanvas, CustomWidget};
+        use core::cell::Cell;
+
+        /// No `Vec` here: this crate is `no_std`, so the test counts and remembers the last answer instead.
+        struct Recording {
+            calls: Cell<usize>,
+            last: Cell<Rect>,
+        }
+
+        impl CustomWidget for Recording {
+            fn render(
+                &self,
+                canvas: &mut dyn CustomCanvas,
+                rect: Rect,
+                _style: &crate::style::WidgetStyle,
+                _state: crate::style::VisualState,
+            ) -> Result<(), crate::GuiError> {
+                self.calls.set(self.calls.get() + 1);
+                self.last.set(canvas.visible_rect(rect));
+                Ok(())
+            }
+        }
+
+        // The widget is declared first: the context borrows it for as long as the context lives, and a context
+        // built before it would have to borrow for longer than the widget exists.
+        let recording = Recording {
+            calls: Cell::new(0),
+            last: Cell::new(Rect::new(0, 0, 0, 0)),
+        };
+        let mut ctx: crate::GuiContext<'_, 32, 16, 16> = crate::GuiContext::new(Rect::new(0, 0, 100, 40));
+        ctx.add_custom_widget(Rect::new(0, 0, 20, 40), &recording, crate::style::WidgetStyle::default())
+            .unwrap();
+        ctx.add_themed_button(Rect::new(60, 5, 30, 20), "Press").unwrap();
+
+        let mut buf = crate::test_buffer::TestBuffer::new(100, 40);
+        ctx.render(&mut buf).unwrap();
+        assert_eq!(recording.calls.get(), 1, "a whole frame draws the widget once");
+        assert_eq!(
+            recording.last.get(),
+            Rect::new(0, 0, 20, 40),
+            "and shows it all of itself"
+        );
+
+        ctx.clear_dirty();
+        ctx.handle_input(InputEvent::Pointer {
+            x: 70,
+            y: 10,
+            state: PointerState::Pressed,
+            button: PointerButton::Primary,
+        })
+        .unwrap();
+        assert!(
+            !ctx.dirty_regions().is_empty(),
+            "the press is what damages the button"
+        );
+
+        recording.calls.set(0);
+        ctx.render_dirty(&mut buf).unwrap();
+        assert!(recording.calls.get() > 0, "the widget is still walked, clipped to the damage");
+        assert!(
+            recording.last.get().is_empty(),
+            "and is told that none of it is visible: {:?}",
+            recording.last.get()
+        );
     }
 }

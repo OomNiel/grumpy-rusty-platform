@@ -251,6 +251,20 @@ pub trait CustomCanvas {
         font: crate::font::FontId,
     ) -> Result<(), crate::GuiError>;
 
+    /// The part of `rect` that can still reach the display, for a widget whose work is expensive.
+    ///
+    /// The canvas is clipped to the widget's cell, to the frame it sits in and to the region being repainted, so
+    /// a widget is asked to draw in rectangles that may have nothing left of it. Painting into that is free --
+    /// the canvas throws it away -- but *computing* is not: a picture read off a card has to be read again for
+    /// every frame its widget is walked over, whether or not a pixel of it will be seen. Asking here first is how
+    /// a widget tells the difference: an empty answer means there is nothing to do, and a band means only that
+    /// band is worth computing.
+    ///
+    /// The default is `rect` itself, which is what a canvas with no damage tracking can honestly say.
+    fn visible_rect(&self, rect: Rect) -> Rect {
+        rect
+    }
+
     /// Fills a one-row rectangle from a slice of colours, `pixels[i]` being the colour of `rect.x + i`.
     ///
     /// A custom widget that has a row of pixels in memory -- a picture decoded from a card, a meter's graph --
