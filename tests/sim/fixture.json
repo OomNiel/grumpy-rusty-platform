@@ -299,6 +299,128 @@
             }
         },
         {
+            "_comment": "The eleven tags that used to be refused by the designer: a slider whose value arrived in the wrong order, an arc whose builder takes ten arguments, a busy wheel with no builder at all, a chart and a plotter that were one tag, a path that generated code naming types that do not exist, and the five widgets the runtime shipped as drawing types without a widget kind. Every one of them is here so the host build compiles the call and paints it, which is the only thing that can prove the tag came back.",
+            "id": "sld",
+            "tag": "slider",
+            "x": 150,
+            "y": 120,
+            "width": 50,
+            "height": 18,
+            "props": {
+                "min": 0,
+                "max": 10,
+                "value": 5,
+                "text_color": "#ff00ff",
+                "accent": "#00ff00"
+            }
+        },
+        {
+            "id": "arc",
+            "tag": "arc",
+            "x": 150,
+            "y": 140,
+            "width": 50,
+            "height": 38,
+            "props": {
+                "progress": 0.7,
+                "clockwise": false,
+                "arc_radius": 0,
+                "frame_inset": 3,
+                "corner_radius": 2,
+                "bg_color": "#220044",
+                "arc_color": "#ff8800",
+                "frame_color": "#00ffff"
+            }
+        },
+        {
+            "id": "whl",
+            "tag": "busy_wheel",
+            "x": 150,
+            "y": 180,
+            "width": 24,
+            "height": 24,
+            "props": { "phase": 0.25, "accent": "#ffff00", "bg": "#003300" }
+        },
+        {
+            "id": "ind",
+            "tag": "content_indicator",
+            "x": 150,
+            "y": 206,
+            "width": 40,
+            "height": 12,
+            "props": { "count": 4, "active": 2, "accent": "#ff0000", "bg": "#101010" }
+        },
+        {
+            "id": "crm",
+            "tag": "crumbs",
+            "x": 150,
+            "y": 220,
+            "width": 40,
+            "height": 12,
+            "props": { "count": 3, "active": 1, "accent": "#00ffff", "bg": "#101010" }
+        },
+        {
+            "id": "cht",
+            "tag": "chart",
+            "x": 200,
+            "y": 236,
+            "width": 46,
+            "height": 36,
+            "props": { "values": "1,4,2,5", "min": 1, "max": 5, "bg": "#000033", "accent": "#ff0000" }
+        },
+        {
+            "id": "plt",
+            "tag": "plotter",
+            "x": 248,
+            "y": 236,
+            "width": 46,
+            "height": 36,
+            "props": { "values": "1,2,3,4", "head": 2, "min": 0, "max": 4, "bg": "#003333", "accent": "#ffff00" }
+        },
+        {
+            "id": "pth",
+            "tag": "path",
+            "x": 440,
+            "y": 212,
+            "width": 40,
+            "height": 40,
+            "props": { "d": "M 2 2 L 36 2 Q 38 20 20 36 Z", "stroke_width": 2, "colour": "#ff00ff" }
+        },
+        {
+            "id": "stb",
+            "tag": "status_bar",
+            "x": 390,
+            "y": 266,
+            "width": 90,
+            "height": 13,
+            "props": { "time": "07:45", "text_color": "#ffffff", "bg": "#330000" }
+        },
+        {
+            "id": "tme",
+            "tag": "time_picker",
+            "x": 390,
+            "y": 212,
+            "width": 45,
+            "height": 26,
+            "props": {
+                "hour": 7,
+                "minute": 45,
+                "is_12h": false,
+                "is_pm": true,
+                "accent": "#ff00ff",
+                "bg": "#220022"
+            }
+        },
+        {
+            "id": "num",
+            "tag": "number_picker",
+            "x": 390,
+            "y": 240,
+            "width": 45,
+            "height": 22,
+            "props": { "min": 0, "max": 20, "value": 11, "unit": "kPa" }
+        },
+        {
             "_comment": "A triangle and a line, so the same codegen fork that renders the circle is exercised for every shape the crate supplies. The triangle's points are deliberately not the default isosceles one: it is a right triangle with its apex in the top right corner, so the render says which shape the design drew and not merely that a triangle appeared.",
             "id": "trib",
             "tag": "triangle",
@@ -332,9 +454,9 @@
         }
     ],
     "empty": {
-        "comment": "A point no widget covers, to check that a tap there raises nothing.",
-        "x": 250,
-        "y": 240
+        "comment": "A point no widget covers, to check that a tap there raises nothing. It moved when the eleven tags below arrived: (250, 240) is inside the chart's column now.",
+        "x": 360,
+        "y": 250
     },
     "fonts": [
         {

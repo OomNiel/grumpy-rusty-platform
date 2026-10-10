@@ -268,6 +268,8 @@ pub fn generate_rust_code(screen: &ScreenDef) -> String {
                 label,
                 checked,
                 off_color,
+                track_border,
+                track_border_width,
                 style,
                 ..
             } => {
@@ -277,8 +279,15 @@ pub fn generate_rust_code(screen: &ScreenDef) -> String {
                 let st = style_expr(style.as_deref(), "Style::default()");
                 let _ = writeln!(
                     &mut out,
-                    "        let {} = gui.add_toggle_colored(cells[{}], \"{}\", {}, {}, {})?;",
-                    var_name, idx, label, checked, off, st
+                    "        let {} = gui.add_toggle_colored(cells[{}], \"{}\", {}, {}, {}, {}, {})?;",
+                    var_name,
+                    idx,
+                    label,
+                    checked,
+                    off,
+                    opt_rgb565(track_border),
+                    track_border_width,
+                    st
                 );
             }
             WidgetDef::Checkbox {
@@ -303,12 +312,19 @@ pub fn generate_rust_code(screen: &ScreenDef) -> String {
                 );
             }
             WidgetDef::Slider {
-                min, max, value, ..
+                min,
+                max,
+                value,
+                style,
+                ..
             } => {
+                // `add_slider` takes `value` first, then `min`, `max`, and every one is an `f32`; the
+                // old arm passed three `i32`s in `min, max, value` order.
+                let st = style_expr(style.as_deref(), "Style::default()");
                 let _ = writeln!(
                     &mut out,
-                    "        let {} = gui.add_slider(cells[{}], {}, {}, {}, Style::default())?;",
-                    var_name, idx, min, max, value
+                    "        let {} = gui.add_slider(cells[{}], {:.1}, {:.1}, {:.1}, {})?;",
+                    var_name, idx, value, min, max, st
                 );
             }
             WidgetDef::Dropdown {
@@ -422,40 +438,97 @@ pub fn generate_rust_code(screen: &ScreenDef) -> String {
                 );
             }
             WidgetDef::SweepingArc {
-                start_angle,
-                end_angle,
+                progress,
+                clockwise,
+                arc_radius,
+                frame_inset,
+                corner_radius,
+                bg_color,
+                arc_color,
+                frame_color,
+                style,
                 ..
             } => {
-                let _ = writeln!(
-                    &mut out,
-                    "        let {} = gui.add_sweeping_arc(cells[{}], {}, {}, Style::panel())?;",
-                    var_name, idx, start_angle, end_angle
-                );
-            }
-            WidgetDef::BusyWheel { active, .. } => {
-                let _ = writeln!(
-                    &mut out,
-                    "        let {} = gui.add_busy_wheel(cells[{}], {}, Style::panel())?;",
-                    var_name, idx, active
-                );
-            }
-            WidgetDef::Plotter { mode, .. } => {
-                let chart_mode = if mode.eq_ignore_ascii_case("bar") {
-                    "ChartMode::Bar"
+                // A design radius of `0` means "fit the cell": the runtime would draw nothing, so the
+                // emitter inlines the same expression the designer's preview uses.
+                let radius = if *arc_radius == 0 {
+                    format!(
+                        "((cells[{}].w.min(cells[{}].h) / 2).saturating_sub(8))",
+                        idx, idx
+                    )
                 } else {
-                    "ChartMode::Line"
+                    arc_radius.to_string()
                 };
+                let st = style_expr(style.as_deref(), "Style::panel()");
                 let _ = writeln!(
                     &mut out,
-                    "        let {} = gui.add_plotter(cells[{}], {}, Style::panel())?;",
-                    var_name, idx, chart_mode
+                    "        let {} = gui.add_sweeping_arc(cells[{}], {:.2}, {}, {}, {}, {}, {}, {}, {}, {})?;",
+                    var_name,
+                    idx,
+                    progress,
+                    clockwise,
+                    radius,
+                    frame_inset,
+                    corner_radius,
+                    rgb565_expr(bg_color),
+                    rgb565_expr(arc_color),
+                    rgb565_expr(frame_color),
+                    st
                 );
             }
-            WidgetDef::StatusBar { time, .. } => {
+            WidgetDef::BusyWheel { phase, style, .. } => {
+                let st = style_expr(style.as_deref(), "Style::panel()");
                 let _ = writeln!(
                     &mut out,
-                    "        let {} = gui.add_status_bar(cells[{}], \"{}\", Style::panel())?;",
-                    var_name, idx, time
+                    "        let {} = gui.add_spinner(cells[{}], {:.2}, {})?;",
+                    var_name, idx, phase, st
+                );
+            }
+            WidgetDef::Chart {
+                values,
+                min,
+                max,
+                style,
+                ..
+            } => {
+                let series = values
+                    .iter()
+                    .map(|v| format!("{v:.1}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let st = style_expr(style.as_deref(), "Style::panel()");
+                let _ = writeln!(
+                    &mut out,
+                    "        let {} = gui.add_chart(cells[{}], &[{}], {:.1}, {:.1}, {})?;",
+                    var_name, idx, series, min, max, st
+                );
+            }
+            WidgetDef::Plotter {
+                values,
+                head,
+                min,
+                max,
+                style,
+                ..
+            } => {
+                let series = values
+                    .iter()
+                    .map(|v| format!("{v:.1}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let st = style_expr(style.as_deref(), "Style::panel()");
+                let _ = writeln!(
+                    &mut out,
+                    "        let {} = gui.add_plotter(cells[{}], &[{}], {}, {:.1}, {:.1}, {})?;",
+                    var_name, idx, series, head, min, max, st
+                );
+            }
+            WidgetDef::StatusBar { time, style, .. } => {
+                let st = style_expr(style.as_deref(), "Style::panel()");
+                let _ = writeln!(
+                    &mut out,
+                    "        let {} = gui.add_status_bar(cells[{}], \"{}\", {})?;",
+                    var_name, idx, time, st
                 );
             }
             WidgetDef::TimePicker {
@@ -463,12 +536,14 @@ pub fn generate_rust_code(screen: &ScreenDef) -> String {
                 minute,
                 is_12h,
                 is_pm,
+                style,
                 ..
             } => {
+                let st = style_expr(style.as_deref(), "Style::panel()");
                 let _ = writeln!(
                     &mut out,
-                    "        let {} = gui.add_time_picker(cells[{}], {}, {}, {}, {}, Style::panel())?;",
-                    var_name, idx, hour, minute, is_12h, is_pm
+                    "        let {} = gui.add_time_picker(cells[{}], {}, {}, {}, {}, {})?;",
+                    var_name, idx, hour, minute, is_12h, is_pm, st
                 );
             }
             WidgetDef::NumberPicker {
@@ -476,12 +551,14 @@ pub fn generate_rust_code(screen: &ScreenDef) -> String {
                 max,
                 value,
                 unit,
+                style,
                 ..
             } => {
+                let st = style_expr(style.as_deref(), "Style::panel()");
                 let _ = writeln!(
                     &mut out,
-                    "        let {} = gui.add_number_picker(cells[{}], {}, {}, {}, \"{}\", Style::panel())?;",
-                    var_name, idx, min, max, value, unit
+                    "        let {} = gui.add_number_picker(cells[{}], {}, {}, {}, \"{}\", {})?;",
+                    var_name, idx, min, max, value, unit, st
                 );
             }
             WidgetDef::Dialog { title, message, .. } => {
@@ -491,18 +568,30 @@ pub fn generate_rust_code(screen: &ScreenDef) -> String {
                     var_name, idx, title, message
                 );
             }
-            WidgetDef::ContentIndicator { count, active, .. } => {
+            WidgetDef::ContentIndicator {
+                count,
+                active,
+                style,
+                ..
+            } => {
+                let st = style_expr(style.as_deref(), "Style::panel()");
                 let _ = writeln!(
                     &mut out,
-                    "        let {} = gui.add_content_indicator(cells[{}], {}, {}, Style::panel())?;",
-                    var_name, idx, count, active
+                    "        let {} = gui.add_content_indicator(cells[{}], {}, {}, {})?;",
+                    var_name, idx, count, active, st
                 );
             }
-            WidgetDef::CrumbsIndicator { count, active, .. } => {
+            WidgetDef::CrumbsIndicator {
+                count,
+                active,
+                style,
+                ..
+            } => {
+                let st = style_expr(style.as_deref(), "Style::panel()");
                 let _ = writeln!(
                     &mut out,
-                    "        let {} = gui.add_crumbs_indicator(cells[{}], {}, {}, Style::panel())?;",
-                    var_name, idx, count, active
+                    "        let {} = gui.add_crumbs_indicator(cells[{}], {}, {}, {})?;",
+                    var_name, idx, count, active, st
                 );
             }
             WidgetDef::Panel { style, .. } => {
@@ -531,64 +620,39 @@ pub fn generate_rust_code(screen: &ScreenDef) -> String {
             }
             WidgetDef::VectorPath {
                 stroke_width,
+                colour,
                 verbs,
                 ..
             } => {
-                let _ = writeln!(
-                    &mut out,
-                    "        let mut _path_{} = VectorPath::<{}>::new();",
-                    var_name,
-                    verbs.len().max(1)
+                // A `Path` custom widget replays the design's verbs through `draw_line`. The enum's
+                // variants are struct variants with named fields, which is what a Rust literal must
+                // build; the old arm pushed tuple variants and could not compile.
+                let verbs_joined = verbs
+                    .iter()
+                    .map(|verb| match verb {
+                        PathVerbDef::MoveTo(x, y) => format!(
+                            "rusty_gui_widgets::PathVerb::MoveTo {{ x: {x}, y: {y} }}"
+                        ),
+                        PathVerbDef::LineTo(x, y) => format!(
+                            "rusty_gui_widgets::PathVerb::LineTo {{ x: {x}, y: {y} }}"
+                        ),
+                        PathVerbDef::QuadTo(cx, cy, x, y) => format!(
+                            "rusty_gui_widgets::PathVerb::QuadTo {{ cx: {cx}, cy: {cy}, x: {x}, y: {y} }}"
+                        ),
+                        PathVerbDef::CubicTo(c1x, c1y, c2x, c2y, x, y) => format!(
+                            "rusty_gui_widgets::PathVerb::CubicTo {{ c1x: {c1x}, c1y: {c1y}, c2x: {c2x}, c2y: {c2y}, x: {x}, y: {y} }}"
+                        ),
+                        PathVerbDef::Close => "rusty_gui_widgets::PathVerb::Close".to_string(),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let fields = format!(
+                    "stroke_width: {}, colour: {}, verbs: &[{}]",
+                    stroke_width,
+                    opt_rgb565(colour),
+                    verbs_joined
                 );
-                for v in verbs {
-                    match v {
-                        PathVerbDef::MoveTo(x, y) => {
-                            let _ = writeln!(
-                                &mut out,
-                                "        _path_{}.push(PathVerb::MoveTo(Point::new({}, {})));",
-                                var_name, x, y
-                            );
-                        }
-                        PathVerbDef::LineTo(x, y) => {
-                            let _ = writeln!(
-                                &mut out,
-                                "        _path_{}.push(PathVerb::LineTo(Point::new({}, {})));",
-                                var_name, x, y
-                            );
-                        }
-                        PathVerbDef::QuadTo(cx, cy, x, y) => {
-                            let _ = writeln!(
-                                &mut out,
-                                "        _path_{}.push(PathVerb::QuadTo(Point::new({}, {}), Point::new({}, {})));",
-                                var_name, cx, cy, x, y
-                            );
-                        }
-                        PathVerbDef::CubicTo(c1x, c1y, c2x, c2y, x, y) => {
-                            let _ = writeln!(
-                                &mut out,
-                                "        _path_{}.push(PathVerb::CubicTo(Point::new({}, {}), Point::new({}, {}), Point::new({}, {})));",
-                                var_name, c1x, c1y, c2x, c2y, x, y
-                            );
-                        }
-                        PathVerbDef::Close => {
-                            let _ = writeln!(
-                                &mut out,
-                                "        _path_{}.push(PathVerb::Close);",
-                                var_name
-                            );
-                        }
-                    }
-                }
-                let _ = writeln!(
-                    &mut out,
-                    "        let {} = gui.add_panel(cells[{}], Style::panel())?;",
-                    var_name, idx
-                );
-                let _ = writeln!(
-                    &mut out,
-                    "        let _ = {}; // stroke_width: {}",
-                    var_name, stroke_width
-                );
+                emit_custom_widget(&mut out, &var_name, idx, "VectorPath", &fields);
             }
             WidgetDef::RectShape {
                 radius,

@@ -1,34 +1,45 @@
 screen id="SimPanel" width=480 height=320 theme="dark" {
-    grid cols="17px 43px 40px 40px 10px 50px 17px 23px 50px 10px 40px 20px 20px 10px 87px 3px 1fr" rows="3px 3px 21px 13px 8px 12px 17px 13px 30px 30px 5px 5px 21px 4px 5px 10px 10px 1px 4px 15px 3px 1px 26px 18px 2px 20px 5px 4px 11px 1fr" gap=0 padding=0 {
-        rect id="band" radius=0 stroke_width=0 col=0 row=0 col_span=16 row_span=4
-        label id="title" text="Odd coordinates" col=1 row=1 col_span=6 row_span=2
+    grid cols="17px 43px 40px 40px 10px 24px 16px 10px 17px 23px 6px 2px 42px 4px 6px 40px 20px 20px 10px 45px 5px 37px 3px 1fr" rows="3px 3px 21px 13px 8px 12px 17px 13px 30px 18px 2px 10px 5px 5px 18px 2px 1px 4px 5px 10px 4px 2px 4px 1px 1px 3px 3px 2px 10px 2px 1px 1px 2px 2px 2px 12px 8px 2px 4px 6px 6px 1px 1px 20px 5px 4px 11px 1fr" gap=0 padding=0 {
+        rect id="band" radius=0 stroke_width=0 col=0 row=0 col_span=23 row_span=4
+        label id="title" text="Odd coordinates" col=1 row=1 col_span=8 row_span=2
         button id="go" text="Button" bg="#3a6ea5" fg="#f0f0f0" text_color="#ffffff" pressed_bg="#2a5a8a" pressed_fg="#ffffff" disabled_bg="#303030" disabled_fg="#808080" focused_bg="#4a7eb5" focused_fg="#ffffff" border_color="#101010" corner_radius=4 col=1 row=5 col_span=1 row_span=2
         circle id="knob" stroke_width=1 col=3 row=6 col_span=1 row_span=2
-        progress id="meter" value=50 col=0 row=25 col_span=16 row_span=1
-        rect id="foot" radius=0 stroke_width=0 col=0 row=26 col_span=8 row_span=3
-        rect id="foot2" radius=0 stroke_width=0 col=8 row=26 col_span=8 row_span=3
-        spacer id="tiny" col=15 row=1 col_span=1 row_span=1
-        toggle id="eco" label="Toggle" checked=true off_color="#392852" col=2 row=9 col_span=1 row_span=1
-        button id="ok" text="Button" bg="#3a6ea5" fg="#f0f0f0" text_color="#ffffff" pressed_bg="#2a5a8a" pressed_fg="#ffffff" disabled_bg="#303030" disabled_fg="#808080" focused_bg="#4a7eb5" focused_fg="#ffffff" border_color="#101010" corner_radius=4 col=10 row=9 col_span=2 row_span=1
-        label id="fonted" text="AB" col=6 row=9 col_span=3 row_span=1
-        label id="builtin" text="AB" col=6 row=12 col_span=3 row_span=3
-        button id="builtinButton" text="AB" bg="#3a6ea5" fg="#f0f0f0" text_color="#ffffff" pressed_bg="#2a5a8a" pressed_fg="#ffffff" disabled_bg="#303030" disabled_fg="#808080" focused_bg="#4a7eb5" focused_fg="#ffffff" border_color="#101010" corner_radius=4 col=10 row=12 col_span=4 row_span=3
-        label id="styled" text="AB" col=6 row=16 col_span=3 row_span=4
-        table id="grid" col=0 row=22 col_span=6 row_span=2 {
+        progress id="meter" value=50 col=0 row=43 col_span=23 row_span=1
+        rect id="foot" radius=0 stroke_width=0 col=0 row=44 col_span=10 row_span=3
+        rect id="foot2" radius=0 stroke_width=0 col=10 row=44 col_span=13 row_span=3
+        spacer id="tiny" col=22 row=1 col_span=1 row_span=1
+        toggle id="eco" label="Toggle" checked=true off_color="#392852" track_border_width=1 col=2 row=9 col_span=1 row_span=3
+        button id="ok" text="Button" bg="#3a6ea5" fg="#f0f0f0" text_color="#ffffff" pressed_bg="#2a5a8a" pressed_fg="#ffffff" disabled_bg="#303030" disabled_fg="#808080" focused_bg="#4a7eb5" focused_fg="#ffffff" border_color="#101010" corner_radius=4 col=15 row=9 col_span=2 row_span=3
+        label id="fonted" text="AB" col=8 row=9 col_span=5 row_span=3
+        label id="builtin" text="AB" col=8 row=14 col_span=5 row_span=5
+        button id="builtinButton" text="AB" bg="#3a6ea5" fg="#f0f0f0" text_color="#ffffff" pressed_bg="#2a5a8a" pressed_fg="#ffffff" disabled_bg="#303030" disabled_fg="#808080" focused_bg="#4a7eb5" focused_fg="#ffffff" border_color="#101010" corner_radius=4 col=15 row=14 col_span=4 row_span=5
+        label id="styled" text="AB" col=8 row=20 col_span=5 row_span=9
+        table id="grid" col=0 row=32 col_span=8 row_span=9 {
             headers "Name" "Value"
             row "A" "1"
             row "B" "2"
         }
-        label id="tinted" text="AB" col=10 row=16 col_span=4 row_span=4
-        checkbox id="check" label="Check" checked=true box_size=18 box_color="#ff8000" col=0 row=11 col_span=5 row_span=2
-        spinbox id="spin" min=0 max=100 value=42 digits=4 decimals=0 accent_color="#ff00ff" chevron_color="#00ff00" col=0 row=14 col_span=5 row_span=4
-        roller id="roll" selected=1 col=0 row=19 col_span=5 row_span=2 {
+        label id="tinted" text="AB" col=15 row=20 col_span=4 row_span=9
+        checkbox id="check" label="Check" checked=true box_size=18 box_color="#ff8000" col=0 row=13 col_span=5 row_span=4
+        spinbox id="spin" min=0 max=100 value=42 digits=4 decimals=0 accent_color="#ff00ff" chevron_color="#00ff00" col=0 row=18 col_span=5 row_span=6
+        roller id="roll" selected=1 col=0 row=26 col_span=5 row_span=5 {
             option "One"
             option "Two"
             option "Three"
         }
-        scale id="gauge" mode="radial" min=0 max=10 value=7 major_ticks=3 minor_ticks=2 start_angle=180 end_angle=0 show_labels=true show_needle=true tick_color="#00ffff" needle_color="#ff00ff" col=14 row=9 col_span=2 row_span=8
-        triangle id="trib" stroke_width=2 p1x=1000 p1y=0 p2x=0 p2y=1000 p3x=1000 p3y=1000 col=10 row=23 col_span=1 row_span=3
-        line id="rule" stroke_width=2 col=10 row=27 col_span=3 row_span=1
+        scale id="gauge" mode="radial" min=0 max=10 value=7 major_ticks=3 minor_ticks=2 start_angle=180 end_angle=0 show_labels=true show_needle=true tick_color="#00ffff" needle_color="#ff00ff" col=19 row=9 col_span=4 row_span=14
+        slider id="sld" min=0 max=10 value=5 col=5 row=9 col_span=3 row_span=1
+        arc id="arc" progress=0.7 clockwise=false arc_radius=0 frame_inset=3 corner_radius=0 bg_color="#220044" arc_color="#ff8800" frame_color="#00ffff" col=5 row=11 col_span=3 row_span=4
+        busy_wheel id="whl" phase=0.25 col=5 row=16 col_span=1 row_span=5
+        content_indicator id="ind" count=4 active=2 col=5 row=22 col_span=2 row_span=5
+        crumbs id="crm" count=3 active=1 col=5 row=28 col_span=2 row_span=2
+        chart id="cht" values="1,4,2,5" min=1 max=5 col=8 row=33 col_span=3 row_span=7
+        plotter id="plt" values="1,2,3,4" head=2 min=0 max=4 col=12 row=33 col_span=2 row_span=7
+        path id="pth" d="M 2 2 L 36 2 Q 38 20 20 36 Z" stroke_width=2 col=21 row=25 col_span=2 row_span=11
+        status_bar id="stb" time="07:45" col=19 row=39 col_span=4 row_span=3
+        time_picker id="tme" hour=7 minute=45 is_12h=false is_pm=true col=19 row=25 col_span=1 row_span=9
+        number_picker id="num" min=0 max=20 value=11 unit="kPa" col=19 row=35 col_span=1 row_span=3
+        triangle id="trib" stroke_width=2 p1x=1000 p1y=0 p2x=0 p2y=1000 p3x=1000 p3y=1000 col=15 row=37 col_span=1 row_span=7
+        line id="rule" stroke_width=2 col=15 row=45 col_span=3 row_span=1
     }
 }

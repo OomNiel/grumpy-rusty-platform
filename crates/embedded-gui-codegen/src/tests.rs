@@ -221,7 +221,23 @@ fn test_svg_path_d_parsing_and_codegen() {
     let rust_code = compile_kdl_to_rust(kdl).unwrap();
     assert!(rust_code.contains("pub struct VectorAppWidgets {"));
     assert!(rust_code.contains("pub my_curve: WidgetId,"));
-    assert!(rust_code.contains("let mut _path_my_curve = VectorPath::<3>::new();"));
+    // The path is a `rusty_gui_widgets::VectorPath` custom widget whose verbs are struct variants
+    // with named fields -- the enum has no tuple variants, which is what the old arm emitted.
+    assert!(
+        rust_code.contains(
+            "static __shape_my_curve: rusty_gui_widgets::VectorPath = rusty_gui_widgets::VectorPath { \
+             stroke_width: 2, colour: None, verbs: &[rusty_gui_widgets::PathVerb::MoveTo { x: 0, y: 10 }, \
+             rusty_gui_widgets::PathVerb::CubicTo { c1x: 20, c1y: 0, c2x: 40, c2y: 40, x: 60, y: 10 }, \
+             rusty_gui_widgets::PathVerb::Close] };"
+        ),
+        "the parsed verbs must reach the path widget as struct-variant literals: {rust_code}"
+    );
+    assert!(
+        rust_code.contains(
+            "let my_curve = gui.add_custom_widget(cells[0], &__shape_my_curve, Style::default())?;"
+        ),
+        "the path must be added as a custom widget: {rust_code}"
+    );
 }
 
 #[test]
@@ -432,9 +448,9 @@ screen id="Styled" width=320 height=240 theme="dark" {
 
     assert!(
         generated.contains(
-            "gui.add_toggle_colored(cells[0], \"x\", true, Rgb565::new(31, 0, 0), Style::panel())"
+            "gui.add_toggle_colored(cells[0], \"x\", true, Rgb565::new(31, 0, 0), None, 0, Style::panel())"
         ),
-        "the toggle's off colour and style must reach the board: {generated}"
+        "the toggle's off colour, track border and style must reach the board: {generated}"
     );
     assert!(
         generated.contains(
@@ -482,7 +498,7 @@ screen id="Plain" width=320 height=240 {
     let generated = compile_kdl_to_rust(plain).unwrap();
     assert!(
         generated.contains(
-            "gui.add_toggle_colored(cells[0], \"x\", true, Rgb565::new(7, 10, 10), Style::default())"
+            "gui.add_toggle_colored(cells[0], \"x\", true, Rgb565::new(7, 10, 10), None, 0, Style::default())"
         ),
         "an unstyled toggle keeps its old default: {generated}"
     );
@@ -491,5 +507,178 @@ screen id="Plain" width=320 height=240 {
             "gui.add_scale_styled(cells[1], ScaleMode::Radial, 0.0, 10.0, 5.0, 3, 1, 135, 45, true, true, Rgb565::new(16, 32, 16), Rgb565::new(31, 0, 0), Style::panel())"
         ),
         "tick counts are passed through and the sweep keeps its old defaults: {generated}"
+    );
+}
+
+#[test]
+fn every_refused_tag_now_generates_a_call_that_compiles() {
+    // The designer refused these tags because their generated code did not compile: the emitter
+    // passed the wrong arguments, the wrong types, or an inlined `VectorPath` built from tuple
+    // variants the runtime does not have. Each assertion below is one frozen builder signature.
+    let kdl = r##"
+screen id="Refused" width=320 height=240 {
+    column gap=0 padding=0 {
+        toggle id="tog" label="PWR" checked=true off_color="#ff0000" track_border="#00ff00" track_border_width=3 style="panel"
+        slider id="sld" min=5.0 max=45.0 value=22.5
+        sweeping_arc id="arc" progress=0.25 clockwise=false arc_radius=0 frame_inset=6 corner_radius=2 bg_color="#ff0000" arc_color="#00ff00" frame_color="#0000ff" style="panel"
+        busy_wheel id="spin" phase=0.75 style="panel"
+        chart id="cht" values="2,5,3,8" min=1.0 max=9.0 style="panel"
+        plotter id="plt" values="2 5 3" head=2 min=1.0 max=9.0 style="panel"
+        status_bar id="stb" time="07:45" style="panel"
+        time_picker id="tp" hour=7 minute=45 is_12h=false is_pm=true style="panel"
+        number_picker id="np" min=3 max=17 value=11 unit="kPa" style="panel"
+        content_indicator id="ci" count=5 active=2 style="panel"
+        crumbs id="cr" count=4 active=1 style="panel"
+        path id="pv" stroke_width=3 colour="#00ff00" d="M 0 0 L 32 32 Q 1 2 3 4 C 1 2 3 4 5 6 Z"
+    }
+}
+"##;
+    let generated = compile_kdl_to_rust(kdl).unwrap();
+
+    assert!(
+        generated.contains(
+            "gui.add_toggle_colored(cells[0], \"PWR\", true, Rgb565::new(31, 0, 0), Some(Rgb565::new(0, 63, 0)), 3, Style::panel())"
+        ),
+        "toggle: track border is the 5th argument and its width the 6th: {generated}"
+    );
+    assert!(
+        generated.contains("gui.add_slider(cells[1], 22.5, 5.0, 45.0, Style::default())"),
+        "slider: value comes before min and max, and all three are floats: {generated}"
+    );
+    assert!(
+        generated.contains(
+            "gui.add_sweeping_arc(cells[2], 0.25, false, ((cells[2].w.min(cells[2].h) / 2).saturating_sub(8)), 6, 2, Rgb565::new(31, 0, 0), Rgb565::new(0, 63, 0), Rgb565::new(0, 0, 31), Style::panel())"
+        ),
+        "arc: progress, direction, cell-derived radius, frame, corners and three colours: {generated}"
+    );
+    assert!(
+        generated.contains("gui.add_spinner(cells[3], 0.75, Style::panel())"),
+        "busy_wheel becomes add_spinner with a phase: {generated}"
+    );
+    assert!(
+        generated.contains("gui.add_chart(cells[4], &[2.0, 5.0, 3.0, 8.0], 1.0, 9.0, Style::panel())"),
+        "chart: its comma-separated series reaches add_chart: {generated}"
+    );
+    assert!(
+        generated.contains("gui.add_plotter(cells[5], &[2.0, 5.0, 3.0], 2, 1.0, 9.0, Style::panel())"),
+        "plotter: its space-separated series and head reach add_plotter: {generated}"
+    );
+    assert!(
+        generated.contains("gui.add_status_bar(cells[6], \"07:45\", Style::panel())"),
+        "status_bar takes a parsed style: {generated}"
+    );
+    assert!(
+        generated.contains("gui.add_time_picker(cells[7], 7, 45, false, true, Style::panel())"),
+        "time_picker takes a parsed style: {generated}"
+    );
+    assert!(
+        generated.contains(
+            "gui.add_number_picker(cells[8], 3, 17, 11, \"kPa\", Style::panel())"
+        ),
+        "number_picker takes a parsed style: {generated}"
+    );
+    assert!(
+        generated.contains("gui.add_content_indicator(cells[9], 5, 2, Style::panel())"),
+        "content_indicator takes a parsed style: {generated}"
+    );
+    assert!(
+        generated.contains("gui.add_crumbs_indicator(cells[10], 4, 1, Style::panel())"),
+        "crumbs takes a parsed style: {generated}"
+    );
+    assert!(
+        generated.contains(
+            "static __shape_pv: rusty_gui_widgets::VectorPath = rusty_gui_widgets::VectorPath { \
+             stroke_width: 3, colour: Some(Rgb565::new(0, 63, 0)), \
+             verbs: &[rusty_gui_widgets::PathVerb::MoveTo { x: 0, y: 0 }, \
+             rusty_gui_widgets::PathVerb::LineTo { x: 32, y: 32 }, \
+             rusty_gui_widgets::PathVerb::QuadTo { cx: 1, cy: 2, x: 3, y: 4 }, \
+             rusty_gui_widgets::PathVerb::CubicTo { c1x: 1, c1y: 2, c2x: 3, c2y: 4, x: 5, y: 6 }, \
+             rusty_gui_widgets::PathVerb::Close] };"
+        ),
+        "path: struct-variant verbs and a non-optional colour reach the custom widget: {generated}"
+    );
+    assert!(
+        generated.contains(
+            "let pv = gui.add_custom_widget(cells[11], &__shape_pv, Style::default())?;"
+        ),
+        "path is a custom widget, not an inline VectorPath: {generated}"
+    );
+
+    // Every new field has to survive a save: parse, serialize and parse again must agree.
+    let screen = parse_kdl_screen(kdl).unwrap();
+    assert_eq!(
+        parse_kdl_screen(&serialize_kdl_screen(&screen)).unwrap(),
+        screen,
+        "the serializer must write the new fields back"
+    );
+
+    // A design that says nothing keeps the behaviour the runtime had before the fields existed.
+    let defaults = r##"
+screen id="Defaults" width=320 height=240 {
+    column gap=0 padding=0 {
+        slider id="dsl"
+        sweeping_arc id="darc"
+        busy_wheel id="dspin"
+        chart id="dcht"
+        plotter id="dplt"
+        status_bar id="dstb"
+        time_picker id="dtp"
+        number_picker id="dnp"
+        content_indicator id="dci"
+        crumbs id="dcr"
+        path id="dpv" d="M 0 0 L 1 1"
+    }
+}
+"##;
+    let generated = compile_kdl_to_rust(defaults).unwrap();
+    assert!(
+        generated.contains("gui.add_slider(cells[0], 0.0, 0.0, 100.0, Style::default())"),
+        "slider defaults are min 0.0, max 100.0, value 0.0 and Style::default(): {generated}"
+    );
+    assert!(
+        generated.contains(
+            "gui.add_sweeping_arc(cells[1], 0.50, true, ((cells[1].w.min(cells[1].h) / 2).saturating_sub(8)), 14, 4, Rgb565::new(1, 3, 1), Rgb565::new(0, 39, 31), Rgb565::new(7, 15, 7), Style::panel())"
+        ),
+        "arc defaults are 0.5 clockwise, fit-cell radius, 4/4 and the old three colours: {generated}"
+    );
+    assert!(
+        generated.contains("gui.add_spinner(cells[2], 0.00, Style::panel())"),
+        "spinner default phase is 0.0: {generated}"
+    );
+    assert!(
+        generated.contains("gui.add_chart(cells[3], &[], 0.0, 10.0, Style::panel())"),
+        "chart with no values is an empty series with min 0.0 max 10.0: {generated}"
+    );
+    assert!(
+        generated.contains("gui.add_plotter(cells[4], &[], 0, 0.0, 10.0, Style::panel())"),
+        "plotter with no values is an empty series with head 0: {generated}"
+    );
+    assert!(
+        generated.contains("gui.add_status_bar(cells[5], \"12:00\", Style::panel())"),
+        "status_bar default style is panel: {generated}"
+    );
+    assert!(
+        generated.contains("gui.add_time_picker(cells[6], 12, 0, true, false, Style::panel())"),
+        "time_picker defaults and style are unchanged: {generated}"
+    );
+    assert!(
+        generated.contains("gui.add_number_picker(cells[7], 0, 100, 0, \"\", Style::panel())"),
+        "number_picker defaults and style are unchanged: {generated}"
+    );
+    assert!(
+        generated.contains("gui.add_content_indicator(cells[8], 3, 0, Style::panel())"),
+        "content_indicator defaults and style are unchanged: {generated}"
+    );
+    assert!(
+        generated.contains("gui.add_crumbs_indicator(cells[9], 3, 0, Style::panel())"),
+        "crumbs defaults and style are unchanged: {generated}"
+    );
+    assert!(
+        generated.contains(
+            "static __shape_dpv: rusty_gui_widgets::VectorPath = rusty_gui_widgets::VectorPath { \
+             stroke_width: 1, colour: None, verbs: &[rusty_gui_widgets::PathVerb::MoveTo { x: 0, y: 0 }, \
+             rusty_gui_widgets::PathVerb::LineTo { x: 1, y: 1 }] };"
+        ),
+        "path defaults to stroke_width 1 and no colour: {generated}"
     );
 }

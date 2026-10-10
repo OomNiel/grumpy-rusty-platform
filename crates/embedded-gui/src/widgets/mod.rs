@@ -263,6 +263,11 @@ pub enum WidgetKind<'a> {
         /// The track's colour when the switch is off. Upstream hard-coded a near-black literal here, which no
         /// markup could reach; `add_toggle` still passes the same colour, so nothing changes unless asked for.
         off_color: Rgb565,
+        /// Outline drawn around the switch track. `None` draws none, exactly as upstream did.
+        track_border: Option<Rgb565>,
+        /// The outline's width in pixels. Only drawn when `track_border` is `Some` and this is greater than
+        /// zero; `0` keeps upstream's outline-free track.
+        track_border_width: u8,
     },
     #[cfg(feature = "rich-widgets")]
     Checkbox {
@@ -401,6 +406,39 @@ pub enum WidgetKind<'a> {
     },
     Spinner {
         phase: f32,
+    },
+    /// Wearable system status bar: a centered clock plus battery/Bluetooth/DND icons.
+    #[cfg(feature = "rich-widgets")]
+    StatusBar {
+        time: &'a str,
+    },
+    /// 12- or 24-hour time picker with hour/minute/period segments.
+    #[cfg(feature = "rich-widgets")]
+    TimePicker {
+        hour: u8,
+        minute: u8,
+        is_12h: bool,
+        is_pm: bool,
+    },
+    /// Numeric range picker with a unit suffix.
+    #[cfg(feature = "rich-widgets")]
+    NumberPicker {
+        value: i32,
+        min: i32,
+        max: i32,
+        unit: &'a str,
+    },
+    /// Arrow hinting at scrollable content beyond the edge.
+    #[cfg(feature = "rich-widgets")]
+    ContentIndicator {
+        count: usize,
+        active: usize,
+    },
+    /// Pagination dots showing position in a set.
+    #[cfg(feature = "rich-widgets")]
+    Crumbs {
+        count: usize,
+        active: usize,
     },
     #[cfg(feature = "rich-widgets")]
     Dropdown {
@@ -726,6 +764,31 @@ impl<'a> WidgetNode<'a> {
             (PropertyKey::Min, WidgetKind::Scale { min, .. }) => Some(PropertyValue::Float(*min)),
             #[cfg(feature = "rich-widgets")]
             (PropertyKey::Max, WidgetKind::Scale { max, .. }) => Some(PropertyValue::Float(*max)),
+            #[cfg(feature = "rich-widgets")]
+            (PropertyKey::Text, WidgetKind::StatusBar { time }) => Some(PropertyValue::Str(time)),
+            #[cfg(feature = "rich-widgets")]
+            (PropertyKey::Value, WidgetKind::NumberPicker { value, .. }) => {
+                Some(PropertyValue::Int(*value))
+            }
+            #[cfg(feature = "rich-widgets")]
+            (PropertyKey::Min, WidgetKind::NumberPicker { min, .. }) => {
+                Some(PropertyValue::Int(*min))
+            }
+            #[cfg(feature = "rich-widgets")]
+            (PropertyKey::Max, WidgetKind::NumberPicker { max, .. }) => {
+                Some(PropertyValue::Int(*max))
+            }
+            // Mirrors the node's other `Selected` arms (`List`, `Tabs`, `RichMenu`) and the `usize`
+            // `active` these two indicators carry. `CrumbsIndicatorWidget::get_property` spells the same
+            // key as `Int`; the node arm uses `Usize` so `get`/`set` round-trip here.
+            #[cfg(feature = "rich-widgets")]
+            (PropertyKey::Selected, WidgetKind::ContentIndicator { active, .. }) => {
+                Some(PropertyValue::Usize(*active))
+            }
+            #[cfg(feature = "rich-widgets")]
+            (PropertyKey::Selected, WidgetKind::Crumbs { active, .. }) => {
+                Some(PropertyValue::Usize(*active))
+            }
             _ => None,
         }
     }
@@ -770,6 +833,59 @@ impl<'a> WidgetNode<'a> {
             #[cfg(feature = "rich-widgets")]
             (PropertyKey::Max, WidgetKind::Scale { max, .. }, PropertyValue::Float(m)) => {
                 *max = m;
+                Ok(())
+            }
+            #[cfg(feature = "rich-widgets")]
+            (PropertyKey::Text, WidgetKind::StatusBar { time }, PropertyValue::Str(s)) => {
+                *time = s;
+                Ok(())
+            }
+            #[cfg(feature = "rich-widgets")]
+            (
+                PropertyKey::Value,
+                WidgetKind::NumberPicker { value, min, max, .. },
+                PropertyValue::Int(v),
+            ) => {
+                *value = v.clamp((*min).min(*max), (*min).max(*max));
+                Ok(())
+            }
+            #[cfg(feature = "rich-widgets")]
+            (
+                PropertyKey::Min,
+                WidgetKind::NumberPicker { value, min, max, .. },
+                PropertyValue::Int(m),
+            ) => {
+                *min = m;
+                // Keep the displayed value inside the range the design just named.
+                *value = (*value).clamp((*min).min(*max), (*min).max(*max));
+                Ok(())
+            }
+            #[cfg(feature = "rich-widgets")]
+            (
+                PropertyKey::Max,
+                WidgetKind::NumberPicker { value, min, max, .. },
+                PropertyValue::Int(m),
+            ) => {
+                *max = m;
+                *value = (*value).clamp((*min).min(*max), (*min).max(*max));
+                Ok(())
+            }
+            #[cfg(feature = "rich-widgets")]
+            (
+                PropertyKey::Selected,
+                WidgetKind::ContentIndicator { count, active },
+                PropertyValue::Usize(s),
+            ) => {
+                *active = s.min((*count).saturating_sub(1));
+                Ok(())
+            }
+            #[cfg(feature = "rich-widgets")]
+            (
+                PropertyKey::Selected,
+                WidgetKind::Crumbs { count, active },
+                PropertyValue::Usize(s),
+            ) => {
+                *active = s.min((*count).saturating_sub(1));
                 Ok(())
             }
             (PropertyKey::Text, WidgetKind::Label(text), PropertyValue::Str(s)) => {
@@ -877,7 +993,19 @@ impl<'a> WidgetNode<'a> {
                 label,
                 on,
                 off_color,
-            } => render_toggle(ctx, rect, label, on, off_color, self.style, state),
+                track_border,
+                track_border_width,
+            } => render_toggle(
+                ctx,
+                rect,
+                label,
+                on,
+                off_color,
+                track_border,
+                track_border_width,
+                self.style,
+                state,
+            ),
             #[cfg(feature = "rich-widgets")]
             WidgetKind::Checkbox {
                 label,
@@ -1078,6 +1206,32 @@ impl<'a> WidgetNode<'a> {
                 state,
             ),
             WidgetKind::Spinner { phase } => render_spinner(ctx, rect, phase, self.style, state),
+            #[cfg(feature = "rich-widgets")]
+            WidgetKind::StatusBar { time } => {
+                render_status_bar(ctx, rect, time, self.style, state)
+            }
+            #[cfg(feature = "rich-widgets")]
+            WidgetKind::TimePicker {
+                hour,
+                minute,
+                is_12h,
+                is_pm,
+            } => render_time_picker(ctx, rect, hour, minute, is_12h, is_pm, self.style, state),
+            #[cfg(feature = "rich-widgets")]
+            WidgetKind::NumberPicker {
+                value,
+                min,
+                max,
+                unit,
+            } => render_number_picker(ctx, rect, min, max, value, unit, self.style, state),
+            #[cfg(feature = "rich-widgets")]
+            WidgetKind::ContentIndicator { count, active } => {
+                render_content_indicator(ctx, rect, count, active, self.style, state)
+            }
+            #[cfg(feature = "rich-widgets")]
+            WidgetKind::Crumbs { count, active } => {
+                render_crumbs(ctx, rect, count, active, self.style, state)
+            }
             #[cfg(feature = "rich-widgets")]
             WidgetKind::Dropdown {
                 items,
@@ -1462,6 +1616,8 @@ fn render_toggle<D, C>(
     label: &str,
     on: bool,
     off_color: Rgb565,
+    track_border: Option<Rgb565>,
+    track_border_width: u8,
     style: WidgetStyle,
     state: VisualState,
 ) -> Result<(), D::Error>
@@ -1481,6 +1637,19 @@ where
         inner.h.saturating_sub(2),
     );
     ctx.fill_rect(track, if on { style.accent } else { off_color })?;
+    // The track outline a design can ask for. `None` or a zero width draws nothing, so a toggle built
+    // through `add_toggle` still looks exactly as it did before this field existed.
+    if track_border_width > 0 {
+        if let Some(color) = track_border {
+            ctx.stroke_rect(
+                track,
+                Border {
+                    color,
+                    width: track_border_width,
+                },
+            )?;
+        }
+    }
     ctx.draw_text_in(
         Rect::new(
             inner.x,
@@ -1491,6 +1660,139 @@ where
         label,
         TextStyle::new(style.text).with_font(style.font),
     )
+}
+
+#[cfg(feature = "rich-widgets")]
+fn render_status_bar<D, C>(
+    ctx: &mut RenderCtx<'_, D, C>,
+    rect: Rect,
+    time: &str,
+    style: WidgetStyle,
+    state: VisualState,
+) -> Result<(), D::Error>
+where
+    D: embedded_graphics_core::draw_target::DrawTarget<Color = Rgb565>,
+    C: Compositor<D>,
+{
+    let resolved = style.resolve(state);
+    // The status bar owns its colours; the design's background, text and accent are mapped onto them so a
+    // configured style reaches the glass instead of being ignored.
+    Block::styled(resolved).render(rect, ctx)?;
+    let mut bar = StatusBarWidget::new(time);
+    if let Some(background) = resolved.background {
+        bar.background_color = background;
+    }
+    bar.foreground_color = resolved.text;
+    bar.accent_color = resolved.accent;
+    // `StatusBarWidget::render` reports draw failures as its own `StatusBarError`, which the node's
+    // `D::Error` return cannot carry; the background has already been painted by the time one can happen.
+    let _ = bar.render(ctx, rect);
+    Ok(())
+}
+
+#[cfg(feature = "rich-widgets")]
+fn render_time_picker<D, C>(
+    ctx: &mut RenderCtx<'_, D, C>,
+    rect: Rect,
+    hour: u8,
+    minute: u8,
+    is_12h: bool,
+    is_pm: bool,
+    style: WidgetStyle,
+    state: VisualState,
+) -> Result<(), D::Error>
+where
+    D: embedded_graphics_core::draw_target::DrawTarget<Color = Rgb565>,
+    C: Compositor<D>,
+{
+    let resolved = style.resolve(state);
+    Block::styled(resolved).render(rect, ctx)?;
+    let mut picker = if is_12h {
+        TimePickerWidget::new_12h(hour, minute, is_pm)
+    } else {
+        TimePickerWidget::new_24h(hour, minute)
+    };
+    if let Some(background) = resolved.background {
+        picker.background_color = background;
+    }
+    picker.text_color = resolved.text;
+    picker.focus_color = resolved.accent;
+    let _ = picker.render(ctx, rect);
+    Ok(())
+}
+
+#[cfg(feature = "rich-widgets")]
+fn render_number_picker<D, C>(
+    ctx: &mut RenderCtx<'_, D, C>,
+    rect: Rect,
+    min: i32,
+    max: i32,
+    value: i32,
+    unit: &str,
+    style: WidgetStyle,
+    state: VisualState,
+) -> Result<(), D::Error>
+where
+    D: embedded_graphics_core::draw_target::DrawTarget<Color = Rgb565>,
+    C: Compositor<D>,
+{
+    let resolved = style.resolve(state);
+    Block::styled(resolved).render(rect, ctx)?;
+    // No colour field exists on `NumberPickerWidget` for a style to override; its rounded card paints over
+    // the block, so the value simply renders in the crate's own colours.
+    let picker = NumberPickerWidget::new(min, max, value, unit);
+    let _ = picker.render(ctx, rect);
+    Ok(())
+}
+
+#[cfg(feature = "rich-widgets")]
+fn render_content_indicator<D, C>(
+    ctx: &mut RenderCtx<'_, D, C>,
+    rect: Rect,
+    count: usize,
+    active: usize,
+    style: WidgetStyle,
+    state: VisualState,
+) -> Result<(), D::Error>
+where
+    D: embedded_graphics_core::draw_target::DrawTarget<Color = Rgb565>,
+    C: Compositor<D>,
+{
+    let resolved = style.resolve(state);
+    Block::styled(resolved).render(rect, ctx)?;
+    // `ContentIndicatorWidget::new` wants a direction, but the `content_indicator` markup carries the same
+    // `count`/`active` pagination pair as `crumbs` and no direction attribute, so the direction is inferred:
+    // while items remain below the active one the hint points down, and on the last item it points up.
+    let direction = if count > 1 && active.saturating_add(1) >= count {
+        ContentIndicatorDirection::Up
+    } else {
+        ContentIndicatorDirection::Down
+    };
+    let mut indicator = ContentIndicatorWidget::new(direction);
+    indicator.color = resolved.accent;
+    indicator.render(ctx, rect)
+}
+
+#[cfg(feature = "rich-widgets")]
+fn render_crumbs<D, C>(
+    ctx: &mut RenderCtx<'_, D, C>,
+    rect: Rect,
+    count: usize,
+    active: usize,
+    style: WidgetStyle,
+    state: VisualState,
+) -> Result<(), D::Error>
+where
+    D: embedded_graphics_core::draw_target::DrawTarget<Color = Rgb565>,
+    C: Compositor<D>,
+{
+    let resolved = style.resolve(state);
+    Block::styled(resolved).render(rect, ctx)?;
+    let count = count.min(u8::MAX as usize) as u8;
+    let active = active.min(count.saturating_sub(1) as usize) as u8;
+    let mut crumbs = CrumbsIndicatorWidget::new(count, active);
+    crumbs.active_color = resolved.accent;
+    crumbs.render(ctx, rect)
 }
 
 #[cfg(feature = "rich-widgets")]
@@ -4066,6 +4368,8 @@ mod tests {
             label: "t",
             on: false,
             off_color: Rgb565::new(7, 10, 10),
+            track_border: None,
+            track_border_width: 0,
         });
         assert!(
             toggle

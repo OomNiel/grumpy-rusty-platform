@@ -212,6 +212,8 @@ pub fn serialize_kdl_screen(screen: &ScreenDef) -> String {
                 label,
                 checked,
                 off_color,
+                track_border,
+                track_border_width,
                 style,
             } => {
                 let id_attr = id
@@ -222,14 +224,27 @@ pub fn serialize_kdl_screen(screen: &ScreenDef) -> String {
                     .as_ref()
                     .map(|s| format!(" off_color=\"{}\"", s))
                     .unwrap_or_default();
+                let track_attr = track_border
+                    .as_ref()
+                    .map(|s| format!(" track_border=\"{}\"", s))
+                    .unwrap_or_default();
                 let style_attr = style
                     .as_ref()
                     .map(|s| format!(" style=\"{}\"", s))
                     .unwrap_or_default();
                 let _ = writeln!(
                     &mut out,
-                    "        toggle{} label=\"{}\" checked={}{}{}{} col={} row={}",
-                    id_attr, label, checked, off_attr, style_attr, span_attrs, p.col, p.row
+                    "        toggle{} label=\"{}\" checked={} track_border_width={}{}{}{}{} col={} row={}",
+                    id_attr,
+                    label,
+                    checked,
+                    track_border_width,
+                    off_attr,
+                    track_attr,
+                    style_attr,
+                    span_attrs,
+                    p.col,
+                    p.row
                 );
             }
             WidgetDef::Checkbox {
@@ -271,15 +286,20 @@ pub fn serialize_kdl_screen(screen: &ScreenDef) -> String {
                 min,
                 max,
                 value,
+                style,
             } => {
                 let id_attr = id
                     .as_ref()
                     .map(|s| format!(" id=\"{}\"", s))
                     .unwrap_or_default();
+                let style_attr = style
+                    .as_ref()
+                    .map(|s| format!(" style=\"{}\"", s))
+                    .unwrap_or_default();
                 let _ = writeln!(
                     &mut out,
-                    "        slider{} min={} max={} value={}{} col={} row={}",
-                    id_attr, min, max, value, span_attrs, p.col, p.row
+                    "        slider{} min={} max={} value={}{}{} col={} row={}",
+                    id_attr, min, max, value, style_attr, span_attrs, p.col, p.row
                 );
             }
             WidgetDef::Dropdown {
@@ -442,50 +462,115 @@ pub fn serialize_kdl_screen(screen: &ScreenDef) -> String {
             }
             WidgetDef::SweepingArc {
                 id,
-                start_angle,
-                end_angle,
+                progress,
+                clockwise,
+                arc_radius,
+                frame_inset,
+                corner_radius,
+                bg_color,
+                arc_color,
+                frame_color,
+                style,
             } => {
                 let id_attr = id
                     .as_ref()
                     .map(|s| format!(" id=\"{}\"", s))
                     .unwrap_or_default();
+                let style_attr = style
+                    .as_ref()
+                    .map(|s| format!(" style=\"{}\"", s))
+                    .unwrap_or_default();
                 let _ = writeln!(
                     &mut out,
-                    "        sweeping_arc{} start_angle={} end_angle={}{} col={} row={}",
-                    id_attr, start_angle, end_angle, span_attrs, p.col, p.row
+                    "        sweeping_arc{} progress={:.2} clockwise={} arc_radius={} frame_inset={} corner_radius={} bg_color=\"{}\" arc_color=\"{}\" frame_color=\"{}\"{}{} col={} row={}",
+                    id_attr,
+                    progress,
+                    clockwise,
+                    arc_radius,
+                    frame_inset,
+                    corner_radius,
+                    bg_color,
+                    arc_color,
+                    frame_color,
+                    style_attr,
+                    span_attrs,
+                    p.col,
+                    p.row
                 );
             }
-            WidgetDef::BusyWheel { id, active } => {
+            WidgetDef::BusyWheel { id, phase, style } => {
                 let id_attr = id
                     .as_ref()
                     .map(|s| format!(" id=\"{}\"", s))
                     .unwrap_or_default();
+                let style_attr = style
+                    .as_ref()
+                    .map(|s| format!(" style=\"{}\"", s))
+                    .unwrap_or_default();
                 let _ = writeln!(
                     &mut out,
-                    "        busy_wheel{} active={}{} col={} row={}",
-                    id_attr, active, span_attrs, p.col, p.row
+                    "        busy_wheel{} phase={:.2}{}{} col={} row={}",
+                    id_attr, phase, style_attr, span_attrs, p.col, p.row
                 );
             }
-            WidgetDef::Plotter { id, mode } => {
+            WidgetDef::Chart {
+                id,
+                values,
+                min,
+                max,
+                style,
+            } => {
                 let id_attr = id
                     .as_ref()
                     .map(|s| format!(" id=\"{}\"", s))
                     .unwrap_or_default();
+                let values_attr = serialize_value_series(values);
+                let style_attr = style
+                    .as_ref()
+                    .map(|s| format!(" style=\"{}\"", s))
+                    .unwrap_or_default();
                 let _ = writeln!(
                     &mut out,
-                    "        plotter{} mode=\"{}\"{} col={} row={}",
-                    id_attr, mode, span_attrs, p.col, p.row
+                    "        chart{} values=\"{}\" min={} max={}{}{} col={} row={}",
+                    id_attr, values_attr, min, max, style_attr, span_attrs, p.col, p.row
                 );
             }
-            WidgetDef::StatusBar { id, time } => {
+            WidgetDef::Plotter {
+                id,
+                values,
+                head,
+                min,
+                max,
+                style,
+            } => {
                 let id_attr = id
                     .as_ref()
                     .map(|s| format!(" id=\"{}\"", s))
                     .unwrap_or_default();
+                let values_attr = serialize_value_series(values);
+                let style_attr = style
+                    .as_ref()
+                    .map(|s| format!(" style=\"{}\"", s))
+                    .unwrap_or_default();
                 let _ = writeln!(
                     &mut out,
-                    "        status_bar{} time=\"{}\"{} col={} row={}",
-                    id_attr, time, span_attrs, p.col, p.row
+                    "        plotter{} values=\"{}\" head={} min={} max={}{}{} col={} row={}",
+                    id_attr, values_attr, head, min, max, style_attr, span_attrs, p.col, p.row
+                );
+            }
+            WidgetDef::StatusBar { id, time, style } => {
+                let id_attr = id
+                    .as_ref()
+                    .map(|s| format!(" id=\"{}\"", s))
+                    .unwrap_or_default();
+                let style_attr = style
+                    .as_ref()
+                    .map(|s| format!(" style=\"{}\"", s))
+                    .unwrap_or_default();
+                let _ = writeln!(
+                    &mut out,
+                    "        status_bar{} time=\"{}\"{}{} col={} row={}",
+                    id_attr, time, style_attr, span_attrs, p.col, p.row
                 );
             }
             WidgetDef::TimePicker {
@@ -494,15 +579,20 @@ pub fn serialize_kdl_screen(screen: &ScreenDef) -> String {
                 minute,
                 is_12h,
                 is_pm,
+                style,
             } => {
                 let id_attr = id
                     .as_ref()
                     .map(|s| format!(" id=\"{}\"", s))
                     .unwrap_or_default();
+                let style_attr = style
+                    .as_ref()
+                    .map(|s| format!(" style=\"{}\"", s))
+                    .unwrap_or_default();
                 let _ = writeln!(
                     &mut out,
-                    "        time_picker{} hour={} minute={} is_12h={} is_pm={}{} col={} row={}",
-                    id_attr, hour, minute, is_12h, is_pm, span_attrs, p.col, p.row
+                    "        time_picker{} hour={} minute={} is_12h={} is_pm={}{}{} col={} row={}",
+                    id_attr, hour, minute, is_12h, is_pm, style_attr, span_attrs, p.col, p.row
                 );
             }
             WidgetDef::NumberPicker {
@@ -511,15 +601,20 @@ pub fn serialize_kdl_screen(screen: &ScreenDef) -> String {
                 max,
                 value,
                 unit,
+                style,
             } => {
                 let id_attr = id
                     .as_ref()
                     .map(|s| format!(" id=\"{}\"", s))
                     .unwrap_or_default();
+                let style_attr = style
+                    .as_ref()
+                    .map(|s| format!(" style=\"{}\"", s))
+                    .unwrap_or_default();
                 let _ = writeln!(
                     &mut out,
-                    "        number_picker{} min={} max={} value={} unit=\"{}\"{} col={} row={}",
-                    id_attr, min, max, value, unit, span_attrs, p.col, p.row
+                    "        number_picker{} min={} max={} value={} unit=\"{}\"{}{} col={} row={}",
+                    id_attr, min, max, value, unit, style_attr, span_attrs, p.col, p.row
                 );
             }
             WidgetDef::Dialog {
@@ -538,26 +633,44 @@ pub fn serialize_kdl_screen(screen: &ScreenDef) -> String {
                     id_attr, title, message, dialog_type, span_attrs, p.col, p.row
                 );
             }
-            WidgetDef::ContentIndicator { id, count, active } => {
+            WidgetDef::ContentIndicator {
+                id,
+                count,
+                active,
+                style,
+            } => {
                 let id_attr = id
                     .as_ref()
                     .map(|s| format!(" id=\"{}\"", s))
                     .unwrap_or_default();
+                let style_attr = style
+                    .as_ref()
+                    .map(|s| format!(" style=\"{}\"", s))
+                    .unwrap_or_default();
                 let _ = writeln!(
                     &mut out,
-                    "        content_indicator{} count={} active={}{} col={} row={}",
-                    id_attr, count, active, span_attrs, p.col, p.row
+                    "        content_indicator{} count={} active={}{}{} col={} row={}",
+                    id_attr, count, active, style_attr, span_attrs, p.col, p.row
                 );
             }
-            WidgetDef::CrumbsIndicator { id, count, active } => {
+            WidgetDef::CrumbsIndicator {
+                id,
+                count,
+                active,
+                style,
+            } => {
                 let id_attr = id
                     .as_ref()
                     .map(|s| format!(" id=\"{}\"", s))
                     .unwrap_or_default();
+                let style_attr = style
+                    .as_ref()
+                    .map(|s| format!(" style=\"{}\"", s))
+                    .unwrap_or_default();
                 let _ = writeln!(
                     &mut out,
-                    "        crumbs{} count={} active={}{} col={} row={}",
-                    id_attr, count, active, span_attrs, p.col, p.row
+                    "        crumbs{} count={} active={}{}{} col={} row={}",
+                    id_attr, count, active, style_attr, span_attrs, p.col, p.row
                 );
             }
             WidgetDef::Panel { id, style } => {
@@ -754,16 +867,21 @@ pub fn serialize_kdl_screen(screen: &ScreenDef) -> String {
             WidgetDef::VectorPath {
                 id,
                 stroke_width,
+                colour,
                 verbs,
             } => {
                 let id_attr = id
                     .as_ref()
                     .map(|s| format!(" id=\"{}\"", s))
                     .unwrap_or_default();
+                let colour_attr = colour
+                    .as_ref()
+                    .map(|s| format!(" colour=\"{}\"", s))
+                    .unwrap_or_default();
                 let _ = writeln!(
                     &mut out,
-                    "        vector_path{} stroke_width={}{} col={} row={} {{",
-                    id_attr, stroke_width, span_attrs, p.col, p.row
+                    "        vector_path{} stroke_width={}{}{} col={} row={} {{",
+                    id_attr, stroke_width, colour_attr, span_attrs, p.col, p.row
                 );
                 for v in verbs {
                     match v {
@@ -925,4 +1043,13 @@ pub fn serialize_kdl_screen(screen: &ScreenDef) -> String {
     let _ = writeln!(&mut out, "    }}");
     let _ = writeln!(&mut out, "}}");
     out
+}
+
+/// Writes a chart/plotter series back as the `values="a, b, c"` text attribute the parser reads.
+fn serialize_value_series(values: &[f32]) -> String {
+    values
+        .iter()
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
 }

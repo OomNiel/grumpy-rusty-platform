@@ -1411,8 +1411,9 @@ function previewButton(context: CanvasRenderingContext2D, widget: DesignerWidget
  * Toggle (spec 4.4, `widgets/mod.rs:1459-1494`): a fixed track at the right whose colour is the state.
  *
  * The off-track is the design's `off_color`, or the crate's own `Rgb565::new(7, 10, 10)`
- * (`builders.rs:276`, `emitter.rs:276`); on is `style.accent`, as upstream. The track has no outline of its
- * own -- the widget's border frames the whole control.
+ * (`builders.rs:220`, `emitter.rs:278`); on is `style.accent`, as upstream. The widget's border frames the
+ * whole control; the design's own `track_border` optionally outlines the switch track itself
+ * (`widgets/mod.rs:1640-1652`), and draws only when a colour is set and the width is above zero.
  */
 function previewToggle(context: CanvasRenderingContext2D, widget: DesignerWidget, state: VisualState): void {
     const style = resolveVisual(designStyle(widget, styleNew()), state);
@@ -1428,6 +1429,12 @@ function previewToggle(context: CanvasRenderingContext2D, widget: DesignerWidget
     };
     const off = colourProp(widget.props, 'off_color') ?? rgb(7, 10, 10);
     fillSolid(context, track, 0, boolProp(widget.props, 'checked', false) ? style.accent : off, 255);
+    // The outline around the switch itself, not the widget's frame (`render_toggle`, `widgets/mod.rs:1642-1652`).
+    const trackBorder = colourProp(widget.props, 'track_border');
+    const trackBorderWidth = Math.max(0, Math.trunc(numberProp(widget.props, 'track_border_width', 0)));
+    if (trackBorder !== undefined && trackBorderWidth > 0) {
+        strokeRounded(context, track, 0, { color: trackBorder, width: trackBorderWidth }, 255);
+    }
     drawTextIn(
         context,
         { x: inner.x, y: inner.y, w: Math.max(0, inner.w - (knobWidth + 4)), h: inner.h },
@@ -1470,9 +1477,14 @@ function previewCheckbox(context: CanvasRenderingContext2D, widget: DesignerWidg
     );
 }
 
-/** Slider (spec 4.6, `widgets/mod.rs:1485-1508`): a one-pixel track and a 3x5 accent knob. */
+/**
+ * Slider (spec 4.6, `widgets/mod.rs:1851-1874`): a one-pixel track and a 3x5 accent knob.
+ *
+ * The track is `style.text` and the knob `style.accent`, and all three numbers are floats, so the base
+ * style is the tag's own `Style::default()` (`emitter.rs:314-325`) with the design's appearance folded on.
+ */
 function previewSlider(context: CanvasRenderingContext2D, widget: DesignerWidget, state: VisualState): void {
-    const style = resolveVisual(styleNew(), state);
+    const style = resolveVisual(designStyle(widget, styleNew()), state);
     const rect = rectOf(widget);
     drawBlock(context, rect, style);
     const inner = blockInner(rect, style);
@@ -1953,6 +1965,813 @@ function previewScale(context: CanvasRenderingContext2D, widget: DesignerWidget,
     }
 }
 
+// ---------------------------------------------------------------------------
+// Sweeping arc, busy wheel, chart, plotter and vector path
+//
+// These are `WidgetKind` variants the crate has always had but the canvas had no arm for. The workers
+// below are the crate's own render functions, read line for line rather than from the spec.
+// ---------------------------------------------------------------------------
+
+/** `f32::EPSILON`, the crate's own non-zero denominator (`widgets/mod.rs:1868`, `:2793`, `:2910`). */
+const F32_EPSILON = 1.1920928955078125e-7;
+
+/** A value clamped the way `f32::clamp(0.0, 1.0)` resolves it (NaN falls through, as in Rust). */
+function clamp01(value: number): number {
+    if (value < 0) {
+        return 0;
+    }
+    if (value > 1) {
+        return 1;
+    }
+    return value;
+}
+
+/** A Rust `.clamp(min, max)` for integers. */
+function clampInt(value: number, min: number, max: number): number {
+    return Math.min(Math.max(value, min), max);
+}
+
+/** `Rect::intersection` (`geometry.rs`): the overlap, or an empty rect when the two miss. */
+function rectIntersect(a: Rect, b: Rect): Rect {
+    const x = Math.max(a.x, b.x);
+    const y = Math.max(a.y, b.y);
+    const right = Math.min(rectRight(a), rectRight(b));
+    const bottom = Math.min(rectBottom(a), rectBottom(b));
+    return { x, y, w: Math.max(0, right - x), h: Math.max(0, bottom - y) };
+}
+
+/** `normalize_angle_deg` (`render/mod.rs:2482-2490`). */
+function normalizeAngleDeg(deg: number): number {
+    let value = deg;
+    while (value < 0) {
+        value += 360;
+    }
+    while (value >= 360) {
+        value -= 360;
+    }
+    return value;
+}
+
+/** `cardinal_unit` (`render/mod.rs:2501-2515`): the exact axes, or `undefined` for a real trig call. */
+function cardinalUnit(deg: number): readonly [number, number] | undefined {
+    const EPS = 1e-4;
+    const normalized = normalizeAngleDeg(deg);
+    if (Math.abs(normalized) < EPS) {
+        return [1, 0];
+    }
+    if (Math.abs(normalized - 90) < EPS) {
+        return [0, 1];
+    }
+    if (Math.abs(normalized - 180) < EPS) {
+        return [-1, 0];
+    }
+    if (Math.abs(normalized - 270) < EPS) {
+        return [0, -1];
+    }
+    return undefined;
+}
+
+/** `cross` (`render/mod.rs:2518-2520`). */
+function cross(ux: number, uy: number, vx: number, vy: number): number {
+    return ux * vy - uy * vx;
+}
+
+/**
+ * `RenderCtx::fill_sector_sweep` (`render/mod.rs:1396-1479`).
+ *
+ * The crate reduces the sweep to two boundary direction vectors and classifies each pixel inside the circle
+ * with two cross products (a convex wedge at 180° or less) or the complement (a reflex one). `clip` is the
+ * context's own clip, which the engine sets to the widget's cell, so this walks the same `visible_rect`.
+ */
+function fillSectorSweep(
+    context: CanvasRenderingContext2D,
+    cx: number,
+    cy: number,
+    radius: number,
+    startDeg: number,
+    sweepDeg: number,
+    colour: Rgb565,
+    clip: Rect,
+): void {
+    if (radius === 0) {
+        return;
+    }
+    const draw = rectIntersect({ x: cx - radius, y: cy - radius, w: radius * 2 + 1, h: radius * 2 + 1 }, clip);
+    if (rectEmpty(draw)) {
+        return;
+    }
+    const maxSweep = Math.min(Math.abs(sweepDeg), 360);
+    if (maxSweep <= 0) {
+        return;
+    }
+    const rr = radius * radius;
+    const start = normalizeAngleDeg(startDeg);
+    const ccw = sweepDeg >= 0;
+    const loDeg = ccw ? start : start - maxSweep;
+    const hiDeg = ccw ? start + maxSweep : start;
+    const lo = cardinalUnit(loDeg) ?? [Math.cos((loDeg * Math.PI) / 180), Math.sin((loDeg * Math.PI) / 180)];
+    const hi = cardinalUnit(hiDeg) ?? [Math.cos((hiDeg * Math.PI) / 180), Math.sin((hiDeg * Math.PI) / 180)];
+    const fullCircle = maxSweep >= 360;
+    const reflex = maxSweep > 180;
+    for (let y = draw.y; y < rectBottom(draw); y += 1) {
+        for (let x = draw.x; x < rectRight(draw); x += 1) {
+            const dx = x - cx;
+            const dy = y - cy;
+            if (dx * dx + dy * dy > rr) {
+                continue;
+            }
+            let inSweep: boolean;
+            if (fullCircle) {
+                inSweep = true;
+            } else if (!reflex) {
+                inSweep = cross(lo[0], lo[1], dx, dy) >= 0 && cross(dx, dy, hi[0], hi[1]) >= 0;
+            } else {
+                inSweep = !(cross(hi[0], hi[1], dx, dy) >= 0 && cross(dx, dy, lo[0], lo[1]) >= 0);
+            }
+            if (inSweep) {
+                pixel(context, x, y, colour, 255);
+            }
+        }
+    }
+}
+
+/**
+ * `RenderCtx::stroke_arc_styled` (`render/mod.rs:1354-1391`): the angle walk with the square pen.
+ *
+ * The step is two degrees at High quality, the crate's default (`render/mod.rs:1369-1373`), and the
+ * endpoints are swapped when the sweep runs backwards. `left/right` and `top/bottom` are the pen offsets.
+ */
+function strokeArcStyled(
+    context: CanvasRenderingContext2D,
+    cx: number,
+    cy: number,
+    radius: number,
+    startDeg: number,
+    endDeg: number,
+    colour: Rgb565,
+    options: { readonly width?: number; readonly opacity?: number; readonly joinRound?: boolean } = {},
+): void {
+    let start = startDeg;
+    let end = endDeg;
+    if (end < start) {
+        const swap = start;
+        start = end;
+        end = swap;
+    }
+    const half = Math.max(0, Math.floor((options.width ?? 1) / 2));
+    const opacity = options.opacity ?? 255;
+    for (let deg = start; deg <= end; deg += 2) {
+        const rad = (deg * Math.PI) / 180;
+        const x = cx + Math.trunc(radius * Math.cos(rad));
+        const y = cy + Math.trunc(radius * Math.sin(rad));
+        for (let oy = -half; oy <= half; oy += 1) {
+            for (let ox = -half; ox <= half; ox += 1) {
+                pixel(context, x + ox, y + oy, colour, opacity);
+            }
+        }
+        if (options.joinRound === true) {
+            fillCircle(context, x, y, Math.max(1, half), colour);
+        }
+    }
+}
+
+/**
+ * `parse_value_series` (`crates/embedded-gui-codegen/src/parser.rs:291-300`): split on commas or whitespace,
+ * drop the empty tokens, parse each as an `f32`, and skip whatever will not parse.
+ */
+function parseValueSeries(raw: string): number[] {
+    const values: number[] = [];
+    for (const token of raw.split(/[\s,]+/)) {
+        if (token === '') {
+            continue;
+        }
+        const value = rustF32(token);
+        if (value !== undefined) {
+            values.push(value);
+        }
+    }
+    return values;
+}
+
+/** Rust's `f32::from_str`: a decimal with an optional exponent, or the literal infinities / NaN. */
+function rustF32(text: string): number | undefined {
+    const lower = text.toLowerCase();
+    if (lower === 'inf' || lower === '+inf' || lower === 'infinity' || lower === '+infinity') {
+        return Infinity;
+    }
+    if (lower === '-inf' || lower === '-infinity') {
+        return -Infinity;
+    }
+    if (lower === 'nan' || lower === '+nan' || lower === '-nan') {
+        return NaN;
+    }
+    if (!/^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$/.test(text)) {
+        return undefined;
+    }
+    return Number(text);
+}
+
+/** One command of an SVG path, in design pixels relative to the widget's top-left corner. */
+type PathCommand =
+    | { readonly kind: 'move'; readonly x: number; readonly y: number }
+    | { readonly kind: 'line'; readonly x: number; readonly y: number }
+    | { readonly kind: 'quad'; readonly cx: number; readonly cy: number; readonly x: number; readonly y: number }
+    | {
+          readonly kind: 'cubic';
+          readonly c1x: number;
+          readonly c1y: number;
+          readonly c2x: number;
+          readonly c2y: number;
+          readonly x: number;
+          readonly y: number;
+      }
+    | { readonly kind: 'close' };
+
+/** `f32::round` (half away from zero) followed by Rust's saturating `as i32` cast. */
+function rustRoundToI32(value: number): number {
+    if (Number.isNaN(value)) {
+        return 0;
+    }
+    const rounded = Math.sign(value) * Math.round(Math.abs(value));
+    return clampInt(rounded, -2147483648, 2147483647);
+}
+
+/**
+ * `parse_svg_path_d` (`crates/embedded-gui-codegen/src/parser.rs:64-240`), a line-for-line port.
+ *
+ * A command letter starts a run of numbers; every number is parsed as an `f32` and rounded to an `i32`, so
+ * the board's own coordinates are integers. An unknown letter still consumes its numbers, as the crate does.
+ */
+function parseSvgPathD(d: string): PathCommand[] {
+    const commands: PathCommand[] = [];
+    let curX = 0;
+    let curY = 0;
+    let index = 0;
+    while (index < d.length) {
+        const ch = d[index] ?? '';
+        if (/\s/.test(ch) || ch === ',') {
+            index += 1;
+            continue;
+        }
+        if (!/[A-Za-z]/.test(ch)) {
+            index += 1;
+            continue;
+        }
+        const command = ch;
+        index += 1;
+        const relative = command >= 'a' && command <= 'z';
+        const numbers: number[] = [];
+        while (index < d.length) {
+            const next = d[index] ?? '';
+            if (/\s/.test(next) || next === ',') {
+                index += 1;
+                continue;
+            }
+            if (!/[0-9]/.test(next) && next !== '-' && next !== '+' && next !== '.') {
+                break;
+            }
+            let token = '';
+            while (index < d.length) {
+                const digit = d[index] ?? '';
+                if (/[0-9]/.test(digit) || digit === '-' || digit === '+' || digit === '.') {
+                    token += digit;
+                    index += 1;
+                } else {
+                    break;
+                }
+            }
+            const value = rustF32(token);
+            if (value !== undefined) {
+                numbers.push(rustRoundToI32(value));
+            }
+        }
+        switch (command.toUpperCase()) {
+            case 'M': {
+                for (let i = 0; i + 1 < numbers.length; i += 2) {
+                    curX = relative ? curX + (numbers[i] ?? 0) : numbers[i] ?? 0;
+                    curY = relative ? curY + (numbers[i + 1] ?? 0) : numbers[i + 1] ?? 0;
+                    commands.push(i === 0 ? { kind: 'move', x: curX, y: curY } : { kind: 'line', x: curX, y: curY });
+                }
+                break;
+            }
+            case 'L': {
+                for (let i = 0; i + 1 < numbers.length; i += 2) {
+                    curX = relative ? curX + (numbers[i] ?? 0) : numbers[i] ?? 0;
+                    curY = relative ? curY + (numbers[i + 1] ?? 0) : numbers[i + 1] ?? 0;
+                    commands.push({ kind: 'line', x: curX, y: curY });
+                }
+                break;
+            }
+            case 'H': {
+                for (const x of numbers) {
+                    curX = relative ? curX + x : x;
+                    commands.push({ kind: 'line', x: curX, y: curY });
+                }
+                break;
+            }
+            case 'V': {
+                for (const y of numbers) {
+                    curY = relative ? curY + y : y;
+                    commands.push({ kind: 'line', x: curX, y: curY });
+                }
+                break;
+            }
+            case 'Q': {
+                for (let i = 0; i + 3 < numbers.length; i += 4) {
+                    const cx = relative ? curX + (numbers[i] ?? 0) : numbers[i] ?? 0;
+                    const cy = relative ? curY + (numbers[i + 1] ?? 0) : numbers[i + 1] ?? 0;
+                    curX = relative ? curX + (numbers[i + 2] ?? 0) : numbers[i + 2] ?? 0;
+                    curY = relative ? curY + (numbers[i + 3] ?? 0) : numbers[i + 3] ?? 0;
+                    commands.push({ kind: 'quad', cx, cy, x: curX, y: curY });
+                }
+                break;
+            }
+            case 'C': {
+                for (let i = 0; i + 5 < numbers.length; i += 6) {
+                    const c1x = relative ? curX + (numbers[i] ?? 0) : numbers[i] ?? 0;
+                    const c1y = relative ? curY + (numbers[i + 1] ?? 0) : numbers[i + 1] ?? 0;
+                    const c2x = relative ? curX + (numbers[i + 2] ?? 0) : numbers[i + 2] ?? 0;
+                    const c2y = relative ? curY + (numbers[i + 3] ?? 0) : numbers[i + 3] ?? 0;
+                    curX = relative ? curX + (numbers[i + 4] ?? 0) : numbers[i + 4] ?? 0;
+                    curY = relative ? curY + (numbers[i + 5] ?? 0) : numbers[i + 5] ?? 0;
+                    commands.push({ kind: 'cubic', c1x, c1y, c2x, c2y, x: curX, y: curY });
+                }
+                break;
+            }
+            case 'Z':
+                commands.push({ kind: 'close' });
+                break;
+            default:
+                break;
+        }
+    }
+    return commands;
+}
+
+/**
+ * `CURVE_STEPS` (`rusty-gui-widgets/src/lib.rs:484`): the fixed twelve segments a curve is flattened into,
+ * the number that makes the canvas and the board agree.
+ */
+const CURVE_STEPS = 12;
+
+/** `VectorPath::stroke` (`rusty-gui-widgets/src/lib.rs:504-522`): the segment stamped with the square pen. */
+function pathStroke(
+    context: CanvasRenderingContext2D,
+    rect: Rect,
+    colour: Rgb565,
+    half: number,
+    fromX: number,
+    fromY: number,
+    toX: number,
+    toY: number,
+): void {
+    const ax = rect.x + fromX;
+    const ay = rect.y + fromY;
+    const bx = rect.x + toX;
+    const by = rect.y + toY;
+    for (let oy = -half; oy <= half; oy += 1) {
+        for (let ox = -half; ox <= half; ox += 1) {
+            drawLineStyled(context, ax + ox, ay + oy, bx + ox, by + oy, colour, { width: 1 });
+        }
+    }
+}
+
+/** `VectorPath::quad` (`rusty-gui-widgets/src/lib.rs:525-546`), integer de Casteljau scaled by 12². */
+function pathQuad(
+    context: CanvasRenderingContext2D,
+    rect: Rect,
+    colour: Rgb565,
+    half: number,
+    fromX: number,
+    fromY: number,
+    controlX: number,
+    controlY: number,
+    toX: number,
+    toY: number,
+): void {
+    const denominator = CURVE_STEPS * CURVE_STEPS;
+    let previousX = fromX;
+    let previousY = fromY;
+    for (let step = 1; step <= CURVE_STEPS; step += 1) {
+        const t = step;
+        const inv = CURVE_STEPS - step;
+        const x = Math.trunc((inv * inv * fromX + 2 * inv * t * controlX + t * t * toX) / denominator);
+        const y = Math.trunc((inv * inv * fromY + 2 * inv * t * controlY + t * t * toY) / denominator);
+        pathStroke(context, rect, colour, half, previousX, previousY, x, y);
+        previousX = x;
+        previousY = y;
+    }
+}
+
+/** `VectorPath::cubic` (`rusty-gui-widgets/src/lib.rs:549-578`), integer de Casteljau scaled by 12³. */
+function pathCubic(
+    context: CanvasRenderingContext2D,
+    rect: Rect,
+    colour: Rgb565,
+    half: number,
+    fromX: number,
+    fromY: number,
+    firstX: number,
+    firstY: number,
+    secondX: number,
+    secondY: number,
+    toX: number,
+    toY: number,
+): void {
+    const denominator = CURVE_STEPS * CURVE_STEPS * CURVE_STEPS;
+    let previousX = fromX;
+    let previousY = fromY;
+    for (let step = 1; step <= CURVE_STEPS; step += 1) {
+        const t = step;
+        const inv = CURVE_STEPS - step;
+        const x = Math.trunc(
+            (inv * inv * inv * fromX + 3 * inv * inv * t * firstX + 3 * inv * t * t * secondX + t * t * t * toX) /
+                denominator,
+        );
+        const y = Math.trunc(
+            (inv * inv * inv * fromY + 3 * inv * inv * t * firstY + 3 * inv * t * t * secondY + t * t * t * toY) /
+                denominator,
+        );
+        pathStroke(context, rect, colour, half, previousX, previousY, x, y);
+        previousX = x;
+        previousY = y;
+    }
+}
+
+/**
+ * Sweeping arc (`render_sweeping_arc`, `widgets/mod.rs:2587-2619`; emitted by `emitter.rs:440-478`).
+ *
+ * `arc_radius` of zero means "fit the cell", which the emitter inlines as `min(w,h)/2 - 8`, so the canvas
+ * evaluates the same expression. The frame is filled, and painted *after* the sector, so only the sector
+ * outside the frame is visible -- the crate's own order, kept.
+ */
+function previewArc(context: CanvasRenderingContext2D, widget: DesignerWidget, state: VisualState): void {
+    const style = resolveVisual(designStyle(widget, stylePanel()), state);
+    const rect = rectOf(widget);
+    drawBlock(context, rect, style);
+    fillSolid(context, rect, 0, colourProp(widget.props, 'bg_color') ?? rgb(2, 4, 8), 255);
+    const cx = rect.x + Math.trunc(rect.w / 2);
+    const cy = rect.y + Math.trunc(rect.h / 2);
+    const requested = Math.max(0, Math.trunc(numberProp(widget.props, 'arc_radius', 0)));
+    const radius =
+        requested === 0 ? Math.max(0, Math.trunc(Math.min(rect.w, rect.h) / 2) - 8) : requested;
+    const progress = clamp01(numberProp(widget.props, 'progress', 0.5));
+    const sweep = progress * 360;
+    const signed = boolProp(widget.props, 'clockwise', true) ? -sweep : sweep;
+    fillSectorSweep(context, cx, cy, radius, -90, signed, colourProp(widget.props, 'arc_color') ?? rgb(0, 40, 31), rect);
+    const inset = Math.max(0, Math.trunc(numberProp(widget.props, 'frame_inset', 4)));
+    const frame: Rect = {
+        x: rect.x + inset,
+        y: rect.y + inset,
+        w: Math.max(0, rect.w - 2 * inset),
+        h: Math.max(0, rect.h - 2 * inset),
+    };
+    const corner = Math.max(0, Math.trunc(numberProp(widget.props, 'corner_radius', 4)));
+    const frameColour = colourProp(widget.props, 'frame_color') ?? rgb(8, 16, 8);
+    fillSolid(context, frame, corner, frameColour, 255);
+    strokeRounded(context, frame, corner, { color: frameColour, width: 1 }, 255);
+}
+
+/**
+ * Busy wheel (`render_spinner`, `widgets/mod.rs:2940-2969`): a 120° arc whose start follows `phase`.
+ *
+ * `base = (phase.fract() * 360) as i32` then `rem_euclid(360)`; the arc is stroked at width two with
+ * antialiasing, which the crate's High-quality compositor dithers at opacity 220 (`render/mod.rs:2102-2112`).
+ */
+function previewSpinner(context: CanvasRenderingContext2D, widget: DesignerWidget, state: VisualState): void {
+    const style = resolveVisual(designStyle(widget, stylePanel()), state);
+    const rect = rectOf(widget);
+    drawBlock(context, rect, style);
+    const inner = blockInner(rect, style);
+    const cx = inner.x + Math.trunc(inner.w / 2);
+    const cy = inner.y + Math.trunc(inner.h / 2);
+    const radius = Math.max(0, Math.trunc(Math.min(inner.w, inner.h) / 2) - 1);
+    const phase = numberProp(widget.props, 'phase', 0);
+    // Rust's `(phase.fract() * 360.0) as i32) .rem_euclid(360)`: fract keeps the sign, the cast truncates.
+    const base = (((Math.trunc((phase % 1) * 360) % 360) + 360) % 360);
+    strokeArcStyled(context, cx, cy, radius, base, base + 120, style.accent, { width: 2, opacity: 220 });
+}
+
+/**
+ * Chart (`render_chart`, `widgets/mod.rs:2709-2853`), as `add_chart` configures it (`builders.rs:767-794`):
+ * a `Line` series at thickness one, no fill, markers, grid, axes or labels.
+ */
+function previewChart(context: CanvasRenderingContext2D, widget: DesignerWidget, state: VisualState): void {
+    const style = resolveVisual(designStyle(widget, stylePanel()), state);
+    const rect = rectOf(widget);
+    drawBlock(context, rect, style);
+    const values = parseValueSeries(stringProp(widget.props, 'values'));
+    if (values.length < 2) {
+        return;
+    }
+    const inner = blockInner(rect, style);
+    const min = numberProp(widget.props, 'min', 0);
+    const max = numberProp(widget.props, 'max', 10);
+    const range = Math.max(max - min, F32_EPSILON);
+    const step = Math.max(0, inner.w - 1) / Math.max(1, values.length - 1);
+    for (let i = 1; i < values.length; i += 1) {
+        const v0 = clamp01(((values[i - 1] ?? 0) - min) / range);
+        const v1 = clamp01(((values[i] ?? 0) - min) / range);
+        const x0 = inner.x + Math.trunc((i - 1) * step);
+        const x1 = inner.x + Math.trunc(i * step);
+        const y0 = rectBottom(inner) - 1 - Math.trunc(v0 * Math.max(0, inner.h - 1));
+        const y1 = rectBottom(inner) - 1 - Math.trunc(v1 * Math.max(0, inner.h - 1));
+        drawLineStyled(context, x0, y0, x1, y1, style.accent, { width: 1, opacity: 220 });
+    }
+}
+
+/**
+ * Plotter (`render_plotter`, `widgets/mod.rs:2856-2938`): the same trace, but the newest value is at `head`
+ * and the older ones wrap around behind it.
+ */
+function previewPlotter(context: CanvasRenderingContext2D, widget: DesignerWidget, state: VisualState): void {
+    const style = resolveVisual(designStyle(widget, stylePanel()), state);
+    const rect = rectOf(widget);
+    drawBlock(context, rect, style);
+    const values = parseValueSeries(stringProp(widget.props, 'values'));
+    if (values.length < 2) {
+        return;
+    }
+    const inner = blockInner(rect, style);
+    const min = numberProp(widget.props, 'min', 0);
+    const max = numberProp(widget.props, 'max', 10);
+    const range = Math.max(max - min, F32_EPSILON);
+    const head = Math.max(0, Math.trunc(numberProp(widget.props, 'head', 0)));
+    const step = Math.max(0, inner.w - 1) / Math.max(1, values.length - 1);
+    for (let i = 1; i < values.length; i += 1) {
+        const idx0 = (head + i - 1) % values.length;
+        const idx1 = (head + i) % values.length;
+        const v0 = clamp01(((values[idx0] ?? 0) - min) / range);
+        const v1 = clamp01(((values[idx1] ?? 0) - min) / range);
+        const x0 = inner.x + Math.trunc((i - 1) * step);
+        const x1 = inner.x + Math.trunc(i * step);
+        const y0 = rectBottom(inner) - 1 - Math.trunc(v0 * Math.max(0, inner.h - 1));
+        const y1 = rectBottom(inner) - 1 - Math.trunc(v1 * Math.max(0, inner.h - 1));
+        drawLineStyled(context, x0, y0, x1, y1, style.accent, { width: 1, opacity: 220 });
+    }
+}
+
+/**
+ * Vector path (`VectorPath::render`, `rusty-gui-widgets/src/lib.rs:581-649`): the design's own verbs,
+ * stroked through the canvas's one-pixel line, with the pen width spread symmetrically around each segment.
+ *
+ * It draws no block: a custom widget paints only what it paints. The cell's origin is added here, so the
+ * path is written relative to its widget.
+ */
+function previewPath(context: CanvasRenderingContext2D, widget: DesignerWidget, _state: VisualState): void {
+    const colour = colourProp(widget.props, 'colour');
+    if (colour === undefined) {
+        return;
+    }
+    const rect = rectOf(widget);
+    const commands = parseSvgPathD(stringProp(widget.props, 'd', 'data'));
+    if (commands.length === 0 || rect.w === 0 || rect.h === 0) {
+        return;
+    }
+    const half = Math.max(1, Math.trunc(numberProp(widget.props, 'stroke_width', 1))) >> 1;
+    let penX = 0;
+    let penY = 0;
+    let startX = 0;
+    let startY = 0;
+    let open = false;
+    for (const command of commands) {
+        switch (command.kind) {
+            case 'move':
+                penX = command.x;
+                penY = command.y;
+                startX = command.x;
+                startY = command.y;
+                open = true;
+                break;
+            case 'line':
+                if (!open) {
+                    startX = penX;
+                    startY = penY;
+                    open = true;
+                }
+                pathStroke(context, rect, colour, half, penX, penY, command.x, command.y);
+                penX = command.x;
+                penY = command.y;
+                break;
+            case 'quad':
+                if (!open) {
+                    startX = penX;
+                    startY = penY;
+                    open = true;
+                }
+                pathQuad(context, rect, colour, half, penX, penY, command.cx, command.cy, command.x, command.y);
+                penX = command.x;
+                penY = command.y;
+                break;
+            case 'cubic':
+                if (!open) {
+                    startX = penX;
+                    startY = penY;
+                    open = true;
+                }
+                pathCubic(context, rect, colour, half, penX, penY, command.c1x, command.c1y, command.c2x, command.c2y, command.x, command.y);
+                penX = command.x;
+                penY = command.y;
+                break;
+            case 'close':
+                pathStroke(context, rect, colour, half, penX, penY, startX, startY);
+                penX = startX;
+                penY = startY;
+                open = false;
+                break;
+        }
+    }
+}
+
+/**
+ * `StatusBarWidget::render` (`widgets/status_bar.rs:134-240`) with the fields `render_status_bar`
+ * (`widgets/mod.rs:1666-1691`) maps a style onto: background from `style.background` when set, foreground
+ * from `style.text`, accent from `style.accent`. Everything else is `StatusBarWidget::default()`: mode
+ * ClockAndIcons, 85 % discharging battery, Bluetooth connected, DND off, separator `rgb(6,12,18)`.
+ */
+function drawStatusBar(
+    context: CanvasRenderingContext2D,
+    rect: Rect,
+    time: string,
+    background: Rgb565,
+    foreground: Rgb565,
+    accent: Rgb565,
+): void {
+    // `StatusBarWidget::render` returns on an empty bounds (`status_bar.rs:143`).
+    if (rectEmpty(rect)) {
+        return;
+    }
+    fillSolid(context, rect, 0, background, 255);
+    fillSolid(context, { x: rect.x, y: rectBottom(rect) - 1, w: rect.w, h: 1 }, 0, rgb(6, 12, 18), 255);
+    const centerY = rect.y + Math.trunc(rect.h / 2);
+    // Clock: centred on a fixed four-pixel cell width (`status_bar.rs:164-169`).
+    const textWidth = time.length * 4;
+    drawCrateText(context, rect.x + Math.trunc((rect.w - textWidth) / 2), centerY - 3, time, 'Tiny3x5', foreground);
+    // Bluetooth glyph, left inset six (`status_bar.rs:176-185`).
+    const bx = rect.x + 6;
+    const by = centerY - 4;
+    strokeRounded(context, { x: bx, y: by, w: 6, h: 8 }, 0, { color: accent, width: 1 }, 255);
+    drawCrateText(context, bx + 1, by + 1, 'B', 'Tiny3x5', accent);
+    // Battery shell, terminal nipple and level (`status_bar.rs:195-230`).
+    const battW = 16;
+    const battH = 8;
+    const battX = rectRight(rect) - 6 - battW;
+    const battY = centerY - 4;
+    strokeRounded(context, { x: battX, y: battY, w: battW, h: battH }, 0, { color: foreground, width: 1 }, 255);
+    fillSolid(context, { x: battX + battW, y: battY + 2, w: 2, h: 4 }, 0, foreground, 255);
+    const maxFill = battW - 4;
+    const fillWidth = Math.max(Math.trunc((85 * maxFill) / 100), 1);
+    fillSolid(context, { x: battX + 2, y: battY + 2, w: fillWidth, h: battH - 4 }, 0, foreground, 255);
+}
+
+/**
+ * Status bar (crate `render_status_bar`, `widgets/mod.rs:1666-1691`).
+ *
+ * The style maps onto the widget's own fields, so `text_color` is the clock and icon colour and `accent`
+ * the Bluetooth colour; the separator and the battery's own geometry come from the default widget.
+ */
+function previewStatusBar(context: CanvasRenderingContext2D, widget: DesignerWidget, state: VisualState): void {
+    const style = resolveVisual(designStyle(widget, stylePanel()), state);
+    const rect = rectOf(widget);
+    drawBlock(context, rect, style);
+    drawStatusBar(context, rect, stringProp(widget.props, 'time'), style.background ?? rgb(2, 4, 8), style.text, style.accent);
+}
+
+/**
+ * `TimePickerWidget::render` twice over (`picker.rs:192-310`), through `render_time_picker`
+ * (`widgets/mod.rs:1694-1722`): background from `style.background`, `text_color` from `style.text` and
+ * `focus_color` from `style.accent`. The hour/min/minute clamp and the focused Hour segment are the
+ * constructor's and the default's.
+ */
+function previewTimePicker(context: CanvasRenderingContext2D, widget: DesignerWidget, state: VisualState): void {
+    const style = resolveVisual(designStyle(widget, stylePanel()), state);
+    const rect = rectOf(widget);
+    drawBlock(context, rect, style);
+    if (rectEmpty(rect)) {
+        return;
+    }
+    const is12h = boolProp(widget.props, 'is_12h', true);
+    const isPm = boolProp(widget.props, 'is_pm', false);
+    const parsedHour = clampInt(Math.trunc(numberProp(widget.props, 'hour', 12)), 0, 23);
+    const parsedMinute = clampInt(Math.trunc(numberProp(widget.props, 'minute', 0)), 0, 59);
+    const hour = is12h ? clampInt(parsedHour, 1, 12) : Math.min(parsedHour, 23);
+    const minute = Math.min(parsedMinute, 59);
+    const background = style.background ?? rgb(3, 6, 12);
+    const textColour = style.text;
+    const focusColour = style.accent;
+    fillSolid(context, rect, 6, background, 255);
+    strokeRounded(context, rect, 6, { color: rgb(6, 16, 26), width: 1 }, 255);
+    const numFields = is12h ? 3 : 2;
+    const spacing = 6;
+    const totalSpacing = spacing * (numFields - 1);
+    const cellW = Math.max(Math.trunc((rect.w - 24 - totalSpacing) / numFields), 28);
+    const cellH = Math.max(Math.max(0, rect.h - 16), 24);
+    const startX = rect.x + Math.trunc((rect.w - (cellW * numFields + totalSpacing)) / 2);
+    const cellY = rect.y + Math.trunc((rect.h - cellH) / 2);
+    const fields = is12h ? ['hour', 'minute', 'period'] : ['hour', 'minute'];
+    for (let i = 0; i < numFields; i += 1) {
+        const field = fields[i] ?? 'hour';
+        // `TimePickerWidget::default` focuses the hour (`picker.rs:84`).
+        const isFocused = field === 'hour';
+        const cx = startX + i * (cellW + spacing);
+        const cell: Rect = { x: cx, y: cellY, w: cellW, h: cellH };
+        fillSolid(context, cell, 4, isFocused ? rgb(0, 30, 45) : rgb(4, 8, 16), 255);
+        strokeRounded(context, cell, 4, { color: isFocused ? focusColour : rgb(8, 16, 24), width: 1 }, 255);
+        const text =
+            field === 'hour' ? String(hour).padStart(2, '0') : field === 'minute' ? String(minute).padStart(2, '0') : isPm ? 'PM' : 'AM';
+        const textX = cell.x + Math.trunc((cellW - text.length * 4) / 2);
+        drawCrateText(context, textX, cell.y + Math.trunc(cellH / 2) - 3, text, 'Tiny3x5', isFocused ? focusColour : textColour);
+        if (isFocused) {
+            const caretX = cell.x + Math.trunc(cellW / 2) - 2;
+            drawCrateText(context, caretX, cell.y - 8, '^', 'Tiny3x5', focusColour);
+            drawCrateText(context, caretX, rectBottom(cell) + 2, 'v', 'Tiny3x5', focusColour);
+        }
+    }
+}
+
+/**
+ * Number picker (`NumberPickerWidget::render`, `picker.rs:357-395`; `render_number_picker`,
+ * `widgets/mod.rs:1725-1746`).
+ *
+ * The widget always paints its own focused card -- `rgb(0,30,40)` with a `CSS_CYAN` border -- and its text
+ * is always `CSS_WHITE`; `render_number_picker` passes no style field to it, so the design's `text_color`
+ * reaches only the block underneath, which the card covers. The value is clamped the way the builder does
+ * before `NumberPickerWidget::new` clamps it again.
+ */
+function previewNumberPicker(context: CanvasRenderingContext2D, widget: DesignerWidget, state: VisualState): void {
+    const style = resolveVisual(designStyle(widget, stylePanel()), state);
+    const rect = rectOf(widget);
+    drawBlock(context, rect, style);
+    if (rectEmpty(rect)) {
+        return;
+    }
+    const min = Math.trunc(numberProp(widget.props, 'min', 0));
+    const max = Math.trunc(numberProp(widget.props, 'max', 100));
+    const initial = Math.trunc(numberProp(widget.props, 'value', 0));
+    const value = clampInt(initial, Math.min(min, max), Math.max(min, max));
+    const unit = stringProp(widget.props, 'unit');
+    fillSolid(context, rect, 4, rgb(0, 30, 40), 255);
+    strokeRounded(context, rect, 4, { color: rgb(0, 63, 31), width: 1 }, 255);
+    const text = `${value} ${unit}`;
+    const textX = rect.x + Math.trunc((rect.w - text.length * 4) / 2);
+    drawCrateText(context, textX, rect.y + Math.trunc(rect.h / 2) - 3, text, 'Tiny3x5', rgb(31, 63, 31));
+}
+
+/**
+ * Content indicator (`ContentIndicatorWidget::render`, `wearable.rs:42-75`; `render_content_indicator`,
+ * `widgets/mod.rs:1749-1774`).
+ *
+ * It is a chevron, not a row of dots: `count` and `active` only choose the direction, and the accent is the
+ * arrow colour. While items remain below the active one the hint points down; on the last one it points up.
+ */
+function previewContentIndicator(context: CanvasRenderingContext2D, widget: DesignerWidget, state: VisualState): void {
+    const style = resolveVisual(designStyle(widget, stylePanel()), state);
+    const rect = rectOf(widget);
+    drawBlock(context, rect, style);
+    if (rect.w === 0 || rect.h === 0) {
+        return;
+    }
+    const count = Math.trunc(numberProp(widget.props, 'count', 3));
+    const active = Math.trunc(numberProp(widget.props, 'active', 0));
+    const up = count > 1 && active + 1 >= count;
+    const cx = rect.x + Math.trunc(rect.w / 2);
+    const cy = rect.y + Math.trunc(rect.h / 2);
+    const s = Math.max(Math.trunc(Math.min(rect.w, rect.h) / 3), 2);
+    const halfS = Math.trunc(s / 2);
+    if (up) {
+        drawLineStyled(context, cx - s, cy + halfS, cx, cy - halfS, style.accent, { width: 1 });
+        drawLineStyled(context, cx, cy - halfS, cx + s, cy + halfS, style.accent, { width: 1 });
+    } else {
+        drawLineStyled(context, cx - s, cy - halfS, cx, cy + halfS, style.accent, { width: 1 });
+        drawLineStyled(context, cx, cy + halfS, cx + s, cy - halfS, style.accent, { width: 1 });
+    }
+}
+
+/**
+ * Crumbs indicator (`CrumbsIndicatorWidget::render`, `wearable.rs:113-143`; `render_crumbs`,
+ * `widgets/mod.rs:1777-1796`).
+ *
+ * `count` dots at six-pixel spacing; the active one is a pixel larger and the accent, the rest
+ * `rgb(10,20,10)`. A zero count returns before painting, exactly as the widget does, and the active index is
+ * clamped to the last dot.
+ */
+function previewCrumbs(context: CanvasRenderingContext2D, widget: DesignerWidget, state: VisualState): void {
+    const style = resolveVisual(designStyle(widget, stylePanel()), state);
+    const rect = rectOf(widget);
+    drawBlock(context, rect, style);
+    const count = clampInt(Math.trunc(numberProp(widget.props, 'count', 3)), 0, 255);
+    if (count === 0) {
+        return;
+    }
+    const active = clampInt(Math.trunc(numberProp(widget.props, 'active', 0)), 0, count - 1);
+    const startX = rect.x + Math.trunc((rect.w - ((count - 1) * 6 + 4)) / 2) + 2;
+    const cy = rect.y + Math.trunc(rect.h / 2);
+    for (let i = 0; i < count; i += 1) {
+        const isActive = i === active;
+        fillCircle(context, startX + i * 6, cy, isActive ? 3 : 2, isActive ? style.accent : rgb(10, 20, 10), 255);
+    }
+}
+
 function rectOf(widget: DesignerWidget): Rect {
     return { x: widget.x, y: widget.y, w: widget.width, h: widget.height };
 }
@@ -2021,6 +2840,40 @@ export function previewWidget(
         case 'scale':
         case 'gauge':
             previewScale(context, widget, state);
+            return true;
+        case 'arc':
+        case 'sweeping_arc':
+            previewArc(context, widget, state);
+            return true;
+        case 'busy_wheel':
+        case 'spinner':
+            previewSpinner(context, widget, state);
+            return true;
+        case 'chart':
+            previewChart(context, widget, state);
+            return true;
+        case 'plotter':
+            previewPlotter(context, widget, state);
+            return true;
+        case 'path':
+        case 'vector_path':
+            previewPath(context, widget, state);
+            return true;
+        case 'status_bar':
+            previewStatusBar(context, widget, state);
+            return true;
+        case 'time_picker':
+            previewTimePicker(context, widget, state);
+            return true;
+        case 'number_picker':
+            previewNumberPicker(context, widget, state);
+            return true;
+        case 'content_indicator':
+            previewContentIndicator(context, widget, state);
+            return true;
+        case 'crumbs':
+        case 'crumbs_indicator':
+            previewCrumbs(context, widget, state);
             return true;
         case 'table':
             previewTable(context, widget, state);

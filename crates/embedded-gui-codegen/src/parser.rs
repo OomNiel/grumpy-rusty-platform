@@ -284,6 +284,21 @@ fn parse_path_verbs(node: &KdlNode) -> Vec<PathVerbDef> {
     verbs
 }
 
+/// Parses a chart/plotter `values` text attribute: numbers separated by commas or whitespace.
+///
+/// Tokens that do not parse as `f32` are skipped rather than aborting the node, so a stray label in
+/// the series leaves the rest of the plot intact.
+fn parse_value_series(node: &KdlNode) -> Vec<f32> {
+    get_string_prop(node, "values")
+        .map(|raw| {
+            raw.split(|c: char| c == ',' || c.is_whitespace())
+                .filter(|token| !token.is_empty())
+                .filter_map(|token| token.parse::<f32>().ok())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Parses a single widget KDL node.
 pub fn parse_widget(node: &KdlNode) -> Result<(GridPlacementDef, WidgetDef), CodegenError> {
     let tag = node.name().value();
@@ -427,11 +442,17 @@ pub fn parse_widget(node: &KdlNode) -> Result<(GridPlacementDef, WidgetDef), Cod
             // The one colour `add_toggle` bakes in as a near-black literal; absent means the
             // board's own default, not "transparent".
             let off_color = get_string_prop(node, "off_color").map(str::to_string);
+            let track_border = get_string_prop(node, "track_border").map(str::to_string);
+            let track_border_width = get_i64_prop(node, "track_border_width")
+                .unwrap_or(0)
+                .clamp(0, 255) as u8;
             WidgetDef::Toggle {
                 id,
                 label,
                 checked,
                 off_color,
+                track_border,
+                track_border_width,
                 style,
             }
         }
@@ -455,14 +476,15 @@ pub fn parse_widget(node: &KdlNode) -> Result<(GridPlacementDef, WidgetDef), Cod
             }
         }
         "slider" => {
-            let min = get_i64_prop(node, "min").unwrap_or(0) as i32;
-            let max = get_i64_prop(node, "max").unwrap_or(100) as i32;
-            let value = get_i64_prop(node, "value").unwrap_or(min as i64) as i32;
+            let min = get_f64_prop(node, "min").unwrap_or(0.0) as f32;
+            let max = get_f64_prop(node, "max").unwrap_or(100.0) as f32;
+            let value = get_f64_prop(node, "value").unwrap_or(0.0) as f32;
             WidgetDef::Slider {
                 id,
                 min,
                 max,
                 value,
+                style,
             }
         }
         "dropdown" => {
@@ -563,25 +585,73 @@ pub fn parse_widget(node: &KdlNode) -> Result<(GridPlacementDef, WidgetDef), Cod
             WidgetDef::ProgressBar { id, value, style }
         }
         "sweeping_arc" | "arc" => {
-            let start_angle = get_i64_prop(node, "start_angle").unwrap_or(0) as i16;
-            let end_angle = get_i64_prop(node, "end_angle").unwrap_or(270) as i16;
+            let progress = get_f64_prop(node, "progress")
+                .unwrap_or(0.5)
+                .clamp(0.0, 1.0) as f32;
+            let clockwise = get_bool_prop(node, "clockwise").unwrap_or(true);
+            let arc_radius = get_i64_prop(node, "arc_radius").unwrap_or(0).max(0) as u32;
+            // Fourteen rather than four because the frame is an opaque card painted *after* the sweep: at four
+            // it covers nearly all of it, and a design that names nothing would see no arc at all.
+            let frame_inset = get_i64_prop(node, "frame_inset")
+                .unwrap_or(14)
+                .clamp(0, u16::MAX as i64) as u16;
+            let corner_radius = get_i64_prop(node, "corner_radius").unwrap_or(4).clamp(0, 255) as u8;
+            // The three colours `add_sweeping_arc` used to hard-code; a design that names none keeps them.
+            let bg_color = get_string_prop(node, "bg_color")
+                .unwrap_or("#101010")
+                .to_string();
+            let arc_color = get_string_prop(node, "arc_color")
+                .unwrap_or("#00a0ff")
+                .to_string();
+            let frame_color = get_string_prop(node, "frame_color")
+                .unwrap_or("#404040")
+                .to_string();
             WidgetDef::SweepingArc {
                 id,
-                start_angle,
-                end_angle,
+                progress,
+                clockwise,
+                arc_radius,
+                frame_inset,
+                corner_radius,
+                bg_color,
+                arc_color,
+                frame_color,
+                style,
             }
         }
         "busy_wheel" | "spinner" => {
-            let active = get_bool_prop(node, "active").unwrap_or(true);
-            WidgetDef::BusyWheel { id, active }
+            let phase = get_f64_prop(node, "phase").unwrap_or(0.0).clamp(0.0, 1.0) as f32;
+            WidgetDef::BusyWheel { id, phase, style }
         }
-        "plotter" | "chart" => {
-            let mode = get_string_prop(node, "mode").unwrap_or("line").to_string();
-            WidgetDef::Plotter { id, mode }
+        "chart" => {
+            let values = parse_value_series(node);
+            let min = get_f64_prop(node, "min").unwrap_or(0.0) as f32;
+            let max = get_f64_prop(node, "max").unwrap_or(10.0) as f32;
+            WidgetDef::Chart {
+                id,
+                values,
+                min,
+                max,
+                style,
+            }
+        }
+        "plotter" => {
+            let values = parse_value_series(node);
+            let head = get_i64_prop(node, "head").unwrap_or(0).max(0) as usize;
+            let min = get_f64_prop(node, "min").unwrap_or(0.0) as f32;
+            let max = get_f64_prop(node, "max").unwrap_or(10.0) as f32;
+            WidgetDef::Plotter {
+                id,
+                values,
+                head,
+                min,
+                max,
+                style,
+            }
         }
         "status_bar" => {
             let time = get_string_prop(node, "time").unwrap_or("12:00").to_string();
-            WidgetDef::StatusBar { id, time }
+            WidgetDef::StatusBar { id, time, style }
         }
         "time_picker" => {
             let hour = get_i64_prop(node, "hour").unwrap_or(12).clamp(0, 23) as u8;
@@ -594,6 +664,7 @@ pub fn parse_widget(node: &KdlNode) -> Result<(GridPlacementDef, WidgetDef), Cod
                 minute,
                 is_12h,
                 is_pm,
+                style,
             }
         }
         "number_picker" => {
@@ -607,6 +678,7 @@ pub fn parse_widget(node: &KdlNode) -> Result<(GridPlacementDef, WidgetDef), Cod
                 max,
                 value,
                 unit,
+                style,
             }
         }
         "dialog" => {
@@ -625,12 +697,22 @@ pub fn parse_widget(node: &KdlNode) -> Result<(GridPlacementDef, WidgetDef), Cod
         "content_indicator" => {
             let count = get_i64_prop(node, "count").unwrap_or(3).max(1) as u8;
             let active = get_i64_prop(node, "active").unwrap_or(0) as u8;
-            WidgetDef::ContentIndicator { id, count, active }
+            WidgetDef::ContentIndicator {
+                id,
+                count,
+                active,
+                style,
+            }
         }
         "crumbs" | "crumbs_indicator" => {
             let count = get_i64_prop(node, "count").unwrap_or(3).max(1) as u8;
             let active = get_i64_prop(node, "active").unwrap_or(0) as u8;
-            WidgetDef::CrumbsIndicator { id, count, active }
+            WidgetDef::CrumbsIndicator {
+                id,
+                count,
+                active,
+                style,
+            }
         }
         "panel" | "card" => WidgetDef::Panel { id, style },
         "image" | "bitmap" => {
@@ -741,11 +823,13 @@ pub fn parse_widget(node: &KdlNode) -> Result<(GridPlacementDef, WidgetDef), Cod
         }
         "spacer" => WidgetDef::Spacer,
         "vector_path" | "path" => {
-            let stroke_width = get_i64_prop(node, "stroke_width").unwrap_or(2).max(1) as u8;
+            let stroke_width = get_i64_prop(node, "stroke_width").unwrap_or(1).max(0) as u8;
+            let colour = get_string_prop(node, "colour").map(str::to_string);
             let verbs = parse_path_verbs(node);
             WidgetDef::VectorPath {
                 id,
                 stroke_width,
+                colour,
                 verbs,
             }
         }

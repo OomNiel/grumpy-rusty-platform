@@ -122,6 +122,7 @@ const PARSER_TAGS = [
     'arc',
     'busy_wheel',
     'chart',
+    'plotter',
     'status_bar',
     'time_picker',
     'number_picker',
@@ -162,7 +163,6 @@ test('every alias resolves to its canonical widget', () => {
         sweeping_arc: 'arc',
         gauge: 'scale',
         spinner: 'busy_wheel',
-        plotter: 'chart',
         bitmap: 'image',
         composite_icon: 'icon',
         card: 'panel',
@@ -214,7 +214,10 @@ test('the defaults are the parser\'s own unwrap_or values, including the surpris
     equal(props('spinbox').max, 9999, 'spinbox max');
     equal(props('spinbox').digits, 4, 'spinbox digits');
     equal(props('number_picker').max, 100, 'number_picker max');
-    equal(props('arc').end_angle, 270, 'arc end angle');
+    equal(props('arc').progress, 0.5, 'an arc starts half swept');
+    // Fourteen, not four: the frame is an opaque card painted over the sweep, so a smaller inset would hide
+    // the arc completely at the default radius -- the design would look like it had no arc at all.
+    equal(props('arc').frame_inset, 14, 'and its frame leaves room for the arc');
     equal(props('status_bar').time, '12:00', 'status_bar time is text, not a number');
     equal(props('scale').minor_ticks, 2, 'scale minor ticks');
     equal(props('scale').mode, 'radial', 'scale mode');
@@ -225,7 +228,7 @@ test('the defaults are the parser\'s own unwrap_or values, including the surpris
     equal(props('mesh').shading, 'solid', 'mesh shading');
     equal(props('dialog').title, 'Alert', 'dialog title');
     equal(props('slider').value, 0, 'slider value starts at its minimum');
-    equal(props('busy_wheel').active, true, 'a busy wheel starts spinning');
+    equal(props('busy_wheel').phase, 0, 'a busy wheel starts at the top of its turn');
     equal(props('toggle').checked, false, 'toggle checked');
 });
 
@@ -236,7 +239,7 @@ test('the closed vocabularies match what the emitter branches on', () => {
     equal(options('scale', 'mode').join(','), 'radial,linear_vertical,linear_horizontal', 'gauge modes');
     equal(options('image', 'fit').join(','), 'stretch,center', 'image fits');
     equal(options('icon', 'align').join(','), 'center,top_left', 'icon aligns');
-    equal(options('chart', 'mode').join(','), 'line,bar', 'chart modes');
+    equal(options('scale', 'mode').join(','), 'radial,linear_vertical,linear_horizontal', 'and the gauge again');
 });
 
 test('the two widgets the parser refuses without an asset are marked required', () => {
@@ -304,27 +307,27 @@ test('the Toolbox offers every widget that can be built, and only into known cat
         ok(group.widgets.length > 0, `${group.category} should not be an empty group`);
     }
 
-    // The ten the crate cannot build are documented but not handed out: dropping one would produce a project
-    // that does not compile, which is the one thing a WYSIWYG designer must never do.
-    for (const widget of KDL_WIDGETS) {
-        if (widget.unavailable === undefined) {
-            continue;
-        }
-        notOk(offered.includes(widget.tag), `${widget.tag} must not be offered`);
-        ok(widget.unavailable.length > 0, `${widget.tag} must say why not`);
-    }
+    // Nothing is refused any more. The ten tags that used to be documented-but-withheld -- a slider whose
+    // value arrived in the wrong order, an arc whose builder takes ten arguments, an arc's missing `add_busy_wheel`
+    // and the five widgets the runtime did not dispatch at all -- now generate code the runtime accepts, so the
+    // Toolbox hands out the whole catalogue. `unavailable` stays as the channel for the next defect: a tag that
+    // cannot be built must say why rather than produce a project that does not compile.
+    const refused = KDL_WIDGETS.filter((widget) => widget.unavailable !== undefined);
+    equal(refused.length, 0, 'no tag is refused today');
+    equal(offered.length, KDL_WIDGETS.length, 'so every widget in the catalogue is offered');
     ok(usable.length > 0, 'and the toolbox is not empty');
-    ok(usable.length < KDL_WIDGETS.length, 'the catalogue still documents the ones it cannot offer');
 });
 
-test('a design using a tag the crate cannot build is refused, with the reason', () => {
-    // An older design file, or one hand-edited, can hold one of them. Refusing on load is what turns "the build
-    // failed inside a macro" into "delete this control, here is why".
-    const doc = document(0, [widget('level', 'slider', { x: 8, y: 8, width: 200, height: 28 })]);
+test('a design naming a tag the markup does not have is refused by name', () => {
+    // The refusal path that matters now that nothing is withheld: an older or hand-edited design file can name
+    // something the catalogue has never heard of, and loading it must say which control and why rather than
+    // failing later inside a macro.
+    const doc = document(0, [widget('level', 'leveller', { x: 8, y: 8, width: 200, height: 28 })]);
     const problems = validateDocument(doc);
     equal(problems.length, 1, JSON.stringify(problems));
     contains(problems[0], '"level"', 'the widget is named');
-    contains(problems[0], 'add_slider', 'and the crate\'s own method is quoted, so the reason can be checked');
+    contains(problems[0], 'leveller', 'and so is the tag it asked for');
+    contains(problems[0], 'not one of the widgets', 'with the reason the markup cannot build it');
 });
 
 // ---------------------------------------------------------------- the grid mapping
@@ -1301,7 +1304,7 @@ test('every property and every widget has a hover description', () => {
 test('the properties that mean something different per widget say so', () => {
     // A shared name would otherwise describe the wrong thing: `mode` selects between quite different
     // drawings, and `scale` is a glyph's growth on an icon but the model's size on a mesh.
-    ok(propertyHelp('scale', 'mode') !== propertyHelp('chart', 'mode'), 'mode differs');
+    ok(propertyHelp('scale', 'mode') !== propertyHelp('image', 'mode'), 'mode differs');
     ok(propertyHelp('icon', 'scale') !== propertyHelp('mesh', 'scale'), 'scale differs');
     equal(propertyHelp('label', 'text'), propertyHelp('button', 'text'), 'and a shared one is shared');
 });

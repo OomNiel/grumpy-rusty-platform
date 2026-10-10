@@ -89,7 +89,7 @@ function documentFromFixture(fixture) {
 }
 
 /** The `draws` values that mean "the crate paints this shape from the cell rect". */
-const SHAPE_DRAWS = new Set(['circle', 'rectangle', 'line', 'triangle']);
+const SHAPE_DRAWS = new Set(['circle', 'rectangle', 'line', 'triangle', 'path']);
 
 /** The widgets the design gives a *declared* font to, which is the route the markup has an attribute for. */
 function declaredFontWidgets(document) {

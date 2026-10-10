@@ -14,7 +14,7 @@ pub const CANVAS_H: u32 = 320;
 /// and a *text colour* on a label takes the same route. A *shape* is the sixth: its own
 /// fill/stroke attributes on a tag the codegen fork renders with `add_custom_widget`. A build is
 /// the only thing that can prove any of them is honoured.
-pub const APPEARANCE_RECTS: [(i32, i32, u32, u32); 17] = [
+pub const APPEARANCE_RECTS: [(i32, i32, u32, u32); 27] = [
     // "fonted" (declared font "test")
     (200, 120, 90, 30),
     // "builtin" (built-in font "Scaled6x10")
@@ -37,6 +37,24 @@ pub const APPEARANCE_RECTS: [(i32, i32, u32, u32); 17] = [
     (0, 215, 150, 18),
     // "gauge" (text colour "#ffff00")
     (390, 120, 90, 90),
+    // "sld" (text colour "#ff00ff")
+    (150, 120, 50, 18),
+    // "arc" (text colour undefined)
+    (150, 140, 50, 38),
+    // "whl" (text colour undefined)
+    (150, 180, 24, 24),
+    // "ind" (text colour undefined)
+    (150, 206, 40, 12),
+    // "crm" (text colour undefined)
+    (150, 220, 40, 12),
+    // "cht" (text colour undefined)
+    (200, 236, 46, 36),
+    // "plt" (text colour undefined)
+    (248, 236, 46, 36),
+    // "stb" (text colour "#ffffff")
+    (390, 266, 90, 13),
+    // "tme" (text colour "")
+    (390, 212, 45, 26),
     // "band" (shape rectangle)
     (0, 0, 480, 40),
     // "knob" (shape circle)
@@ -45,6 +63,8 @@ pub const APPEARANCE_RECTS: [(i32, i32, u32, u32); 17] = [
     (0, 300, 240, 20),
     // "foot2" (shape rectangle)
     (240, 300, 240, 20),
+    // "pth" (shape path)
+    (440, 212, 40, 40),
     // "trib" (shape triangle)
     (300, 260, 40, 40),
     // "rule" (shape line)
