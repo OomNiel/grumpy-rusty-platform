@@ -19,9 +19,11 @@
  *     spec "Cannot be replicated" #1). A label whose `font=` names a declared BDF -- which the crate draws
  *     as `FontId::Bitmap` -- is approximated with the packed default font; the comment at the one place it
  *     happens says so rather than pretending.
- *   * No `Vector` polylines: `glyphs.ts` carries only the packed 3x5 rows, so a `Vector(n)` glyph is the
- *     3x5 bitmap scaled by `n`, clearly marked as an approximation (spec "Uncertain"/"Cannot be replicated"
- *     #2). It is not the crate's vector path.
+ *   * `Vector(n)` is drawn from the crate's own polylines: `glyphs.ts` carries `vectorGlyph`, the points the
+ *     crate strokes. Each coordinate is multiplied by `n` and consecutive points are stroked as 1px canvas
+ *     segments, with the pen-up marker breaking a glyph into strokes. The crate's stroke pixel is dithered at
+ *     opacity 220 while a canvas stroke blends, so the two are close but not pixel-identical (spec
+ *     "Cannot be replicated" #2); the comment at the routine says so.
  *
  * The canvas is 1:1 in device pixels (see `canvas.ts`), so `widget.x/y/width/height` are already board
  * pixels and no zoom arithmetic belongs in here.
@@ -29,7 +31,7 @@
 
 import { isBuiltInFont } from '../../src/designer/fonts';
 import { type DesignerWidget } from '../../src/designer/model';
-import { glyphMetrics, glyphRows, GLYPH_COLUMNS, GLYPH_ROWS } from './glyphs';
+import { glyphMetrics, glyphRows, GLYPH_COLUMNS, GLYPH_ROWS, vectorGlyph, VECTOR_PEN_UP } from './glyphs';
 
 // ---------------------------------------------------------------------------
 // Colour
@@ -475,9 +477,10 @@ function contentArea(rect: Rect, style: Style, hasTitle: boolean): Rect {
  * `opacity > BAYER[(y&3)*4+(x&3)]*16+8`.
  *
  * This is the board's default compositor. It is *not* an alpha blend, so `globalAlpha` would be smoother and
- * darker than the glass; the parent asked for the dither, and this is it. The pattern is evaluated in canvas
- * (design) coordinates; the board's own framebuffer coordinates are the same once the panel's rotation has
- * been applied, which is the orientation `canvas.ts` already draws in.
+ * darker than the glass; the parent asked for the dither, and this is it. The pattern is indexed by the
+ * board's own framebuffer pixel (`render/compositor.rs:43-61`); the canvas works in the design's
+ * rotation-applied coordinates (see `canvas.ts`), so at rotation 0 the two coincide and at 90/270 the mask's
+ * phase can differ by the axis swap. That is a phase difference in a dither pattern, not a different model.
  */
 const BAYER: readonly number[] = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
 
@@ -669,15 +672,38 @@ function strokeRounded(
 }
 
 /**
- * The shadow ring loop (spec 3.2, `block.rs:111-175`).
+ * The shadow ring loop (spec 3.2, `block.rs:111-175`), with the crate's occluded-core optimisation.
  *
  * High quality means `spread` rings (`render/mod.rs:483-495`), `i` ascending so later rings paint over
  * earlier; the fade is `(opacity * (spread-i) / spread)` in integer arithmetic; the ring grows by `i` and its
- * radius by `i`. The crate's occluded-core strip optimisation is pixel-identical to this plain loop by its own
- * test (`block.rs:225-290`) and is not reproduced.
+ * radius by `i`.
+ *
+ * Each ring is a *filled* rounded rect, and at the shadow's opacity that fill is ordered-dithered, so painting
+ * the ring whole costs one canvas op per ~1.7 pixels of the ring's **area** — 24 000 ops for a 360x120 panel,
+ * on every repaint. The crate does not do that: when the block's own fill is opaque it clips each ring to four
+ * strips around an inset *core* (`block.rs:113-171`), because the core is about to be painted over anyway, and
+ * its own test asserts the clipped and unclipped loops are pixel-identical (`block.rs:225-290`). This does the
+ * same thing the same way: the core's columns are skipped on the rows the core covers, which is the union of
+ * those four strips, and the result is the same pixels for a fraction of the work.
+ *
+ * The core only exists when the block will actually cover it -- `opacity == 255` and a background or gradient
+ * to paint with -- and when the rect is bigger than its corners (`block.rs:115-123`). A shape with a shadow and
+ * nothing to fill with gets the whole ring, exactly as the crate does.
  */
-function drawShadow(context: CanvasRenderingContext2D, rect: Rect, cornerRadius: number, shadow: Shadow): void {
+function drawShadow(
+    context: CanvasRenderingContext2D,
+    rect: Rect,
+    cornerRadius: number,
+    shadow: Shadow,
+    opaqueFill: boolean,
+): void {
     const spread = shadow.spread;
+    const radius = clampRadius(rect, cornerRadius);
+    const core =
+        opaqueFill && rect.w > radius * 2 && rect.h > radius * 2
+            ? { x: rect.x + radius, y: rect.y + radius, w: rect.w - radius * 2, h: rect.h - radius * 2 }
+            : undefined;
+
     for (let i = 0; i < spread; i += 1) {
         const ring: Rect = {
             x: rect.x + shadow.offsetX - i,
@@ -687,7 +713,64 @@ function drawShadow(context: CanvasRenderingContext2D, rect: Rect, cornerRadius:
         };
         const opacity = Math.floor((shadow.opacity * (spread - i)) / spread);
         // The ring's radius grows with the ring (spec 3.2, `block.rs:138`).
-        fillSolid(context, ring, cornerRadius + i, shadow.color, opacity);
+        fillRing(context, ring, cornerRadius + i, shadow.color, opacity, core);
+    }
+}
+
+/**
+ * One dithered shadow ring, skipping the core's columns on the rows it covers.
+ *
+ * Splitting a row around the core is the same set of pixels as the crate's four clipped strips, without giving
+ * the canvas a clip rectangle per strip.
+ */
+function fillRing(
+    context: CanvasRenderingContext2D,
+    ring: Rect,
+    radius: number,
+    colour: Rgb565,
+    opacity: number,
+    core: Rect | undefined,
+): void {
+    if (rectEmpty(ring) || opacity <= 0) {
+        return;
+    }
+    const clamped = clampRadius(ring, radius);
+    for (let y = ring.y; y < rectBottom(ring); y += 1) {
+        const run = rowExtent(ring, clamped, y);
+        if (run === undefined) {
+            continue;
+        }
+        const [x0, x1] = run;
+        const inCoreRows = core !== undefined && y >= core.y && y < rectBottom(core);
+        if (!inCoreRows) {
+            paintRun(context, x0, x1, y, colour, opacity);
+            continue;
+        }
+        // Left strip, then right strip; either may be empty.
+        paintRun(context, x0, Math.min(x1, core.x), y, colour, opacity);
+        paintRun(context, Math.max(x0, rectRight(core)), x1, y, colour, opacity);
+    }
+}
+
+/** One horizontal run of a dithered fill: a single `fillRect` at full opacity, per-pixel below it. */
+function paintRun(
+    context: CanvasRenderingContext2D,
+    x0: number,
+    x1: number,
+    y: number,
+    colour: Rgb565,
+    opacity: number,
+): void {
+    if (x1 <= x0) {
+        return;
+    }
+    if (opacity >= 255) {
+        context.fillStyle = css(colour);
+        context.fillRect(x0, y, x1 - x0, 1);
+        return;
+    }
+    for (let x = x0; x < x1; x += 1) {
+        pixel(context, x, y, colour, opacity);
     }
 }
 
@@ -725,27 +808,23 @@ function charCount(text: string): number {
     return Array.from(text).length;
 }
 
-/**
- * The per-variant block size for a set glyph pixel (spec 1.4).
- *
- * `Tiny3x5`/`Medium4x7` draw one canvas pixel per set bit. `Scaled6x10` draws a 2x2 block. `Vector(n)` is
- * *approximated* by an `n x n` block of the 3x5 bitmap: the table has no vector polylines (spec
- * "Cannot be replicated" #2), so this is not the crate's stroke path. A named font that is not one of the
- * crate's built-ins is a declared BDF, drawn by the crate as `FontId::Bitmap` (external data, spec #1); it
- * too falls back to the 1x1 packed walk.
- */
-function glyphBlockSize(font: string): number {
-    if (font === 'Scaled6x10') {
-        return 2;
-    }
-    const vector = /^Vector\((\d+)\)$/.exec(font);
-    if (vector?.[1] !== undefined) {
-        return Math.max(1, parseInt(vector[1], 10));
-    }
-    return 1;
+/** The `n` of a `Vector(n)` font, or 0 for a packed bitmap font (spec 1.2/1.6). */
+function vectorScale(font: string): number {
+    const match = /^Vector\((\d+)\)$/.exec(font);
+    return match?.[1] !== undefined ? Math.max(1, parseInt(match[1], 10)) : 0;
 }
 
-/** `draw_char_with_font` for the packed fonts (spec 1.3-1.4, `render/mod.rs:1880-1928`). */
+/**
+ * The block size for a packed glyph's set bit (spec 1.4): one canvas pixel for `Tiny3x5`/`Medium4x7`, a 2x2
+ * block for `Scaled6x10`. A named font that is not one of the crate's built-ins is a declared BDF, drawn by
+ * the crate as `FontId::Bitmap` (external data, spec "Cannot be replicated" #1); it falls back to the 1x1
+ * packed walk.
+ */
+function glyphBlockSize(font: string): number {
+    return font === 'Scaled6x10' ? 2 : 1;
+}
+
+/** `draw_char_with_font` for the bitmap fonts (spec 1.3-1.4, `render/mod.rs:1897-1928`). */
 function drawGlyph(
     context: CanvasRenderingContext2D,
     x: number,
@@ -755,6 +834,11 @@ function drawGlyph(
     colour: Rgb565,
     opacity: number,
 ): void {
+    const scale = vectorScale(font);
+    if (scale > 0) {
+        drawVectorGlyph(context, x, y, ch, scale, colour, opacity);
+        return;
+    }
     const rows = glyphRows(font, ch);
     const block = glyphBlockSize(font);
     for (let row = 0; row < GLYPH_ROWS; row += 1) {
@@ -780,6 +864,51 @@ function drawGlyph(
 }
 
 /**
+ * `FontId::Vector(scale)` (spec 1.4, `render/mod.rs:1929-1951`): the crate's own polyline, scaled by `n`.
+ *
+ * `vectorGlyph` is the flat `(x,y)` list the crate strokes; `(VECTOR_PEN_UP, VECTOR_PEN_UP)` lifts the pen
+ * and breaks the glyph into strokes. Each coordinate is `x + px*scale` (the crate multiplies the `u8` by the
+ * scale as `f32` and truncates; for an integer scale the product is exact). One-pixel canvas segments are the
+ * closest honest match for `draw_line_styled(..., width 1, antialias true)`; the crate draws each stroke
+ * pixel at opacity 220 through its ordered-dither compositor, so the canvas blends where the crate dithers
+ * and the result is not pixel-identical (spec "Render quality", "Cannot be replicated" #2).
+ */
+function drawVectorGlyph(
+    context: CanvasRenderingContext2D,
+    x: number,
+    y: number,
+    ch: string,
+    scale: number,
+    colour: Rgb565,
+    opacity: number,
+): void {
+    const points = vectorGlyph(ch);
+    context.save();
+    context.strokeStyle = css(colour);
+    context.lineWidth = 1;
+    // `stroke_opacity` is 220 at High quality (spec "Render quality", `render/mod.rs:2102-2113`).
+    context.globalAlpha = (220 / 255) * (opacity / 255);
+    let last: readonly [number, number] | undefined;
+    for (let i = 0; i + 1 < points.length; i += 2) {
+        const px = points[i] ?? 0;
+        const py = points[i + 1] ?? 0;
+        if (px === VECTOR_PEN_UP && py === VECTOR_PEN_UP) {
+            last = undefined;
+            continue;
+        }
+        const current: readonly [number, number] = [x + px * scale, y + py * scale];
+        if (last !== undefined) {
+            context.beginPath();
+            context.moveTo(last[0], last[1]);
+            context.lineTo(current[0], current[1]);
+            context.stroke();
+        }
+        last = current;
+    }
+    context.restore();
+}
+
+/**
  * Splits text into the lines the engine would draw (spec 1.5, `render/mod.rs:2561-2607`).
  *
  * `TextWrap::None` (the default) only breaks on `\n`; `Character` and `Word` break at `max_chars`. This is a
@@ -788,11 +917,11 @@ function drawGlyph(
  */
 function wrapLines(text: string, wrap: 'none' | 'word' | 'character', width: number | undefined, advance: number): string[] {
     const paragraphs = text.split('\n');
+    // A trailing newline is consumed, not an empty extra line (spec 1.5, `line_len_at`).
+    if (paragraphs.length > 1 && paragraphs[paragraphs.length - 1] === '') {
+        paragraphs.pop();
+    }
     if (wrap === 'none' || width === undefined) {
-        if (paragraphs.length > 1 && paragraphs[paragraphs.length - 1] === '') {
-            // A trailing newline is consumed, not an empty extra line (spec 1.5).
-            paragraphs.pop();
-        }
         return paragraphs.length === 0 ? [''] : paragraphs;
     }
     const maxChars = Math.max(Math.floor(width / advance), 1);
@@ -868,10 +997,12 @@ export function drawCrateText(
         const line = lines[index] ?? '';
         const lineWidth = charCount(line) * advance;
         let left = x;
+        // The crate saturates before dividing (`rect.w.saturating_sub(line_w) as i32 / 2`,
+        // render/mod.rs:1072-1076), so an overflowing line starts at the rect edge rather than left of it.
         if (opts.width !== undefined && opts.align === 'center') {
-            left = x + Math.floor((opts.width - lineWidth) / 2);
+            left = x + Math.floor(Math.max(0, opts.width - lineWidth) / 2);
         } else if (opts.width !== undefined && opts.align === 'right') {
-            left = x + (opts.width - lineWidth);
+            left = x + Math.max(0, opts.width - lineWidth);
         }
         let cursor = left;
         for (const ch of line) {
@@ -907,7 +1038,10 @@ export function drawBlock(context: CanvasRenderingContext2D, rect: Rect, style: 
         return;
     }
     if (style.shadow !== undefined) {
-        drawShadow(context, rect, style.cornerRadius, style.shadow);
+        // The core is only occluded when the block will paint over it: an opaque fill with something to paint
+        // (`block.rs:115-123`). Anything else gets the whole ring, as the crate does.
+        const opaqueFill = style.opacity === 255 && (style.background !== undefined || style.gradient !== undefined);
+        drawShadow(context, rect, style.cornerRadius, style.shadow, opaqueFill);
     }
     if (style.gradient !== undefined) {
         fillGradient(context, rect, style.cornerRadius, style.gradient, style.opacity);
@@ -1065,8 +1199,9 @@ function previewPanel(context: CanvasRenderingContext2D, widget: DesignerWidget,
 }
 
 /** Label (spec 4.2, `widgets/mod.rs:1325-1344`): block, then left/top text; the label ignores the live state. */
-function previewLabel(context: CanvasRenderingContext2D, widget: DesignerWidget, state: VisualState): void {
-    const style = resolveVisual(labelOrCarouselStyle(widget, styleNew()), state);
+function previewLabel(context: CanvasRenderingContext2D, widget: DesignerWidget, _state: VisualState): void {
+    // §4.2 resolves VisualState::Normal for a label whatever the input state is.
+    const style = resolveVisual(labelOrCarouselStyle(widget, styleNew()), 'normal');
     const rect = rectOf(widget);
     drawBlock(context, rect, style);
     drawTextIn(context, blockInner(rect, style), stringProp(widget.props, 'text', 'label', 'title'), style.font, style.text);
@@ -1326,6 +1461,9 @@ function previewCarousel(context: CanvasRenderingContext2D, widget: DesignerWidg
             return raw < 0 ? raw + count : raw;
         })();
         const textValue = items[index] ?? '';
+        // `text_left` in the crate is `inner.x + (inner.w - chars*advance) / 2` with non-saturating u32
+        // arithmetic (spec 4.12, U7); an item wider than `inner.w` is therefore unspecified there. This
+        // floors the signed difference instead, so an overflowing row stays centred about the widget.
         const left = inner.x + Math.floor((inner.w - charCount(textValue) * advance) / 2);
         drawCrateText(context, left, rowCentre - Math.floor(lineHeight / 2), textValue, style.font, carouselSlotColor(style.text, Math.abs(rel)));
     }

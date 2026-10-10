@@ -13,6 +13,53 @@ _Nothing yet._
 
 ## [0.0.64] - 2026-10-09
 
+### Added
+
+- **The canvas is WYSIWYG: it draws what the board draws.** Labels, buttons, panels, toggles, checkboxes,
+  sliders, progress bars, dropdowns, rollers, tables, dialogs and carousels are no longer rounded rectangles with
+  their type name in them. Each is drawn with the crate's own arithmetic and colours — `Block`'s background,
+  gradient, border, corner radius, shadow and padding, then the widget's own content — using the style the code
+  generator actually gives that tag, and clipped to the widget's own rect the way the engine clips it.
+- **Text is drawn in the crate's own fonts.** `webview/designer/glyphs.ts` is generated from
+  `embedded_gui::font::glyph_rows` (and, for the vector face, from `get_vector_glyph`'s polylines — `Vector(n)`
+  is not a bitmap), so what the canvas measures is the font the board will use rather than one that looks like it.
+
+### Changed
+
+- The canvas draws shadows with the crate's ordered dither and gradients at the crate's per-row quantisation,
+  instead of a canvas alpha shadow and a smooth `createLinearGradient`: the board's default compositor does not
+  alpha-blend, so the smoother version would have been darker than the glass.
+- `Progress`, `Slider`, `Toggle` and `Checkbox` are drawn with the style the emitter hard-codes for them
+  (`Style::default()` — no background, no border). They previously looked like themed panels, which was prettier
+  than the board and therefore a lie.
+
+### Verified
+
+- 807 hermetic tests pass (7 of them new, driving the real built bundle and asserting exact canvas
+  geometry: a slider knob's x at min/mid/max, a progress fill's width at 0/.25/.5/1, a toggle's track colour
+  against `checked`, a button's gradient stops and glyph pixels, and a table's header row before its body rows).
+  `tsc` clean on both sides; all four host checks pass.
+
+### Performance
+
+- Shadow rings are painted the way the crate paints them — clipped to the band outside an inset core, which the
+  crate's own test shows is pixel-identical (`block.rs:225-290`) — instead of filling each ring whole. The rings
+  are ordered-dithered, so a whole-ring fill cost one canvas op per ~1.7 pixels of the ring's *area*: 24 543 ops
+  for a 360x120 panel, on every repaint. With the band it is 1 315, and the cost now grows with the widget's
+  perimeter rather than its area (120x40: 2 783 -> 435; 240x80: 10 963 -> 875; 360x120: 24 543 -> 1 315).
+
+### Known approximations
+
+- A declared **BDF font** on a Label/Carousel/Button draws with the crate's default glyphs, because the `.bdf`
+  data is not shipped to the webview: the base style is honoured, the glyphs fall back to `Tiny3x5`.
+- **Vector text** uses the crate's own polylines, but a canvas 1px stroke blends where the crate dithers it.
+- The **dither phase** can differ under a 90/270 degree rotation, since the pattern is indexed by the board's
+  framebuffer and the canvas works in design coordinates.
+- **`image`/`icon`** previews still need the assets handed to the webview (the next slice); **`mesh`** has no
+  renderer at all, so both keep the designer's placeholder.
+
+## [0.0.64] - 2026-10-09
+
 ### Fixed
 
 - **A Table's cells now reach the board.** The KDL parser has always collected a table's `headers` and `row`
