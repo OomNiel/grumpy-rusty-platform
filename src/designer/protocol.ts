@@ -102,16 +102,6 @@ export type HostToDesigner = DesignerInit | DesignerReport | DesignerAssetPicked
  * editor, and asking the extension to build the project.
  */
 export type DesignerAction =
-    | {
-          type: 'action';
-          /**
-           * What the panel's toolbar asked for.
-           *
-           * `openDesigner` runs the `rustyPlatform.openDesigner` command rather than opening a file, which is
-           * what makes the panel's own button and the Command Palette entry the same thing: one implementation,
-           * whichever way it is reached.
-           */
-          action: 'revealKdl' | 'revealDocument' | 'build' | 'revealProject' | 'openDesigner';
-      };
+    | { type: 'action'; action: 'revealKdl' | 'revealDocument' | 'build' | 'revealProject' };
 
 export type DesignerInbound = DesignerToHost | DesignerAction;

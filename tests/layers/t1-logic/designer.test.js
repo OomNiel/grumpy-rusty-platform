@@ -1195,22 +1195,3 @@ test('the font property explains where a font comes from', () => {
     // The field was a trap once: it takes a name, and the name has to be declared on the screen.
     contains(propertyHelp('label', 'font'), 'Fonts', 'it points at the section that declares them');
 });
-
-test('the panel routes its Open Designer button to the command, not to a copy of it', () => {
-    // Source-level, like the other command tests: the button has to reach the *same* implementation as the
-    // palette entry, or the two drift -- and the command asks a question (which project?) that a copy would
-    // have to ask again, differently.
-    const editor = fs.readFileSync(path.join(repoRoot(), 'src/designer/editor.ts'), 'utf8');
-    contains(editor, "'openDesigner'", 'the action is handled');
-    contains(
-        editor,
-        "executeCommand('rustyPlatform.openDesigner')",
-        'and it runs the command rather than re-opening the panel itself',
-    );
-    // The two lists that name the actions have to agree: the protocol the panel posts, and the host that acts.
-    const protocol = fs.readFileSync(path.join(repoRoot(), 'src/designer/protocol.ts'), 'utf8');
-    contains(protocol, "'openDesigner'", 'the wire format knows the action too');
-    const webview = fs.readFileSync(path.join(repoRoot(), 'webview/designer/main.ts'), 'utf8');
-    contains(webview, "action: 'openDesigner'", 'and the panel posts it');
-    contains(webview, "'Open Designer'", 'from a button named after the command');
-});

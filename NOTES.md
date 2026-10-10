@@ -4827,3 +4827,47 @@ typo, and the repository has no local codicon package to check against.
 
 The row runs the command, so nothing else changed: the sidebar, the Command Palette and the Project view's
 title-bar icon are one entry point with three doors.
+
+## 105. A revert the merge could not see: the session auto-commit (2026-10-09)
+
+v0.0.62 shipped two things it should not have: an `Open Designer` button inside the Designer panel's Toolbox,
+and a test that fails from a clean checkout. Both were the remains of the two *earlier* placements of that button
+— the toolbar, then the Toolbox — which I had reverted before implementing the version the user actually asked
+for (a row in the sidebar's Controls section).
+
+The revert was real in the working tree and was verified: `git diff --stat` was empty afterwards, and the source
+files were grepped for the `openDesigner` action and came back clean. Then it vanished anyway, and the reason is
+the one thing worth carrying forward.
+
+### What happened
+
+This session's harness **auto-commits worktree changes to `main`** at turn boundaries, under the author
+`DSH Session Merge <dsh-session@localhost>`:
+
+    5dd75f8  Session dsh-musjkdlz-gq2l3e worktree changes   <- the toolbar/Toolbox attempt, as it stood
+    2e137d7  Session dsh-musjkdlz-gq2l3e worktree changes   <- the Controls row, on top of it
+    edd0413  Merge shapes that draw in rows                 <- the branch I kept working on
+
+So `main` had the first attempt, while my branch was still based on `edd0413` and contained the revert. Merging
+the branch into `main` compared both sides against `edd0413`:
+
+* `main` **added** the plumbing and the tests (a change),
+* my branch had them removed, which — relative to `edd0413`, where they had never existed — was **not a change
+  at all**.
+
+A merge cannot see a deletion that is not a difference. So `main`'s copy of everything I had removed was kept,
+silently, and the failing test came with it. My own verification was sound and incomplete in the same breath: I
+checked the working tree after reverting, not the tree that the *merge* produced.
+
+### The rules this leaves
+
+- **Verify after the merge, not before it.** When the harness has committed to `main` behind my back, the
+  working-tree check proves nothing about the merge result. Grep the merged tree for what should be gone, and run
+  the suite there. (Done here: `grep` for `openDesigner` across the panel sources and the tests, then the full
+  suite, both after merging.)
+- **A revert that must survive is a commit.** Removing something that the base never had has to be an explicit
+  change against the *current* base; otherwise it is invisible.
+- **The tests are what would have caught it** — one of the two failures *was* the stale test, which is a poor
+  witness because it asserted the leftover. The other (the glyph-table checks in this same release) was green, so
+  the suite was red on exactly the thing that had gone wrong, and no more. That is luck, not a system: the
+  defence is checking the merged tree against what was asked for.
