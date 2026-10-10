@@ -115,6 +115,16 @@ test('a widget with no asset named yet is not reported as missing', () => {
     equal(missingAssets(withImage, () => false).length, 0, 'an empty src is the validator\'s business');
 });
 
+test('an image read from the card is not looked for in the project', () => {
+    // The file is on the SD card the firmware mounts, so asking the project's own asset check about it would
+    // report every card image as missing -- which is exactly backwards.
+    const onCard = document([
+        widget('photo', 'image', { x: 0, y: 0, width: 96, height: 96 }, { src: 'sd:PIC1.BMP' }),
+        widget('icon', 'icon', { x: 0, y: 96, width: 48, height: 48 }, { src: 'sd:LOGO.BMP' }),
+    ]);
+    equal(missingAssets(onCard, () => false).length, 0, 'a card path is not a project asset');
+});
+
 test('every part of a composite icon is checked', () => {
     const icon = widget('battery', 'icon', { x: 0, y: 0, width: 48, height: 48 });
     icon.children = {

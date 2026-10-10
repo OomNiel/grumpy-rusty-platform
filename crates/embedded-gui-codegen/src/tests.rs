@@ -682,3 +682,65 @@ screen id="Defaults" width=320 height=240 {
         "path defaults to stroke_width 1 and no colour: {generated}"
     );
 }
+
+#[test]
+fn an_image_on_the_card_is_read_at_runtime_rather_than_embedded() {
+    // The `sd:` prefix is the design saying the file lives on the card the firmware mounts. That is a different
+    // kind of thing from an asset: the `include_gui!` macro reads every `Image`'s file off the build machine and
+    // refuses a path outside the project, so an SD image must not be an `Image` at all -- it is emitted as a
+    // custom widget over `rusty_gui_widgets::BmpImage`, which streams the rows as it draws them.
+    let kdl = r##"screen id="Card" width=320 height=240 theme="dark" {
+    grid cols="1fr" rows="1fr" {
+        image id="pic" src="sd:/PIC1.BMP" fit="stretch" col=0 row=0
+        image id="fitted" src="sd:/PIC2.BMP" fit="center" col=0 row=0
+    }
+}
+"##;
+    let generated = compile_kdl_to_rust(kdl).unwrap();
+    assert!(
+        generated.contains(
+            "rusty_gui_widgets::BmpImage { path: \"PIC1.BMP\", stretch: true, with_file: crate::sd::with_file }"
+        ),
+        "the card path and the reader must reach the widget: {generated}"
+    );
+    assert!(
+        generated.contains(
+            "rusty_gui_widgets::BmpImage { path: \"PIC2.BMP\", stretch: false, with_file: crate::sd::with_file }"
+        ),
+        "and a centred image is not stretched: {generated}"
+    );
+    assert!(
+        generated.contains("gui.add_custom_widget(cells[0], &__shape_pic, Style::default())?"),
+        "the widget is added as a custom widget: {generated}"
+    );
+    assert!(
+        !generated.contains("asset data is supplied by include_gui!"),
+        "nothing is left for the macro to embed: {generated}"
+    );
+
+    // An ordinary `src` keeps the build-time route, which is the spacer the macro replaces with the pixels.
+    let embedded = r##"screen id="Flash" width=320 height=240 theme="dark" {
+    grid cols="1fr" rows="1fr" {
+        image id="logo" src="assets/logo.bmp" col=0 row=0
+    }
+}
+"##;
+    let generated = compile_kdl_to_rust(embedded).unwrap();
+    assert!(
+        generated.contains("asset data is supplied by include_gui!"),
+        "an embedded image is still handed to the macro: {generated}"
+    );
+    assert!(
+        !generated.contains("BmpImage"),
+        "and is not read from a card: {generated}"
+    );
+
+    // The design is written back the way it was written, so a round trip through the serializer is lossless.
+    let screen = parse_kdl_screen(kdl).unwrap();
+    let serialized = serialize_kdl_screen(&screen);
+    assert!(
+        serialized.contains("image id=\"pic\" src=\"sd:PIC1.BMP\" fit=\"stretch\""),
+        "the prefix survives serialization, written the way the driver wants it: {serialized}"
+    );
+    assert_eq!(screen, parse_kdl_screen(&serialized).unwrap());
+}

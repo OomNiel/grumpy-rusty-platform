@@ -32,6 +32,13 @@ discarded when the rotation changes and the four corners are asked for again. To
 the glass within the first two seconds after a reset - the stored calibration is thrown away and the corner
 screen comes back.
 
+## Reading images from the card
+
+An image control whose source is written as `sd:/PIC1.BMP` is read from the TF card when it is drawn,
+not compiled into flash. The file must be on a FAT-formatted card under a short 8.3 name
+(`PIC1.BMP`, not `holiday photo.bmp`: the filesystem library has no long-name support), and the card
+is mounted once at boot. A missing or unreadable card is logged and leaves the image blank.
+
 ## First-time setup
 
 The Xtensa targets are not in released Rust, so one extra toolchain is needed:
@@ -79,6 +86,10 @@ from the Pico's.
 | 12 | panel SPI data in |
 | 33 | XPT2046 touch chip select |
 | 36 | XPT2046 touch interrupt (active low) |
+| 5 | TF card chip select |
+| 18 | TF card SPI clock |
+| 23 | TF card SPI data out |
+| 19 | TF card SPI data in |
 
 These come from the board's own schematic or board definition rather than from a
 guess; if you change one, change it in `src/main.rs` as well.

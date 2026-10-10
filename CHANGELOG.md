@@ -11,6 +11,37 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.69] - 2026-10-09
+
+### Added
+
+- **An Image can come from the microSD card instead of the flash.** A design names the file as
+  `src="sd:PIC1.BMP"` and the board reads it while it draws, a row at a time, so a full-screen image costs a row
+  of RAM rather than a copy of the file in the firmware. Uncompressed BMP is what the card holds — 24- and
+  32-bit, or 16-bit with either colour layout — which any image editor writes and which the device can parse
+  without a decoder.
+- **The card is set up for you** on boards whose definition declares a socket (the ESP32-035, on its own SPI
+  bus: CS 5, clock 18, out 23, in 19). A new Designer project on such a board gets a `src/sd.rs` that mounts
+  the card and a call to it in `main`, and the extension reports what to add if a project was created before
+  this version. Boards with no socket (the T-QT) are untouched, and a design that names a card image on such a
+  board says so in the panel rather than failing to compile.
+- The card is read with **short 8.3 file names from the root**, which the panel checks: a generated project has
+  no allocator for long names, so `sd:holiday photo.bmp` is a file the firmware cannot open. The canvas names
+  the file an SD image will read instead of drawing a picture it cannot see, which is also how a typo is caught
+  before a build.
+
+### Notes
+
+- The drawing half is `rusty_gui_widgets::BmpImage`, which links no filesystem: the project hands it a
+  `with_file` callback from its own `src/sd.rs`, so the same widget works against a card, a flash chip or a
+  slice in a test. It reads each row once, in the order the file holds it, with a single cached row and one
+  rectangle per run of colour; a pixel that straddles a read buffer is carried rather than lost.
+- The shapes crate is at 27 tests (eight of them the image reader, from the row order to a truncated file), the
+  codegen fork at 23, the vendored runtime at 232, and the hermetic suite at 850.
+- The generated card module is proved by a real cross-compile rather than by the host suite: a Designer project
+  for the ESP32-035 was generated and `cargo check`ed under the ESP toolchain for `xtensa-esp32-none-elf`, which
+  is the only thing that can exercise esp-hal's SPI, CS and delay setup.
+
 ## [0.0.68] - 2026-10-09
 
 ### Added

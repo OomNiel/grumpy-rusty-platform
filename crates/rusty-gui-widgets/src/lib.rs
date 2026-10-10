@@ -648,3 +648,390 @@ impl CustomWidget for VectorPath {
         Ok(())
     }
 }
+
+/// A byte stream a [`BmpImage`] reads from, which is all this crate needs to know about a storage device.
+///
+/// The generated project implements this over the card it has mounted; this crate never links a filesystem or
+/// a driver, so the same widget works with a card, a flash chip, or a slice in a test. `read` follows the usual
+/// short-read rule: fewer bytes than asked for means the end of the stream.
+pub trait ByteSource {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, ()>;
+}
+
+/// Opens a file and hands it to `use_file` for as long as it is needed.
+///
+/// A **callback** rather than an open/read/close triple because the reader in a generated project borrows the
+/// card's mounted volume for the duration, and a borrowed file cannot be stored between calls. The widget runs
+/// its whole read inside this one call, which is what makes the borrow legal without any global state here.
+pub type WithFile = fn(&str, &mut dyn FnMut(&mut dyn ByteSource) -> Result<(), ()>) -> Result<(), ()>;
+
+/// The widest image this widget can draw, in pixels.
+///
+/// One row of converted pixels is held on the stack so that a source row feeding several destination rows is
+/// read once, and the buffer is what sets this limit. It is the widest panel the platform supports (480), and
+/// a wider file is refused rather than drawn wrong.
+pub const MAX_ROW_PIXELS: usize = 480;
+
+/// Bytes read from the card at a time while converting a row. A multiple of four keeps the reads aligned with
+/// the FAT cluster the driver is fetching anyway.
+const READ_CHUNK: usize = 128;
+
+/// An image read from a BMP file when it is drawn, streamed a row at a time.
+///
+/// The design carries a *path* instead of the pixels: an embedded asset is turned into a static array at build
+/// time, which costs flash for every image in a design, while this draws from a card the application has
+/// mounted. Rows are read and painted in one pass -- no seeking backwards, no whole-image buffer -- so a
+/// full-screen image costs a row of stack rather than 300 KB of RAM.
+///
+/// The file is uncompressed BMP, which any image editor writes: 24- or 32-bit `BI_RGB`, or 16-bit with a
+/// 5-5-5 or 5-6-5 layout. Both row orders are handled (a negative height means the file is already top-down).
+pub struct BmpImage {
+    /// The file on the card, as the driver wants it named (a FAT short name fits without an allocator).
+    pub path: &'static str,
+    /// True to fill the widget's cell, false to draw at the file's own size in the middle of it.
+    pub stretch: bool,
+    /// The generated project's reader: `sd::with_file` where the board has a card.
+    pub with_file: WithFile,
+}
+
+/// What the header says about the pixels that follow it.
+struct BmpHeader {
+    data_offset: u32,
+    width: u32,
+    height: u32,
+    /// True when the rows are stored top-to-bottom (BMP says this with a negative height).
+    top_down: bool,
+    bits: u16,
+    compression: u32,
+    /// Row stride in bytes, padded to a four-byte boundary as the format requires.
+    stride: u32,
+    red: ChannelMask,
+    green: ChannelMask,
+    blue: ChannelMask,
+}
+
+/// Where a colour channel sits in a pixel and how wide it is, so 5-5-5, 5-6-5 and 8-8-8 all convert.
+#[derive(Clone, Copy)]
+struct ChannelMask {
+    shift: u32,
+    bits: u32,
+}
+
+impl ChannelMask {
+    /// The channel of one pixel, scaled to the five or six bits `Rgb565` wants.
+    fn to565(self, pixel: u32, target_bits: u32) -> u8 {
+        if self.bits == 0 {
+            return 0;
+        }
+        let value = (pixel >> self.shift) & ((1u32 << self.bits) - 1);
+        if self.bits >= target_bits {
+            (value >> (self.bits - target_bits)) as u8
+        } else {
+            (value << (target_bits - self.bits)) as u8
+        }
+    }
+}
+
+/// A little-endian reader over a byte stream, which is all the parsing this format needs.
+struct Stream<'a> {
+    source: &'a mut dyn ByteSource,
+}
+
+impl<'a> Stream<'a> {
+    fn read_exact(&mut self, buf: &mut [u8]) -> Result<(), ()> {
+        let mut filled = 0;
+        while filled < buf.len() {
+            let read = self.source.read(&mut buf[filled..])?;
+            if read == 0 {
+                return Err(());
+            }
+            filled += read;
+        }
+        Ok(())
+    }
+
+    /// Reads and throws away, for the rows and padding between the ones being drawn.
+    fn skip(&mut self, mut count: u32) -> Result<(), ()> {
+        let mut scratch = [0u8; READ_CHUNK];
+        while count > 0 {
+            let step = (count as usize).min(scratch.len());
+            self.read_exact(&mut scratch[..step])?;
+            count -= step as u32;
+        }
+        Ok(())
+    }
+
+    fn u16(&mut self) -> Result<u16, ()> {
+        let mut buf = [0u8; 2];
+        self.read_exact(&mut buf)?;
+        Ok(u16::from_le_bytes(buf))
+    }
+
+    fn u32(&mut self) -> Result<u32, ()> {
+        let mut buf = [0u8; 4];
+        self.read_exact(&mut buf)?;
+        Ok(u32::from_le_bytes(buf))
+    }
+}
+
+impl BmpHeader {
+    /// Reads the fields a drawing pass needs, in one pass over the two headers.
+    fn parse(stream: &mut Stream<'_>) -> Result<Self, ()> {
+        let mut magic = [0u8; 2];
+        stream.read_exact(&mut magic)?;
+        if &magic != b"BM" {
+            return Err(());
+        }
+        let _file_size = stream.u32()?;
+        let _reserved = stream.u32()?;
+        let data_offset = stream.u32()?;
+        let header_size = stream.u32()?;
+        if header_size < 40 {
+            // The OS/2 header is 12 bytes and has no compression or mask fields; nothing writes it any more.
+            return Err(());
+        }
+        let width = stream.u32()?;
+        let raw_height = stream.u32()? as i32;
+        let _planes = stream.u16()?;
+        let bits = stream.u16()?;
+        let compression = stream.u32()?;
+        let _image_size = stream.u32()?;
+        let _x_ppm = stream.u32()?;
+        let _y_ppm = stream.u32()?;
+        let _colours_used = stream.u32()?;
+        let _important = stream.u32()?;
+
+        let top_down = raw_height < 0;
+        let height = raw_height.unsigned_abs();
+        if width == 0 || height == 0 || width > MAX_ROW_PIXELS as u32 {
+            return Err(());
+        }
+        let (red, green, blue) = match (bits, compression) {
+            // BI_BITFIELDS carries the masks after the 40-byte header; BI_RGB's 16-bit is the 5-5-5 layout
+            // BMP has meant since Windows 3, which is *not* the 5-6-5 everything else uses.
+            (16, 3) => {
+                let r = stream.u32()?;
+                let g = stream.u32()?;
+                let b = stream.u32()?;
+                (mask_of(r), mask_of(g), mask_of(b))
+            }
+            (16, 0) => (mask_of(0x7C00), mask_of(0x03E0), mask_of(0x001F)),
+            (24, 0) | (32, 0) => (
+                ChannelMask { shift: 16, bits: 8 },
+                ChannelMask { shift: 8, bits: 8 },
+                ChannelMask { shift: 0, bits: 8 },
+            ),
+            _ => return Err(()),
+        };
+        let stride = ((bits as u32 * width + 31) / 32) * 4;
+        Ok(Self {
+            data_offset,
+            width,
+            height,
+            top_down,
+            bits,
+            compression,
+            stride,
+            red,
+            green,
+            blue,
+        })
+    }
+
+    /// One pixel of a row, as the canvas wants it.
+    #[inline]
+    fn colour(&self, bytes: &[u8]) -> Rgb565 {
+        let pixel = match self.bits {
+            24 => (bytes[2] as u32) << 16 | (bytes[1] as u32) << 8 | bytes[0] as u32,
+            32 => (bytes[2] as u32) << 16 | (bytes[1] as u32) << 8 | bytes[0] as u32,
+            _ => u16::from_le_bytes([bytes[0], bytes[1]]) as u32,
+        };
+        Rgb565::new(
+            self.red.to565(pixel, 5),
+            self.green.to565(pixel, 6),
+            self.blue.to565(pixel, 5),
+        )
+    }
+
+    /// Bytes per pixel, which is what walks a row.
+    fn bytes_per_pixel(&self) -> u32 {
+        (self.bits as u32 + 7) / 8
+    }
+}
+
+/// The mask a `0xRRGGBB`-style bit pattern describes.
+fn mask_of(pattern: u32) -> ChannelMask {
+    if pattern == 0 {
+        return ChannelMask { shift: 0, bits: 0 };
+    }
+    let shift = pattern.trailing_zeros();
+    let bits = pattern.count_ones();
+    ChannelMask { shift, bits }
+}
+
+impl BmpImage {
+    /// Draws the file into `rect`, one row at a time.
+    fn draw(
+        &self,
+        source: &mut dyn ByteSource,
+        canvas: &mut dyn CustomCanvas,
+        rect: Rect,
+    ) -> Result<(), ()> {
+        let mut stream = Stream { source };
+        let header = BmpHeader::parse(&mut stream)?;
+
+        // The destination: the whole cell when stretching, otherwise the file's own size centred in it.
+        let area = if self.stretch {
+            rect
+        } else {
+            let w = header.width.min(rect.w);
+            let h = header.height.min(rect.h);
+            Rect::new(
+                rect.x + (rect.w.saturating_sub(w) / 2) as i32,
+                rect.y + (rect.h.saturating_sub(h) / 2) as i32,
+                w,
+                h,
+            )
+        };
+        if area.w == 0 || area.h == 0 {
+            return Ok(());
+        }
+
+        // Skip whatever precedes the pixels (the colour table, usually).
+        stream.skip(header.data_offset.saturating_sub(header_bytes_read(&header)))?;
+
+        let bytes_per_pixel = header.bytes_per_pixel();
+        let mut row = [Rgb565::new(0, 0, 0); MAX_ROW_PIXELS];
+        let mut scratch = [0u8; READ_CHUNK];
+
+        // Rows are visited in the order the *file* holds them, which is the only order a stream can be read in:
+        // a bottom-up BMP (the usual one, and the reason a height is signed) stores the bottom row first, so the
+        // destination rows are walked from the last to the first. Every destination row then maps to a source
+        // row that is the same as the one before it or later in the file, never earlier -- which is exactly what
+        // lets this be one pass with a single row of memory.
+        let ascending = header.top_down;
+        let mut cached: Option<u32> = None;
+        for step in 0..area.h {
+            let dy = if ascending { step } else { area.h - 1 - step };
+            let visual = (dy as u64 * header.height as u64 / area.h as u64) as u32;
+            let file_row = if ascending {
+                visual
+            } else {
+                header.height - 1 - visual
+            };
+
+            if cached != Some(file_row) {
+                let previous = cached.map(|row| row as i64).unwrap_or(-1);
+                let ahead = file_row as i64 - previous - 1;
+                if ahead < 0 {
+                    // Only reachable with a hand-edited header: rows that would have to be read again.
+                    return Ok(());
+                }
+                stream.skip(ahead as u32 * header.stride)?;
+                read_row(&mut stream, &header, bytes_per_pixel, &mut row, &mut scratch)?;
+                cached = Some(file_row);
+            }
+            // An enlarged image feeds one source row to several destination rows; the row is still cached, so
+            // those cost a paint rather than another read.
+            draw_row(canvas, &header, &row, area, dy);
+        }
+        Ok(())
+    }
+}
+
+/// The header bytes `BmpHeader::parse` consumed, so the skip lands exactly on the pixel data.
+fn header_bytes_read(header: &BmpHeader) -> u32 {
+    // 14 (file header) + 40 (info header) + 12 when the bitfield masks are present.
+    if header.bits == 16 && header.compression == 3 {
+        66
+    } else {
+        54
+    }
+}
+
+/// Reads one whole source row into `row`, converting as it goes and throwing the padding away.
+///
+/// A row is longer than the read buffer for any real image, so a pixel can straddle two reads. The carry is what
+/// keeps that from losing its bytes: without it a 64-pixel row comes out right for the first 42 pixels and
+/// shifted after that, which is a picture rather than an error.
+fn read_row(
+    stream: &mut Stream<'_>,
+    header: &BmpHeader,
+    bytes_per_pixel: u32,
+    row: &mut [Rgb565; MAX_ROW_PIXELS],
+    scratch: &mut [u8; READ_CHUNK],
+) -> Result<(), ()> {
+    let bytes = bytes_per_pixel as usize;
+    let mut carry = [0u8; 4];
+    let mut carried = 0usize;
+    let mut x = 0usize;
+    let mut remaining = header.stride;
+    while remaining > 0 {
+        let step = (remaining as usize).min(scratch.len());
+        stream.read_exact(&mut scratch[..step])?;
+        remaining -= step as u32;
+        let mut offset = 0usize;
+        while offset < step {
+            let take = (bytes - carried).min(step - offset);
+            carry[carried..carried + take].copy_from_slice(&scratch[offset..offset + take]);
+            carried += take;
+            offset += take;
+            if carried == bytes {
+                if x < header.width as usize {
+                    row[x] = header.colour(&carry[..bytes]);
+                    x += 1;
+                }
+                carried = 0;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Paints one converted source row across the destination row it belongs to, one run per colour change.
+fn draw_row(
+    canvas: &mut dyn CustomCanvas,
+    header: &BmpHeader,
+    row: &[Rgb565; MAX_ROW_PIXELS],
+    area: Rect,
+    destination_y: u32,
+) {
+    let mut run_start = 0u32;
+    let mut run_colour = row[0];
+    for dx in 1..=area.w {
+        let source = (dx as u64 * header.width as u64 / area.w as u64) as usize;
+        let colour = if source < header.width as usize { row[source] } else { run_colour };
+        let changed = dx == area.w || colour != run_colour;
+        if changed {
+            let run_width = dx.saturating_sub(run_start);
+            if run_width > 0 {
+                let _ = canvas.fill_rect(
+                    Rect::new(area.x + run_start as i32, area.y + destination_y as i32, run_width, 1),
+                    run_colour,
+                );
+            }
+            run_start = dx;
+            run_colour = colour;
+        }
+    }
+}
+
+impl CustomWidget for BmpImage {
+    fn render(
+        &self,
+        canvas: &mut dyn CustomCanvas,
+        rect: Rect,
+        _style: &WidgetStyle,
+        _state: VisualState,
+    ) -> Result<(), GuiError> {
+        if rect.w == 0 || rect.h == 0 {
+            return Ok(());
+        }
+        // The reader owns the file handle for this whole call; the closure is the drawing pass inside it. A
+        // failure is not an error the engine has to carry: an image that is missing or not a BMP leaves the
+        // cell as it was, which is what a placeholder does on the glass.
+        let mut sink = |source: &mut dyn ByteSource| self.draw(source, canvas, rect);
+        let _ = (self.with_file)(self.path, &mut sink);
+        Ok(())
+    }
+}

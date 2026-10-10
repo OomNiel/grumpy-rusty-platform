@@ -554,3 +554,39 @@ test('the content indicator shows its direction and the crumbs their dots', () =
     const empty = boot(documentWith(widgetOf('crumbs', { count: 0, active: 0, accent: '#12ab34' })));
     equal(fillsWithColour(empty.calls, accent).length, 0, 'a zero-count crumbs paints no dots');
 });
+
+// ---------------------------------------------------------------------------
+// An image whose pixels are on the card
+
+test('the canvas names an SD image instead of drawing a picture it cannot read', () => {
+    // The pixels are on a card this machine has never seen, so anything the canvas drew would be its own guess.
+    // What it can do honestly is say which file the board will open, which is also how a typo in the path is
+    // noticed before the project is built.
+    const { calls } = boot(
+        documentWith(widgetOf('image', { src: 'sd:PIC1.BMP', fit: 'stretch', mode: 'color', tint: '' })),
+    );
+    const texts = calls.filter((call) => call.method === 'fillText').map((call) => String(call.args[0]));
+    ok(
+        texts.some((text) => text.startsWith('SD card: PIC1.BMP')),
+        `the card path must be on the canvas, got ${JSON.stringify(texts)}`,
+    );
+    // An embedded asset says the same kind of thing for its own case, and a missing one still says "needs an
+    // asset": the three states are not allowed to look alike.
+    const asset = boot(
+        documentWith(widgetOf('image', { src: 'assets/logo.bmp', fit: 'stretch', mode: 'color', tint: '' })),
+    );
+    const assetTexts = asset.calls
+        .filter((call) => call.method === 'fillText')
+        .map((call) => String(call.args[0]));
+    notOk(
+        assetTexts.some((text) => text.startsWith('SD card:')),
+        'an embedded image is not announced as a card file',
+    );
+    const missing = boot(documentWith(widgetOf('image', { src: '', fit: 'stretch', mode: 'color', tint: '' })));
+    ok(
+        missing.calls.some(
+            (call) => call.method === 'fillText' && String(call.args[0]).includes('needs an asset'),
+        ),
+        'and an image with no source at all still says so',
+    );
+});

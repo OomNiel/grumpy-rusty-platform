@@ -34,6 +34,7 @@ import {
     type DesignerDocument,
 } from './model';
 import { loadDocument, missingAssets, planAssetImport, renderDesign } from './store';
+import { sdImagesNeedingCard } from './model';
 import {
     copyVendoredCrates,
     hasVendoredCrates,
@@ -320,7 +321,29 @@ class DesignerPanel {
         // Reported, never enforced: a design with controls in it and touch switched off is a decision the user
         // is allowed to make -- a half-built design, or placeholder buttons -- but not a silent one.
         const touch = touchNeededBy(document.widgets, this.touchEnabled);
-        const problems = [...rendered.problems, ...assets, ...touch];
+        // An image from the card has two requirements the design cannot state: the board must have a socket, and
+        // the project must have the module that mounts it. Both are reported here because both fail at build
+        // time otherwise -- `crate::sd::with_file` is named by the generated markup, so a project without it does
+        // not compile, which is a much worse way to find out than a line in the panel.
+        const sd = sdImagesNeedingCard(document.widgets).flatMap((id) => {
+            // `sd` is a property of an ESP board profile, like `touch`, so the union has to be narrowed first.
+            if (this.board?.kind !== 'esp' || this.board.sd === undefined) {
+                return [
+                    `"${id}": this image comes from the SD card, and ${
+                        this.board?.name ?? 'this board'
+                    } has no card socket`,
+                ];
+            }
+            const module = path.join(this.folder.fsPath, 'src', 'sd.rs');
+            if (!fs.existsSync(module)) {
+                return [
+                    `"${id}": this project has no src/sd.rs, so nothing can read the card. Recreate the project ` +
+                        'with this version of the extension, or add the module and its init call to src/main.rs',
+                ];
+            }
+            return [];
+        });
+        const problems = [...rendered.problems, ...assets, ...touch, ...sd];
 
         if (rendered.documentJson !== this.lastWritten) {
             await writeProjectFile(this.folder, DESIGNER_DOCUMENT_PATH, rendered.documentJson);

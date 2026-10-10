@@ -140,7 +140,10 @@ export function missingAssets(
     }
     for (const widget of document.widgets) {
         const source = widget.props.src;
-        if (typeof source === 'string' && source !== '' && !exists(source)) {
+        // A `sd:` source is a file on the card the firmware mounts, not one in the project: looking for it here
+        // would report every card image as missing, which is the opposite of the truth.
+        const onCard = typeof source === 'string' && source.startsWith('sd:');
+        if (typeof source === 'string' && source !== '' && !onCard && !exists(source)) {
             problems.push(`"${widget.id}": the asset "${source}" is not in the project`);
         }
         if (widget.children?.kind === 'parts') {

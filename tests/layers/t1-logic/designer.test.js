@@ -31,6 +31,8 @@ const {
     circleRect,
     rustFieldName,
     screenIdFrom,
+    sdImageSourceProblems,
+    sdImagesNeedingCard,
     uniqueWidgetId,
     validateDocument,
     DEFAULT_TRIANGLE_POINTS,
@@ -1445,4 +1447,44 @@ test('a control with no appearance at all emits no style, so the crate\'s own de
     const plain = emitKdl(document(0, [widget('p', 'progress', { x: 0, y: 0, width: 100, height: 20 })]));
     contains(plain, 'progress id="p" value=0', 'a progress bar still emits its own value');
     notContains(plain, 'style=', 'and no style expression at all');
+});
+
+// ---------------------------------------------------------------- images from the SD card
+
+test('an image can name a file on the card, and the name is checked against what the card can read', () => {
+    // Reading the card is what makes this different from an asset: the file is not on the build machine, so the
+    // markup carries a path the firmware opens at runtime. The card is read with short 8.3 names from its root,
+    // because a generated project has no allocator for long names and opens no subdirectories.
+    const image = (source) => widget('pic', 'image', { x: 0, y: 0, width: 64, height: 64 }, { props: { src: source } });
+    equal(sdImageSourceProblems(image('assets/logo.bmp')).length, 0, 'an embedded asset is not a card path');
+    equal(sdImageSourceProblems(image('sd:PIC1.BMP')).length, 0, 'a short name is fine');
+    equal(sdImageSourceProblems(image('sd:/PIC1.BMP')).length, 0, 'and a leading slash is just a habit');
+    equal(sdImageSourceProblems(image('sd:PIC1')).length, 0, 'a name with no extension is fine too');
+
+    contains(sdImageSourceProblems(image('sd:'))[0], 'empty', 'an empty path says so');
+    contains(sdImageSourceProblems(image('sd:/sub/PIC1.BMP'))[0], 'root', 'a subdirectory is refused');
+    contains(sdImageSourceProblems(image('sd:PHOTO_1234.BMP'))[0], 'short file name', 'a long name is refused');
+    contains(sdImageSourceProblems(image('sd:PHOTO.BMPX'))[0], 'short file name', 'and so is a long extension');
+});
+
+test('a design with a card image in it is reported when the board has no card', () => {
+    // Whether the card exists belongs to the board, so the design says which widgets need one and the panel
+    // adds the sentence. A board without a socket has no src/sd.rs either, so a project that cannot read the
+    // card is a build failure waiting to happen -- the panel is where it should be found.
+    const card = widget('pic', 'image', { x: 0, y: 0, width: 64, height: 64 }, { props: { src: 'sd:PIC1.BMP' } });
+    const asset = widget('logo', 'image', { x: 0, y: 64, width: 64, height: 64 }, { props: { src: 'assets/logo.bmp' } });
+    equal(sdImagesNeedingCard([card, asset]).join(','), 'pic', 'only the card image is listed');
+    equal(sdImagesNeedingCard([asset]).length, 0, 'and an embedded one needs no socket');
+    equal(sdImagesNeedingCard([]).length, 0, 'an empty design needs nothing');
+});
+
+test('the markup keeps the card prefix rather than turning it into an asset path', () => {
+    // Two halves have to agree here: the designer writes the path as the design spelled it, and the codegen
+    // fork is what notices the prefix and emits a runtime reader instead of an embedded array.
+    const card = widget('pic', 'image', { x: 0, y: 0, width: 64, height: 64 }, {
+        props: { ...defaultProps('image'), src: 'sd:PIC1.BMP', fit: 'center' },
+    });
+    const kdl = emitKdl(document(0, [card]));
+    contains(kdl, 'image id="pic" src="sd:PIC1.BMP" fit="center"', 'the card path travels whole');
+    notContains(kdl, 'assets/', 'and is not rewritten as a project asset');
 });
