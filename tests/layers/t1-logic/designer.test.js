@@ -39,7 +39,13 @@ const {
 } = compiled('designer/model');
 const { emitKdl, layoutDocument } = compiled('designer/kdl');
 const { fontConstName } = compiled('designer/model');
-const { rgb565Expression } = compiled('designer/appearance');
+const {
+    rgb565Expression,
+    appearanceExpression,
+    ownStyleOf,
+    resolveStyleValues,
+    styleValuesOf,
+} = compiled('designer/appearance');
 
 /** The CYD's panel, which is the board the designer is developed against. */
 const PANEL = { boardId: 'sunton-3248s035r', panelWidth: 320, panelHeight: 480 };
@@ -1303,4 +1309,137 @@ test('the properties that mean something different per widget say so', () => {
 test('the font property explains where a font comes from', () => {
     // The field was a trap once: it takes a name, and the name has to be declared on the screen.
     contains(propertyHelp('label', 'font'), 'Fonts', 'it points at the section that declares them');
+});
+
+// ---------------------------------------------------------------- the appearance the six controls gained
+
+test('every control that had no colours offers them, and the crate reads the rest as attributes', () => {
+    // The complaint was that a Toggle, Checkbox, Roller, Progress bar and Gauge had no colour settings at all,
+    // and that a Spinbox had none either. Which of the new properties travel inside the `style` expression and
+    // which are attributes the runtime reads is the crate's shape, not a preference, so it is pinned here.
+    const viaStyle = {
+        toggle: ['accent', 'bg', 'border_color', 'border_width', 'corner_radius', 'text_color'],
+        checkbox: ['accent', 'bg', 'border_color', 'border_width', 'corner_radius', 'text_color'],
+        roller: ['accent', 'bg', 'border_color', 'border_width', 'corner_radius', 'text_color'],
+        progress: ['fg', 'bg', 'border_color', 'border_width', 'corner_radius'],
+        spinbox: ['bg', 'border_color', 'border_width', 'corner_radius', 'text_color'],
+        scale: ['bg', 'border_color', 'border_width', 'corner_radius', 'text_color'],
+    };
+    // The colours the runtime fork reads for itself, because upstream hard-coded them inside a renderer.
+    const attributes = {
+        toggle: ['off_color'],
+        checkbox: ['box_size', 'box_color'],
+        roller: [],
+        progress: [],
+        spinbox: ['accent_color', 'chevron_color'],
+        scale: [
+            'start_angle',
+            'end_angle',
+            'show_labels',
+            'show_needle',
+            'tick_color',
+            'needle_color',
+            'major_ticks',
+            'minor_ticks',
+        ],
+    };
+    for (const [tag, names] of Object.entries(viaStyle)) {
+        const spec = widgetSpec(tag);
+        for (const name of names) {
+            const property = spec.props.find((entry) => entry.name === name);
+            ok(property !== undefined, `${tag} offers ${name}`);
+            ok(property.viaStyle !== undefined, `${tag}'s ${name} travels in the style expression`);
+            ok(property.kind === 'color' || property.kind === 'int', `${tag}'s ${name} is a colour or a size`);
+            if (property.kind === 'color') {
+                equal(property.defaultValue, '', `${tag}'s ${name} starts unset, not black`);
+            }
+        }
+        for (const name of attributes[tag]) {
+            const property = spec.props.find((entry) => entry.name === name);
+            ok(property !== undefined, `${tag} offers ${name}`);
+            equal(property.viaStyle, undefined, `${tag}'s ${name} is an attribute, not a style expression`);
+        }
+    }
+    // And the gauge's tick counts, which the emitter used to drop on the floor.
+    contains(emitKdl(document(0, [widget('g', 'scale', { x: 0, y: 0, width: 90, height: 90 })])), 'major_ticks=5', 'the gauge emits its tick counts');
+});
+
+test('a colour is set on the style the widget already wore, not on one generic default', () => {
+    // The whole point of a single colour: an accent on a Roller must not also turn its panel surface into a
+    // bare label. Each tag's own base is the codegen fork's fallback, and the canvas paints the same one.
+    equal(ownStyleOf('toggle'), 'label', 'a toggle is plain');
+    equal(ownStyleOf('checkbox'), 'label', 'so is a checkbox');
+    equal(ownStyleOf('progress'), 'label', 'and a progress bar, which draws its own track');
+    equal(ownStyleOf('roller'), 'panel', 'a roller is a panel');
+    equal(ownStyleOf('spinbox'), 'panel', 'and so is a spinbox');
+    equal(ownStyleOf('scale'), 'panel', 'and the gauge');
+    equal(ownStyleOf('button'), 'button', 'a button has its own');
+    equal(ownStyleOf('label'), 'label', 'and anything unknown falls back to plain');
+
+    equal(
+        appearanceExpression({ tag: 'roller', values: { accent: '#ff8800' } }),
+        '{ let mut style = Style::panel(); style.accent = Rgb565::new(31, 34, 0); style }',
+        'one accent is one assignment on the roller\'s own surface',
+    );
+    equal(
+        appearanceExpression({ tag: 'toggle', style: 'panel', values: { accent: '#00ff00' } }),
+        '{ let mut style = Style::panel(); style.accent = Rgb565::new(0, 63, 0); style }',
+        'and a chosen base style replaces it',
+    );
+});
+
+test('the appearance rules: a colour is what asks for a border, and zero keeps the base\'s', () => {
+    // These three rules exist so that a half-filled form does the obvious thing. They are asserted as data
+    // because the canvas resolves the same values: if it disagreed, the board and the canvas would drift.
+    equal(
+        JSON.stringify(resolveStyleValues({ border: '#ffff00' })),
+        JSON.stringify({ border: { colour: '#ffff00', width: 1 } }),
+        'a border colour alone means a one-pixel border, or a plain toggle would show nothing',
+    );
+    equal(
+        JSON.stringify(resolveStyleValues({ border: '#ffff00', borderWidth: 3 })),
+        JSON.stringify({ border: { colour: '#ffff00', width: 3 } }),
+        'and a width thickens it',
+    );
+    equal(
+        JSON.stringify(resolveStyleValues({ borderWidth: 4 })),
+        JSON.stringify({ borderWidth: 4 }),
+        'a width alone thickens the border the base style already had',
+    );
+    equal(
+        JSON.stringify(resolveStyleValues({ borderWidth: 0, radius: 0 })),
+        '{}',
+        'a zero width and a zero radius mean "leave the base style alone"',
+    );
+    equal(
+        JSON.stringify(resolveStyleValues({ background: '#8000ff' })),
+        JSON.stringify({ background: '#8000ff' }),
+        'a background is a background',
+    );
+    equal(JSON.stringify(resolveStyleValues({ text: 'not-a-colour' })), '{}', 'and a non-colour is nothing at all');
+});
+
+test('the emitted expression clears the gradient, because a gradient paints over a background', () => {
+    // `Block::render` draws the gradient *instead of* the background, so a design that picked a flat colour on
+    // a panel-based widget would otherwise see the panel's gradient and nothing else.
+    const style = appearanceExpression({ tag: 'progress', values: { background: '#003300', foreground: '#ff00ff' } });
+    contains(style, 'style.background = Some(Rgb565::new(0, 12, 0));', 'the background is set');
+    contains(style, 'style.gradient = None;', 'and the gradient is cleared');
+    contains(style, 'style.foreground = Rgb565::new(31, 0, 31);', 'with the fill colour');
+    equal(style.indexOf('background'), style.indexOf('gradient') - 'style.background = Some(Rgb565::new(0, 12, 0)); '.length, 'in that order');
+});
+
+test('a control with no appearance at all emits no style, so the crate\'s own default stands', () => {
+    // The other half of the promise: a design that says nothing must emit the same markup it did before these
+    // properties existed. Nothing here may invent a colour.
+    for (const tag of ['toggle', 'checkbox', 'roller', 'progress', 'spinbox', 'scale']) {
+        equal(
+            appearanceExpression({ tag, values: styleValuesOf({ props: defaultProps(tag) }, widgetSpec(tag).props) }),
+            undefined,
+            `${tag} needs no expression when nothing is set`,
+        );
+    }
+    const plain = emitKdl(document(0, [widget('p', 'progress', { x: 0, y: 0, width: 100, height: 20 })]));
+    contains(plain, 'progress id="p" value=0', 'a progress bar still emits its own value');
+    notContains(plain, 'style=', 'and no style expression at all');
 });

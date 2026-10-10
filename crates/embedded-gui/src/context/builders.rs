@@ -217,7 +217,34 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
     where
         S: Into<WidgetStyle>,
     {
-        let id = self.add_widget(rect, WidgetKind::Toggle { label, on }, style)?;
+        self.add_toggle_colored(rect, label, on, Rgb565::new(7, 10, 10), style)
+    }
+
+    /// A toggle whose track colour while *off* is the design's.
+    ///
+    /// Upstream's `add_toggle` passes a near-black literal for that one colour, so an off switch was invisible
+    /// on a dark panel and no markup could change it. The colour when *on* is `style.accent`, as upstream.
+    #[cfg(feature = "rich-widgets")]
+    pub fn add_toggle_colored<S>(
+        &mut self,
+        rect: impl Into<Rect>,
+        label: &'a str,
+        on: bool,
+        off_color: Rgb565,
+        style: S,
+    ) -> Result<WidgetId, GuiError>
+    where
+        S: Into<WidgetStyle>,
+    {
+        let id = self.add_widget(
+            rect,
+            WidgetKind::Toggle {
+                label,
+                on,
+                off_color,
+            },
+            style,
+        )?;
         self.ensure_focus();
         Ok(id)
     }
@@ -243,7 +270,37 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
     where
         S: Into<WidgetStyle>,
     {
-        let id = self.add_widget(rect, WidgetKind::Checkbox { label, checked }, style)?;
+        self.add_checkbox_sized(rect, label, checked, 0, None, style)
+    }
+
+    /// A checkbox whose box has a size and an outline of its own.
+    ///
+    /// `box_size` of `0` means upstream's rule -- `inner.h.min(8)` -- and is what `add_checkbox` passes, so
+    /// nothing changes for markup that says nothing. `box_color` of `None` keeps upstream's outline colour,
+    /// which is `style.text`, the same colour the label is drawn in.
+    #[cfg(feature = "rich-widgets")]
+    pub fn add_checkbox_sized<S>(
+        &mut self,
+        rect: impl Into<Rect>,
+        label: &'a str,
+        checked: bool,
+        box_size: u8,
+        box_color: Option<Rgb565>,
+        style: S,
+    ) -> Result<WidgetId, GuiError>
+    where
+        S: Into<WidgetStyle>,
+    {
+        let id = self.add_widget(
+            rect,
+            WidgetKind::Checkbox {
+                label,
+                checked,
+                box_size,
+                box_color,
+            },
+            style,
+        )?;
         self.ensure_focus();
         Ok(id)
     }
@@ -998,6 +1055,54 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
         )
     }
 
+    /// A graduated scale configured from the design: mode, range, tick counts, sweep and both colours.
+    ///
+    /// Upstream's `add_scale` hard-codes the tick and needle colours (`CSS_GRAY`/`CSS_RED`), the tick counts
+    /// (`5`/`3`), the sweep (`135`..`45`) and the label/needle switches, so a gauge built with it looked the
+    /// same whatever the design said. The runtime has always *carried* these on `WidgetKind::Scale`; this is
+    /// the builder that lets generated code reach them.
+    #[allow(clippy::too_many_arguments)]
+    #[cfg(feature = "rich-widgets")]
+    pub fn add_scale_styled<S>(
+        &mut self,
+        rect: Rect,
+        mode: ScaleMode,
+        min: f32,
+        max: f32,
+        value: f32,
+        major_ticks: u8,
+        minor_ticks: u8,
+        start_angle: i16,
+        end_angle: i16,
+        show_labels: bool,
+        show_needle: bool,
+        tick_color: Rgb565,
+        needle_color: Rgb565,
+        style: S,
+    ) -> Result<WidgetId, GuiError>
+    where
+        S: Into<WidgetStyle>,
+    {
+        self.add_widget(
+            rect,
+            WidgetKind::Scale {
+                mode,
+                value: value.clamp(min, max),
+                min,
+                max,
+                major_ticks: major_ticks.max(1),
+                minor_ticks: minor_ticks.max(1),
+                start_angle,
+                end_angle,
+                show_labels,
+                show_needle,
+                tick_color,
+                needle_color,
+            },
+            style,
+        )
+    }
+
     #[cfg(feature = "rich-widgets")]
     pub fn add_radial_scale<S>(
         &mut self,
@@ -1040,6 +1145,40 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
     where
         S: Into<WidgetStyle>,
     {
+        self.add_spinbox_styled(
+            rect,
+            min,
+            max,
+            value,
+            4,
+            0,
+            Rgb565::CSS_CYAN,
+            Rgb565::CSS_GRAY,
+            style,
+        )
+    }
+
+    /// A spinbox built the way the design asked: how many digits it shows, how many of them are decimals, and
+    /// the two colours upstream's `add_spinbox` hard-codes (`CSS_CYAN` for the focused digit's underline,
+    /// `CSS_GRAY` for the two chevron outlines). Everything else -- the block, the value text and the `-`/`+`
+    /// glyphs -- is already the resolved style.
+    #[allow(clippy::too_many_arguments)]
+    #[cfg(feature = "rich-widgets")]
+    pub fn add_spinbox_styled<S>(
+        &mut self,
+        rect: Rect,
+        min: i32,
+        max: i32,
+        value: i32,
+        digits: u8,
+        decimals: u8,
+        accent_color: Rgb565,
+        chevron_color: Rgb565,
+        style: S,
+    ) -> Result<WidgetId, GuiError>
+    where
+        S: Into<WidgetStyle>,
+    {
         self.add_widget(
             rect,
             WidgetKind::Spinbox {
@@ -1047,9 +1186,11 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
                 min,
                 max,
                 step: 1,
-                digits: 4,
-                decimals: 0,
+                digits: digits.max(1),
+                decimals,
                 focused_digit: 0,
+                accent_color,
+                chevron_color,
             },
             style,
         )
@@ -1509,5 +1650,236 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
         suggestions: &'a [&'a str],
     ) -> Result<WidgetId, GuiError> {
         self.add_autocomplete_widget(rect, suggestions, self.theme.panel)
+    }
+}
+
+/// The vendored fork's own tests: the values a design can now name, and the gauge that could not be moved.
+///
+/// These render through the real `GuiContext` and read pixels back, because the point of the changes is what
+/// reaches the glass, not what reaches a struct field. `add_*` upstream builders keep passing the old
+/// constants, so a markup that says nothing about any of this renders exactly as it did before the fork --
+/// that is asserted here too, or the fork would be a behaviour change rather than an addition.
+#[cfg(all(test, feature = "rich-widgets"))]
+mod fork_tests {
+    use super::*;
+    use crate::style::Style;
+    use crate::widget::{PropertyKey, PropertyValue};
+    use crate::TestBuffer;
+    use embedded_graphics_core::pixelcolor::{RgbColor, WebColors};
+
+    fn gui() -> GuiContext<'static, 32, 16, 32> {
+        GuiContext::<32, 16, 32>::new(Rect::new(0, 0, 200, 80))
+    }
+
+    fn render(gui: &GuiContext<'static, 32, 16, 32>) -> TestBuffer {
+        let mut buffer = TestBuffer::new(200, 80);
+        gui.render(&mut buffer).expect("the design renders");
+        buffer
+    }
+
+    #[test]
+    fn a_checkbox_box_can_be_sized_and_the_upstream_builder_still_caps_at_eight() {
+        // Upstream's rule is `inner.h.min(8)`, which is why a checkbox on a 24-pixel row drew an eight-pixel
+        // box. A design can now name the size.
+        let mut small = gui();
+        small
+            .add_checkbox_sized(Rect::new(0, 0, 80, 20), "x", true, 0, None, Style::label())
+            .unwrap();
+        let big = {
+            let mut gui = gui();
+            gui.add_checkbox_sized(
+                Rect::new(0, 0, 80, 20),
+                "x",
+                true,
+                16,
+                None,
+                Style::label(),
+            )
+            .unwrap();
+            gui
+        };
+        // The box outline is `style.text` (white) on a label style, and the tick inside it is `style.accent`.
+        // Counting the outline's pixels is what separates a 16-pixel box from an 8-pixel one: 4*size - 4,
+        // give or take the corners the tick covers.
+        let outline = |buffer: &TestBuffer| {
+            (0..20)
+                .flat_map(|y| (0..20).map(move |x| (x, y)))
+                .filter(|&(x, y)| buffer.pixel_at(x, y) == Some(Rgb565::WHITE))
+                .count()
+        };
+        let small_box = outline(&render(&small));
+        let big_box = outline(&render(&big));
+        assert!(
+            big_box > small_box,
+            "a 16-pixel box must draw more outline than an 8-pixel one: {big_box} vs {small_box}"
+        );
+        assert!(small_box > 0, "the default box is still drawn");
+        // And a box taller than its row cannot escape it: the engine clips, and the canvas could not show it.
+        let mut capped = gui();
+        capped
+            .add_checkbox_sized(Rect::new(0, 0, 80, 12), "x", false, 40, None, Style::label())
+            .unwrap();
+        let pixels = render(&capped);
+        assert_eq!(
+            pixels.pixel_at(0, 11),
+            Some(Rgb565::WHITE),
+            "a 40-pixel box in a 12-pixel row is capped to the row, and its outline is on the last row"
+        );
+        assert_eq!(pixels.pixel_at(0, 12), Some(Rgb565::BLACK), "and nothing is below it");
+    }
+
+    #[test]
+    fn the_switches_track_colours_come_from_the_design() {
+        let style = Style::new();
+        let mut off = gui();
+        off.add_toggle_colored(Rect::new(0, 0, 80, 20), "x", false, Rgb565::CSS_BLUE, style)
+            .unwrap();
+        let mut on = gui();
+        on.add_toggle_colored(Rect::new(0, 0, 80, 20), "x", true, Rgb565::CSS_BLUE, style)
+            .unwrap();
+        let has_blue = |gui: &GuiContext<'static, 32, 16, 32>| {
+            let buffer = render(gui);
+            (0..20)
+                .flat_map(|y| (0..80).map(move |x| (x, y)))
+                .any(|(x, y)| buffer.pixel_at(x, y) == Some(Rgb565::CSS_BLUE))
+        };
+        assert!(has_blue(&off), "an off switch paints its design's track colour");
+        // The on colour is `style.accent`, as upstream, so the design's colour is *replaced* rather than added.
+        assert!(!has_blue(&on), "an on switch uses the style's accent, not the off colour");
+        assert_eq!(style.accent, Style::new().accent, "and the two agree on what that is");
+    }
+
+    #[test]
+    fn a_spinbox_underline_and_chevrons_use_the_colours_the_design_names() {
+        let mut plain = gui();
+        plain
+            .add_spinbox(Rect::new(0, 0, 100, 20), 0, 100, 42, Style::label())
+            .unwrap();
+        let mut styled = gui();
+        styled
+            .add_spinbox_styled(
+                Rect::new(0, 0, 100, 20),
+                0,
+                100,
+                42,
+                4,
+                0,
+                Rgb565::CSS_ORANGE,
+                Rgb565::CSS_PURPLE,
+                Style::label(),
+            )
+            .unwrap();
+        let has = |gui: &GuiContext<'static, 32, 16, 32>, colour: Rgb565| {
+            let buffer = render(gui);
+            (0..20)
+                .flat_map(|y| (0..100).map(move |x| (x, y)))
+                .any(|(x, y)| buffer.pixel_at(x, y) == Some(colour))
+        };
+        assert!(has(&plain, Rgb565::CSS_CYAN), "upstream's underline is still the default");
+        assert!(has(&plain, Rgb565::CSS_GRAY), "and so are its chevron outlines");
+        assert!(has(&styled, Rgb565::CSS_ORANGE), "the design's underline is used");
+        assert!(has(&styled, Rgb565::CSS_PURPLE), "and the design's chevron colour");
+        assert!(!has(&styled, Rgb565::CSS_CYAN), "instead of the upstream one");
+    }
+
+    #[test]
+    fn a_spinbox_shows_the_number_of_digits_the_design_asked_for() {
+        // `digits` and `decimals` reach the renderer's formatter, which is the difference between a design that
+        // says "four digits" and one that says "six": `add_spinbox` fixed both at 4 and 0, so a design could not
+        // change them however the panel was set.
+        let white = |gui: &GuiContext<'static, 32, 16, 32>| {
+            let buffer = render(gui);
+            (0..20)
+                .flat_map(|y| (0..100).map(move |x| (x, y)))
+                .filter(|&(x, y)| buffer.pixel_at(x, y) == Some(Rgb565::WHITE))
+                .count()
+        };
+        let mut one = gui();
+        one.add_spinbox_styled(
+            Rect::new(0, 0, 100, 20),
+            0,
+            99,
+            42,
+            1,
+            0,
+            Rgb565::CSS_CYAN,
+            Rgb565::CSS_GRAY,
+            Style::label(),
+        )
+        .unwrap();
+        let mut six = gui();
+        six.add_spinbox_styled(
+            Rect::new(0, 0, 100, 20),
+            0,
+            99,
+            42,
+            6,
+            0,
+            Rgb565::CSS_CYAN,
+            Rgb565::CSS_GRAY,
+            Style::label(),
+        )
+        .unwrap();
+        assert!(
+            white(&six) > white(&one),
+            "six digits must paint more text than one: {} vs {}",
+            white(&six),
+            white(&one)
+        );
+    }
+
+    #[test]
+    fn a_scale_is_built_from_the_design_and_its_value_moves() {
+        let mut gui = gui();
+        let id = gui
+            .add_scale_styled(
+                Rect::new(0, 0, 100, 100),
+                ScaleMode::Radial,
+                0.0,
+                100.0,
+                25.0,
+                4,
+                2,
+                180,
+                0,
+                false,
+                true,
+                Rgb565::CSS_ORANGE,
+                Rgb565::CSS_BLUE,
+                Style::label(),
+            )
+            .unwrap();
+        // The whole point of a gauge: its value is readable and writable after it is built. Upstream answered
+        // `NotFound` to both, because the node dispatch had no arm for a scale.
+        assert_eq!(
+            gui.get_widget_property(id, PropertyKey::Value),
+            Some(PropertyValue::Float(25.0))
+        );
+        gui.set_widget_property(id, PropertyKey::Value, PropertyValue::Float(80.0))
+            .expect("a gauge's value can be set");
+        assert_eq!(
+            gui.get_widget_property(id, PropertyKey::Value),
+            Some(PropertyValue::Float(80.0))
+        );
+        // Clamped to the range, like every other value widget.
+        gui.set_widget_property(id, PropertyKey::Value, PropertyValue::Float(500.0))
+            .unwrap();
+        assert_eq!(
+            gui.get_widget_property(id, PropertyKey::Value),
+            Some(PropertyValue::Float(100.0))
+        );
+
+        // And the colours the design named are the ones on the glass. The needle is at 100 now: the top of a
+        // 180..0 sweep is the top of the dial, so orange ticks and a blue needle are both somewhere in the
+        // buffer.
+        let buffer = render(&gui);
+        let drawn = |colour: Rgb565| {
+            (0..100)
+                .flat_map(|y| (0..100).map(move |x| (x, y)))
+                .any(|(x, y)| buffer.pixel_at(x, y) == Some(colour))
+        };
+        assert!(drawn(Rgb565::CSS_ORANGE), "the ticks are the design's colour");
+        assert!(drawn(Rgb565::CSS_BLUE), "and the needle is too");
+        assert!(!drawn(Rgb565::CSS_GRAY), "not upstream's grey ticks");
     }
 }

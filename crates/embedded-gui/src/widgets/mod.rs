@@ -260,11 +260,19 @@ pub enum WidgetKind<'a> {
     Toggle {
         label: &'a str,
         on: bool,
+        /// The track's colour when the switch is off. Upstream hard-coded a near-black literal here, which no
+        /// markup could reach; `add_toggle` still passes the same colour, so nothing changes unless asked for.
+        off_color: Rgb565,
     },
     #[cfg(feature = "rich-widgets")]
     Checkbox {
         label: &'a str,
         checked: bool,
+        /// How big the box is, in pixels. `0` keeps upstream's rule (`inner.h.min(8)`), which caps the box at
+        /// eight pixels however tall the widget is -- the reason a designer checkbox looked tiny.
+        box_size: u8,
+        /// The box's outline. `None` keeps upstream's `style.text`, which the label shares.
+        box_color: Option<Rgb565>,
     },
     #[cfg(feature = "rich-widgets")]
     Slider {
@@ -436,6 +444,10 @@ pub enum WidgetKind<'a> {
         digits: u8,
         decimals: u8,
         focused_digit: u8,
+        /// The focused digit's underline. Upstream hard-coded `CSS_CYAN` here.
+        accent_color: Rgb565,
+        /// The `-`/`+` chevron outlines. Upstream hard-coded `CSS_GRAY` here.
+        chevron_color: Rgb565,
     },
     #[cfg(feature = "rich-widgets")]
     TextArea {
@@ -702,6 +714,18 @@ impl<'a> WidgetNode<'a> {
             (PropertyKey::Selected, WidgetKind::RichMenu { selected, .. }) => {
                 Some(PropertyValue::Usize(*selected))
             }
+            // A scale is the one widget whose entire purpose is to display a value that changes, and upstream
+            // had no arm here at all: `set_widget_property(.., Value, ..)` answered `NotFound` for it, so a
+            // gauge could only ever show whatever the markup was built with. `ScaleWidget` already implements
+            // both accessors; these arms are what connect the node to them.
+            #[cfg(feature = "rich-widgets")]
+            (PropertyKey::Value, WidgetKind::Scale { value, .. }) => {
+                Some(PropertyValue::Float(*value))
+            }
+            #[cfg(feature = "rich-widgets")]
+            (PropertyKey::Min, WidgetKind::Scale { min, .. }) => Some(PropertyValue::Float(*min)),
+            #[cfg(feature = "rich-widgets")]
+            (PropertyKey::Max, WidgetKind::Scale { max, .. }) => Some(PropertyValue::Float(*max)),
             _ => None,
         }
     }
@@ -727,6 +751,25 @@ impl<'a> WidgetNode<'a> {
                 PropertyValue::Float(v),
             ) => {
                 *value = v.clamp(*min, *max);
+                Ok(())
+            }
+            #[cfg(feature = "rich-widgets")]
+            (
+                PropertyKey::Value,
+                WidgetKind::Scale { value, min, max, .. },
+                PropertyValue::Float(v),
+            ) => {
+                *value = v.clamp(*min, *max);
+                Ok(())
+            }
+            #[cfg(feature = "rich-widgets")]
+            (PropertyKey::Min, WidgetKind::Scale { min, .. }, PropertyValue::Float(m)) => {
+                *min = m;
+                Ok(())
+            }
+            #[cfg(feature = "rich-widgets")]
+            (PropertyKey::Max, WidgetKind::Scale { max, .. }, PropertyValue::Float(m)) => {
+                *max = m;
                 Ok(())
             }
             (PropertyKey::Text, WidgetKind::Label(text), PropertyValue::Str(s)) => {
@@ -830,13 +873,27 @@ impl<'a> WidgetNode<'a> {
                 render_progress(ctx, rect, value, self.style, state)
             }
             #[cfg(feature = "rich-widgets")]
-            WidgetKind::Toggle { label, on } => {
-                render_toggle(ctx, rect, label, on, self.style, state)
-            }
+            WidgetKind::Toggle {
+                label,
+                on,
+                off_color,
+            } => render_toggle(ctx, rect, label, on, off_color, self.style, state),
             #[cfg(feature = "rich-widgets")]
-            WidgetKind::Checkbox { label, checked } => {
-                render_checkbox(ctx, rect, label, checked, self.style, state)
-            }
+            WidgetKind::Checkbox {
+                label,
+                checked,
+                box_size,
+                box_color,
+            } => render_checkbox(
+                ctx,
+                rect,
+                label,
+                checked,
+                box_size,
+                box_color,
+                self.style,
+                state,
+            ),
             #[cfg(feature = "rich-widgets")]
             WidgetKind::Slider { value, min, max } => {
                 render_slider(ctx, rect, value, min, max, self.style, state)
@@ -1087,6 +1144,8 @@ impl<'a> WidgetNode<'a> {
                 digits,
                 decimals,
                 focused_digit,
+                accent_color,
+                chevron_color,
             } => {
                 let spinbox = SpinboxWidget {
                     value,
@@ -1096,6 +1155,8 @@ impl<'a> WidgetNode<'a> {
                     digits,
                     decimals,
                     focused_digit,
+                    accent_color,
+                    chevron_color,
                 };
                 spinbox.render(ctx, rect, self.style, state)
             }
@@ -1400,6 +1461,7 @@ fn render_toggle<D, C>(
     rect: Rect,
     label: &str,
     on: bool,
+    off_color: Rgb565,
     style: WidgetStyle,
     state: VisualState,
 ) -> Result<(), D::Error>
@@ -1418,14 +1480,7 @@ where
         knob_w,
         inner.h.saturating_sub(2),
     );
-    ctx.fill_rect(
-        track,
-        if on {
-            style.accent
-        } else {
-            Rgb565::new(7, 10, 10)
-        },
-    )?;
+    ctx.fill_rect(track, if on { style.accent } else { off_color })?;
     ctx.draw_text_in(
         Rect::new(
             inner.x,
@@ -1444,6 +1499,8 @@ fn render_checkbox<D, C>(
     rect: Rect,
     label: &str,
     checked: bool,
+    box_size: u8,
+    box_color: Option<Rgb565>,
     style: WidgetStyle,
     state: VisualState,
 ) -> Result<(), D::Error>
@@ -1455,14 +1512,21 @@ where
     let block = Block::styled(style);
     block.render(rect, ctx)?;
     let inner = block.inner(rect);
-    let box_size = inner.h.min(8);
+    // `0` is upstream's rule, so a design that says nothing about the size renders exactly as before. A named
+    // size is still capped by the row: a box taller than the widget would draw outside its own cell, where the
+    // engine clips it and the designer's canvas could not show it.
+    let box_size = if box_size == 0 {
+        inner.h.min(8)
+    } else {
+        (box_size as u32).min(inner.h)
+    };
     let box_rect = Rect::new(
         inner.x,
         inner.y + (inner.h.saturating_sub(box_size) as i32 / 2),
         box_size,
         box_size,
     );
-    ctx.stroke_rect(box_rect, Border::one(style.text))?;
+    ctx.stroke_rect(box_rect, Border::one(box_color.unwrap_or(style.text)))?;
     if checked && box_size > 4 {
         ctx.fill_rect(
             box_rect.inset(crate::geometry::EdgeInsets::all(2)),
@@ -4001,6 +4065,7 @@ mod tests {
         let mut toggle = node(WidgetKind::Toggle {
             label: "t",
             on: false,
+            off_color: Rgb565::new(7, 10, 10),
         });
         assert!(
             toggle
@@ -4015,6 +4080,8 @@ mod tests {
         let mut checkbox = node(WidgetKind::Checkbox {
             label: "c",
             checked: true,
+            box_size: 0,
+            box_color: None,
         });
         assert!(
             checkbox

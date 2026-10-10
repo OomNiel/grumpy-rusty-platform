@@ -29,6 +29,8 @@
  * pixels and no zoom arithmetic belongs in here.
  */
 
+import { resolveStyleValues, styleValuesOf, type ResolvedStyle } from '../../src/designer/appearance';
+import { widgetSpec } from '../../src/designer/catalog';
 import { isBuiltInFont } from '../../src/designer/fonts';
 import { type DesignerWidget } from '../../src/designer/model';
 import { glyphMetrics, glyphRows, GLYPH_COLUMNS, GLYPH_ROWS, vectorGlyph, VECTOR_PEN_UP } from './glyphs';
@@ -274,6 +276,78 @@ function namedBase(name: string, fallback: Style): Style {
             // honest answer (spec 5.3: an unknown name is passed through verbatim as Rust).
             return fallback;
     }
+}
+
+/**
+ * A resolved design appearance, laid over a base style.
+ *
+ * This is the canvas half of `src/designer/appearance.ts`: the same `resolveStyleValues` policy the emitter
+ * compiles from, applied to the preview's own `Style` record rather than written as Rust. One policy, two
+ * consumers -- so the canvas cannot apply a border the board will not paint, or drop one it will.
+ *
+ * `background` clears the gradient because `Block::render` paints the gradient *instead of* the background
+ * (`block.rs:177-186`); the emitter writes `style.gradient = None;` for the same reason
+ * (`appearance.ts` assignments), so the two agree by construction rather than by luck. The preview's fields
+ * are `readonly`, so every change builds a new object.
+ */
+function applyResolved(base: Style, resolved: ResolvedStyle): Style {
+    let style = base;
+    if (resolved.background !== undefined) {
+        const background = fromHex(resolved.background);
+        if (background !== undefined) {
+            style = { ...style, background, gradient: undefined };
+        }
+    }
+    if (resolved.border !== undefined) {
+        const colour = fromHex(resolved.border.colour);
+        if (colour !== undefined) {
+            style = { ...style, border: { color: colour, width: resolved.border.width } };
+        }
+    } else if (resolved.borderWidth !== undefined) {
+        // A width on its own thickens the border the base already had, keeping its colour.
+        style = { ...style, border: { ...style.border, width: resolved.borderWidth } };
+    }
+    if (resolved.radius !== undefined) {
+        style = { ...style, cornerRadius: resolved.radius };
+    }
+    if (resolved.text !== undefined) {
+        const colour = fromHex(resolved.text);
+        if (colour !== undefined) {
+            style = { ...style, text: colour };
+        }
+    }
+    if (resolved.accent !== undefined) {
+        const colour = fromHex(resolved.accent);
+        if (colour !== undefined) {
+            style = { ...style, accent: colour };
+        }
+    }
+    if (resolved.foreground !== undefined) {
+        const colour = fromHex(resolved.foreground);
+        if (colour !== undefined) {
+            style = { ...style, foreground: colour };
+        }
+    }
+    if (resolved.font !== undefined) {
+        style = { ...style, font: resolved.font };
+    }
+    return style;
+}
+
+/**
+ * The style a widget wears in the design: the base style it names, with the appearance fields its `viaStyle`
+ * properties carry folded on top.
+ *
+ * The base is the tag's *own* fallback rather than one global default, because a design that names one colour
+ * must keep the surface the widget already had -- `Style::panel()` for a roller, spinbox or scale,
+ * `Style::default()` for a toggle, checkbox or progress (the codegen fork's per-tag literals, `ownStyleOf`).
+ * The properties come from the catalogue, which is the authority on which fields travel inside the style
+ * expression rather than as attributes.
+ */
+function designStyle(widget: DesignerWidget, fallback: Style): Style {
+    const name = stringProp(widget.props, 'style');
+    const base = name === '' ? fallback : namedBase(name, fallback);
+    return applyResolved(base, resolveStyleValues(styleValuesOf(widget, widgetSpec(widget.tag)?.props ?? [])));
 }
 
 // ---------------------------------------------------------------------------
@@ -774,6 +848,121 @@ function paintRun(
     }
 }
 
+/**
+ * `RenderCtx::fill_circle` (spec 4.12, `render/mod.rs:1279-1299`): a scanline fill whose half-width is
+ * `sqrt(r² - dy²)` truncated to an integer, one run per row. The truncation is the crate's `as i32`, so it is
+ * kept rather than smoothed.
+ */
+function fillCircle(
+    context: CanvasRenderingContext2D,
+    cx: number,
+    cy: number,
+    radius: number,
+    colour: Rgb565,
+    opacity = 255,
+): void {
+    if (radius <= 0) {
+        return;
+    }
+    const rSq = radius * radius;
+    for (let dy = -radius; dy <= radius; dy += 1) {
+        const dx = Math.trunc(Math.sqrt(rSq - dy * dy));
+        if (dx >= 0) {
+            fillSolid(context, { x: cx - dx, y: cy + dy, w: dx * 2 + 1, h: 1 }, 0, colour, opacity);
+        }
+    }
+}
+
+/**
+ * `RenderCtx::stroke_circle` (spec 4.12, `render/mod.rs:1301-1333`): the crate's own midpoint circle, eight
+ * pixels at a time. Used for the radial needle's white ring.
+ */
+function strokeCircle(
+    context: CanvasRenderingContext2D,
+    cx: number,
+    cy: number,
+    radius: number,
+    colour: Rgb565,
+    opacity = 255,
+): void {
+    if (radius <= 0) {
+        return;
+    }
+    let x = radius;
+    let y = 0;
+    let err = 1 - x;
+    while (x >= y) {
+        pixel(context, cx + x, cy + y, colour, opacity);
+        pixel(context, cx + y, cy + x, colour, opacity);
+        pixel(context, cx - y, cy + x, colour, opacity);
+        pixel(context, cx - x, cy + y, colour, opacity);
+        pixel(context, cx - x, cy - y, colour, opacity);
+        pixel(context, cx - y, cy - x, colour, opacity);
+        pixel(context, cx + y, cy - x, colour, opacity);
+        pixel(context, cx + x, cy - y, colour, opacity);
+        y += 1;
+        if (err < 0) {
+            err += 2 * y + 1;
+        } else {
+            x -= 1;
+            err += 2 * (y - x) + 1;
+        }
+    }
+}
+
+/**
+ * `RenderCtx::draw_line_styled` (spec 4.12, `render/mod.rs:1130-1172`): the crate's Bresenham with the square
+ * pen the width selects.
+ *
+ * The pen is `2*floor(width/2)+1` pixels, not `width` -- a width of 2 draws a 3x3 block (`half` is 1, and the
+ * loop runs `-half..=half`). A round cap fills a circle of radius `max(1, half)` at each *endpoint*, once per
+ * step, which is how the crate draws it; at High quality the stroke is opaque (spec "Render quality").
+ */
+function drawLineStyled(
+    context: CanvasRenderingContext2D,
+    x0: number,
+    y0: number,
+    x1: number,
+    y1: number,
+    colour: Rgb565,
+    options: { readonly width?: number; readonly roundCap?: boolean; readonly opacity?: number } = {},
+): void {
+    const width = options.width ?? 1;
+    const opacity = options.opacity ?? 255;
+    const half = Math.max(0, Math.floor(width / 2));
+    let x = x0;
+    let y = y0;
+    const dx = Math.abs(x1 - x0);
+    const sx = x0 < x1 ? 1 : -1;
+    const dy = -Math.abs(y1 - y0);
+    const sy = y0 < y1 ? 1 : -1;
+    let err = dx + dy;
+
+    for (;;) {
+        for (let oy = -half; oy <= half; oy += 1) {
+            for (let ox = -half; ox <= half; ox += 1) {
+                pixel(context, x + ox, y + oy, colour, opacity);
+            }
+        }
+        if (options.roundCap === true) {
+            fillCircle(context, x0, y0, Math.max(1, half), colour, opacity);
+            fillCircle(context, x1, y1, Math.max(1, half), colour, opacity);
+        }
+        if (x === x1 && y === y1) {
+            break;
+        }
+        const e2 = 2 * err;
+        if (e2 >= dy) {
+            err += dy;
+            x += sx;
+        }
+        if (e2 <= dx) {
+            err += dx;
+            y += sy;
+        }
+    }
+}
+
 /** The title `Block::render` draws (spec 4.11, `block.rs:194-204`): `style.accent` on the block font. */
 function drawTitle(context: CanvasRenderingContext2D, rect: Rect, style: Style, title: string): void {
     const area = titleArea(rect, style);
@@ -1218,9 +1407,15 @@ function previewButton(context: CanvasRenderingContext2D, widget: DesignerWidget
     });
 }
 
-/** Toggle (spec 4.4, `widgets/mod.rs:1398-1439`): a fixed track at the right whose colour is the state. */
+/**
+ * Toggle (spec 4.4, `widgets/mod.rs:1459-1494`): a fixed track at the right whose colour is the state.
+ *
+ * The off-track is the design's `off_color`, or the crate's own `Rgb565::new(7, 10, 10)`
+ * (`builders.rs:276`, `emitter.rs:276`); on is `style.accent`, as upstream. The track has no outline of its
+ * own -- the widget's border frames the whole control.
+ */
 function previewToggle(context: CanvasRenderingContext2D, widget: DesignerWidget, state: VisualState): void {
-    const style = resolveVisual(styleNew(), state);
+    const style = resolveVisual(designStyle(widget, styleNew()), state);
     const rect = rectOf(widget);
     drawBlock(context, rect, style);
     const inner = blockInner(rect, style);
@@ -1231,7 +1426,8 @@ function previewToggle(context: CanvasRenderingContext2D, widget: DesignerWidget
         w: knobWidth,
         h: Math.max(0, inner.h - 2),
     };
-    fillSolid(context, track, 0, boolProp(widget.props, 'checked', false) ? style.accent : rgb(7, 10, 10), 255);
+    const off = colourProp(widget.props, 'off_color') ?? rgb(7, 10, 10);
+    fillSolid(context, track, 0, boolProp(widget.props, 'checked', false) ? style.accent : off, 255);
     drawTextIn(
         context,
         { x: inner.x, y: inner.y, w: Math.max(0, inner.w - (knobWidth + 4)), h: inner.h },
@@ -1241,20 +1437,27 @@ function previewToggle(context: CanvasRenderingContext2D, widget: DesignerWidget
     );
 }
 
-/** Checkbox (spec 4.5, `widgets/mod.rs:1442-1482`): an outlined box and, when checked, an accent square. */
+/**
+ * Checkbox (spec 4.5, `widgets/mod.rs:1497-1546`): an outlined box and, when checked, an accent square.
+ *
+ * `box_size` is the height the box wants, still capped by the row so it cannot draw outside its own cell
+ * (`widgets/mod.rs:1515-1522`); `0` keeps the crate's own `min(inner.h, 8)`, which is why the default box is
+ * small. `box_color` is the outline, defaulting to `style.text`, the colour the label shares.
+ */
 function previewCheckbox(context: CanvasRenderingContext2D, widget: DesignerWidget, state: VisualState): void {
-    const style = resolveVisual(styleNew(), state);
+    const style = resolveVisual(designStyle(widget, styleNew()), state);
     const rect = rectOf(widget);
     drawBlock(context, rect, style);
     const inner = blockInner(rect, style);
-    const boxSize = Math.min(inner.h, 8);
+    const requested = Math.max(0, Math.trunc(numberProp(widget.props, 'box_size', 0)));
+    const boxSize = requested === 0 ? Math.min(inner.h, 8) : Math.min(requested, inner.h);
     const box: Rect = {
         x: inner.x,
         y: inner.y + Math.floor(Math.max(0, inner.h - boxSize) / 2),
         w: boxSize,
         h: boxSize,
     };
-    strokeRounded(context, box, 0, { color: style.text, width: 1 }, 255);
+    strokeRounded(context, box, 0, { color: colourProp(widget.props, 'box_color') ?? style.text, width: 1 }, 255);
     if (boolProp(widget.props, 'checked', false) && boxSize > 4) {
         fillSolid(context, rectInset(box, allEdges(2)), 0, style.accent, 255);
     }
@@ -1286,14 +1489,14 @@ function previewSlider(context: CanvasRenderingContext2D, widget: DesignerWidget
 }
 
 /**
- * Progress bar (spec 4.7, `widgets/mod.rs:1370-1395`).
+ * Progress bar (spec 4.7, `widgets/mod.rs:1431-1456`).
  *
- * The emitter passes `Style::default()` (spec 5.1, `emitter.rs:347-353`), so the block is inert and the fill
- * is `style.foreground` (WHITE) in Normal -- `Style::progress()`'s bordered horizontal gradient is *not* what
- * a KDL progress bar gets.
+ * The emitter passes `Style::default()` unless the design names a style (spec 5.1, `emitter.rs:414-421`), so
+ * the block is inert by default and the fill is `style.foreground` (WHITE) in Normal -- `Style::progress()`'s
+ * bordered horizontal gradient is *not* what a KDL progress bar gets unless the design picks it.
  */
 function previewProgress(context: CanvasRenderingContext2D, widget: DesignerWidget, state: VisualState): void {
-    const style = resolveVisual(styleNew(), state);
+    const style = resolveVisual(designStyle(widget, styleNew()), state);
     const rect = rectOf(widget);
     drawBlock(context, rect, style);
     const inner = blockInner(rect, style);
@@ -1326,9 +1529,9 @@ function previewDropdown(context: CanvasRenderingContext2D, widget: DesignerWidg
     );
 }
 
-/** Roller (spec 4.9, `widgets/mod.rs:2669-2710`): previous/current/next in thirds, middle highlighted. */
+/** Roller (spec 4.9, `widgets/mod.rs:2733-2774`): previous/current/next in thirds, middle highlighted. */
 function previewRoller(context: CanvasRenderingContext2D, widget: DesignerWidget, state: VisualState): void {
-    const style = resolveVisual(stylePanel(), state);
+    const style = resolveVisual(designStyle(widget, stylePanel()), state);
     const rect = rectOf(widget);
     drawBlock(context, rect, style);
     const items = optionValues(widget);
@@ -1504,6 +1707,252 @@ function previewCarousel(context: CanvasRenderingContext2D, widget: DesignerWidg
     }
 }
 
+// ---------------------------------------------------------------------------
+// Spinbox and Gauge (spec 4.13-4.14)
+//
+// The crate has carried both for a while; the canvas had no arm for either, so both fell through to the
+// generic outline. They are drawn here from the crate's own render functions rather than from the spec,
+// because the spec never covered them: `widgets/spinbox.rs:127-205` and `widgets/scale.rs:95-332`.
+// ---------------------------------------------------------------------------
+
+/**
+ * `CHAR_WIDTH` (spec 1.1, `render/text_style.rs:7`): the crate's monospace cell width, a fixed `4` whatever
+ * the font. The spinbox measures and underlines with it even though the text engine advances by the font's
+ * own `advance()`, so the two can disagree on a wide face -- and that disagreement is the crate's, kept here.
+ */
+const CHAR_WIDTH = 4;
+
+/**
+ * `SpinboxWidget::format_text` (`widgets/spinbox.rs:95-125`): the sign, the integer part zero-padded to
+ * `digits`, and `decimals` digits after the point.
+ *
+ * The two are read from the design, because the board's widget gets them: `add_spinbox_styled` takes `digits`
+ * and `decimals` (`context/builders.rs`) and the emitter forwards what the panel holds, so a six-digit spinbox
+ * prints six digits on the glass. The canvas formats the same two fields, or it would show a number the board
+ * does not.
+ */
+function spinboxText(value: number, digits: number, decimals: number): string {
+    const magnitude = Math.abs(Math.trunc(value));
+    const sign = value < 0 ? '-' : '';
+    if (decimals === 0) {
+        return `${sign}${String(magnitude).padStart(digits, '0')}`;
+    }
+    let divisor = 1;
+    for (let i = 0; i < decimals; i += 1) {
+        divisor *= 10;
+    }
+    const integer = Math.floor(magnitude / divisor);
+    const fraction = magnitude % divisor;
+    const width = Math.max(0, digits - decimals);
+    return `${sign}${String(integer).padStart(width, '0')}.${String(fraction).padStart(decimals, '0')}`;
+}
+
+/** The value the board's widget holds: `add_spinbox_styled` clamps it to `[min, max]` (`builders.rs:1181`). */
+function spinboxValue(widget: DesignerWidget): number {
+    const min = numberProp(widget.props, 'min', 0);
+    const max = numberProp(widget.props, 'max', 9999);
+    const value = numberProp(widget.props, 'value', 0);
+    return Math.min(Math.max(value, min), max);
+}
+
+/**
+ * Spinbox (`widgets/spinbox.rs:127-205`): the block, the value centred on `CHAR_WIDTH` cells, the focused
+ * digit's two-pixel underline, and the `-`/`+` chevrons when the inner width reaches 80.
+ *
+ * Every board-built spinbox has `focused_digit: 0` (`builders.rs:1187`), so the underline sits under the
+ * *last* formatted character at `start_y + line_h + 1`, two pixels tall and one cell wide. The chevrons are
+ * 14-wide boxes at inset 2, stroked in `chevron_color`, with the `-`/`+` centred in them in the text colour;
+ * they are skipped entirely below 80 pixels, exactly as the crate's `if inner.w >= 80` does.
+ */
+function previewSpinbox(context: CanvasRenderingContext2D, widget: DesignerWidget, state: VisualState): void {
+    const style = resolveVisual(designStyle(widget, stylePanel()), state);
+    const rect = rectOf(widget);
+    drawBlock(context, rect, style);
+    const inner = blockInner(rect, style);
+
+    const digits = numberProp(widget.props, 'digits', 4);
+    const decimals = numberProp(widget.props, 'decimals', 0);
+    const text = spinboxText(spinboxValue(widget), digits, decimals);
+    const lineHeight = lineHeightOf(style);
+    const totalChars = charCount(text);
+    const startX = inner.x + Math.floor(Math.max(0, inner.w - totalChars * CHAR_WIDTH) / 2);
+    const startY = inner.y + Math.floor(Math.max(0, inner.h - lineHeight) / 2);
+    drawCrateText(context, startX, startY, text, style.font, style.text);
+
+    const underline: Rect = {
+        x: startX + Math.max(0, totalChars - 1) * CHAR_WIDTH,
+        y: startY + lineHeight + 1,
+        w: CHAR_WIDTH,
+        h: 2,
+    };
+    fillSolid(context, underline, 0, colourProp(widget.props, 'accent_color') ?? rgb(0, 63, 31), 255);
+
+    if (inner.w >= 80) {
+        const height = Math.max(0, inner.h - 4);
+        const left: Rect = { x: inner.x + 2, y: inner.y + 2, w: 14, h: height };
+        const right: Rect = { x: rectRight(inner) - 16, y: inner.y + 2, w: 14, h: height };
+        const chevron = colourProp(widget.props, 'chevron_color') ?? rgb(16, 32, 16);
+        strokeRounded(context, left, 0, { color: chevron, width: 1 }, 255);
+        strokeRounded(context, right, 0, { color: chevron, width: 1 }, 255);
+        drawTextIn(context, left, '-', style.font, style.text, { align: 'center' });
+        drawTextIn(context, right, '+', style.font, style.text, { align: 'center' });
+    }
+}
+
+/** The `scale mode=` attribute (`emitter.rs:362-368`): radial, vertical, and everything else horizontal. */
+function scaleModeOf(widget: DesignerWidget): 'radial' | 'linear_horizontal' | 'linear_vertical' {
+    const mode = stringProp(widget.props, 'mode');
+    if (mode === '' || mode === 'radial') {
+        return 'radial';
+    }
+    return mode === 'linear_vertical' ? 'linear_vertical' : 'linear_horizontal';
+}
+
+/** Rust's `f32::round` (`scale.rs:156`, `:225`, `:295`): half away from zero, unlike `Math.round`. */
+function roundHalfAwayFromZero(value: number): number {
+    return Math.sign(value) * Math.round(Math.abs(value));
+}
+
+/**
+ * Gauge (`widgets/scale.rs:95-332`): a graduated dial or bar with a needle.
+ *
+ * All three modes draw the block first; the radial one then returns without drawing anything when
+ * `radius < 8` (`scale.rs:266-269`). Angles are degrees with `y` increasing downwards, because the crate
+ * feeds them straight to `sin`/`cos` in framebuffer coordinates and the canvas shares that orientation:
+ * 0° is to the right, 90° down, 270° up -- so the default 135°..45° sweep runs across the bottom.
+ *
+ * The `start_angle`/`end_angle`, the tick counts, the label/needle switches and the two colours all arrive
+ * from the design now (`emitter.rs:346-393`); the tick counts were previously unreachable.
+ */
+function previewScale(context: CanvasRenderingContext2D, widget: DesignerWidget, state: VisualState): void {
+    const style = resolveVisual(designStyle(widget, stylePanel()), state);
+    const rect = rectOf(widget);
+    drawBlock(context, rect, style);
+    const inner = blockInner(rect, style);
+
+    const mode = scaleModeOf(widget);
+    const min = numberProp(widget.props, 'min', 0);
+    const max = numberProp(widget.props, 'max', 100);
+    const value = numberProp(widget.props, 'value', 0);
+    // The builder lifts both counts to at least one (`context/builders.rs:1093-1094`).
+    const majorTicks = Math.max(1, Math.trunc(numberProp(widget.props, 'major_ticks', 5)));
+    const minorTicks = Math.max(1, Math.trunc(numberProp(widget.props, 'minor_ticks', 2)));
+    const startAngle = numberProp(widget.props, 'start_angle', 135);
+    const endAngle = numberProp(widget.props, 'end_angle', 45);
+    const showLabels = boolProp(widget.props, 'show_labels', true);
+    const showNeedle = boolProp(widget.props, 'show_needle', true);
+    const tickColour = colourProp(widget.props, 'tick_color') ?? rgb(16, 32, 16);
+    const needleColour = colourProp(widget.props, 'needle_color') ?? rgb(31, 0, 0);
+    const totalSteps = majorTicks * minorTicks;
+    // `f32::EPSILON`'s role: a non-zero denominator when min == max (`scale.rs:140`).
+    const range = Math.max(max - min, 1e-7);
+    const labelsAt = (t: number): string => String(roundHalfAwayFromZero(min + t * range));
+
+    if (mode === 'radial') {
+        const cx = inner.x + Math.floor(inner.w / 2);
+        const cy = inner.y + Math.floor(inner.h / 2);
+        const radius = Math.max(0, Math.floor(Math.min(inner.w, inner.h) / 2) - 4);
+        if (radius < 8) {
+            return;
+        }
+        const sweep = endAngle - startAngle;
+        for (let step = 0; step <= totalSteps; step += 1) {
+            const t = step / totalSteps;
+            const angle = ((startAngle + sweep * t) * Math.PI) / 180;
+            const major = step % minorTicks === 0;
+            const length = major ? 8 : 4;
+            const cos = Math.cos(angle);
+            const sin = Math.sin(angle);
+            drawLineStyled(
+                context,
+                cx + Math.trunc((radius - length) * cos),
+                cy + Math.trunc((radius - length) * sin),
+                cx + Math.trunc(radius * cos),
+                cy + Math.trunc(radius * sin),
+                tickColour,
+                { width: major ? 2 : 1 },
+            );
+            if (major && showLabels && radius > 20) {
+                const lx = cx + Math.trunc((radius - 18) * cos);
+                const ly = cy + Math.trunc((radius - 18) * sin);
+                drawTextIn(
+                    context,
+                    { x: lx - 12, y: ly - 6, w: 24, h: 12 },
+                    labelsAt(t),
+                    style.font,
+                    style.text,
+                    { align: 'center' },
+                );
+            }
+        }
+        if (showNeedle) {
+            const t = Math.min(Math.max((value - min) / range, 0), 1);
+            const angle = ((startAngle + sweep * t) * Math.PI) / 180;
+            const length = radius - 6;
+            const nx = cx + Math.trunc(length * Math.cos(angle));
+            const ny = cy + Math.trunc(length * Math.sin(angle));
+            drawLineStyled(context, cx, cy, nx, ny, needleColour, { width: 2, roundCap: true });
+            fillCircle(context, cx, cy, 4, needleColour, 255);
+            strokeCircle(context, cx, cy, 4, WHITE, 255);
+        }
+        return;
+    }
+
+    if (mode === 'linear_horizontal') {
+        const baseline = inner.y + Math.trunc((inner.h * 2) / 3);
+        drawLineStyled(context, inner.x, baseline, rectRight(inner), baseline, tickColour, { width: 1 });
+        for (let step = 0; step <= totalSteps; step += 1) {
+            const t = step / totalSteps;
+            const x = inner.x + Math.trunc(t * inner.w);
+            const major = step % minorTicks === 0;
+            const length = major ? 8 : 4;
+            drawLineStyled(context, x, baseline, x, baseline - length, tickColour, { width: major ? 2 : 1 });
+            if (major && showLabels) {
+                drawTextIn(
+                    context,
+                    { x: x - 15, y: baseline - 20, w: 30, h: lineHeightOf(style) },
+                    labelsAt(t),
+                    style.font,
+                    style.text,
+                    { align: 'center' },
+                );
+            }
+        }
+        if (showNeedle) {
+            const t = Math.min(Math.max((value - min) / range, 0), 1);
+            const nx = inner.x + Math.trunc(t * inner.w);
+            drawLineStyled(context, nx, baseline - 12, nx, baseline + 6, needleColour, { width: 2, roundCap: true });
+            fillCircle(context, nx, baseline, 3, needleColour, 255);
+        }
+        return;
+    }
+
+    const baseline = inner.x + Math.trunc(inner.w / 3);
+    drawLineStyled(context, baseline, inner.y, baseline, rectBottom(inner), tickColour, { width: 1 });
+    for (let step = 0; step <= totalSteps; step += 1) {
+        const t = step / totalSteps;
+        const y = rectBottom(inner) - Math.trunc(t * inner.h);
+        const major = step % minorTicks === 0;
+        const length = major ? 8 : 4;
+        drawLineStyled(context, baseline, y, baseline + length, y, tickColour, { width: major ? 2 : 1 });
+        if (major && showLabels) {
+            drawTextIn(
+                context,
+                { x: baseline + 12, y: y - 4, w: 30, h: lineHeightOf(style) },
+                labelsAt(t),
+                style.font,
+                style.text,
+            );
+        }
+    }
+    if (showNeedle) {
+        const t = Math.min(Math.max((value - min) / range, 0), 1);
+        const ny = rectBottom(inner) - Math.trunc(t * inner.h);
+        drawLineStyled(context, baseline - 4, ny, baseline + 12, ny, needleColour, { width: 2, roundCap: true });
+        fillCircle(context, baseline, ny, 3, needleColour, 255);
+    }
+}
+
 function rectOf(widget: DesignerWidget): Rect {
     return { x: widget.x, y: widget.y, w: widget.width, h: widget.height };
 }
@@ -1565,6 +2014,13 @@ export function previewWidget(
             return true;
         case 'roller':
             previewRoller(context, widget, state);
+            return true;
+        case 'spinbox':
+            previewSpinbox(context, widget, state);
+            return true;
+        case 'scale':
+        case 'gauge':
+            previewScale(context, widget, state);
             return true;
         case 'table':
             previewTable(context, widget, state);

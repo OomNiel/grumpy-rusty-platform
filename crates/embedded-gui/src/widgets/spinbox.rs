@@ -20,6 +20,11 @@ pub struct SpinboxWidget {
     pub digits: u8,
     pub decimals: u8,
     pub focused_digit: u8,
+    /// The focused digit's underline. Upstream hard-coded `CSS_CYAN`; `new` still does, so a widget built the
+    /// old way looks exactly as it did.
+    pub accent_color: Rgb565,
+    /// The `-`/`+` chevron outlines. Upstream hard-coded `CSS_GRAY`.
+    pub chevron_color: Rgb565,
 }
 
 impl SpinboxWidget {
@@ -32,6 +37,8 @@ impl SpinboxWidget {
             digits: 4,
             decimals: 0,
             focused_digit: 0,
+            accent_color: Rgb565::CSS_CYAN,
+            chevron_color: Rgb565::CSS_GRAY,
         }
     }
 
@@ -164,7 +171,7 @@ impl SpinboxWidget {
                 .saturating_sub(digit_from_right);
             let digit_x = start_x + (char_idx * char_w) as i32;
             let underline = Rect::new(digit_x, start_y + line_h as i32 + 1, char_w, 2);
-            ctx.fill_rect(underline, Rgb565::CSS_CYAN)?;
+            ctx.fill_rect(underline, self.accent_color)?;
         }
 
         // Draw increment / decrement indicator chevrons on sides if width allows
@@ -176,8 +183,8 @@ impl SpinboxWidget {
                 14,
                 inner.h.saturating_sub(4),
             );
-            ctx.stroke_rect(left_btn, Border::one(Rgb565::CSS_GRAY))?;
-            ctx.stroke_rect(right_btn, Border::one(Rgb565::CSS_GRAY))?;
+            ctx.stroke_rect(left_btn, Border::one(self.chevron_color))?;
+            ctx.stroke_rect(right_btn, Border::one(self.chevron_color))?;
             ctx.draw_text_in(
                 left_btn,
                 "-",

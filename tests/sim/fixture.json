@@ -75,7 +75,9 @@
             "width": 480,
             "height": 20,
             "props": {
-                "value": 50
+                "value": 50,
+                "fg": "#ff00ff",
+                "bg": "#003300"
             }
         },
         {
@@ -116,6 +118,12 @@
             "y": 120,
             "width": 40,
             "height": 30,
+            "_props_comment": "On, and with an accent and a surface of its own: an off switch paints its track colour instead, so an accent on an off toggle would change nothing and prove nothing.",
+            "props": {
+                "checked": true,
+                "accent": "#00ff00",
+                "bg": "#003300"
+            },
             "events": [
                 "valueChanged"
             ]
@@ -210,6 +218,84 @@
             "props": {
                 "text": "AB",
                 "text_color": "#ff0000"
+            }
+        },
+        {
+            "_comment": "The four controls the appearance work is about, each with colours that are not the crate's defaults. Stripping a colour in the second render has to change pixels inside the widget's own cell, which is what proves the value travelled designer -> KDL -> fork -> runtime -> glass.",
+            "id": "check",
+            "tag": "checkbox",
+            "x": 0,
+            "y": 155,
+            "width": 150,
+            "height": 26,
+            "props": {
+                "label": "Check",
+                "checked": true,
+                "box_size": 18,
+                "box_color": "#ff8000",
+                "accent": "#00ff00",
+                "bg": "#8000ff",
+                "border_color": "#ffff00",
+                "border_width": 2,
+                "text_color": "#00ffff"
+            }
+        },
+        {
+            "_comment": "A spinbox: the underline and the chevron outlines are literals in the crate's renderer, so they are attributes the runtime fork reads rather than style expressions.",
+            "id": "spin",
+            "tag": "spinbox",
+            "x": 0,
+            "y": 185,
+            "width": 150,
+            "height": 26,
+            "props": {
+                "min": 0,
+                "max": 100,
+                "value": 42,
+                "accent_color": "#ff00ff",
+                "chevron_color": "#00ff00",
+                "bg": "#003366",
+                "text_color": "#ffff00"
+            }
+        },
+        {
+            "_comment": "A roller, whose selected row is the crate's accent and whose text and surface come from its style.",
+            "id": "roll",
+            "tag": "roller",
+            "x": 0,
+            "y": 215,
+            "width": 150,
+            "height": 18,
+            "props": {
+                "selected": 1,
+                "accent": "#ff8800",
+                "bg": "#004400",
+                "text_color": "#ffffff"
+            }
+        },
+        {
+            "_comment": "A gauge. Upstream's add_scale hard-coded grey ticks, a red needle and a 135..45 sweep, so nothing about it could be designed; every one of those is a field here.",
+            "id": "gauge",
+            "tag": "scale",
+            "x": 390,
+            "y": 120,
+            "width": 90,
+            "height": 90,
+            "props": {
+                "mode": "radial",
+                "min": 0,
+                "max": 10,
+                "value": 7,
+                "major_ticks": 3,
+                "minor_ticks": 2,
+                "start_angle": 180,
+                "end_angle": 0,
+                "show_labels": true,
+                "show_needle": true,
+                "tick_color": "#00ffff",
+                "needle_color": "#ff00ff",
+                "bg": "#220044",
+                "text_color": "#ffff00"
             }
         },
         {

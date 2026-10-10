@@ -135,11 +135,16 @@ pub enum WidgetDef {
         id: Option<String>,
         label: String,
         checked: bool,
+        off_color: Option<String>,
+        style: Option<String>,
     },
     Checkbox {
         id: Option<String>,
         label: String,
         checked: bool,
+        box_size: u8,
+        box_color: Option<String>,
+        style: Option<String>,
     },
     Slider {
         id: Option<String>,
@@ -156,6 +161,7 @@ pub enum WidgetDef {
         id: Option<String>,
         options: Vec<String>,
         selected: usize,
+        style: Option<String>,
     },
     Scale {
         id: Option<String>,
@@ -165,6 +171,13 @@ pub enum WidgetDef {
         value: f32,
         major_ticks: u8,
         minor_ticks: u8,
+        start_angle: i16,
+        end_angle: i16,
+        show_labels: bool,
+        show_needle: bool,
+        tick_color: Option<String>,
+        needle_color: Option<String>,
+        style: Option<String>,
     },
     Spinbox {
         id: Option<String>,
@@ -173,6 +186,9 @@ pub enum WidgetDef {
         value: i32,
         digits: u8,
         decimals: u8,
+        accent_color: Option<String>,
+        chevron_color: Option<String>,
+        style: Option<String>,
     },
     Table {
         id: Option<String>,
@@ -182,6 +198,7 @@ pub enum WidgetDef {
     ProgressBar {
         id: Option<String>,
         value: f32,
+        style: Option<String>,
     },
     SweepingArc {
         id: Option<String>,

@@ -165,6 +165,13 @@ designer for the active project. Either way it works on a board that carries a p
   `time_picker`, `number_picker`, `content_indicator`, `crumbs`, `path`) are parsed by its code generator but
   emit calls its runtime does not accept, so they are documented and refused rather than handed out. A design
   that already contains one says so, by name, with the reason, and the control can be selected and deleted.
+- **Every control's appearance is yours to set** — a Toggle, Checkbox, Roller, Progress bar, Spinbox and Gauge
+  each carry a background, a border colour and width, a corner radius and their own accent and text colours; a
+  Gauge also carries its tick and needle colours, its tick counts, where its sweep starts and ends, and whether
+  its labels and needle are drawn. A border **colour** is what asks for a border (one pixel wide unless you name
+  a width); a width on its own thickens the border the control already had, and a radius of `0` keeps the
+  control's own corners. These controls are painted on the glass by a vendored copy of the `embedded-gui`
+  runtime, because some of those values are read inside its renderers — see `crates/embedded-gui/README.md`.
 - **A created project is loaded** — the folder the wizard writes becomes part of the window whatever the
   notification's answer is, so the Explorer, Source Control and the terminal are already pointing at it. Loading
   a folder can restart the extension host, so a Designer asked for at that moment reopens on the other side.

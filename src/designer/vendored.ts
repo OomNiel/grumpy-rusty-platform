@@ -25,8 +25,15 @@ import * as path from 'path';
 // code. The one thing that asks the user -- `ensureVendoredCrates` -- lives in `editor.ts`, which has a window.
 import type * as vscode from 'vscode';
 
-/** The crates copied into a Designer project's `codegen/` folder, in the order they are written. */
-export const VENDORED_CRATES = ['rusty-gui-widgets', 'embedded-gui-codegen'] as const;
+/**
+ * The crates copied into a Designer project's `codegen/` folder, in the order they are written.
+ *
+ * `embedded-gui` is the runtime the generated code calls, vendored for the same reason as the other two: a few
+ * values a design must be able to name -- a checkbox's box size, a gauge's tick and needle colours, the colours
+ * inside a spinbox -- are read by the runtime's renderers, where no markup can reach them unless the runtime
+ * itself is ours. See `crates/embedded-gui/README.md`.
+ */
+export const VENDORED_CRATES = ['rusty-gui-widgets', 'embedded-gui-codegen', 'embedded-gui'] as const;
 
 /** Where in the project the copying extension's version is recorded. */
 export const VENDORED_MARKER = 'codegen/.rusty-platform-crates';

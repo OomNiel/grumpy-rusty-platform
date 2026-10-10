@@ -264,18 +264,42 @@ pub fn generate_rust_code(screen: &ScreenDef) -> String {
                     var_name, idx, text, st
                 );
             }
-            WidgetDef::Toggle { label, checked, .. } => {
+            WidgetDef::Toggle {
+                label,
+                checked,
+                off_color,
+                style,
+                ..
+            } => {
+                // `add_toggle`'s own default for the off track is this near-black literal. A design
+                // that names no colour keeps it, so old markup emits the call it always did.
+                let off = rgb565_or(off_color, "Rgb565::new(7, 10, 10)");
+                let st = style_expr(style.as_deref(), "Style::default()");
                 let _ = writeln!(
                     &mut out,
-                    "        let {} = gui.add_toggle(cells[{}], \"{}\", {}, Style::default())?;",
-                    var_name, idx, label, checked
+                    "        let {} = gui.add_toggle_colored(cells[{}], \"{}\", {}, {}, {})?;",
+                    var_name, idx, label, checked, off, st
                 );
             }
-            WidgetDef::Checkbox { label, checked, .. } => {
+            WidgetDef::Checkbox {
+                label,
+                checked,
+                box_size,
+                box_color,
+                style,
+                ..
+            } => {
+                let st = style_expr(style.as_deref(), "Style::default()");
                 let _ = writeln!(
                     &mut out,
-                    "        let {} = gui.add_checkbox(cells[{}], \"{}\", {}, Style::default())?;",
-                    var_name, idx, label, checked
+                    "        let {} = gui.add_checkbox_sized(cells[{}], \"{}\", {}, {}, {}, {})?;",
+                    var_name,
+                    idx,
+                    label,
+                    checked,
+                    box_size,
+                    opt_rgb565(box_color),
+                    st
                 );
             }
             WidgetDef::Slider {
@@ -302,17 +326,21 @@ pub fn generate_rust_code(screen: &ScreenDef) -> String {
                 );
             }
             WidgetDef::Roller {
-                options, selected, ..
+                options,
+                selected,
+                style,
+                ..
             } => {
                 let opts_joined = options
                     .iter()
                     .map(|s| format!("\"{}\"", s))
                     .collect::<Vec<_>>()
                     .join(", ");
+                let st = style_expr(style.as_deref(), "Style::panel()");
                 let _ = writeln!(
                     &mut out,
-                    "        let {} = gui.add_roller(cells[{}], &[{}], {}, Style::panel())?;",
-                    var_name, idx, opts_joined, selected
+                    "        let {} = gui.add_roller(cells[{}], &[{}], {}, {})?;",
+                    var_name, idx, opts_joined, selected, st
                 );
             }
             WidgetDef::Scale {
@@ -320,6 +348,15 @@ pub fn generate_rust_code(screen: &ScreenDef) -> String {
                 min,
                 max,
                 value,
+                major_ticks,
+                minor_ticks,
+                start_angle,
+                end_angle,
+                show_labels,
+                show_needle,
+                tick_color,
+                needle_color,
+                style,
                 ..
             } => {
                 let scale_mode = if mode.eq_ignore_ascii_case("radial") {
@@ -329,26 +366,59 @@ pub fn generate_rust_code(screen: &ScreenDef) -> String {
                 } else {
                     "ScaleMode::LinearHorizontal"
                 };
+                // `add_scale` hard-codes gray ticks and a red needle; absent colours keep those
+                // literals. The tick counts are newly reachable here -- `add_scale` dropped them.
+                let tick = rgb565_or(tick_color, "Rgb565::new(16, 32, 16)");
+                let needle = rgb565_or(needle_color, "Rgb565::new(31, 0, 0)");
+                let st = style_expr(style.as_deref(), "Style::panel()");
                 let _ = writeln!(
                     &mut out,
-                    "        let {} = gui.add_scale(cells[{}], {}, {:.1}, {:.1}, {:.1}, Style::panel())?;",
-                    var_name, idx, scale_mode, min, max, value
+                    "        let {} = gui.add_scale_styled(cells[{}], {}, {:.1}, {:.1}, {:.1}, {}, {}, {}, {}, {}, {}, {}, {}, {})?;",
+                    var_name,
+                    idx,
+                    scale_mode,
+                    min,
+                    max,
+                    value,
+                    major_ticks,
+                    minor_ticks,
+                    start_angle,
+                    end_angle,
+                    show_labels,
+                    show_needle,
+                    tick,
+                    needle,
+                    st
                 );
             }
             WidgetDef::Spinbox {
-                min, max, value, ..
+                min,
+                max,
+                value,
+                digits,
+                decimals,
+                accent_color,
+                chevron_color,
+                style,
+                ..
             } => {
+                // `add_spinbox` bakes in `CSS_CYAN` for the focused-digit underline and
+                // `CSS_GRAY` for the chevrons; `Rgb565::new` spells those without `WebColors`.
+                let accent = rgb565_or(accent_color, "Rgb565::new(0, 63, 31)");
+                let chevron = rgb565_or(chevron_color, "Rgb565::new(16, 32, 16)");
+                let st = style_expr(style.as_deref(), "Style::panel()");
                 let _ = writeln!(
                     &mut out,
-                    "        let {} = gui.add_spinbox(cells[{}], {}, {}, {}, Style::panel())?;",
-                    var_name, idx, min, max, value
+                    "        let {} = gui.add_spinbox_styled(cells[{}], {}, {}, {}, {}, {}, {}, {}, {})?;",
+                    var_name, idx, min, max, value, digits, decimals, accent, chevron, st
                 );
             }
-            WidgetDef::ProgressBar { value, .. } => {
+            WidgetDef::ProgressBar { value, style, .. } => {
+                let st = style_expr(style.as_deref(), "Style::default()");
                 let _ = writeln!(
                     &mut out,
-                    "        let {} = gui.add_progress_bar(cells[{}], {:.2}, Style::default())?;",
-                    var_name, idx, value
+                    "        let {} = gui.add_progress_bar(cells[{}], {:.2}, {})?;",
+                    var_name, idx, value, st
                 );
             }
             WidgetDef::SweepingArc {
@@ -1475,6 +1545,14 @@ fn opt_rgb565(token: &Option<String>) -> String {
     match token {
         Some(value) => format!("Some({})", rgb565_expr(value)),
         None => "None".to_string(),
+    }
+}
+
+/// The colour a design named, or the numeric literal the runtime used to hard-code for this field.
+fn rgb565_or(token: &Option<String>, default: &str) -> String {
+    match token {
+        Some(value) => rgb565_expr(value),
+        None => default.to_string(),
     }
 }
 

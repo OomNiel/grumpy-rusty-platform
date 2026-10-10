@@ -406,3 +406,90 @@ screen id="Wild" width=320 height=240 theme="dark" {
         "out-of-range points are clamped to the cell: {generated}"
     );
 }
+
+#[test]
+fn appearance_attributes_reach_the_generated_code() {
+    // Six widgets now carry appearance and value fields the designer writes. Dropping one anywhere
+    // along KDL -> parser -> AST -> emitter still compiles and still draws *a* widget, so only an
+    // assertion on the generated text catches the loss.
+    let kdl = r##"
+screen id="Styled" width=320 height=240 theme="dark" {
+    grid cols="1fr" rows="1fr 1fr 1fr 1fr 1fr 1fr" gap=0 padding=0 {
+        toggle id="t" label="x" checked=true off_color="#ff0000" style="Style::panel()" col=0 row=0
+        checkbox id="c" label="x" checked=true box_size=14 box_color="#ff0000" style="{ let mut style = Style::panel(); style.border.width = 2; style }" col=0 row=1
+        progress id="p" value=0.25 style="Style::panel()" col=0 row=2
+        roller id="r" selected=1 style="Style::panel()" col=0 row=3 {
+            option "a"
+            option "b"
+        }
+        spinbox id="s" min=1 max=9 value=5 digits=2 decimals=1 accent_color="#ff0000" chevron_color="#00ff00" style="Style::panel()" col=0 row=4
+        scale id="g" mode="radial" min=0.0 max=10.0 value=5.0 major_ticks=4 minor_ticks=3 start_angle=90 end_angle=270 show_labels=false show_needle=false tick_color="#ff0000" needle_color="#00ff00" style="Style::panel()" col=0 row=5
+    }
+}
+"##;
+    let screen = parse_kdl_screen(kdl).unwrap();
+    let generated = compile_kdl_to_rust(kdl).unwrap();
+
+    assert!(
+        generated.contains(
+            "gui.add_toggle_colored(cells[0], \"x\", true, Rgb565::new(31, 0, 0), Style::panel())"
+        ),
+        "the toggle's off colour and style must reach the board: {generated}"
+    );
+    assert!(
+        generated.contains(
+            "gui.add_checkbox_sized(cells[1], \"x\", true, 14, Some(Rgb565::new(31, 0, 0)), { let mut style = Style::panel(); style.border.width = 2; style })"
+        ),
+        "the checkbox's size, outline colour and style expression must reach the board: {generated}"
+    );
+    assert!(
+        generated.contains("gui.add_progress_bar(cells[2], 0.25, Style::panel())"),
+        "the progress bar's style must replace the hard-coded default: {generated}"
+    );
+    assert!(
+        generated.contains("gui.add_roller(cells[3], &[\"a\", \"b\"], 1, Style::panel())"),
+        "the roller's style must replace the hard-coded panel: {generated}"
+    );
+    assert!(
+        generated.contains(
+            "gui.add_spinbox_styled(cells[4], 1, 9, 5, 2, 1, Rgb565::new(31, 0, 0), Rgb565::new(0, 63, 0), Style::panel())"
+        ),
+        "the spinbox's accent/chevron colours must reach the board: {generated}"
+    );
+    assert!(
+        generated.contains(
+            "gui.add_scale_styled(cells[5], ScaleMode::Radial, 0.0, 10.0, 5.0, 4, 3, 90, 270, false, false, Rgb565::new(31, 0, 0), Rgb565::new(0, 63, 0), Style::panel())"
+        ),
+        "the scale's sweep, tick counts and colours must reach the board: {generated}"
+    );
+
+    // The serializer has to write these fields back, or a designer's next save silently reverts them.
+    assert_eq!(
+        parse_kdl_screen(&serialize_kdl_screen(&screen)).unwrap(),
+        screen
+    );
+
+    // A design that names no appearance keeps the literals the runtime used to hard-code: the
+    // toggle's near-black off track and `Style::default()`, and the scale's old sweep and palette.
+    let plain = r#"
+screen id="Plain" width=320 height=240 {
+    grid cols="1fr" rows="1fr 1fr" gap=0 padding=0 {
+        toggle id="t" label="x" checked=true col=0 row=0
+        scale id="g" mode="radial" min=0.0 max=10.0 value=5.0 major_ticks=3 minor_ticks=1 col=0 row=1
+    }
+}
+"#;
+    let generated = compile_kdl_to_rust(plain).unwrap();
+    assert!(
+        generated.contains(
+            "gui.add_toggle_colored(cells[0], \"x\", true, Rgb565::new(7, 10, 10), Style::default())"
+        ),
+        "an unstyled toggle keeps its old default: {generated}"
+    );
+    assert!(
+        generated.contains(
+            "gui.add_scale_styled(cells[1], ScaleMode::Radial, 0.0, 10.0, 5.0, 3, 1, 135, 45, true, true, Rgb565::new(16, 32, 16), Rgb565::new(31, 0, 0), Style::panel())"
+        ),
+        "tick counts are passed through and the sweep keeps its old defaults: {generated}"
+    );
+}

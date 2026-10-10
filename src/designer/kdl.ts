@@ -27,7 +27,7 @@ import { designCanvasSize } from './model';
 import { layoutToGrid, trackSpec, type GridLayout } from './grid';
 import { widgetSpec } from './catalog';
 import { isBuiltInFont } from './fonts';
-import { appearanceExpression } from './appearance';
+import { appearanceExpression, styleValuesOf } from './appearance';
 
 /** Escapes a value for a KDL quoted string. */
 function quote(value: string): string {
@@ -75,21 +75,14 @@ function widgetLine(
     const spec = widgetSpec(widget.tag);
     const parts = [`${widget.tag} id=${quote(widget.id)}`];
 
-    // The base style and a built-in font are not two attributes: a built-in font *is* a style expression, since
-    // the markup has no attribute for the crate's own fonts. So both are composed into one, and the individual
-    // properties are skipped by the loop below. See `src/designer/appearance.ts`.
-    const builtIn = typeof widget.props.font === 'string' && isBuiltInFont(widget.props.font) ? widget.props.font : '';
-    // The colour the widget's text is painted with, when the markup gives the tag no colour attribute and the
-    // value therefore has to ride in the style expression with everything else.
-    const viaStyle = (spec?.props ?? []).find((property) => property.viaStyle === true);
+    // The base style, a built-in font and the widget's own colours are not separate attributes: a built-in font
+    // *is* a style expression (the markup has no attribute for the crate's own fonts), and a colour the tag has
+    // no field for has to ride in the same expression. So all of them are composed into one, and the properties
+    // that travelled that way are skipped by the loop below. See `src/designer/appearance.ts`.
     const appearance = appearanceExpression({
         tag: widget.tag,
         style: typeof widget.props.style === 'string' ? widget.props.style : undefined,
-        builtInFont: builtIn,
-        textColour:
-            viaStyle !== undefined && typeof widget.props[viaStyle.name] === 'string'
-                ? (widget.props[viaStyle.name] as string)
-                : undefined,
+        values: styleValuesOf(widget, spec?.props ?? []),
     });
 
     // A circle is not emitted with its catalogue property names: the codegen parser reads `stroke_width`,
@@ -122,7 +115,7 @@ function widgetLine(
         if (property.kind === 'font' && isBuiltInFont(value as string)) {
             continue;
         }
-        if (property.kind === 'style' || property.viaStyle === true) {
+        if (property.kind === 'style' || property.viaStyle !== undefined) {
             continue;
         }
         parts.push(`${property.name}=${literal(value as string | number | boolean)}`);
