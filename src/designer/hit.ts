@@ -14,7 +14,16 @@
  *   search for `widgetAt` runs backwards and a click lands on what the user can actually see.
  */
 
-import { type DesignerDocument, type DesignerWidget, designCanvasSize } from './model';
+import {
+    type DesignerDocument,
+    type DesignerWidget,
+    type TriangleVertex,
+    TRIANGLE_VERTICES,
+    designCanvasSize,
+    triangleBoxOf,
+    triangleVertex,
+} from './model';
+import { widgetSpec } from './catalog';
 import type { Rect } from './grid';
 
 /** The eight resize handles, named by the corner or edge they sit on. */
@@ -24,6 +33,15 @@ export const HANDLES: Handle[] = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'];
 
 /** How big a handle is on screen, in canvas pixels. */
 export const HANDLE_SIZE = 8;
+
+/**
+ * How big a triangle's vertex handles are.
+ *
+ * Larger than a box handle, because they are the only way to aim a triangle's point and the apex sits exactly
+ * on the box's own north handle. They are drawn as diamonds rather than the boxes' squares, so which is which
+ * is visible and not just something the user has to discover by dragging one.
+ */
+export const VERTEX_HANDLE_SIZE = 11;
 
 /** How close an edge has to come before it snaps, in canvas pixels. */
 export const SNAP_TOLERANCE = 6;
@@ -38,6 +56,31 @@ export interface Target {
     id: string;
     /** Present when the click was on one of the selected widget's resize handles. */
     handle?: Handle;
+    /**
+     * Present when the click was on one of a selected triangle's vertex handles.
+     *
+     * A vertex wins over the box handle it sits on: the apex of a freshly dropped triangle is exactly on the
+     * box's `n` handle, and a click there has to mean "move this point", which is the thing only a triangle
+     * has. The box is still resizable from its other seven handles, and grows by itself when a vertex is
+     * dragged past it.
+     */
+    vertex?: TriangleVertex;
+}
+
+/** The three draggable points of a triangle, in panel pixels. Empty for every other tag. */
+export function vertexHandles(
+    widget: DesignerWidget,
+): { vertex: TriangleVertex; x: number; y: number }[] {
+    if (widgetSpec(widget.tag)?.draws !== 'triangle') {
+        return [];
+    }
+    const box = triangleBoxOf(widget);
+    return TRIANGLE_VERTICES.map((vertex) => ({ vertex, ...triangleVertex(box, vertex) }));
+}
+
+/** Whether a point is within `reach` of a handle's centre, on both axes. */
+function hits(centre: { x: number; y: number }, x: number, y: number, reach: number): boolean {
+    return x >= centre.x - reach && x <= centre.x + reach && y >= centre.y - reach && y <= centre.y + reach;
 }
 
 /** A line the frontend draws to show why something snapped where it did. */
@@ -70,7 +113,8 @@ function handleCentres(widget: DesignerWidget): { handle: Handle; x: number; y: 
  * What is under a point.
  *
  * The selected widget's handles are tested first, with the tolerance reaching outside the widget so that a
- * corner handle on a widget flush with the canvas edge is still grabbable.
+ * corner handle on a widget flush with the canvas edge is still grabbable. A triangle's vertices are tested
+ * before even those, so the apex -- which shares its pixel with the box's north handle -- can be dragged.
  */
 export function hitTest(
     document: DesignerDocument,
@@ -81,14 +125,13 @@ export function hitTest(
     if (selectedId !== undefined) {
         const selected = document.widgets.find((widget) => widget.id === selectedId);
         if (selected !== undefined) {
-            const reach = Math.floor(HANDLE_SIZE / 2);
+            for (const centre of vertexHandles(selected)) {
+                if (hits(centre, x, y, Math.floor(VERTEX_HANDLE_SIZE / 2))) {
+                    return { id: selected.id, vertex: centre.vertex };
+                }
+            }
             for (const centre of handleCentres(selected)) {
-                if (
-                    x >= centre.x - reach &&
-                    x <= centre.x + reach &&
-                    y >= centre.y - reach &&
-                    y <= centre.y + reach
-                ) {
+                if (hits(centre, x, y, Math.floor(HANDLE_SIZE / 2))) {
                     return { id: selected.id, handle: centre.handle };
                 }
             }

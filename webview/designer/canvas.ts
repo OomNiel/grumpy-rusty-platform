@@ -12,7 +12,14 @@
  * makes the zoom a presentation choice rather than something the document can be wrong about.
  */
 
-import { type DesignerState, canvasOf, moveWidget, resizeWidget, addWidget } from '../../src/designer/state';
+import {
+    type DesignerState,
+    canvasOf,
+    moveWidget,
+    resizeWidget,
+    setTriangleGeometry,
+    addWidget,
+} from '../../src/designer/state';
 import {
     type Guide,
     type Handle,
@@ -23,6 +30,13 @@ import {
     snapMove,
     snapTargets,
 } from '../../src/designer/hit';
+import {
+    type TriangleBox,
+    type TriangleVertex,
+    triangleBoxOf,
+    triangleFromVertices,
+    triangleVertices,
+} from '../../src/designer/model';
 import type { Rect } from '../../src/designer/grid';
 import { widgetSpec } from '../../src/designer/catalog';
 import { DARK_PALETTE, drawSelection, drawWidget } from './theme';
@@ -44,14 +58,29 @@ export interface CanvasCallbacks {
 }
 
 interface Drag {
-    kind: 'move' | 'resize';
+    kind: 'move' | 'resize' | 'vertex';
     id: string;
     handle?: Handle;
+    /** Which point of a triangle is being dragged. Present only for a `vertex` drag. */
+    vertex?: TriangleVertex;
     /** Where the pointer went down, in design pixels. */
     fromX: number;
     fromY: number;
     /** The rectangle as it was, so a drag is always computed from the original rather than accumulating. */
     origin: Rect;
+    /**
+     * A triangle's box and points as they were, for the same reason as `origin`.
+     *
+     * A vertex drag moves the box, so the other two points have to be recovered from a snapshot: reading them
+     * back out of the updated document each move would quantise them through the per-mille arithmetic again
+     * and again, and a point would crawl across the canvas while the pointer stood still.
+     */
+    originTriangle?: TriangleBox;
+}
+
+/** Keeps a design coordinate inside the canvas, which is what a vertex drag has to respect. */
+function clamp(value: number, low: number, high: number): number {
+    return Math.max(low, Math.min(high, value));
 }
 
 export class CanvasView {
@@ -199,12 +228,19 @@ export class CanvasView {
             if (widget !== undefined) {
                 this.element.setPointerCapture(event.pointerId);
                 this.drag = {
-                    kind: target.handle === undefined ? 'move' : 'resize',
+                    kind:
+                        target.vertex !== undefined
+                            ? 'vertex'
+                            : target.handle === undefined
+                              ? 'move'
+                              : 'resize',
                     id: target.id,
                     handle: target.handle,
+                    vertex: target.vertex,
                     fromX: x,
                     fromY: y,
                     origin: { x: widget.x, y: widget.y, width: widget.width, height: widget.height },
+                    originTriangle: target.vertex === undefined ? undefined : triangleBoxOf(widget),
                 };
             }
         }
@@ -227,6 +263,21 @@ export class CanvasView {
             const rect = resizeFrom(drag.origin, drag.handle ?? 'se', dx, dy);
             this.guides = [];
             this.callbacks.onEdit(resizeWidget(state, drag.id, rect));
+            return;
+        }
+
+        if (drag.kind === 'vertex' && drag.vertex !== undefined && drag.originTriangle !== undefined) {
+            // The point goes exactly where the pointer is -- a whole design pixel, not the move grid -- and the
+            // box is remeasured around all three points, so the other two do not stir and the dragged one can
+            // leave the old box. No guides: they describe a rectangle aligning with its neighbours, which is
+            // not what a free point is doing.
+            const vertices = triangleVertices(drag.originTriangle);
+            vertices[drag.vertex] = {
+                x: clamp(Math.round(x), 0, canvas.width - 1),
+                y: clamp(Math.round(y), 0, canvas.height - 1),
+            };
+            this.guides = [];
+            this.callbacks.onEdit(setTriangleGeometry(state, drag.id, triangleFromVertices(vertices)));
             return;
         }
 

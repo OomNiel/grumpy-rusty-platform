@@ -353,3 +353,56 @@ screen id="T" width=200 height=120 theme="dark" {
     let rust_code = compile_kdl_to_rust(empty).unwrap();
     assert!(rust_code.contains("gui.add_table(cells[0], &[], Style::panel())"));
 }
+
+#[test]
+fn triangle_points_reach_the_generated_code() {
+    // The designer's six offsets are the only thing that makes a triangle any shape but isosceles, and they
+    // travel designer -> KDL -> parser -> AST -> emitter -> `rusty_gui_widgets::Triangle`. A field dropped
+    // anywhere along that line still compiles and still paints *a* triangle, so nothing but an assertion on
+    // the generated text catches it.
+    let kdl = r##"
+screen id="Shapes" width=320 height=240 theme="dark" {
+    grid cols="1fr" rows="1fr" {
+        triangle id="pyr" stroke_width=2 fill="#ff0000" stroke="#00ff00" p1x=1000 p1y=0 p2x=0 p2y=1000 p3x=1000 p3y=1000 col=0 row=0
+    }
+}
+"##;
+    let generated = compile_kdl_to_rust(kdl).unwrap();
+    assert!(
+        generated.contains(
+            "rusty_gui_widgets::Triangle { stroke_width: 2, fill: Some(Rgb565::new(31, 0, 0)), \
+             stroke: Some(Rgb565::new(0, 63, 0)), points: [1000, 0, 0, 1000, 1000, 1000] }"
+        ),
+        "the design's three points must reach the widget: {generated}"
+    );
+
+    // A design written before the points existed says nothing, and the parser's own default is the isosceles
+    // triangle the designer used to drop -- so an old design keeps the shape it always had.
+    let old = r##"
+screen id="Old" width=320 height=240 theme="dark" {
+    grid cols="1fr" rows="1fr" {
+        triangle id="pyr" stroke_width=1 fill="#ff0000" col=0 row=0
+    }
+}
+"##;
+    let generated = compile_kdl_to_rust(old).unwrap();
+    assert!(
+        generated.contains("points: [500, 0, 0, 1000, 1000, 1000]"),
+        "an old design falls back to the default triangle: {generated}"
+    );
+
+    // Out-of-range offsets are clamped rather than passed through: a vertex outside its cell would paint
+    // outside the widget, where the engine clips it and the designer's handle cannot reach it.
+    let wild = r##"
+screen id="Wild" width=320 height=240 theme="dark" {
+    grid cols="1fr" rows="1fr" {
+        triangle id="pyr" p1x=-40 p1y=4000 p2x=0 p2y=1000 p3x=1000 p3y=1000 col=0 row=0
+    }
+}
+"##;
+    let generated = compile_kdl_to_rust(wild).unwrap();
+    assert!(
+        generated.contains("points: [0, 1000, 0, 1000, 1000, 1000]"),
+        "out-of-range points are clamped to the cell: {generated}"
+    );
+}

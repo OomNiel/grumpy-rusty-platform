@@ -11,6 +11,34 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.66] - 2026-10-09
+
+### Added
+
+- **A Triangle is any triangle.** Each of its three points has its own diamond handle on the canvas and can be
+  dragged wherever on the glass you want it, not only to the three places an isosceles triangle reaches. The
+  widget's box follows a point — it grows around the three of them — so a vertex can be dragged out past the box
+  it started in, and the box's own eight handles still resize the whole shape. The points are also in the
+  Properties panel under **Points** (six offsets of a thousandth of the box), for when you want them exact.
+- The points travel to the board as the six markup attributes `p1x`..`p3y` that the vendored
+  `embedded-gui-codegen` fork passes to `rusty_gui_widgets::Triangle`, which maps them into its cell with the
+  same arithmetic the canvas uses. A design written before this keeps the isosceles triangle it always had —
+  both the parser and the crate default the same six values — and the attributes are optional in the design
+  file, so an older design is still valid rather than reported as incomplete.
+- **The designer offers to refresh a project's vendored crates when they are not this extension's copy.** A
+  Designer project builds against the `codegen/` copies of those two crates, made by whichever version created
+  the project, so a project made before a change keeps the old markup vocabulary: an older fork reads the three
+  triangle attributes it knows, ignores the six it does not, and paints a different shape without complaining.
+  The copy now records which extension version made it, and the designer says so and offers **Update Crates**
+  on opening such a project, once.
+
+### Changed
+
+- A triangle's base now sits on its box's last row instead of one row below it. The old shape left the box —
+  `embedded-gui`'s `Rect::bottom()` is `y + h`, not the last row — and the engine's clip to the widget's cell
+  is what made it look right; the new geometry never leaves the box, and an even-width triangle's apex is the
+  middle column to within a pixel rather than necessarily the left of the two.
+
 ## [0.0.65] - 2026-10-09
 
 ### Fixed

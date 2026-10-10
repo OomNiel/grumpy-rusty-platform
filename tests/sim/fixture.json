@@ -213,7 +213,7 @@
             }
         },
         {
-            "_comment": "A triangle and a line, so the same codegen fork that renders the circle is exercised for every shape the crate supplies.",
+            "_comment": "A triangle and a line, so the same codegen fork that renders the circle is exercised for every shape the crate supplies. The triangle's points are deliberately not the default isosceles one: it is a right triangle with its apex in the top right corner, so the render says which shape the design drew and not merely that a triangle appeared.",
             "id": "trib",
             "tag": "triangle",
             "x": 300,
@@ -223,7 +223,13 @@
             "props": {
                 "stroke_width": 2,
                 "fill": "#ff0000",
-                "stroke": "#00ff00"
+                "stroke": "#00ff00",
+                "p1x": 1000,
+                "p1y": 0,
+                "p2x": 0,
+                "p2y": 1000,
+                "p3x": 1000,
+                "p3y": 1000
             }
         },
         {

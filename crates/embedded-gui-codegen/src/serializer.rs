@@ -765,6 +765,7 @@ pub fn serialize_kdl_screen(screen: &ScreenDef) -> String {
                 stroke_width,
                 fill_color,
                 stroke_color,
+                points,
             } => {
                 let id_attr = id
                     .as_ref()
@@ -778,10 +779,24 @@ pub fn serialize_kdl_screen(screen: &ScreenDef) -> String {
                     .as_ref()
                     .map(|s| format!(" stroke=\"{}\"", s))
                     .unwrap_or_default();
+                // The vertices are the design's, so they are written back: a round trip through the serializer
+                // must not quietly turn a chosen triangle into an isosceles one.
                 let _ = writeln!(
                     &mut out,
-                    "        triangle{} stroke_width={}{}{}{} col={} row={}",
-                    id_attr, stroke_width, fill_attr, stroke_attr, span_attrs, p.col, p.row
+                    "        triangle{} stroke_width={} p1x={} p1y={} p2x={} p2y={} p3x={} p3y={}{}{}{} col={} row={}",
+                    id_attr,
+                    stroke_width,
+                    points[0],
+                    points[1],
+                    points[2],
+                    points[3],
+                    points[4],
+                    points[5],
+                    fill_attr,
+                    stroke_attr,
+                    span_attrs,
+                    p.col,
+                    p.row
                 );
             }
             WidgetDef::Table { id, headers, rows } => {

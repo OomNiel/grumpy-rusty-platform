@@ -742,7 +742,12 @@ pub fn parse_widget(node: &KdlNode) -> Result<(GridPlacementDef, WidgetDef), Cod
             }
         }
         "triangle" => {
-            // A triangle has no parsed radius: its vertices are derived from the cell rect, like the circle.
+            // The three vertices are the design's, as per-mille offsets into the cell: `p1x`..`p3y`, each
+            // `0..=1000`. Absent, they are the isosceles triangle the designer has always dropped (apex at the
+            // top centre, base along the bottom), so a design written before they existed is unchanged.
+            let point = |name: &str, default: i16| {
+                get_i64_prop(node, name).unwrap_or(default as i64).clamp(0, 1000) as i16
+            };
             let stroke_width = get_i64_prop(node, "stroke_width").unwrap_or(1).max(0) as u8;
             let fill_color = get_string_prop(node, "fill").map(|s| s.to_string());
             let stroke_color = get_string_prop(node, "stroke").map(|s| s.to_string());
@@ -751,6 +756,14 @@ pub fn parse_widget(node: &KdlNode) -> Result<(GridPlacementDef, WidgetDef), Cod
                 stroke_width,
                 fill_color,
                 stroke_color,
+                points: [
+                    point("p1x", 500),
+                    point("p1y", 0),
+                    point("p2x", 0),
+                    point("p2y", 1000),
+                    point("p3x", 1000),
+                    point("p3y", 1000),
+                ],
             }
         }
         "table" => {

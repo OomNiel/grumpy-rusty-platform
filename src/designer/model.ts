@@ -318,6 +318,137 @@ export function circleRect(
     return { x: centreX - r, y: centreY - r, width: r * 2, height: r * 2 };
 }
 
+/**
+ * A triangle's three vertices as six per-mille offsets into its box: `[p1x, p1y, p2x, p2y, p3x, p3y]`.
+ *
+ * Per-mille of the box rather than pixels, because the box is the one thing the designer and the board
+ * share exactly: the grid hands the widget its cell, so `x + p * w / 1000` puts a vertex in the same place on
+ * the canvas and on the glass without either side knowing the other's arithmetic. It also means the triangle
+ * scales with its box -- resizing the box scales the shape instead of moving one lonely vertex.
+ *
+ * The attribute names are the KDL ones, in order, so the catalogue's six properties and this tuple cannot
+ * drift apart: the panel writes them, `kdl.ts` emits them, and the crate's parser reads them as `p1x`..`p3y`.
+ */
+export type TrianglePoints = [number, number, number, number, number, number];
+
+/** The six KDL attribute names, in the order `TrianglePoints` counts in. */
+export const TRIANGLE_POINT_NAMES = ['p1x', 'p1y', 'p2x', 'p2y', 'p3x', 'p3y'] as const;
+
+/** The three vertices as indices into `TrianglePoints`, for a drag handle and for the panel's rows. */
+export type TriangleVertex = 0 | 1 | 2;
+
+export const TRIANGLE_VERTICES: TriangleVertex[] = [0, 1, 2];
+
+/** The isosceles triangle a freshly dropped one is: apex on the top edge centre, base along the bottom edge. */
+export const DEFAULT_TRIANGLE_POINTS: TrianglePoints = [500, 0, 0, 1000, 1000, 1000];
+
+/** A triangle's box and its six offsets together, which is everything its geometry needs. */
+export interface TriangleBox {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    points: TrianglePoints;
+}
+
+function clampInt(value: number, low: number, high: number): number {
+    return Math.max(low, Math.min(high, Math.round(value)));
+}
+
+/**
+ * A widget's six offsets, falling back to the default triangle.
+ *
+ * A document written before the vertices could be dragged has none of the six properties, and the crate's
+ * `Triangle` has the same default, so the old design keeps the shape it always had on both sides rather than
+ * needing a migration.
+ */
+export function trianglePoints(widget: DesignerWidget): TrianglePoints {
+    // Per offset, not all-or-nothing: the crate's parser reads each of the six with its own default, so a
+    // document that names two of them gets those two and the crate's value for the rest -- which is what
+    // `parser.rs` does on the other side.
+    return TRIANGLE_POINT_NAMES.map((name, index) => {
+        const value = widget.props[name];
+        const fallback = DEFAULT_TRIANGLE_POINTS[index] ?? 0;
+        return typeof value === 'number' && Number.isFinite(value) ? clampInt(value, 0, 1000) : fallback;
+    }) as TrianglePoints;
+}
+
+/** A triangle widget's box and offsets together, with the points the document leaves out filled in. */
+export function triangleBoxOf(widget: DesignerWidget): TriangleBox {
+    return { x: widget.x, y: widget.y, width: widget.width, height: widget.height, points: trianglePoints(widget) };
+}
+
+/**
+ * One vertex of a triangle in panel pixels, by the same rule the crate's `Triangle::vertices` uses.
+ *
+ * The crate measures in whole pixels inside the cell (`p * w / 1000`, clamped to the box), so a vertex at
+ * `1000` is the box's *last* pixel and not one beyond it: a triangle can never paint outside its own cell,
+ * which is what keeps it inside the engine's clip. Doing the same rounding here means the handle the user
+ * grabs sits on the pixel the board paints, not half a pixel away from it.
+ */
+export function triangleVertex(box: TriangleBox, vertex: TriangleVertex): { x: number; y: number } {
+    const w = Math.max(1, Math.round(box.width));
+    const h = Math.max(1, Math.round(box.height));
+    // A tuple of six, indexed by a vertex in 0..=2, so both are always there; the defaults are unreachable
+    // and only satisfy the index check.
+    const px = box.points[vertex * 2] ?? 0;
+    const py = box.points[vertex * 2 + 1] ?? 0;
+    return {
+        x: clampInt(box.x + Math.floor((px * w) / 1000), box.x, box.x + w - 1),
+        y: clampInt(box.y + Math.floor((py * h) / 1000), box.y, box.y + h - 1),
+    };
+}
+
+/** The three vertices in panel pixels, in point order, which is the inverse of `triangleFromVertices`. */
+export function triangleVertices(box: TriangleBox): { x: number; y: number }[] {
+    return TRIANGLE_VERTICES.map((vertex) => triangleVertex(box, vertex));
+}
+
+/**
+ * The box and offsets for three vertices in panel pixels: the inverse of `triangleVertices`.
+ *
+ * The box is the three vertices' bounding rectangle measured in whole pixels, so dragging one vertex moves
+ * the box with it and the other two stay exactly where they were -- which is what lets a point be dragged
+ * anywhere on the glass instead of only inside the box it started in. The offsets are chosen so that the
+ * round trip through the crate's own arithmetic returns the same pixel: the box is `span + 1` pixels wide
+ * (its last pixel is a real pixel), so a vertex at the far edge comes back as `1000` and not `999`.
+ */
+export function triangleFromVertices(
+    vertices: readonly { x: number; y: number }[],
+): { x: number; y: number; width: number; height: number; points: TrianglePoints } {
+    const xs = vertices.map((vertex) => Math.round(vertex.x));
+    const ys = vertices.map((vertex) => Math.round(vertex.y));
+    const x = Math.min(...xs);
+    const y = Math.min(...ys);
+    const width = Math.max(1, Math.max(...xs) - x + 1);
+    const height = Math.max(1, Math.max(...ys) - y + 1);
+    const points: number[] = [];
+    for (const vertex of vertices) {
+        points.push(pointOf(Math.round(vertex.x), x, width), pointOf(Math.round(vertex.y), y, height));
+    }
+    // Six values by construction: three vertices, two coordinates each.
+    return { x, y, width, height, points: points as TrianglePoints };
+}
+
+/**
+ * One pixel of a box as a per-mille offset, chosen so that `triangleVertex` lands back on that same pixel.
+ *
+ * Rounded **up**, which is not the obvious choice. The crate measures forward by truncating (`p * size /
+ * 1000`), so rounding the fraction down here comes back a pixel short: the 55th pixel of a 56-pixel box is
+ * 982.1 per-mille, and 982 per-mille of 56 pixels is 54.9 -- the 54th. Rounding up makes it 983, and 983
+ * per-mille of 56 is 55.0 -- the 55th, which is where the user let go of it.
+ */
+function pointOf(pixel: number, origin: number, size: number): number {
+    const span = pixel - origin;
+    if (span <= 0) {
+        return 0;
+    }
+    if (span >= size) {
+        return 1000;
+    }
+    return Math.min(1000, Math.ceil((span * 1000) / size));
+}
+
 function isRustIdentifier(value: string): boolean {
     return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
 }
@@ -405,7 +536,12 @@ export function validateDocument(document: DesignerDocument): string[] {
             for (const property of spec.props) {
                 const value = widget.props[property.name];
                 if (value === undefined) {
-                    problems.push(`${where}: ${property.label} is missing`);
+                    // An optional property the crate itself defaults may simply not be named. Refusing it
+                    // would reject every design written before the property existed, which is why the
+                    // catalogue has to say which ones those are rather than the validator guessing.
+                    if (property.optional !== true) {
+                        problems.push(`${where}: ${property.label} is missing`);
+                    }
                     continue;
                 }
                 const complaint = propertyProblem(property, value);

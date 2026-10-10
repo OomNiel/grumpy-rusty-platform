@@ -33,6 +33,9 @@ const {
     screenIdFrom,
     uniqueWidgetId,
     validateDocument,
+    DEFAULT_TRIANGLE_POINTS,
+    TRIANGLE_POINT_NAMES,
+    trianglePoints,
 } = compiled('designer/model');
 const { emitKdl, layoutDocument } = compiled('designer/kdl');
 const { fontConstName } = compiled('designer/model');
@@ -977,6 +980,79 @@ test('the shapes speak the attribute names the codegen fork parses', () => {
     contains(triangle, 'stroke="#ff00ff"', 'and its stroke');
 });
 
+test('a triangle emits its three points, and an older design without them keeps the crate\'s default', () => {
+    // The six offsets are ordinary attributes, so they travel the same route as every other property -- and
+    // the crate's parser reads each with the default triangle's value, which is what makes a design written
+    // before the points existed still build to the shape it always had.
+    const dragged = widget('pyr', 'triangle', { x: 0, y: 40, width: 40, height: 40 }, {
+        props: {
+            ...defaultProps('triangle'),
+            p1x: 1000,
+            p1y: 0,
+            p2x: 0,
+            p2y: 1000,
+            p3x: 1000,
+            p3y: 1000,
+        },
+    });
+    const doc = document(0, [dragged]);
+    equal(validateDocument(doc).length, 0, 'a triangle with dragged points is a valid design');
+    contains(
+        emitKdl(doc),
+        'triangle id="pyr" stroke_width=1 fill="#3a6ea5" stroke="#ffffff" p1x=1000 p1y=0 p2x=0 p2y=1000 p3x=1000 p3y=1000',
+        'the six points are emitted in the order the parser reads them',
+    );
+
+    // The older design: none of the six, and therefore the isosceles triangle -- on the canvas as well as on
+    // the board, since the canvas reads the same fallback.
+    const old = widget('old', 'triangle', { x: 0, y: 0, width: 32, height: 32 });
+    for (const name of TRIANGLE_POINT_NAMES) {
+        delete old.props[name];
+    }
+    const oldDoc = document(0, [old]);
+    equal(validateDocument(oldDoc).length, 0, 'a design without the points is still valid');
+    notContains(emitKdl(oldDoc), 'p1x=', 'and emits no point at all, so the crate defaults it');
+    equal(trianglePoints(old).join(','), DEFAULT_TRIANGLE_POINTS.join(','), 'while the canvas shows the default');
+});
+
+test('the six point attributes are the ones the whole chain spells the same way', () => {
+    // Designer property -> KDL attribute -> fork parser -> fork AST -> crate struct. A rename anywhere along
+    // it would leave a triangle that builds and then never moves, so the names are read out of the sources
+    // rather than pinned as literals here.
+    const read = (file) => fs.readFileSync(path.join(repoRoot(), file), 'utf8');
+    const parser = read('crates/embedded-gui-codegen/src/parser.rs');
+    const ast = read('crates/embedded-gui-codegen/src/ast.rs');
+    const emitter = read('crates/embedded-gui-codegen/src/emitter.rs');
+    const widgets = read('crates/rusty-gui-widgets/src/lib.rs');
+
+    for (const name of TRIANGLE_POINT_NAMES) {
+        contains(parser, `point("${name}",`, `the fork's parser reads ${name}`);
+    }
+    contains(ast, 'points: [i16; 6]', 'the fork carries the six on the shape node');
+    contains(emitter, 'points,', 'and writes them into the custom widget');
+    contains(widgets, 'pub points: [i16; 6],', "the crate's Triangle holds them");
+    contains(
+        widgets,
+        'DEFAULT_TRIANGLE_POINTS: [i16; 6] = [500, 0, 0, 1000, 1000, 1000]',
+        'and its default is the isosceles triangle',
+    );
+    equal(
+        defaultProps('triangle').p1x +
+            ',' +
+            defaultProps('triangle').p1y +
+            ',' +
+            defaultProps('triangle').p2x +
+            ',' +
+            defaultProps('triangle').p2y +
+            ',' +
+            defaultProps('triangle').p3x +
+            ',' +
+            defaultProps('triangle').p3y,
+        DEFAULT_TRIANGLE_POINTS.join(','),
+        'which is the same one the catalogue drops and the parser falls back to',
+    );
+});
+
 test('every shape is offered, and each declares how it is drawn', () => {
     // The canvas paints from `draws`; a shape without one would fall back to the panel look and quietly lie.
     const shapes = ['rect', 'line', 'circle', 'triangle'];
@@ -1180,6 +1256,24 @@ test('the canvas colour and the emitted colour are the same arithmetic', () => {
 });
 
 // ---------------------------------------------------------------- hover help
+
+test('a triangle\'s six points are one group of optional properties', () => {
+    // Grouped, so the panel presents them as three points rather than six loose numbers; and optional, since
+    // the crate defaults each of them and a design written before they existed must stay valid.
+    const spec = widgetSpec('triangle');
+    const points = spec.props.filter((property) => property.name !== 'stroke_width' && property.name !== 'fill' && property.name !== 'stroke');
+    equal(points.map((property) => property.name).join(','), TRIANGLE_POINT_NAMES.join(','), 'the six, in order');
+    for (const property of points) {
+        equal(property.optional, true, `${property.name} may be absent`);
+        equal(typeof property.group, 'string', `${property.name} belongs to a group`);
+        equal(property.min, 0, `${property.name} is a per-mille offset`);
+        equal(property.max, 1000, `${property.name} stops at the box's far edge`);
+    }
+    equal(new Set(points.map((property) => property.group)).size, 1, 'and they all share the one heading');
+    // Nothing else in the catalogue is optional: a shape's points are the case this exists for.
+    const optional = KDL_WIDGETS.flatMap((entry) => entry.props).filter((property) => property.optional === true);
+    equal(optional.length, 6, 'only the triangle\'s points are optional so far');
+});
 
 test('every property and every widget has a hover description', () => {
     // The panel shows these as the field's tooltip, so a property without one is a control the user has to

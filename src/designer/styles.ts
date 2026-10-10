@@ -165,6 +165,13 @@ body {
     border-bottom: 1px solid var(--vscode-panel-border);
 }
 
+.field-group {
+    margin: 8px 0 4px;
+    font-size: 0.8em;
+    font-weight: 600;
+    opacity: 0.7;
+}
+
 .field {
     display: flex;
     align-items: center;

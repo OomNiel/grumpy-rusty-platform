@@ -20,12 +20,16 @@ import {
     type DesignerFont,
     type DesignerIconPart,
     type DesignerWidget,
+    type TriangleBox,
+    TRIANGLE_POINT_NAMES,
     createDocument,
     defaultChildren,
     defaultProps,
     designCanvasSize,
     isFontId,
     placeWidget,
+    triangleFromVertices,
+    triangleVertices,
     uniqueWidgetId,
 } from './model';
 import type { DesignerEvent } from './catalog';
@@ -195,6 +199,50 @@ export function resizeWidget(state: DesignerState, id: string, rect: Rect): Desi
             y: clamp(Math.round(rect.y), 0, canvas.height - 1),
             width: clamp(Math.round(rect.width), 1, canvas.width - clamp(Math.round(rect.x), 0, canvas.width - 1)),
             height: clamp(Math.round(rect.height), 1, canvas.height - clamp(Math.round(rect.y), 0, canvas.height - 1)),
+        })),
+    );
+}
+
+/**
+ * Places a triangle's three points, moving and growing its box to hold them.
+ *
+ * The box is the points' bounding rectangle, so this is how a vertex drag works: the dragged point is
+ * wherever the pointer is, the other two stay on the pixels they were on, and the box follows them all. Doing
+ * it in one operation rather than a move-then-resize pair keeps the document consistent at every step -- there
+ * is no moment where a vertex is outside its own box -- and gives the whole drag one undo step.
+ *
+ * Every vertex is clamped into the canvas first, which is the one place a point could otherwise go: outside
+ * it the widget is clipped by the engine, so a point placed there could never be reached again. Because the
+ * box is then measured from the clamped pixels, the box cannot hang over the edge either.
+ */
+export function setTriangleGeometry(state: DesignerState, id: string, box: TriangleBox): DesignerState {
+    const canvas = canvasOf(state.document);
+    const pixels = triangleVertices({
+        x: Math.round(box.x),
+        y: Math.round(box.y),
+        width: Math.max(1, Math.round(box.width)),
+        height: Math.max(1, Math.round(box.height)),
+        points: box.points,
+    }).map((vertex) => ({
+        x: clamp(vertex.x, 0, canvas.width - 1),
+        y: clamp(vertex.y, 0, canvas.height - 1),
+    }));
+    const geometry = triangleFromVertices(pixels);
+    const props: Record<string, string | number | boolean> = {};
+    TRIANGLE_POINT_NAMES.forEach((name, index) => {
+        const value = geometry.points[index];
+        if (value !== undefined) {
+            props[name] = value;
+        }
+    });
+    return edit(state, `triangle:${id}`, (document) =>
+        withWidget(document, id, (widget) => ({
+            ...widget,
+            x: geometry.x,
+            y: geometry.y,
+            width: geometry.width,
+            height: geometry.height,
+            props: { ...widget.props, ...props },
         })),
     );
 }

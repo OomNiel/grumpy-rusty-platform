@@ -34,6 +34,14 @@ import {
     type DesignerDocument,
 } from './model';
 import { loadDocument, missingAssets, planAssetImport, renderDesign } from './store';
+import {
+    copyVendoredCrates,
+    hasVendoredCrates,
+    readVendoredMarker,
+    vendoredDescription,
+    vendoredState,
+    vendoredUpdateNeeded,
+} from './vendored';
 import type { DesignerAssetKind, DesignerInbound, DesignerReport } from './protocol';
 import { designerStyles } from './styles';
 
@@ -108,6 +116,11 @@ class DesignerPanel {
             current.panel.reveal();
             return;
         }
+
+        // The project's `codegen/` copy is what its Cargo.toml builds against, and a copy from an older version
+        // may not know the markup this designer writes -- a triangle's six points, for one -- and would render
+        // something else without complaining. Asked here, once, before anything is drawn on that promise.
+        await ensureVendoredCrates(context, project.folder, output);
 
         const configPath = vscode.Uri.joinPath(project.folder, '.cargo', 'esp-config.toml');
         const config = (await readText(configPath)) ?? '';
@@ -383,6 +396,48 @@ class DesignerPanel {
 }
 
 /** Opens (or reveals) the designer, for the active project or for a named folder. */
+/**
+ * Offers to refresh a project's vendored crates when they are not this extension's.
+ *
+ * Asked rather than done silently: `codegen/` is inside the user's project, and while it is our copy of our own
+ * crates, overwriting files in someone's folder without a word is not something a plugin should do. "Later"
+ * only means the next thing the user does is not this; the check will ask again next time the designer opens.
+ */
+async function ensureVendoredCrates(
+    context: vscode.ExtensionContext,
+    project: vscode.Uri,
+    output: vscode.OutputChannel,
+): Promise<void> {
+    const version = String(context.extension.packageJSON.version ?? '');
+    const marker = readVendoredMarker(project);
+    const state = vendoredState({ hasCrates: hasVendoredCrates(project), marker, version });
+    if (!vendoredUpdateNeeded(state)) {
+        return;
+    }
+    output.appendLine(`[designer] ${vendoredDescription(state, marker)}`);
+    const choice = await vscode.window.showInformationMessage(
+        `The shapes this project builds with are not this extension's copy (${vendoredDescription(
+            state,
+            marker,
+        )}). The designer can draw a shape the old copy will not render on the glass. Update them?`,
+        'Update Crates',
+        'Later',
+    );
+    if (choice !== 'Update Crates') {
+        output.appendLine('[designer] vendored crates left as they are');
+        return;
+    }
+    try {
+        copyVendoredCrates(context, project, output);
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        output.appendLine(`[designer] could not update the vendored crates: ${message}`);
+        void vscode.window.showErrorMessage(
+            `The vendored crates could not be updated: ${message.split('\n')[0]}`,
+        );
+    }
+}
+
 export async function showDesigner(
     context: vscode.ExtensionContext,
     output: vscode.OutputChannel,

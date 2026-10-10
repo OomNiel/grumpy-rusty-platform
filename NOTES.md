@@ -4994,3 +4994,83 @@ Measured on the host: the fixture's circle regains the row and column the clip h
 pixels becoming `716`, with nothing painted outside any cell. The bug had been in every circle the designer ever
 drew, and the earlier "the engine clips each widget to its cell" note (§106) is what made it visible rather than
 mysterious: the clip is real, so a shape that reaches outside its box *will* be cut.
+
+## 108. A triangle that is not only isosceles (2026-10-09)
+
+The shape had been the crate's since it was written: `Triangle::render` derived its three vertices from the cell
+rect -- apex at the top centre, base along the bottom -- so *the triangle* was one shape at every size and there
+was nothing in the markup to say otherwise. The request was to put a handle on each of the three points and let
+them be dragged anywhere on the glass.
+
+### Six numbers, six layers
+
+The interesting part was never the handle; it was where the geometry goes. A point could have been stored in
+absolute pixels, in which case the board would have needed the design's canvas size and the grid's rounding, and
+the two would have disagreed the first time a track resolved one pixel off. Instead the vertices travel as
+**per-mille offsets into the box** (`p1x`..`p3y`, `0..=1000`), which is the one rectangle the designer and the
+engine already share: the grid hands the widget its cell, and `cell.x + p * cell.w / 1000` puts a vertex in the
+same place on both sides with no side knowing the other's arithmetic. It also makes a triangle *scale* with its
+box rather than owning one size -- resize the box and the shape grows with it, deliberately.
+
+So one idea had to be threaded through six places, and each one could have dropped it silently:
+
+1. **The crate** (`rusty-gui-widgets`) -- `Triangle { points: [i16; 6] }`, `vertices()` mapping per-mille to
+   pixels with the crate's own truncating division, and `DEFAULT_TRIANGLE_POINTS` as the old isosceles shape.
+2. **The fork's parser** -- `point("p1x", 500)` and friends, each clamped to `0..=1000`.
+3. **The fork's AST, emitter and serializer** -- the field on the node, `points: [..]` in the generated static,
+   and the six attributes written back out.
+4. **The catalogue** -- six properties in one group, and `optional: true` on each.
+5. **The emitter** -- no code at all, which was the point: they are ordinary attributes, so the generic property
+   loop already writes them and the KDL grammar needed nothing new.
+6. **The canvas** -- the same mapping for painting, hit testing and the handle.
+
+### The one number that is not obvious
+
+`triangleFromVertices` -- the inverse, run on every mouse move of a vertex drag -- has to choose a per-mille
+value for a pixel, and the obvious `round` is wrong. The crate measures *forward* with a truncating division, so
+the 55th pixel of a 56-pixel box is `982.1` per-mille, and `982` per-mille of 56 pixels is `54.9` -- the 54th.
+Round **up** instead: `983` per-mille is `55.0`, the 55th, where the user let go. The t1 test sweeps every pixel
+of seven box shapes, including a 1x1 and a 479x3, and asserts the round trip is exact; the first version of it
+failed on exactly this, one pixel short at the far edge.
+
+The other subtlety is sizing the box: it is `span + 1` pixels wide because the box's last pixel is a real pixel,
+so a vertex on the far edge comes back as `1000` rather than `999`. And a dragged vertex is not clamped *into the
+box* -- it moves the box with it, or a point could never reach the glass's edge. The box stays the bounding
+rectangle of the three points, the two points that are not being dragged stay on their own pixels (from a
+snapshot taken when the drag started, so no rounding accumulates over forty mouse-moves), and the eight box
+handles stay where they were for scaling the whole shape.
+
+### What the tests pin now
+
+`cargo test` in the crate is **14** tests, including a skewed triangle, and the per-mille mapping in three box
+sizes. The fork is **20**: a new one compiles a design with `p1x=1000 …` and asserts the generated Rust contains
+`rusty_gui_widgets::Triangle { …, points: [1000, 0, 0, 1000, 1000, 1000] }`, that a design without the six keeps
+the parser's default, and that out-of-range values are clamped. The t1 layer (now **781** tests, of the suite's
+**817**) round-trips the
+geometry, drags a point out of its box, checks the vertex handle wins over the box handle underneath it, and
+checks an older design still validates -- which is what the new `optional` flag is for: six new required
+properties would have invalidated every design made before them.
+
+Two tests were changed rather than added, and both were pinning the *old* shape: the crate's own triangle tests
+expected the base one row *below* the box (`Rect::bottom()` in `embedded-gui` is `y + h`), which is why the old
+isosceles triangle painted 31 rows of a 30-row cell and its apex was, for an even width, on the right of the two
+middle columns. The base is now the cell's last row, so nothing leaves the box.
+
+The engine, end to end: a new `--shape-points` mode in the designer simulator builds the fixture twice through a
+real `include_gui!` -- once as drawn, once with the points reset to the crate's default -- and reports
+
+    PASS: the design's right triangle and the default isosceles one differ in 611 of the 1600 pixels of
+    their cell -- each fills its own point at (334, 272) and (320, 272) and not the other's -- and agree on
+    every pixel outside it
+
+A pixel count alone would have proved nothing here, which is worth recording: both triangles fill *half* their
+cell, so the two renders have almost the same ink. What says which shape was drawn is *where* the fill colour
+is, which is why the check probes one point deep inside each and not the totals. The fixture's triangle is a
+right one now for the same reason, and the existing `--font` run measures `822` of its `1600` pixels changing
+when its colours are stripped -- about the half-cell a triangle should be. Both were run against the real engine
+along with the other three modes (`default`, `--touch`, `--dispatch`): all five PASS.
+
+Not done, and deliberately: the six fields in the Properties panel are six numbers under one **Points** heading
+rather than a little triangle widget of their own, and a vertex snaps to whole pixels rather than to the 4-pixel
+grid the box moves on -- a *point* is the fine placement tool, and grid-snapping it would fight the user who is
+trying to aim it.

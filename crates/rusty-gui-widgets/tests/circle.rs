@@ -185,19 +185,21 @@ fn rectangle_fills_then_borders() {
 
 #[test]
 fn triangle_fills_its_interior_and_strokes_the_edges() {
-    let cx = 8; // rect 0,0,16,16 -> apex (8,0), base (0,16)-(16,16)
+    let cx = 8; // rect 0,0,16,16 -> apex (8,0), base (0,15)-(15,15) (the base is the cell's last row)
     let mut m = Mock::default();
     rusty_gui_widgets::Triangle {
         stroke_width: 1,
         fill: Some(Rgb565::new(0, 0, 0)),
         stroke: Some(Rgb565::new(31, 0, 0)),
+        points: rusty_gui_widgets::DEFAULT_TRIANGLE_POINTS,
     }
     .render(&mut m, Rect::new(0, 0, 16, 16), &WidgetStyle::default(), VisualState::default())
         .unwrap();
     let pixels = covered(&m);
     // The apex and the base midpoint are inside the triangle.
     assert!(pixels.contains(&(cx, 0)), "apex is filled");
-    assert!(pixels.contains(&(cx, 16)), "base midpoint is filled");
+    assert!(pixels.contains(&(cx, 15)), "base midpoint is filled");
+    assert!(!pixels.contains(&(cx, 16)), "and the base is the cell's last row, not a row outside it");
     // A corner outside the triangle (top-left of the cell) is not.
     assert!(!pixels.contains(&(0, 0)), "the top-left corner is outside the triangle");
     // The three stroke edges each contributed a line.
@@ -212,6 +214,7 @@ fn triangle_ignores_radius_and_derives_geometry_from_rect() {
         stroke_width: 2,
         fill: Some(Rgb565::new(0, 0, 0)),
         stroke: None,
+        points: rusty_gui_widgets::DEFAULT_TRIANGLE_POINTS,
     };
     tri.render(&mut a, Rect::new(0, 0, 20, 20), &WidgetStyle::default(), VisualState::default())
         .unwrap();
@@ -391,14 +394,74 @@ fn a_filled_triangle_is_one_run_per_row() {
         stroke_width: 0,
         fill: Some(Rgb565::new(0, 0, 0)),
         stroke: None,
+        points: rusty_gui_widgets::DEFAULT_TRIANGLE_POINTS,
     }
     .render(&mut m, Rect::new(0, 0, 40, 30), &WidgetStyle::default(), VisualState::default())
         .unwrap();
     assert!(m.pixels.is_empty(), "the interior is filled by runs");
-    assert_eq!(m.rects.len(), 31, "one run per scanline of the triangle");
+    // The base sits on the cell's last row (29), so the 30-row cell costs 30 runs -- a run is never emitted
+    // outside the cell.
+    assert_eq!(m.rects.len(), 30, "one run per scanline of the triangle");
+    assert!(
+        m.rects.iter().all(|r| r.y >= 0 && r.y < 30),
+        "no run lands outside the cell"
+    );
     assert!(m.rects.iter().all(|rect| rect.h == 1), "each one row tall");
     // Half the cell, give or take the row the two slanted edges land on: an exact number here would only be
     // the scanline algorithm written a second time.
     let area = covered(&m).len() as i32;
-    assert!((area - 620).abs() <= 31, "the runs cover about half the cell, got {area}");
+    assert!((area - 600).abs() <= 40, "the runs cover about half the cell, got {area}");
+}
+
+#[test]
+fn triangle_vertices_come_from_the_design() {
+    // The default is the isosceles triangle the designer drops: apex at the top centre, base along the bottom.
+    let rect = Rect::new(0, 0, 40, 30);
+    let mut m = Mock::default();
+    rusty_gui_widgets::Triangle {
+        stroke_width: 1,
+        fill: Some(Rgb565::new(31, 63, 31)),
+        stroke: None,
+        points: rusty_gui_widgets::DEFAULT_TRIANGLE_POINTS,
+    }
+    .render(&mut m, rect, &WidgetStyle::default(), VisualState::default())
+    .unwrap();
+    let apex = covered(&m);
+    assert!(apex.contains(&(20, 0)), "the apex is at the top centre");
+    assert!(apex.contains(&(0, 29)) && apex.contains(&(39, 29)), "and the base along the bottom");
+    assert!(!apex.contains(&(0, 0)), "so the top-left corner is outside it");
+
+    // The same widget with vertices of its own draws that triangle instead: a right triangle with the
+    // right-angle at the bottom right, and nothing where the isosceles apex used to be.
+    let mut skewed = Mock::default();
+    rusty_gui_widgets::Triangle {
+        stroke_width: 1,
+        fill: Some(Rgb565::new(31, 63, 31)),
+        stroke: None,
+        points: [0, 0, 0, 1000, 1000, 1000],
+    }
+    .render(&mut skewed, rect, &WidgetStyle::default(), VisualState::default())
+    .unwrap();
+    let right = covered(&skewed);
+    assert!(right.contains(&(0, 0)), "the top-left corner is a vertex now");
+    assert!(right.contains(&(39, 29)) && right.contains(&(0, 29)), "and the base is along the bottom");
+    assert!(!right.contains(&(20, 0)), "nothing is drawn at the old apex");
+
+    // Per-mille of the cell: a vertex at 500/1000 of a 40x30 cell is (20, 29), and the same triangle in a cell
+    // of another size keeps its shape.
+    let mut wide = Mock::default();
+    rusty_gui_widgets::Triangle {
+        stroke_width: 1,
+        fill: Some(Rgb565::new(31, 63, 31)),
+        stroke: None,
+        points: [500, 0, 0, 1000, 1000, 1000],
+    }
+    .render(&mut wide, Rect::new(0, 0, 80, 60), &WidgetStyle::default(), VisualState::default())
+    .unwrap();
+    let ink = covered(&wide);
+    assert!(ink.contains(&(40, 0)), "the apex follows the cell's width");
+    assert!(ink.contains(&(0, 59)) && ink.contains(&(79, 59)), "and the base its height");
+    for &(x, y) in &ink {
+        assert!(x < 80 && y < 60, "({x},{y}) is outside the cell");
+    }
 }

@@ -58,6 +58,15 @@ export interface KdlProperty {
     kind: KdlPropertyKind;
     /** What the property panel calls it. */
     label: string;
+    /**
+     * Properties that belong together, under one small heading in the Properties panel.
+     *
+     * The triangle's six vertex offsets are the reason this exists: they are one idea -- where the shape's
+     * three points sit -- and six loose fields in a row would read as six unrelated numbers. The canvas
+     * handles are the usual way to set them; the numbers are there to be exact, and to be editable without a
+     * pointer.
+     */
+    group?: string;
     /** What a freshly dropped widget gets, so the markup is always complete enough to build. */
     defaultValue: string | number | boolean;
     min?: number;
@@ -65,6 +74,15 @@ export interface KdlProperty {
     options?: readonly string[];
     /** True when the parser errors without it, e.g. an image's `src`. */
     required?: boolean;
+    /**
+     * True when the value may be absent from a document, because the crate applies the same default.
+     *
+     * A triangle's six vertex offsets are the case: a design written before they existed -- or one hand-edited
+     * to name only some of them -- is not an incomplete design, it is one using the crate's own default
+     * triangle. The panel still writes them when the user drags a point, and `defaultProps` fills them in for
+     * a widget dropped from the Toolbox, so a design the designer made always names all six.
+     */
+    optional?: boolean;
     /**
      * True when the parser reads the property but the generator throws it away.
      *
@@ -316,6 +334,14 @@ export const DEFAULT_TABLE_ROWS: readonly (readonly string[])[] = [
  * Ordered by category and then by how likely a hand reaches for it, because that is the order the Toolbox
  * lists them in.
  */
+/**
+ * The heading the triangle's six vertex offsets share in the Properties panel.
+ *
+ * The unit is in the heading rather than in each of six labels, so the numbers read as a set of coordinates
+ * ("Point 1 X" out of 1000) instead of as six magic values that happen to stop at a thousand.
+ */
+const TRIANGLE_POINTS_LABEL = 'Points (of 1000 across its box)';
+
 export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
     {
         tag: 'label',
@@ -774,14 +800,27 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         label: 'Triangle',
         category: 'shape',
         defaultSize: { width: 64, height: 56 },
-        // Board-side: `rusty-gui-widgets` renders a triangle inscribed in the cell rect (apex at the top
-        // centre, base on the bottom edge); the canvas paints the same one for editing.
+        // Board-side: `rusty-gui-widgets` renders a triangle from its cell rect and the six vertex offsets
+        // below; the canvas paints the same vertices. A freshly dropped one is isosceles -- apex on the top
+        // edge centre, base along the bottom edge -- and the three points can then be dragged anywhere.
         draws: 'triangle',
-        note: 'Drawn as a triangle inscribed in its rectangle, from the cell rect.',
+        note:
+            'Drawn as a triangle. Drag any of the three points on the canvas to move it; the box follows a ' +
+            'point, so a vertex can go anywhere on the glass.',
         props: [
             { name: 'stroke_width', kind: 'int', label: 'Stroke width', defaultValue: 1, min: 0, max: 32 },
             { name: 'fill', kind: 'color', label: 'Fill', defaultValue: '#3a6ea5' },
             { name: 'stroke', kind: 'color', label: 'Stroke', defaultValue: '#ffffff' },
+            // Per-mille of the box, which is how the crate's `Triangle` reads them (`parser.rs` clamps to
+            // 0..=1000 and falls back to this same default). Six properties rather than one packed string so
+            // each is a plain attribute the parser already accepts -- no new child grammar -- and so a
+            // document written before they existed keeps the isosceles shape on both sides.
+            { name: 'p1x', kind: 'int', label: 'Point 1 X', defaultValue: 500, min: 0, max: 1000, optional: true, group: TRIANGLE_POINTS_LABEL },
+            { name: 'p1y', kind: 'int', label: 'Point 1 Y', defaultValue: 0, min: 0, max: 1000, optional: true, group: TRIANGLE_POINTS_LABEL },
+            { name: 'p2x', kind: 'int', label: 'Point 2 X', defaultValue: 0, min: 0, max: 1000, optional: true, group: TRIANGLE_POINTS_LABEL },
+            { name: 'p2y', kind: 'int', label: 'Point 2 Y', defaultValue: 1000, min: 0, max: 1000, optional: true, group: TRIANGLE_POINTS_LABEL },
+            { name: 'p3x', kind: 'int', label: 'Point 3 X', defaultValue: 1000, min: 0, max: 1000, optional: true, group: TRIANGLE_POINTS_LABEL },
+            { name: 'p3y', kind: 'int', label: 'Point 3 Y', defaultValue: 1000, min: 0, max: 1000, optional: true, group: TRIANGLE_POINTS_LABEL },
         ],
         events: [],
     },
@@ -897,6 +936,12 @@ const PROPERTY_HELP: Record<string, string> = {
     minor_ticks: 'How many short ticks to draw between the long ones',
     minute: 'Minute of the hour',
     mode: 'How it is drawn',
+    p1x: 'How far point 1 sits across the box, 0 to 1000. Drag the point on the canvas to place it by eye',
+    p1y: 'How far point 1 sits down the box, 0 to 1000. Drag the point on the canvas to place it by eye',
+    p2x: 'How far point 2 sits across the box, 0 to 1000. Drag the point on the canvas to place it by eye',
+    p2y: 'How far point 2 sits down the box, 0 to 1000. Drag the point on the canvas to place it by eye',
+    p3x: 'How far point 3 sits across the box, 0 to 1000. Drag the point on the canvas to place it by eye',
+    p3y: 'How far point 3 sits down the box, 0 to 1000. Drag the point on the canvas to place it by eye',
     pitch: 'Tilt up or down, in degrees',
     pressed_bg: 'Background while it is pressed',
     pressed_fg: 'Foreground while it is pressed',
@@ -974,7 +1019,7 @@ const WIDGET_HELP: Record<string, string> = {
     rect: 'A rectangle of its own fill and stroke, painted by the crate from the cell rect',
     line: 'A line segment along the cell, in its own colour and thickness',
     circle: 'A circle the crate paints from the cell rect',
-    triangle: 'A triangle the crate paints from the cell rect',
+    triangle: 'A triangle whose three points you can drag anywhere in its box',
     path: 'A vector outline built from SVG path data',
 };
 

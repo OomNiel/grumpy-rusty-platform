@@ -347,7 +347,14 @@ function propertyForm(
     callbacks: PanelCallbacks,
 ): HTMLElement {
     const node = section('Properties');
+    // Properties that belong together -- a triangle's six vertex offsets -- get one small heading rather than
+    // six identical-looking rows, so the numbers read as three points and not as six unrelated values.
+    let group: string | undefined;
     for (const property of spec.props) {
+        if (property.group !== undefined && property.group !== group) {
+            group = property.group;
+            node.append(element('h4', 'field-group', property.group));
+        }
         const control = propertyControl(
             property,
             widget.props[property.name],
