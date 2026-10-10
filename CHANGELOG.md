@@ -35,7 +35,28 @@ _Nothing yet._
 
 ### Verified
 
-- 800 hermetic tests pass; `tsc` clean on both sides; all four host checks pass.
+- 807 hermetic tests pass (7 of them new, driving the real built bundle and asserting exact canvas
+  geometry: a slider knob's x at min/mid/max, a progress fill's width at 0/.25/.5/1, a toggle's track colour
+  against `checked`, a button's gradient stops and glyph pixels, and a table's header row before its body rows).
+  `tsc` clean on both sides; all four host checks pass.
+
+### Performance
+
+- Shadow rings are painted the way the crate paints them — clipped to the band outside an inset core, which the
+  crate's own test shows is pixel-identical (`block.rs:225-290`) — instead of filling each ring whole. The rings
+  are ordered-dithered, so a whole-ring fill cost one canvas op per ~1.7 pixels of the ring's *area*: 24 543 ops
+  for a 360x120 panel, on every repaint. With the band it is 1 315, and the cost now grows with the widget's
+  perimeter rather than its area (120x40: 2 783 -> 435; 240x80: 10 963 -> 875; 360x120: 24 543 -> 1 315).
+
+### Known approximations
+
+- A declared **BDF font** on a Label/Carousel/Button draws with the crate's default glyphs, because the `.bdf`
+  data is not shipped to the webview: the base style is honoured, the glyphs fall back to `Tiny3x5`.
+- **Vector text** uses the crate's own polylines, but a canvas 1px stroke blends where the crate dithers it.
+- The **dither phase** can differ under a 90/270 degree rotation, since the pattern is indexed by the board's
+  framebuffer and the canvas works in design coordinates.
+- **`image`/`icon`** previews still need the assets handed to the webview (the next slice); **`mesh`** has no
+  renderer at all, so both keep the designer's placeholder.
 
 ## [0.0.64] - 2026-10-09
 

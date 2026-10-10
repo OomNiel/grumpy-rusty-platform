@@ -570,6 +570,14 @@ function fillColourAt(calls, index) {
     return undefined;
 }
 
+/** The white a widget's text is drawn in (`Rgb565::WHITE`); nothing else paints white fills. */
+const TEXT_WHITE = 'rgb(255,255,255)';
+
+/** The `fillRect` calls whose fillStyle is `colour`, so a dithering shadow cannot stand in for text. */
+function fillsWithColour(calls, colour) {
+    return calls.filter((call, index) => call.method === 'fillRect' && fillColourAt(calls, index) === colour);
+}
+
 test('a slider knob sits at the left track end at min, the right end at max, and moves with value', () => {
     // The knob is a 3x5 accent rectangle (preview-spec.md §4.6); the one-pixel track is 160x1. The default
     // slider style is `Style::default()`, so the block paints nothing and `inner == rect`.
@@ -621,9 +629,10 @@ test('a button draws the crate gradient and its own text', () => {
     // to 24-bit the way the packed pixel is.
     ok(colours.includes('rgb(49,48,132)'), 'the gradient\'s first stop is painted');
     ok(colours.includes('rgb(16,16,66)'), 'and its last stop');
-    // Medium4x7 is a bitmap font: one canvas pixel per set bit (preview-spec.md §1.4).
-    const glyphs = fillRects(calls).filter((call) => call.args[2] === 1 && call.args[3] === 1);
-    ok(glyphs.length > 0, 'the button text is drawn, even though no glyph table row is 0b111');
+    // Medium4x7 is a bitmap font: one canvas pixel per set bit (preview-spec.md §1.4). The white colour
+    // separates text from the button's black dithered shadow, which also draws 1x1 pixels.
+    const glyphs = fillsWithColour(calls, TEXT_WHITE).filter((call) => call.args[2] === 1 && call.args[3] === 1);
+    ok(glyphs.length > 0, 'the button text is drawn as white glyph pixels');
     ok(
         glyphs.every((call) => call.args[0] >= 40 && call.args[0] < 40 + 96 && call.args[1] >= 60 && call.args[1] < 60 + 32),
         'and its pixels are inside the button',
@@ -637,7 +646,7 @@ test('a label draws no block background, only its text', () => {
         fills.some((call) => call.args[0] === 40 && call.args[1] === 60 && call.args[2] === 96 && call.args[3] === 24),
         'Style::label() has no background, so the whole rect is not filled',
     );
-    const glyphs = fills.filter(
+    const glyphs = fillsWithColour(calls, TEXT_WHITE).filter(
         (call) =>
             call.args[2] === 1 &&
             call.args[3] === 1 &&
@@ -656,7 +665,7 @@ test('a table draws the header row as the first row, then the body rows', () => 
     // two headers and two body rows; every cell is stroked and its text drawn.
     const { calls } = boot(documentWith(widgetOf('table', {}, defaultChildren('table'))));
     const textRowsAt = (top) =>
-        fillRects(calls).filter(
+        fillsWithColour(calls, TEXT_WHITE).filter(
             (call) =>
                 call.args[2] === 1 &&
                 call.args[3] === 1 &&
@@ -674,10 +683,17 @@ test('a Vector font draws the crate\'s own polylines, not bitmap pixels', () => 
     // Vector(n) uses `vectorGlyph`'s points, scaled by n and stroked as one-pixel segments (preview-spec.md
     // §1.4). A bitmap font would emit fillRects inside the glyph box instead; the vector path must not.
     const { calls } = boot(documentWith(widgetOf('label', { text: 'A', font: 'Vector(2)' })));
-    ok(
-        calls.some((call) => call.method === 'lineTo'),
-        'the vector glyph is stroked as a polyline',
+    // The canvas grid also strokes `lineTo`s, but it runs the full width/height, so only a segment with both
+    // endpoints inside the label's own box can be the glyph.
+    const glyphLines = calls.filter(
+        (call) =>
+            call.method === 'lineTo' &&
+            call.args[0] >= 40 &&
+            call.args[0] < 40 + 96 &&
+            call.args[1] >= 60 &&
+            call.args[1] < 60 + 24,
     );
+    ok(glyphLines.length > 0, 'the vector glyph is stroked as a polyline inside its box');
     const glyphBox = fillRects(calls).filter(
         (call) => call.args[0] >= 40 && call.args[0] < 40 + 96 && call.args[1] >= 60 && call.args[1] < 60 + 24,
     );

@@ -4917,3 +4917,36 @@ Two things had to be true before the canvas could be honest rather than *nearly*
 The designer's fallback stays for tags the crate gives no renderer: `mesh` emits a spacer (nothing to draw),
 `image` and `icon` need their asset files (the next slice: the panel has to hand the webview a URI per asset),
 and the ten tags the codegen cannot build are not offered at all.
+
+### Three things the board taught the replica while it was being written
+
+**A pen's zero is not a width.** Already true of the shapes (§103); here it showed up as `stroke_width` 0 meaning
+no outline on both sides.
+
+**The clip is the widget's cell, and that is measurable.** The spec's own notes said the clip was the "inherited"
+one, which would have let a panel's soft shadow darken its neighbours and a carousel's `mask_top` bar paint above
+its cell. Both were measured instead: a panel with `Shadow::soft()` (offset (1,2), spread 2) on a white backdrop
+paints **0** non-white pixels within 4 px of its cell, and a carousel with `mask_top=6`/`mask_bottom=6` paints
+**0** above or below its own. So the engine clips each widget to its rect, the masks only shade *inside* the cell
+(which is why the crate's fade loop, not its mask bars, is what a carousel actually shows), and the replica clips
+the same way. It took two wrong attempts to measure this cleanly -- the first two probes counted a neighbouring
+widget's pixels as spill, because the fixture's widgets sit next to each other and a black backdrop hides a
+dithered black shadow. A one-widget screen on a white backdrop is what settled it.
+
+**Faithful is not the same as cheap.** Mirroring the crate's shadow arithmetic exactly meant filling each
+dithered ring whole, which costs one canvas op per ~1.7 pixels of the ring's area -- 24 543 ops for a 360x120
+panel, on every repaint, in an editor where the canvas redraws while you drag. The crate avoids that with an
+occlusion rule whose own test asserts it is pixel-identical, so the replica now uses it too: the same pixels,
+1 315 ops, and the cost grows with the perimeter instead of the area. That is the kind of thing that would have
+shipped as "the canvas feels sluggish with a few panels on it", with no obvious cause.
+
+### What is still approximate, and why
+
+The declared **BDF fonts** cannot be drawn by the webview (the `.bdf` is the project's file, not the crate's
+data), so those fall back to the crate's default glyphs; the base style around them is right. **Vector strokes**
+blend on the canvas where the crate dithers. The **dither phase** is indexed by the board's framebuffer, so it
+can shift under a 90/270 degree rotation. `image`/`icon` previews need the panel to hand the webview a URI per
+asset -- the next slice -- and `mesh` has no renderer at all, because its codegen arm emits a spacer.
+
+Every one of those is a comment in `preview.ts` beside the code that does it, and a line in the changelog, rather
+than a gap a user has to discover.

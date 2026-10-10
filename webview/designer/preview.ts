@@ -477,9 +477,10 @@ function contentArea(rect: Rect, style: Style, hasTitle: boolean): Rect {
  * `opacity > BAYER[(y&3)*4+(x&3)]*16+8`.
  *
  * This is the board's default compositor. It is *not* an alpha blend, so `globalAlpha` would be smoother and
- * darker than the glass; the parent asked for the dither, and this is it. The pattern is evaluated in canvas
- * (design) coordinates; the board's own framebuffer coordinates are the same once the panel's rotation has
- * been applied, which is the orientation `canvas.ts` already draws in.
+ * darker than the glass; the parent asked for the dither, and this is it. The pattern is indexed by the
+ * board's own framebuffer pixel (`render/compositor.rs:43-61`); the canvas works in the design's
+ * rotation-applied coordinates (see `canvas.ts`), so at rotation 0 the two coincide and at 90/270 the mask's
+ * phase can differ by the axis swap. That is a phase difference in a dither pattern, not a different model.
  */
 const BAYER: readonly number[] = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
 
@@ -671,15 +672,38 @@ function strokeRounded(
 }
 
 /**
- * The shadow ring loop (spec 3.2, `block.rs:111-175`).
+ * The shadow ring loop (spec 3.2, `block.rs:111-175`), with the crate's occluded-core optimisation.
  *
  * High quality means `spread` rings (`render/mod.rs:483-495`), `i` ascending so later rings paint over
  * earlier; the fade is `(opacity * (spread-i) / spread)` in integer arithmetic; the ring grows by `i` and its
- * radius by `i`. The crate's occluded-core strip optimisation is pixel-identical to this plain loop by its own
- * test (`block.rs:225-290`) and is not reproduced.
+ * radius by `i`.
+ *
+ * Each ring is a *filled* rounded rect, and at the shadow's opacity that fill is ordered-dithered, so painting
+ * the ring whole costs one canvas op per ~1.7 pixels of the ring's **area** — 24 000 ops for a 360x120 panel,
+ * on every repaint. The crate does not do that: when the block's own fill is opaque it clips each ring to four
+ * strips around an inset *core* (`block.rs:113-171`), because the core is about to be painted over anyway, and
+ * its own test asserts the clipped and unclipped loops are pixel-identical (`block.rs:225-290`). This does the
+ * same thing the same way: the core's columns are skipped on the rows the core covers, which is the union of
+ * those four strips, and the result is the same pixels for a fraction of the work.
+ *
+ * The core only exists when the block will actually cover it -- `opacity == 255` and a background or gradient
+ * to paint with -- and when the rect is bigger than its corners (`block.rs:115-123`). A shape with a shadow and
+ * nothing to fill with gets the whole ring, exactly as the crate does.
  */
-function drawShadow(context: CanvasRenderingContext2D, rect: Rect, cornerRadius: number, shadow: Shadow): void {
+function drawShadow(
+    context: CanvasRenderingContext2D,
+    rect: Rect,
+    cornerRadius: number,
+    shadow: Shadow,
+    opaqueFill: boolean,
+): void {
     const spread = shadow.spread;
+    const radius = clampRadius(rect, cornerRadius);
+    const core =
+        opaqueFill && rect.w > radius * 2 && rect.h > radius * 2
+            ? { x: rect.x + radius, y: rect.y + radius, w: rect.w - radius * 2, h: rect.h - radius * 2 }
+            : undefined;
+
     for (let i = 0; i < spread; i += 1) {
         const ring: Rect = {
             x: rect.x + shadow.offsetX - i,
@@ -689,7 +713,64 @@ function drawShadow(context: CanvasRenderingContext2D, rect: Rect, cornerRadius:
         };
         const opacity = Math.floor((shadow.opacity * (spread - i)) / spread);
         // The ring's radius grows with the ring (spec 3.2, `block.rs:138`).
-        fillSolid(context, ring, cornerRadius + i, shadow.color, opacity);
+        fillRing(context, ring, cornerRadius + i, shadow.color, opacity, core);
+    }
+}
+
+/**
+ * One dithered shadow ring, skipping the core's columns on the rows it covers.
+ *
+ * Splitting a row around the core is the same set of pixels as the crate's four clipped strips, without giving
+ * the canvas a clip rectangle per strip.
+ */
+function fillRing(
+    context: CanvasRenderingContext2D,
+    ring: Rect,
+    radius: number,
+    colour: Rgb565,
+    opacity: number,
+    core: Rect | undefined,
+): void {
+    if (rectEmpty(ring) || opacity <= 0) {
+        return;
+    }
+    const clamped = clampRadius(ring, radius);
+    for (let y = ring.y; y < rectBottom(ring); y += 1) {
+        const run = rowExtent(ring, clamped, y);
+        if (run === undefined) {
+            continue;
+        }
+        const [x0, x1] = run;
+        const inCoreRows = core !== undefined && y >= core.y && y < rectBottom(core);
+        if (!inCoreRows) {
+            paintRun(context, x0, x1, y, colour, opacity);
+            continue;
+        }
+        // Left strip, then right strip; either may be empty.
+        paintRun(context, x0, Math.min(x1, core.x), y, colour, opacity);
+        paintRun(context, Math.max(x0, rectRight(core)), x1, y, colour, opacity);
+    }
+}
+
+/** One horizontal run of a dithered fill: a single `fillRect` at full opacity, per-pixel below it. */
+function paintRun(
+    context: CanvasRenderingContext2D,
+    x0: number,
+    x1: number,
+    y: number,
+    colour: Rgb565,
+    opacity: number,
+): void {
+    if (x1 <= x0) {
+        return;
+    }
+    if (opacity >= 255) {
+        context.fillStyle = css(colour);
+        context.fillRect(x0, y, x1 - x0, 1);
+        return;
+    }
+    for (let x = x0; x < x1; x += 1) {
+        pixel(context, x, y, colour, opacity);
     }
 }
 
@@ -836,11 +917,11 @@ function drawVectorGlyph(
  */
 function wrapLines(text: string, wrap: 'none' | 'word' | 'character', width: number | undefined, advance: number): string[] {
     const paragraphs = text.split('\n');
+    // A trailing newline is consumed, not an empty extra line (spec 1.5, `line_len_at`).
+    if (paragraphs.length > 1 && paragraphs[paragraphs.length - 1] === '') {
+        paragraphs.pop();
+    }
     if (wrap === 'none' || width === undefined) {
-        if (paragraphs.length > 1 && paragraphs[paragraphs.length - 1] === '') {
-            // A trailing newline is consumed, not an empty extra line (spec 1.5).
-            paragraphs.pop();
-        }
         return paragraphs.length === 0 ? [''] : paragraphs;
     }
     const maxChars = Math.max(Math.floor(width / advance), 1);
@@ -916,10 +997,12 @@ export function drawCrateText(
         const line = lines[index] ?? '';
         const lineWidth = charCount(line) * advance;
         let left = x;
+        // The crate saturates before dividing (`rect.w.saturating_sub(line_w) as i32 / 2`,
+        // render/mod.rs:1072-1076), so an overflowing line starts at the rect edge rather than left of it.
         if (opts.width !== undefined && opts.align === 'center') {
-            left = x + Math.floor((opts.width - lineWidth) / 2);
+            left = x + Math.floor(Math.max(0, opts.width - lineWidth) / 2);
         } else if (opts.width !== undefined && opts.align === 'right') {
-            left = x + (opts.width - lineWidth);
+            left = x + Math.max(0, opts.width - lineWidth);
         }
         let cursor = left;
         for (const ch of line) {
@@ -955,7 +1038,10 @@ export function drawBlock(context: CanvasRenderingContext2D, rect: Rect, style: 
         return;
     }
     if (style.shadow !== undefined) {
-        drawShadow(context, rect, style.cornerRadius, style.shadow);
+        // The core is only occluded when the block will paint over it: an opaque fill with something to paint
+        // (`block.rs:115-123`). Anything else gets the whole ring, as the crate does.
+        const opaqueFill = style.opacity === 255 && (style.background !== undefined || style.gradient !== undefined);
+        drawShadow(context, rect, style.cornerRadius, style.shadow, opaqueFill);
     }
     if (style.gradient !== undefined) {
         fillGradient(context, rect, style.cornerRadius, style.gradient, style.opacity);
@@ -1113,8 +1199,9 @@ function previewPanel(context: CanvasRenderingContext2D, widget: DesignerWidget,
 }
 
 /** Label (spec 4.2, `widgets/mod.rs:1325-1344`): block, then left/top text; the label ignores the live state. */
-function previewLabel(context: CanvasRenderingContext2D, widget: DesignerWidget, state: VisualState): void {
-    const style = resolveVisual(labelOrCarouselStyle(widget, styleNew()), state);
+function previewLabel(context: CanvasRenderingContext2D, widget: DesignerWidget, _state: VisualState): void {
+    // §4.2 resolves VisualState::Normal for a label whatever the input state is.
+    const style = resolveVisual(labelOrCarouselStyle(widget, styleNew()), 'normal');
     const rect = rectOf(widget);
     drawBlock(context, rect, style);
     drawTextIn(context, blockInner(rect, style), stringProp(widget.props, 'text', 'label', 'title'), style.font, style.text);
@@ -1374,6 +1461,9 @@ function previewCarousel(context: CanvasRenderingContext2D, widget: DesignerWidg
             return raw < 0 ? raw + count : raw;
         })();
         const textValue = items[index] ?? '';
+        // `text_left` in the crate is `inner.x + (inner.w - chars*advance) / 2` with non-saturating u32
+        // arithmetic (spec 4.12, U7); an item wider than `inner.w` is therefore unspecified there. This
+        // floors the signed difference instead, so an overflowing row stays centred about the widget.
         const left = inner.x + Math.floor((inner.w - charCount(textValue) * advance) / 2);
         drawCrateText(context, left, rowCentre - Math.floor(lineHeight / 2), textValue, style.font, carouselSlotColor(style.text, Math.abs(rel)));
     }
