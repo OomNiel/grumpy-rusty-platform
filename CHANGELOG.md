@@ -11,6 +11,22 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.64] - 2026-10-09
+
+### Fixed
+
+- **A Table's cells now reach the board.** The KDL parser has always collected a table's `headers` and `row`
+  lines, and the code generator's table arm then passed `&[]` to `add_table` — so a table painted its
+  panel-styled block and none of its contents, however carefully it was written in the designer. The vendored
+  fork now emits the header and the body rows (the header first: the renderer has no separate header concept),
+  with `{:?}` string literals so a quote in a cell cannot break the generated code.
+
+### Verified
+
+- The vendored fork's own test compiles a table and asserts the emitted `add_table` call carries every cell
+  (19 fork tests pass), and the host simulator's fixture now contains a table, so the call is compiled by the
+  real `include_gui!` against `embedded-gui` and measured: all four host checks pass with it in place.
+
 ## [0.0.63] - 2026-10-09
 
 ### Fixed
