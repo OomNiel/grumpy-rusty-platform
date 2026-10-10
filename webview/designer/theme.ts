@@ -29,6 +29,8 @@
 
 import { widgetSpec } from '../../src/designer/catalog';
 import type { DesignerWidget } from '../../src/designer/model';
+import { triangleBoxOf, triangleVertices } from '../../src/designer/model';
+import { VERTEX_HANDLE_SIZE, vertexHandles } from '../../src/designer/hit';
 import { previewWidget } from './preview';
 
 export interface Palette {
@@ -234,16 +236,18 @@ function paintLine(context: CanvasRenderingContext2D, widget: DesignerWidget, pa
 }
 
 /**
- * Paints a designer triangle inscribed in the cell: apex at the top edge centre,
- * base on the bottom edge. Fill and stroke follow `rusty_gui_widgets::Triangle`,
- * which derives the three vertices from the rect.
+ * Paints a designer triangle from its three points.
+ *
+ * The vertices come from `triangleVertices`, which applies the same per-mille rule as the crate's
+ * `Triangle::vertices` -- so the outline the user drags is the outline the board paints, and the apex of a
+ * freshly dropped triangle is the box's last-pixel-inclusive centre rather than half a pixel away from it.
  */
 function paintTriangle(context: CanvasRenderingContext2D, widget: DesignerWidget, palette: Palette): void {
-    const cx = widget.x + widget.width / 2;
+    const [first, second, third] = triangleVertices(triangleBoxOf(widget));
     context.beginPath();
-    context.moveTo(cx, widget.y);
-    context.lineTo(widget.x, widget.y + widget.height);
-    context.lineTo(widget.x + widget.width, widget.y + widget.height);
+    context.moveTo(first?.x ?? widget.x, first?.y ?? widget.y);
+    context.lineTo(second?.x ?? widget.x, second?.y ?? widget.y);
+    context.lineTo(third?.x ?? widget.x, third?.y ?? widget.y);
     context.closePath();
     context.fillStyle = colorProp(widget.props.fill, palette.widget);
     context.fill();
@@ -372,6 +376,23 @@ export function drawSelection(
     context.fillStyle = palette.handle;
     for (const [cx, cy] of centres) {
         context.fillRect(cx - half, cy - half, handleSize, handleSize);
+    }
+
+    // A triangle's three points, drawn as diamonds so they are visibly not the box's squares. They are the
+    // only handle that moves a point rather than an edge, and the apex sits on top of the north handle, so
+    // the shape is what tells the user which one they are about to grab (see `vertexHandles` in `hit.ts`).
+    const vertexHalf = Math.floor(VERTEX_HANDLE_SIZE / 2);
+    context.fillStyle = palette.selection;
+    context.strokeStyle = palette.handle;
+    for (const { x: vx, y: vy } of vertexHandles(widget)) {
+        context.beginPath();
+        context.moveTo(vx, vy - vertexHalf);
+        context.lineTo(vx + vertexHalf, vy);
+        context.lineTo(vx, vy + vertexHalf);
+        context.lineTo(vx - vertexHalf, vy);
+        context.closePath();
+        context.fill();
+        context.stroke();
     }
     context.restore();
 }

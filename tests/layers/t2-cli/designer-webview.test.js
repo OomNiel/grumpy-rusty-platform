@@ -477,6 +477,100 @@ test('rectangle, line and triangle paint their own primitive and edit through th
     }
 });
 
+test('a triangle paints its own points, and a point can be dragged wherever the pointer goes', () => {
+    const { root, messages, window } = dom.install();
+    delete require.cache[require.resolve(BUNDLE)];
+    require(BUNDLE);
+
+    const doc = createDocument({
+        boardId: 'sunton-035r',
+        panelWidth: 320,
+        panelHeight: 480,
+        rotation: 3,
+        screenId: 'Panel',
+    });
+    // A right triangle -- the far top corner, not the isosceles default -- so the pixels it paints prove the
+    // six offsets travelled from the document to the canvas and not merely that "a triangle was drawn".
+    doc.widgets = [
+        {
+            id: 'pyr',
+            tag: 'triangle',
+            x: 100,
+            y: 100,
+            width: 48,
+            height: 48,
+            props: { ...defaultProps('triangle'), p1x: 1000, p1y: 0, p2x: 0, p2y: 1000, p3x: 1000, p3y: 1000 },
+            events: [],
+        },
+    ];
+
+    const canvas = { width: 480, height: 320 };
+    window.emit('message', {
+        data: {
+            type: 'init',
+            document: doc,
+            canvas,
+            paths: { document: 'designer/panel.ui.json', kdl: 'src/ui.kdl' },
+            touchBoard: false,
+            touchEnabled: false,
+        },
+    });
+
+    const all = () => root.descendants();
+    const canvasElement = all().find((element) => element.tagName === 'CANVAS');
+    const called = (method) => canvasElement.context.calls.filter((call) => call.method === method).map((call) => call.args.join(','));
+    // 1000 per-mille across a 48-pixel box is its *last* column -- pixel 147, not 148, because a box 48 pixels
+    // wide ends at the 47th offset -- and 1000 down is its last row. So the apex is the box's top-right pixel
+    // and the base runs along the bottom, which is exactly what the crate paints on the glass.
+    ok(called('moveTo').includes('147,100'), `the apex is at the box's top right, got ${called('moveTo').join(' ')}`);
+    ok(called('lineTo').includes('100,147'), 'the second point is the bottom left');
+    ok(called('lineTo').includes('147,147'), 'and the third the bottom right');
+
+    // Selecting it shows the six offsets as one group of fields, beside the ordinary geometry and colours.
+    canvasElement.emit('pointerdown', { clientX: 120, clientY: 120, pointerId: 1 });
+    canvasElement.emit('pointerup', { clientX: 120, clientY: 120, pointerId: 1 });
+    const labels = all()
+        .filter((element) => element.classList.contains('field-label'))
+        .map((element) => String(element.textContent));
+    for (const name of ['Point 1 X', 'Point 1 Y', 'Point 2 X', 'Point 2 Y', 'Point 3 X', 'Point 3 Y']) {
+        ok(labels.includes(name), `the triangle sheet offers ${name}`);
+    }
+    ok(
+        all().some(
+            (element) => element.classList.contains('field-group') && String(element.textContent).startsWith('Points'),
+        ),
+        'under one heading, so they read as three points',
+    );
+    for (const name of ['Stroke width', 'Fill', 'Stroke', 'X', 'Y', 'Width', 'Height']) {
+        ok(labels.includes(name), `and it still offers ${name}`);
+    }
+
+    // Now grab the apex -- which shares its pixel with the box's north handle -- and drag it up and to the
+    // right, outside the box it started in. The box has to follow, or a point could never reach the glass's
+    // edges.
+    messages.length = 0;
+    canvasElement.emit('pointerdown', { clientX: 147, clientY: 100, pointerId: 2 });
+    canvasElement.emit('pointermove', { clientX: 180, clientY: 60, pointerId: 2 });
+    canvasElement.emit('pointerup', { clientX: 180, clientY: 60, pointerId: 2 });
+    const changed = messages.filter((message) => message.type === 'changed');
+    ok(changed.length > 0, 'dragging a point posts a change');
+    const moved = changed[changed.length - 1].document.widgets.find((widget) => widget.id === 'pyr');
+    equal(`${moved.x},${moved.y}`, '100,60', 'the box grew up to the dragged point');
+    equal(`${moved.width},${moved.height}`, '81,88', 'and reaches the other two, which have not moved');
+    // The point landed on the pixel the pointer was on, which is the whole promise of the handle.
+    const apexX = moved.x + Math.floor((moved.props.p1x * moved.width) / 1000);
+    const apexY = moved.y + Math.floor((moved.props.p1y * moved.height) / 1000);
+    equal(`${apexX},${apexY}`, '180,60', 'and it is where the user let go of it');
+    // The offsets are relative to the box, so the second point's numbers change as the box grows -- what has
+    // to hold is that its *pixel* has not: the other two points stay where the user left them, which is what
+    // makes one point draggable without disturbing the shape's other corner.
+    const second = {
+        x: moved.x + Math.floor((moved.props.p2x * moved.width) / 1000),
+        y: moved.y + Math.floor((moved.props.p2y * moved.height) / 1000),
+    };
+    equal(`${second.x},${second.y}`, '100,147', 'the second point is still on the pixel it was on');
+});
+
 // ---------------------------------------------------------------------------
 // The WYSIWYG preview: the crate's paint, not the generic rounded rectangle.
 //

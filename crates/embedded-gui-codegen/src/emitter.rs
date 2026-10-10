@@ -565,15 +565,23 @@ pub fn generate_rust_code(screen: &ScreenDef) -> String {
                 stroke_width,
                 fill_color,
                 stroke_color,
+                points,
                 ..
             } => {
-                // A triangle has no parsed radius: the board derives its three vertices from the cell rect,
-                // matching the designer's canvas. Forked to `add_custom_widget(rusty_gui_widgets::Triangle)`.
+                // The three vertices come from the design (per-mille of the cell), so the triangle can be
+                // any shape rather than only isosceles. Forked to
+                // `add_custom_widget(rusty_gui_widgets::Triangle)`.
                 let fields = format!(
-                    "stroke_width: {}, fill: {}, stroke: {}",
+                    "stroke_width: {}, fill: {}, stroke: {}, points: [{}, {}, {}, {}, {}, {}]",
                     stroke_width,
                     opt_rgb565(&fill_color),
                     opt_rgb565(&stroke_color),
+                    points[0],
+                    points[1],
+                    points[2],
+                    points[3],
+                    points[4],
+                    points[5],
                 );
                 emit_custom_widget(&mut out, &var_name, idx, "Triangle", &fields);
             }

@@ -21,7 +21,7 @@ screen id="SimPanel" width=480 height=320 theme="dark" {
             row "B" "2"
         }
         label id="tinted" text="AB" style="{ let mut style = Style::label(); style.text = Rgb565::new(31, 0, 0); style }" col=9 row=13 col_span=4 row_span=1
-        triangle id="trib" stroke_width=2 fill="#ff0000" stroke="#00ff00" col=9 row=16 col_span=1 row_span=3
+        triangle id="trib" stroke_width=2 fill="#ff0000" stroke="#00ff00" p1x=1000 p1y=0 p2x=0 p2y=1000 p3x=1000 p3y=1000 col=9 row=16 col_span=1 row_span=3
         line id="rule" stroke_width=2 color="#0000ff" col=9 row=20 col_span=3 row_span=1
     }
 }

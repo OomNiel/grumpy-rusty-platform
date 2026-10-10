@@ -33,6 +33,7 @@ const {
     setFontField,
     setScreenField,
     setRotation,
+    setTriangleGeometry,
     canvasOf,
     widgetById,
     widgetAt,
@@ -45,11 +46,22 @@ const {
     gridSnap,
     snapMove,
     HANDLE_SIZE,
+    VERTEX_HANDLE_SIZE,
+    vertexHandles,
     MIN_SIZE,
     SNAP_TOLERANCE,
     GRID_STEP,
 } = compiled('designer/hit');
-const { validateDocument } = compiled('designer/model');
+const {
+    DEFAULT_TRIANGLE_POINTS,
+    TRIANGLE_POINT_NAMES,
+    triangleBoxOf,
+    triangleFromVertices,
+    trianglePoints,
+    triangleVertex,
+    triangleVertices,
+    validateDocument,
+} = compiled('designer/model');
 
 /** A CYD document. Rotation 3 is the landscape canvas, 480x320. */
 function state(rotation = 0) {
@@ -442,4 +454,166 @@ test('duplicating near an edge keeps the copy inside the canvas', () => {
     const copy = duplicateWidget(far, 'button');
     const made = copy.document.widgets[1];
     ok(made.x + made.width <= 320 && made.y + made.height <= 480, `the copy is inside, got ${made.x},${made.y}`);
+});
+
+// ---------------------------------------------------------------- a triangle's three points
+
+/** A design with one dropped triangle on it, which is 64x56 at 100,50 with the catalogue's own points. */
+function withTriangle(x = 100, y = 50) {
+    const made = addWidget(state(), 'triangle', x, y);
+    return made;
+}
+
+test('a dropped triangle carries its three points, and the default is the old isosceles shape', () => {
+    const widget = withTriangle().document.widgets[0];
+    // Six attributes, so the markup never has to rely on the parser's fallback for a widget the designer made.
+    for (const name of TRIANGLE_POINT_NAMES) {
+        ok(typeof widget.props[name] === 'number', `a dropped triangle has ${name}`);
+    }
+    const box = triangleBoxOf(widget);
+    const [apex, left, right] = triangleVertices(box);
+    // The apex is the top centre and the base is the box's *last* row: `p = 1000` measures the cell's final
+    // pixel, which is the same rule the crate renders with, so no point can leave the cell.
+    equal(`${apex.x},${apex.y}`, `${box.x + Math.floor(box.width / 2)},${box.y}`, 'the apex is the top centre');
+    equal(left.y, box.y + box.height - 1, 'the base sits on the last row');
+    equal(right.y, left.y, 'both base corners on it');
+    equal(right.x, box.x + box.width - 1, 'and the base spans the last column too');
+    // An isosceles triangle, which is what every design made before the points existed has.
+    equal(box.x + box.width - 1 - right.x, 0, 'the right corner is the box corner');
+    equal(left.x, box.x, 'the left one too');
+    // Centred to within a pixel: an even-width box has two middle columns, and the apex lands on the right
+    // one of them (the crate's `floor` of 500 per-mille). It is the same column the board paints on.
+    equal(Math.abs(apex.x - left.x - (right.x - apex.x)) <= 1, true, 'so the apex is the middle column');
+});
+
+test('dragging a point moves the box around it and leaves the other two on their pixels', () => {
+    const one = withTriangle();
+    const widget = one.document.widgets[0];
+    const vertices = triangleVertices(triangleBoxOf(widget));
+
+    // Drag the apex up and to the right, off the original box: the user asked to be able to put a point
+    // anywhere on the glass, so the box has to follow rather than hold the point inside itself.
+    const wanted = { x: 200, y: 10 };
+    const moved = setTriangleGeometry(
+        one,
+        widget.id,
+        triangleFromVertices([wanted, vertices[1], vertices[2]]),
+    );
+    const after = moved.document.widgets[0];
+    equal(`${after.x},${after.y}`, '100,10', 'the box grew upwards to hold the dragged point');
+    // 100..200 across (the dragged point is right of both base corners) and 10..105 down: the bounding box of
+    // the three points, which is wider than the original 64 because the point left the box to the right.
+    equal(`${after.width},${after.height}`, '101,96', 'and is the bounding box of all three points');
+
+    const now = triangleVertices(triangleBoxOf(after));
+    equal(`${now[0].x},${now[0].y}`, '200,10', 'the dragged point is exactly where it was let go');
+    equal(`${now[1].x},${now[1].y}`, `${vertices[1].x},${vertices[1].y}`, 'the second point has not stirred');
+    equal(`${now[2].x},${now[2].y}`, `${vertices[2].x},${vertices[2].y}`, 'nor the third');
+
+    // One undo step for a whole drag: forty mouse-moves are not forty presses of Ctrl+Z.
+    const again = setTriangleGeometry(
+        moved,
+        widget.id,
+        triangleFromVertices([{ x: 210, y: 5 }, vertices[1], vertices[2]]),
+    );
+    const restored = undo(again);
+    equal(restored.document.widgets[0].height, 56, 'one undo takes back the whole drag, not just one move');
+    equal(
+        restored.document.widgets[0].props.p1x,
+        widget.props.p1x,
+        'and restores the points it started with',
+    );
+    equal(undo(restored).document.widgets.length, 0, 'the step before it is the add, as it was before');
+});
+
+test('the per-mille offsets round-trip through the crate\'s own arithmetic, pixel for pixel', () => {
+    // The crate measures forward with a truncating division (`p * size / 1000`), so this is the check that the
+    // designer's numbers put a point back on the pixel the user let go of -- for every pixel of every box
+    // shape a grid can produce, not only for the ones that happen to divide evenly.
+    for (const [width, height] of [[64, 56], [1, 1], [7, 3], [200, 150], [13, 29], [320, 480], [479, 3]]) {
+        for (let px = 0; px < width; px += Math.max(1, Math.floor(width / 17))) {
+            const vertices = [{ x: px, y: 0 }, { x: 0, y: height - 1 }, { x: width - 1, y: height - 1 }];
+            const box = triangleFromVertices(vertices);
+            equal(box.x, 0, 'the box starts at the leftmost point');
+            equal(box.y, 0, 'and at the topmost');
+            equal(box.width, width, `the box spans the points, got ${box.width} for ${width}`);
+            equal(box.height, height, `and vertically, got ${box.height} for ${height}`);
+            const back = triangleVertex(box, 0);
+            equal(`${back.x},${back.y}`, `${px},0`, `pixel ${px} of a ${width}-wide box comes back`);
+        }
+    }
+});
+
+test('a point dragged off the canvas is brought back in, so it can still be grabbed', () => {
+    const one = withTriangle();
+    const widget = one.document.widgets[0];
+    const vertices = triangleVertices(triangleBoxOf(widget));
+    const canvas = canvasOf(one.document);
+    // The canvas clamps the pointer, but the rule belongs here too: a point outside the panel is one the
+    // engine clips and the pointer can never reach again.
+    const outside = setTriangleGeometry(
+        one,
+        widget.id,
+        triangleFromVertices([{ x: -40, y: -30 }, vertices[1], vertices[2]]),
+    );
+    const after = outside.document.widgets[0];
+    const now = triangleVertices(triangleBoxOf(after));
+    equal(now[0].x, 0, 'the leftmost point is on the left edge');
+    equal(now[0].y, 0, 'and on the top edge');
+    ok(after.x >= 0 && after.y >= 0, 'so the box starts inside the canvas');
+    ok(
+        after.x + after.width <= canvas.width && after.y + after.height <= canvas.height,
+        `and stays inside it, got ${after.x},${after.y} ${after.width}x${after.height}`,
+    );
+});
+
+test('a triangle\'s point handle wins over the box handle it sits on, and only while selected', () => {
+    const one = withTriangle();
+    const widget = one.document.widgets[0];
+    const [apex] = triangleVertices(triangleBoxOf(widget));
+    // The apex and the box's north handle are the same pixel -- that is the point of the priority: a click
+    // there has to mean "move this point", which is the thing a triangle has and a box does not.
+    equal(apex.x, widget.x + Math.floor(widget.width / 2), 'the apex is where the north handle is');
+    equal(apex.y, widget.y, 'on the same row');
+
+    const onApex = hitTest(one.document, apex.x, apex.y, widget.id);
+    equal(onApex.id, widget.id, 'the click is on the triangle');
+    equal(onApex.vertex, 0, 'and it grabbed the first point');
+    equal(onApex.handle, undefined, 'not the box handle underneath it');
+
+    // The other seven edges are still resizable: only the point wins.
+    const west = hitTest(one.document, widget.x, widget.y + Math.floor(widget.height / 2), widget.id);
+    equal(west.handle, 'w', 'the west edge is still a box handle');
+    equal(west.vertex, undefined, 'and not a point');
+
+    // Unselected, there are no point handles at all: a click on the body is a plain selection.
+    const unselected = hitTest(one.document, apex.x, apex.y, undefined);
+    equal(unselected.id, widget.id, 'the click still selects the triangle');
+    equal(unselected.vertex, undefined, 'but grabs no point');
+
+    // And no other tag has them, however big its box is.
+    const button = addWidget(state(), 'button', 10, 10);
+    equal(vertexHandles(button.document.widgets[0]).length, 0, 'a button has no points to drag');
+    equal(vertexHandles(widget).length, 3, 'a triangle has three');
+    equal(VERTEX_HANDLE_SIZE > HANDLE_SIZE, true, 'and they are the easier target to hit');
+});
+
+test('a design written before the points existed keeps the default triangle', () => {
+    // This is the compatibility promise: six new properties must not make an older design invalid, because the
+    // crate's parser defaults each of them to the same isosceles triangle.
+    const one = withTriangle();
+    const widget = one.document.widgets[0];
+    for (const name of TRIANGLE_POINT_NAMES) {
+        delete widget.props[name];
+    }
+    equal(validateDocument(one.document).length, 0, 'an older design is still valid');
+    equal(
+        trianglePoints(widget).join(','),
+        DEFAULT_TRIANGLE_POINTS.join(','),
+        'and reads back as the default triangle',
+    );
+    // Half a set is the same deal, offset by offset, exactly as the parser reads it.
+    widget.props.p1x = 0;
+    equal(trianglePoints(widget)[0], 0, 'the one it names is used');
+    equal(trianglePoints(widget)[1], 0, 'and the rest keep the crate\'s value');
 });

@@ -310,6 +310,9 @@ pub enum WidgetDef {
         stroke_width: u8,
         fill_color: Option<String>,
         stroke_color: Option<String>,
+        /// The three vertices as per-mille offsets into the cell: `[p1x, p1y, p2x, p2y, p3x, p3y]`. The
+        /// designer chooses them; absent ones are the isosceles triangle it drops by default.
+        points: [i16; 6],
     },
 }
 

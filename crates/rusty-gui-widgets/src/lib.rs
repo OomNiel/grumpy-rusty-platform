@@ -241,15 +241,44 @@ impl CustomWidget for Line {
     }
 }
 
-/// A triangle inscribed in the cell `rect` -- apex at the top edge centre, base on
-/// the bottom edge, the same way the designer's canvas draws it. Fill is a scanline
-/// rasteriser over the signed-area vertices; stroke walks each edge with a thick
-/// pen. The three vertices are derived from the rect, never parsed.
+/// A triangle whose three vertices the design chooses.
+///
+/// Each vertex is two per-mille offsets into the cell (`0..=1000` of its width and height), so the triangle
+/// scales with its cell instead of being fixed to one shape: the designer drops one as an isosceles triangle
+/// (apex top centre, base along the bottom) and any vertex can then be dragged anywhere in the control. Fill is
+/// a scanline rasteriser over the vertices; the stroke walks each edge with a thick pen.
+///
+/// The per-mille form is what keeps the board independent of the designer's pixel arithmetic: the *cell* is the
+/// same rectangle on both sides, so `x = cell.x + p * cell.w / 1000` is exact for any cell the grid produces.
 pub struct Triangle {
     pub stroke_width: u8,
     pub fill: Option<Rgb565>,
     pub stroke: Option<Rgb565>,
+    /// `[p1x, p1y, p2x, p2y, p3x, p3y]`, per-mille of the cell. The default is the isosceles triangle the
+    /// designer has always dropped.
+    pub points: [i16; 6],
 }
+
+impl Triangle {
+    /// The three vertices in cell coordinates, clamped to the cell.
+    fn vertices(&self, rect: Rect) -> [(i32, i32); 3] {
+        let w = rect.w as i32;
+        let h = rect.h as i32;
+        let place = |px: i16, py: i16| {
+            let x = rect.x + (px.clamp(0, 1000) as i32 * w) / 1000;
+            let y = rect.y + (py.clamp(0, 1000) as i32 * h) / 1000;
+            (x.clamp(rect.x, rect.x + w - 1), y.clamp(rect.y, rect.y + h - 1))
+        };
+        [
+            place(self.points[0], self.points[1]),
+            place(self.points[2], self.points[3]),
+            place(self.points[4], self.points[5]),
+        ]
+    }
+}
+
+/// The default triangle: apex at the top centre, base along the bottom edge -- the shape the designer drops.
+pub const DEFAULT_TRIANGLE_POINTS: [i16; 6] = [500, 0, 0, 1000, 1000, 1000];
 
 impl CustomWidget for Triangle {
     fn render(
@@ -259,12 +288,10 @@ impl CustomWidget for Triangle {
         _style: &WidgetStyle,
         _state: VisualState,
     ) -> Result<(), GuiError> {
-        let cx = rect.x + (rect.w as i32 >> 1);
         if rect.h == 0 || rect.w == 0 {
             return Ok(());
         }
-        // top, bottom-left, bottom-right
-        let v: [(i32, i32); 3] = [(cx, rect.y), (rect.x, rect.bottom()), (rect.right(), rect.bottom())];
+        let v = self.vertices(rect);
 
         if let Some(c) = self.fill {
             // Sort the three vertices top-to-bottom by y. A fixed `[T; 3]` does not resolve slice

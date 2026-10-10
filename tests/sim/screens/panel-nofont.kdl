@@ -20,7 +20,7 @@ screen id="SimPanel" width=480 height=320 theme="dark" {
             row "B" "2"
         }
         label id="tinted" text="AB" col=9 row=13 col_span=4 row_span=1
-        triangle id="trib" stroke_width=2 col=9 row=16 col_span=1 row_span=3
+        triangle id="trib" stroke_width=2 p1x=1000 p1y=0 p2x=0 p2y=1000 p3x=1000 p3y=1000 col=9 row=16 col_span=1 row_span=3
         line id="rule" stroke_width=2 col=9 row=20 col_span=3 row_span=1
     }
 }

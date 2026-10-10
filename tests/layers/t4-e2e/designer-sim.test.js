@@ -38,6 +38,7 @@ if (!cargo) {
         ['a tap at a widget\'s designed centre reaches that widget and no other', ['--touch']],
         ['the generated ui.rs dispatches a tap to the handler it names', ['--dispatch']],
         ['a declared font changes the pixels inside its widget and nowhere else', ['--font']],
+        ['a triangle paints the shape its points describe, not the default one', ['--shape-points']],
     ]) {
     test(name, () => {
         const tool = path.join(repoRoot(), 'tests', 'tools', 'designer-sim.js');

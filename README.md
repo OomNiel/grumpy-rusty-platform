@@ -176,6 +176,13 @@ designer for the active project. Either way it works on a board that carries a p
   disagree about geometry. A circle is edited by its centre and radius, which are derived from that rectangle
   rather than stored beside it. Designer projects vendor both that crate and the `embedded-gui-codegen` fork that
   knows how to emit its widgets, under `codegen/`, so the build stays offline and self-contained.
+- **A Triangle is any triangle** — its three points are dragged on the canvas, wherever on the glass you want
+  them: each vertex has its own **diamond handle**, and the widget's box follows the point, growing so a vertex
+  can leave the box it started in. The box keeps its eight handles, which scale the whole shape. The points are
+  stored as thousandths of the box, which is how they reach the board: a triangle scales with its cell instead
+  of being pinned to one size, and the six numbers are also in the Properties panel under **Points** if you want
+  them exact. A design written before this keeps the isosceles triangle it always had — the crate defaults the
+  same six values.
 - **A Label's text** — its **font** (built-in or a declared BDF) and its **text colour** both come from the
   same place, because the markup has no attribute for either: they are written into the widget's `style`
   expression, together with the base look. A Button sets its own text colour with a real attribute; most other
