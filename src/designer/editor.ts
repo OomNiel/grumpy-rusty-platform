@@ -349,19 +349,13 @@ class DesignerPanel {
         return fs.existsSync(path.join(this.folder.fsPath, relative));
     }
 
-    private async act(
-        action: 'revealKdl' | 'revealDocument' | 'build' | 'revealProject' | 'openDesigner',
-    ): Promise<void> {
+    private async act(action: 'revealKdl' | 'revealDocument' | 'build' | 'revealProject'): Promise<void> {
         if (action === 'revealKdl') {
             await this.reveal(DESIGNER_KDL_PATH);
         } else if (action === 'revealDocument') {
             await this.reveal(DESIGNER_DOCUMENT_PATH);
         } else if (action === 'build') {
             await vscode.commands.executeCommand('rustyPlatform.build');
-        } else if (action === 'openDesigner') {
-            // The command, not a second implementation of it: the toolbar button and the palette entry have to
-            // stay the same thing, including the questions the command asks when no project is open.
-            await vscode.commands.executeCommand('rustyPlatform.openDesigner');
         } else {
             await vscode.commands.executeCommand('revealInExplorer', this.folder);
         }

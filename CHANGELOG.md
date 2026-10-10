@@ -11,6 +11,33 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.63] - 2026-10-09
+
+### Fixed
+
+- **0.0.62 shipped two leftovers that should not have been in it**, and this removes them:
+  - an `Open Designer` button inside the Designer panel's Toolbox (the two earlier placements of that button that
+    the sidebar row replaced), together with the `openDesigner` action and host routing it needed; and
+  - a test that fails from a clean checkout, because it asserted the panel button that is no longer there.
+
+  The cause is worth recording: the changes were committed to `main` by the *session's automatic worktree
+  commit* while the working branch was still based on an earlier commit, so reverting them in the working tree
+  was not a change relative to that base — the merge kept `main`'s copy of everything the revert had removed.
+  The fix is the removal made against the current base, and the merged tree is now checked rather than assumed:
+  `grep` for the leftovers and the full suite, after the merge. See `NOTES.md` §105.
+
+  The 0.0.62 feature itself is unaffected: `Open Designer` is the first row of the Controls section.
+
+### Added
+
+- **The designer canvas's glyph table, generated from the crate** (`webview/designer/glyphs.ts`, written by
+  `node tests/tools/glyph-table.js` from `tests/sim/src/bin/glyphs.rs`). It reads
+  `embedded_gui::font::glyph_rows` for every printable ASCII character, so the canvas can draw text in the font
+  the board will actually use rather than one that looks like it. Groundwork for the WYSIWYG canvas: nothing
+  draws from it yet. The generator dedupes identical tables (the fonts share one table except that `Medium4x7`
+  spells `*` and `@` differently), it can `--check` the committed file against the crate, and three tests pin
+  its contents.
+
 ## [0.0.62] - 2026-10-09
 
 ### Added
