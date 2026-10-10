@@ -11,6 +11,28 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.73] - 2026-10-09
+
+### Fixed
+
+- **Every setting in the property pane fits the pane, with no side-scrolling.** The geometry fields ran off it on
+  every widget: two columns of X/Y/Width/Height, each as wide as the number input's own default width plus its
+  label, came to 579 px inside a 260 px pane -- 319 px of it reachable only by dragging a horizontal scrollbar.
+  Measured in a real browser rather than reasoned about: **128 of the 132 pane states** the Toolbox can produce
+  overflowed before, and **0 of 132** do now, across four window widths. A path field (`Source`, `File`, a
+  composite icon's part) was the same bug waiting to happen -- an input and its `...` button in one unstyled
+  `div` is a single unbreakable line no pane can narrow.
+- The pane's contents are capped at the pane's width, the two geometry columns may shrink to nothing, a row's
+  label gives up width before its control does and shows an ellipsis where it did, and the middle pane can no
+  longer push the property pane off the side of the panel. A checkbox is no longer stretched across its row.
+
+### Added
+
+- **`tests/tools/designer-layout.js`** -- opens the Designer in Chromium, walks every control the Toolbox offers
+  at four window widths, and reports any pane whose content is wider than the pane. It is run by hand and needs a
+  browser (the file header says how); `tests/layers/t1-logic/designer-panel-layout.test.js` guards the same
+  rules as stylesheet invariants, so a regression is caught by the suite.
+
 ## [0.0.72] - 2026-10-09
 
 ### Changed

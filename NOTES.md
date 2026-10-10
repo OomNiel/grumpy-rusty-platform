@@ -5587,3 +5587,79 @@ Suite: **859 passed, 0 skipped**; the vendored widget crate is at **31** tests (
 at **236** (four for `fill_row`: its pixels, its clip offset, a right-clipped row and a short slice), the codegen
 fork at 23. The generated project was re-checked under the ESP toolchain for `xtensa-esp32-none-elf`: `Finished
 dev profile`, exit 0.
+
+---
+
+## 115. A setting that ran off the side of the property pane (2026-10-09)
+
+"*Please look at the Properties pane in the Designer. Some settings are drawn off screen and needs a horizontal
+scroll to become visible. Place all settings so that it fits the panel, without having to scroll
+horozontally.*"
+
+### What it turned out to be
+
+The geometry form. `X`, `Y`, `Width` and `Height` are laid out as a two-column grid (`.field-grid`), and a grid
+track written `1fr` is really `minmax(auto, 1fr)`: the `auto` minimum is the *item's* min-content size, and the
+item is a `.field` row holding a label and a number input. Whatever the input's own `min-width: 0` says about
+the input, the row's min-content still came out as the input's default width (**142 px**) plus the label, so each
+column was **279 px** and the grid **579 px** inside a 260 px pane. The pane scrolls, and the second column --
+`Y` and `Height`, or a circle's `Centre Y` and `Radius` -- is off the side.
+
+Reading the stylesheet said otherwise, twice, in both directions: first that nothing could overflow (every
+relevant control already had `min-width: 0`), then that `.asset-field` was the culprit. Both were guesses about a
+layout engine nobody was running. So the measurement was built instead.
+
+### Measuring it: a real browser, because nothing here has widths
+
+`tests/tools/designer-layout.js` starts Chromium through puppeteer, builds the panel the way the extension does
+(the compiled `out/webview/designer.js` bundle, a stub `acquireVsCodeApi`, the same `init` message), clicks
+**every control in the Toolbox** in turn, and reports for each state and window width whether
+`pane.scrollWidth > pane.clientWidth` -- which is exactly the scrollbar the user had to drag -- along with the
+elements that stick out past the pane's right edge. It can measure any compiled sheet, which is how the same run
+was pointed at the *installed* 0.0.72 extension:
+
+```
+128 of 132 states overflowed a pane        # the sheet before this change, 319px each
+  0 of 132 states overflowed a pane        # after
+   label.field "X" 1028..1307 (279px), input.field-input 1166..1307 (142px), label.field "Y" 1315..1599
+```
+
+Two things about launching Chromium were worth writing down, because both look like something else: it refuses
+to start at all when `$TMPDIR` is deeper than about a hundred characters (`Socket path too long` in
+`process_singleton_posix.cc`, after a crashpad complaint that reads like a missing database), which any path
+inside a worktree this deep is, so the tool uses `/tmp/dsh-designer-layout`; and a profile has to be given, or
+it tries to write into a read-only home. The browser (Chrome 155, ~300 MB) and its npm packages live under
+`tests/tmp/`, which is not tracked.
+
+A side measurement caught the other half of the job: a fix that makes everything fit by making everything
+unusable. Control widths after the change, at 1280 px wide: geometry number inputs 68-100 px, a path field's
+input 202 px, selects 201-220 px, colour fields 165-212 px, static values 214 px. Nothing is squeezed to a
+sliver and nothing is cut off.
+
+### The change, and why these four rules
+
+```css
+.body { grid-template-columns: 180px minmax(0, 1fr) 260px; }   /* the stage cannot push the pane */
+.toolbox *, .properties * { max-width: 100%; }                   /* nothing may be wider than its pane */
+.field-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.field > :not(.field-label) { flex: 1 1 0; min-width: 0; }
+.field-label { flex: 0 1 auto; }                                 /* the label yields first, with an ellipsis */
+.asset-field { display: flex; min-width: 0; }                    /* input and `...` share a row that can narrow */
+.field > input[type="checkbox"] { flex: 0 0 auto; }              /* a checkbox is a box, not a field */
+```
+
+The `max-width` cap is belt and braces beside the zero minimums: a *minimum* is what pushes a setting off the
+side, and a maximum stops anything that cannot shrink any other way from doing the same. `.asset-field` had no
+rule at all until now, so its input and its browse button sat on one unbreakable line (there is no whitespace
+between them, so no wrap opportunity), which is the same bug one control over. And the checkbox was being
+stretched across half the row by `flex: 1`; it keeps its own size now and sits at the right edge.
+
+### Guarded without a browser
+
+The suite has no layout engine, so a browser cannot be part of it. What the suite can hold is the *declaration*
+that keeps a row shrinkable: `tests/layers/t1-logic/designer-panel-layout.test.js` reads `designerStyles()` and
+asserts each rule above, by property rather than by text, and says in its header why (a new field with a fixed
+width looks right on a wide window and runs off a narrow one). Six tests; the suite is at **865 passed**.
+
+Suite: **865 passed, 0 skipped**. The manual measurement: **0 of 132 states** overflow, at 640, 820, 1000 and
+1280 px wide.

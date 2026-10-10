@@ -90,13 +90,28 @@ body {
 
 .body {
     display: grid;
-    grid-template-columns: 180px 1fr 260px;
+    /* The middle track can shrink to nothing, so a design wider than the window scrolls inside the stage
+       instead of pushing the property pane off the side of the panel. */
+    grid-template-columns: 180px minmax(0, 1fr) 260px;
     min-height: 0;
 }
 
 .pane {
     min-height: 0;
+    /* Vertical scrolling in practice: every row in a pane is built to shrink to the width it is handed, which
+       is what the rules below are for. */
     overflow: auto;
+}
+
+/* Nothing in a pane may be wider than the pane.
+ *
+ * Belt and braces beside the zero minimums below: it is a flex or grid item's own *minimum* that pushes a
+ * setting off the side (an input's default width, a select's widest option), and a maximum is what stops
+ * anything that cannot shrink any other way from doing the same. A user should never have to scroll a pane
+ * sideways to reach a field. */
+.toolbox *,
+.properties * {
+    max-width: 100%;
 }
 
 .toolbox, .properties {
@@ -178,19 +193,45 @@ body {
     justify-content: space-between;
     gap: 6px;
     margin-bottom: 3px;
+    min-width: 0;
 }
 
+/* The label gives up width first, and shows an ellipsis where it did; the control keeps the rest. A label that
+   insists on its whole text is half of what puts a setting off the side of the pane. */
 .field-label {
-    flex: 1;
+    flex: 0 1 auto;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
 
-.field-input { flex: 1; min-width: 0; }
-.field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 8px; }
-.field-grid .field { margin: 0; }
+/* Whatever a row holds besides its label takes the width that is left, and may shrink to nothing. */
+.field > :not(.field-label) { flex: 1 1 0; min-width: 0; }
+
+/* A checkbox is a box, not a field: it keeps its own size rather than stretching across the row. */
+.field > input[type="checkbox"] { flex: 0 0 auto; width: auto; }
+
+.field-input { flex: 1 1 0; width: 100%; min-width: 0; }
+
+/* A path field is an input and its '...' button sharing one row. Without a flex row of its own, the input's
+   default width and the button sit on a single unbreakable line -- there is no whitespace between them -- and
+   the row is then wider than any pane. That was the setting that ran off the side. */
+.asset-field {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex: 1 1 0;
+    min-width: 0;
+}
+
+.asset-field > .field-input { flex: 1 1 0; min-width: 0; }
+.asset-field > button { flex: 0 0 auto; }
+
+/* Two columns that may each shrink to nothing. With the grid's default 'auto' minimum, the number inputs'
+   own widths decide the columns, and the geometry fields run off the side of the pane. */
+.field-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 2px 8px; }
+.field-grid .field { margin: 0; min-width: 0; }
 
 .field-static {
     flex: 1;
@@ -204,8 +245,12 @@ body {
 /* A property the code generator ignores: visible, but marked as not doing anything. */
 .field-ignored .field-label { opacity: 0.55; text-decoration: line-through dotted; }
 
-.color-field { display: flex; gap: 4px; align-items: center; }
-.color-field input[type="color"] { padding: 0; width: 28px; height: 22px; }
+.color-field { display: flex; gap: 4px; align-items: center; flex: 1 1 0; min-width: 0; }
+.color-field > button { flex: 0 0 auto; }
+.color-field input[type="color"] { padding: 0; width: 28px; height: 22px; min-width: 28px; }
+
+/* The text areas a table or an option list is typed into: as wide as the pane, never wider. */
+textarea.field-input { resize: vertical; }
 
 .panel-note {
     margin: 4px 0;
