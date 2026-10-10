@@ -28,7 +28,7 @@
  */
 
 import { widgetSpec } from '../../src/designer/catalog';
-import { type DesignerWidget, circleCentre, circleRadius } from '../../src/designer/model';
+import type { DesignerWidget } from '../../src/designer/model';
 import { previewWidget } from './preview';
 
 export interface Palette {
@@ -144,25 +144,45 @@ function colorProp(value: string | number | boolean | undefined, fallback: strin
  * needed.
  */
 function paintCircle(context: CanvasRenderingContext2D, widget: DesignerWidget, palette: Palette): void {
-    const { cx, cy } = circleCentre(widget);
-    const radius = Math.max(0, circleRadius(widget));
-    context.beginPath();
-    context.arc(cx, cy, radius, 0, 2 * Math.PI);
+    // The disc is inscribed in the box: centre at the box's centre, radius half its shorter side -- which is
+    // the same disc the widget draws (its distance test is done in half-pixels so that an even-sized box
+    // works). Note this deliberately does *not* use the model's `circleCentre`/`circleRadius`: those are the
+    // Geometry panel's integer numbers, which count whole pixels from the centre pixel, and are for editing
+    // rather than for drawing.
+    const diameter = Math.min(widget.width, widget.height);
+    const radius = diameter / 2;
+    if (radius <= 0) {
+        return;
+    }
+    const centreX = widget.x + widget.width / 2;
+    const centreY = widget.y + widget.height / 2;
+    const path = (r: number) => {
+        context.beginPath();
+        context.arc(centreX, centreY, Math.max(0, r), 0, 2 * Math.PI);
+    };
 
     // Not filled means *nothing painted there*, not the screen colour painted over what is behind it: the
     // board passes `fill: None` and leaves the backdrop, so an erasing canvas would show a hole in an
     // overlapping shape that the glass does not have.
     const fill = widget.props.fill === true;
     if (fill) {
+        path(radius);
         context.fillStyle = colorProp(widget.props.fill_color, palette.themePanel);
         context.fill();
     }
 
     const thickness = typeof widget.props.line_thickness === 'number' ? widget.props.line_thickness : 1;
     if (thickness > 0) {
-        context.strokeStyle = colorProp(widget.props.line_color, palette.border);
-        context.lineWidth = thickness;
-        context.stroke();
+        // The outline is the annulus *inside* the radius, which is what the board's ring is (`inner < d <= r`),
+        // not a pen straddling the circle's path: a centred stroke would hang half outside the box and be
+        // clipped there, which is the other half of the same bug. Even-odd on the two circles skins the annulus.
+        context.beginPath();
+        context.arc(centreX, centreY, radius, 0, 2 * Math.PI);
+        // The ring lives inside the outer edge: `inner` is where the pen's inner edge falls, which is what
+        // the widget's annulus is (`inner < d <= r`).
+        context.arc(centreX, centreY, Math.max(0, radius - thickness), 0, 2 * Math.PI);
+        context.fillStyle = colorProp(widget.props.line_color, palette.border);
+        context.fill('evenodd');
     } else if (!fill) {
         placeholderOutline(context, widget.x, widget.y, widget.width, widget.height, palette);
     }

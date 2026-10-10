@@ -727,14 +727,29 @@ test('rectangle, line and triangle are emitted with the codegen attributes their
 });
 
 test('a circle\'s centre, radius and bounding box round-trip through its rect', () => {
+    // These three are the Geometry panel's numbers, in whole pixels, and they have to be each other's inverse:
+    // the Radius field edits the box, and a radius that came back one smaller every time would walk the circle
+    // across the canvas as the user typed.
     const square = { ...widget('dial', 'circle'), x: 10, y: 20, width: 64, height: 64 };
-    equal(circleCentre(square), { cx: 42, cy: 52 }, 'centre is the rect centre');
-    equal(circleRadius(square), 32, 'radius is half the smaller side');
+    equal(circleCentre(square), { cx: 42, cy: 52 }, 'centre is half the box from its corner');
+    equal(circleRadius(square), 32, 'radius is half the shorter side');
     equal(circleRect(42, 52, 32), { x: 10, y: 20, width: 64, height: 64 }, 'radius -> box is the inverse');
+
+    // The panel creates boxes of `2r`, so the radius it shows is exactly the radius the renderer draws, and
+    // the round trip is exact for every radius the field can produce.
+    for (const r of [1, 5, 19, 32]) {
+        const box = circleRect(100, 100, r);
+        equal(circleRadius({ ...widget('dial', 'circle'), ...box }), r, `radius ${r} survives a round trip`);
+        equal(circleRect(100, 100, r), box, 'and the box is stable too');
+    }
 
     // A non-square box still inscribes the circle from its smaller side.
     const oval = { ...widget('dial', 'circle'), x: 0, y: 0, width: 60, height: 40 };
     equal(circleRadius(oval), 20, 'radius is the smaller half');
+
+    // Nothing here is responsible for keeping the disc inside the box: the renderer does that, by measuring in
+    // half-pixels (an even-sized box has no whole-pixel centre, and the earlier whole-pixel measurement put the
+    // disc's top and bottom rows outside the cell, where the board's clip flattened them).
 });
 
 test('a circle is a board shape with its own appearance properties', () => {

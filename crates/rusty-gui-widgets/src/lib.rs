@@ -37,56 +37,62 @@ impl CustomWidget for Circle {
         _style: &WidgetStyle,
         _state: VisualState,
     ) -> Result<(), GuiError> {
-        let cx = rect.x + (rect.w as i32 >> 1);
-        let cy = rect.y + (rect.h as i32 >> 1);
-        let r = (rect.w.min(rect.h) >> 1) as i32;
-        if r <= 0 {
+        // The disc is inscribed in the box: a pixel belongs to it when the distance from the pixel's *centre*
+        // to the box's centre is at most half the shorter side -- which is the circle the canvas draws with
+        // `arc(x + w/2, y + h/2, min(w,h)/2)`.
+        //
+        // The arithmetic is done in doubled coordinates (pixel `i`'s centre is `2i + 1`, so the box's centre is
+        // `w`), because the box's centre is a whole pixel only when its size is odd. Measuring in pixels, as
+        // this used to, put the disc's extremes one pixel outside an even-sized box, where the engine's clip to
+        // the widget's cell shaved them -- a circle with flattened top and bottom edges.
+        let w = rect.w as i32;
+        let h = rect.h as i32;
+        let d = rect.w.min(rect.h) as i32;
+        if d <= 0 {
             return Ok(());
         }
-        let r2 = r as i64 * r as i64;
-        // A pen of zero means *no outline*, which is what the designer's canvas draws and what its
-        // `line_thickness` of 0 promises: only the annulus is skipped, the disc still fills.
         let pen = self.stroke_width as i32;
         let ring = self.stroke.filter(|_| pen > 0);
-        let inner_radius = (r - pen).max(0);
-        let inner2 = inner_radius as i64 * inner_radius as i64;
+        let inner_d = (d - 2 * pen).max(0);
+        let outer = (d as i64) * (d as i64);
+        let inner = (inner_d as i64) * (inner_d as i64);
 
-        // One run per row rather than one call per pixel. A board has no framebuffer: the panel is written
-        // over SPI, where a single pixel costs an address window just as a whole row does, so `fill_rect`
-        // (which the engine streams as one `fill_solid`) paints a row for roughly the price a pixel used to
-        // be. The spans cover exactly the pixels the distance test covered -- for integer `dx`,
-        // `dx*dx + dy*dy <= r*r` holds iff `|dx| <= floor(sqrt(r*r - dy*dy))` -- and both half-widths shrink
-        // monotonically as the row moves away from the centre, so they are *walked* down rather than
-        // computed with `sqrt`, a float this no_std crate does not have.
-        let mut half = r;
-        let mut ihalf = inner_radius;
-        for dy in 0..=r {
-            while half > 0 && (half as i64 * half as i64 + (dy * dy) as i64) > r2 {
-                half -= 1;
+        for row in 0..h {
+            let dy = (2 * row + 1 - h) as i64;
+            let dy2 = dy * dy;
+            if dy2 > outer {
+                // This row misses the disc: every row above or below it does too.
+                continue;
             }
-            while ihalf > 0 && (ihalf as i64 * ihalf as i64 + (dy * dy) as i64) > inner2 {
-                ihalf -= 1;
-            }
-            // The row above the centre, and -- except at the centre -- the matching row below it.
-            for y in row_pair(cy, dy) {
-                if let Some(c) = ring {
-                    if dy <= inner_radius {
-                        // The annulus is this row's outer span minus its inner one: two short runs.
-                        run(canvas, cx - half, y, half - ihalf, c)?;
-                        run(canvas, cx + ihalf + 1, y, half - ihalf, c)?;
-                    } else {
-                        // Nothing to leave unpainted on this row: the whole span is ring.
-                        run(canvas, cx - half, y, 2 * half + 1, c)?;
+            let Some((x0, x1)) = column_span(w, isqrt(outer - dy2)) else {
+                continue;
+            };
+            let inner_span = if pen > 0 && dy2 <= inner {
+                column_span(w, isqrt(inner - dy2))
+            } else {
+                None
+            };
+            // `column_span` answers in box-relative columns, like `row` in rows.
+            let (y, left) = (rect.y + row, rect.x);
+            let (ax0, ax1) = (left + x0, left + x1);
+
+            if let Some(c) = ring {
+                match inner_span {
+                    // The annulus is this row's outer span minus its inner one: two short runs.
+                    Some((a, b)) => {
+                        let (a, b) = (left + a, left + b);
+                        run(canvas, ax0, y, a - ax0, c)?;
+                        run(canvas, b + 1, y, ax1 - b, c)?;
                     }
+                    // Nothing to leave unpainted on this row: the whole span is ring.
+                    None => run(canvas, ax0, y, ax1 - ax0 + 1, c)?,
                 }
-                if let Some(c) = self.fill {
-                    if pen > 0 {
-                        if dy <= inner_radius {
-                            run(canvas, cx - ihalf, y, 2 * ihalf + 1, c)?;
-                        }
-                    } else {
-                        run(canvas, cx - half, y, 2 * half + 1, c)?;
-                    }
+            }
+            if let Some(c) = self.fill {
+                match (pen > 0, inner_span) {
+                    (false, _) => run(canvas, ax0, y, ax1 - ax0 + 1, c)?,
+                    (true, Some((a, b))) => run(canvas, left + a, y, b - a + 1, c)?,
+                    (true, None) => {}
                 }
             }
         }
@@ -94,9 +100,47 @@ impl CustomWidget for Circle {
     }
 }
 
-/// The one or two screen rows a shape row maps onto: `dy` above the centre, and `dy` below it.
-fn row_pair(cy: i32, dy: i32) -> impl Iterator<Item = i32> {
-    core::iter::once(cy - dy).chain((dy > 0).then_some(cy + dy))
+/// The columns of a `w`-wide box whose doubled centre offset `2i + 1 - w` is within `half` of zero.
+///
+/// Answers in box-relative columns, clipped to the box, or `None` when the row has none -- which is what makes
+/// the disc stay inside its cell without relying on the engine's clip.
+fn column_span(w: i32, half: i64) -> Option<(i32, i32)> {
+    let low = w as i64 - 1 - half;
+    let high = w as i64 - 1 + half;
+    let first = low.div_euclid(2) + i64::from(low.rem_euclid(2) != 0); // ceil(low / 2)
+    let last = high.div_euclid(2);
+    let first = first.max(0) as i32;
+    let last = last.min(w as i64 - 1) as i32;
+    if first > last {
+        None
+    } else {
+        Some((first, last))
+    }
+}
+
+/// The integer square root: the largest `r` with `r * r <= n`.
+///
+/// A bit at a time, because the platform's `sqrt` is a float and this crate is `no_std`; the spans are what
+/// decide where a shape's runs start, so they are worth being exact about.
+fn isqrt(n: i64) -> i64 {
+    if n <= 0 {
+        return 0;
+    }
+    let mut bit = 1i64 << 62;
+    while bit > n {
+        bit >>= 2;
+    }
+    let (mut root, mut rest) = (0i64, n);
+    while bit != 0 {
+        if rest >= root + bit {
+            rest -= root + bit;
+            root = (root >> 1) + bit;
+        } else {
+            root >>= 1;
+        }
+        bit >>= 2;
+    }
+    root
 }
 
 /// Paints one horizontal run, if it has any length. Empty and zero-length runs draw nothing, so a shape

@@ -296,12 +296,19 @@ export function circleCentre(widget: DesignerWidget): { cx: number; cy: number }
     };
 }
 
-/** The radius of the circle inscribed in a widget's bounding box, in whole pixels. */
+/**
+ * The radius of the disc inscribed in a widget's box, in whole pixels: half its shorter side.
+ *
+ * This is the Geometry panel's number, and it is the same radius the disc is *drawn* with (the renderer
+ * inscribes the disc in the box, centred on the box's centre). It deliberately does not try to keep the disc
+ * inside the box on its own: that is the renderer's job, and it does it by measuring in half-pixels -- see the
+ * note in `rusty-gui-widgets`. Trying to do it here made the panel's radius one less than the drawn one.
+ */
 export function circleRadius(widget: DesignerWidget): number {
     return Math.floor(Math.min(widget.width, widget.height) / 2);
 }
 
-/** The square bounding box a circle of the given centre and radius would occupy. */
+/** The square box a circle of the given centre and radius occupies, which is the inverse of the two above. */
 export function circleRect(
     centreX: number,
     centreY: number,

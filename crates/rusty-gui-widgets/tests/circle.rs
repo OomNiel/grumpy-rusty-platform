@@ -46,6 +46,20 @@ impl CustomCanvas for Mock {
     }
 }
 
+/// True when a pixel belongs to the disc inscribed in `rect`: the distance from the pixel's centre to the
+/// box's centre is at most half the shorter side.
+///
+/// This is the widget's own rule, written independently of it so the test can disagree with it. The arithmetic
+/// is in doubled coordinates (pixel `i`'s centre is `2i + 1`, the box's centre is `w`) exactly as the widget
+/// does it, because the box's centre is a whole pixel only when its size is odd -- and getting that wrong is
+/// what used to push the disc outside an even-sized box, where the clip flattened its edges.
+fn on_inscribed_disc(x: i32, y: i32, rect: Rect, diameter: i32) -> bool {
+    let dx = (2 * (x - rect.x) + 1 - rect.w as i32) as i64;
+    let dy = (2 * (y - rect.y) + 1 - rect.h as i32) as i64;
+    let d = diameter as i64;
+    dx * dx + dy * dy <= d * d
+}
+
 /// The pixels that ended up painted, from either primitive.
 ///
 /// The shapes draw in *runs* -- one `fill_rect` per row, because on a display with no framebuffer an address
@@ -72,38 +86,40 @@ fn covered_sorted(mock: &Mock) -> Vec<(i32, i32)> {
 
 #[test]
 fn circle_fills_its_disc() {
-    let cx = 15;
-    let cy = 15;
-    let r = 15i32;
+    let rect = Rect::new(0, 0, 30, 30);
     let mut m = Mock::default();
     let c = rusty_gui_widgets::Circle {
         stroke_width: 0,
         fill: Some(Rgb565::new(31, 63, 31)),
         stroke: None,
     };
-    c.render(&mut m, Rect::new(0, 0, 30, 30), &WidgetStyle::default(), VisualState::default())
+    c.render(&mut m, rect, &WidgetStyle::default(), VisualState::default())
         .unwrap();
-    let on_disc = |x: i32, y: i32| (x - cx).pow(2) + (y - cy).pow(2) <= r * r;
-    assert!(covered(&m).contains(&(cx, cy)), "centre is filled");
-    assert!(covered(&m).contains(&(cx + r, cy)), "rim is filled");
-    assert!(!covered(&m).contains(&(0, 0)), "corner outside the disc is not filled");
-    for y in 0..=30 {
-        for x in 0..=30 {
-            assert_eq!(covered(&m).contains(&(x, y)), on_disc(x, y), "pixel ({x},{y}) mismatch");
+    let ink = covered(&m);
+    assert!(!ink.contains(&(0, 0)), "the box's corner is outside the disc");
+    for y in -2..32 {
+        for x in -2..32 {
+            let inside_box = x >= 0 && y >= 0 && x < 30 && y < 30;
+            assert_eq!(
+                ink.contains(&(x, y)),
+                inside_box && on_inscribed_disc(x, y, rect, 30),
+                "pixel ({x},{y}) mismatch"
+            );
         }
+    }
+    // The bug this convention fixes: the disc reached outside its cell, and the engine's clip flattened the
+    // top and bottom edges. Nothing may be drawn outside the box at all.
+    for &(x, y) in &ink {
+        assert!(x >= 0 && y >= 0 && x < 30 && y < 30, "({x},{y}) is outside the box");
     }
 }
 
 #[test]
 fn circle_strokes_only_the_annulus() {
-    let cx = 15;
-    let cy = 15;
-    let r = 15i32;
-    let sw = 2i32;
-    let inner = r - sw;
+    let rect = Rect::new(0, 0, 30, 30);
+    // A pen of two eats one pixel of radius on each side of the outline.
     let on_ring = |x: i32, y: i32| {
-        let d2 = (x - cx).pow(2) + (y - cy).pow(2);
-        d2 <= r * r && d2 > inner * inner
+        on_inscribed_disc(x, y, rect, 30) && !on_inscribed_disc(x, y, rect, 26)
     };
     let mut m = Mock::default();
     let c = rusty_gui_widgets::Circle {
@@ -111,15 +127,18 @@ fn circle_strokes_only_the_annulus() {
         fill: None,
         stroke: Some(Rgb565::new(31, 0, 0)),
     };
-    c.render(&mut m, Rect::new(0, 0, 30, 30), &WidgetStyle::default(), VisualState::default())
+    c.render(&mut m, rect, &WidgetStyle::default(), VisualState::default())
         .unwrap();
-    assert!(!covered(&m).contains(&(cx, cy)), "centre is not stroked when unfilled");
-    assert!(covered(&m).contains(&(cx + r, cy)), "outer rim is stroked");
-    assert!(!covered(&m).contains(&(0, 0)), "corner outside is not stroked");
-    for y in 0..=30 {
-        for x in 0..=30 {
-            assert_eq!(covered(&m).contains(&(x, y)), on_ring(x, y), "pixel ({x},{y}) not on the ring");
+    let ink = covered(&m);
+    assert!(!ink.contains(&(15, 15)), "centre is not stroked when unfilled");
+    assert!(!ink.contains(&(0, 0)), "corner outside is not stroked");
+    for y in -2..32 {
+        for x in -2..32 {
+            assert_eq!(ink.contains(&(x, y)), on_ring(x, y), "pixel ({x},{y}) not on the ring");
         }
+    }
+    for &(x, y) in &ink {
+        assert!(x >= 0 && y >= 0 && x < 30 && y < 30, "({x},{y}) is outside the box");
     }
 }
 
@@ -326,21 +345,24 @@ fn a_filled_disc_is_one_run_per_row() {
     .render(&mut m, Rect::new(0, 0, (2 * r) as u32, (2 * r) as u32), &WidgetStyle::default(), VisualState::default())
         .unwrap();
 
-    // 2r+1 rows, one call each: 81 calls where the per-pixel version made about pi*r^2 = 5027.
+    // One call per row of the box: 80 rows, where the per-pixel version made about pi*r^2 = 5027 calls.
     assert!(m.pixels.is_empty(), "a disc makes no per-pixel calls at all");
-    assert_eq!(m.rects.len(), (2 * r + 1) as usize, "one run per row");
+    assert_eq!(m.rects.len(), (2 * r) as usize, "one run per row of the box");
     for rect in &m.rects {
         assert_eq!(rect.h, 1, "every run is exactly one row tall");
     }
-    // And it is still the disc: the runs cover the same pixels the distance test would.
-    let area = covered(&m).len() as i64;
-    // `0..=2r`: the widget draws the boundary row and column too -- the engine clips a custom widget to its
-    // rect, so on the board those two pixels are dropped, and `circle_fills_its_disc` pins that extent.
-    let expected = (0..=2 * r)
-        .flat_map(|y| (0..=2 * r).map(move |x| (x, y)))
-        .filter(|&(x, y)| (x - r).pow(2) + (y - r).pow(2) <= r * r)
+    // And it is the inscribed disc: the runs cover exactly the pixels whose centres lie within `r`, and none
+    // of them is outside the box.
+    let box_rect = Rect::new(0, 0, (2 * r) as u32, (2 * r) as u32);
+    let ink = covered(&m);
+    let expected = (0..2 * r)
+        .flat_map(|y| (0..2 * r).map(move |x| (x, y)))
+        .filter(|&(x, y)| on_inscribed_disc(x, y, box_rect, 2 * r))
         .count() as i64;
-    assert_eq!(area, expected, "the runs cover exactly the disc");
+    assert_eq!(ink.len() as i64, expected, "the runs cover exactly the disc");
+    for &(x, y) in &ink {
+        assert!(x >= 0 && y >= 0 && x < 2 * r && y < 2 * r, "({x},{y}) is outside the box");
+    }
 }
 
 #[test]
