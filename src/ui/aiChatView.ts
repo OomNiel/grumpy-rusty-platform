@@ -37,6 +37,7 @@ import { findRunningLlamaServer } from '../ai/llamaServer';
 import { endpointMismatchHint } from '../ai/localModels';
 
 import { chooseLocalModel, unloadLoadedModel } from '../ai/localModelSetup';
+import { registerAssistantSwitchCommands } from '../ai/assistantSwitch';
 import { addModelFromHub, removeAddedModel } from '../ai/hubModels';
 import { configView } from '../ai/settings';
 import {
@@ -281,6 +282,8 @@ async function pushState(fresh = false): Promise<void> {
                 endpoint: cfg.endpoint,
                 model: cfg.model,
                 showDiff: cfg.showDiff,
+                assistantOn: cfg.enabled,
+                stopAtStartup: cfg.stopServersAtStartup,
                 hint: state.hint,
                 pinned: state.pinned,
                 enabled: state.enabled,
@@ -296,6 +299,9 @@ async function pushState(fresh = false): Promise<void> {
 
 /** What the panel's settings block is rendered from. */
 interface SettingsSnapshot {
+    /** The switch itself, as the settings hold it (not "does the endpoint answer"). */
+    assistantOn: boolean;
+    stopAtStartup: boolean;
     backend: string;
     endpoint: string;
     model: string;
@@ -459,6 +465,11 @@ function html(webview: vscode.Webview): string {
         <h2>AI Assist</h2>
         <div id="status">…</div>
     </div>
+    <div class="row" id="assistSwitch">
+        <label title="Off unloads every local model and stops the llama-server; on starts what the settings say to start">
+            <input id="assistOn" type="checkbox" style="width:auto"> <span id="assistOnLabel">AI assist is off</span>
+        </label>
+    </div>
     <div class="row" id="chatbar">
         <select id="chats" title="Earlier conversations in this project"></select>
         <button id="newChat" class="secondary" title="Start a new conversation">New</button>
@@ -485,6 +496,7 @@ function html(webview: vscode.Webview): string {
         <label>Model id (empty = the server decides)</label>
         <input id="model" type="text" placeholder="qwen2.5-coder-7b-instruct">
         <label><input id="showDiff" type="checkbox" style="width:auto"> Show a diff before applying</label>
+        <label title="A window that opens with the assistant off unloads the models and stops the llama-server"><input id="stopAtStartup" type="checkbox" style="width:auto"> Stop the local servers when a window starts with the assist off</label>
         <div class="row" style="margin-top:8px">
             <button id="save">Save</button>
             <button id="choose" class="secondary">Choose a local model…</button>
@@ -589,6 +601,16 @@ function html(webview: vscode.Webview): string {
             setting('endpoint', s.endpoint);
             setting('model', s.model);
             setting('showDiff', s.showDiff);
+            // The switch: the checkbox shows the *setting*, and the label spells out what the position means,
+            // because "off" here stops servers rather than merely pausing requests.
+            setting('assistOn', s.assistantOn);
+            setting('stopAtStartup', s.stopAtStartup);
+            const switchLabel = document.getElementById('assistOnLabel');
+            if (switchLabel) {
+                switchLabel.textContent = s.assistantOn
+                    ? 'AI assist is on — turn it off to unload and stop'
+                    : 'AI assist is off — turn it on to start the model';
+            }
             applied = {
                 backend: s.backend === undefined || s.backend === null ? '' : String(s.backend),
                 endpoint: s.endpoint === undefined || s.endpoint === null ? '' : String(s.endpoint),
@@ -649,6 +671,12 @@ function html(webview: vscode.Webview): string {
     document.getElementById('statusBtn').addEventListener('click', () => vscode.postMessage({ type: 'command', command: 'rustyPlatform.assistant.status' }));
     document.getElementById('choose').addEventListener('click', () => vscode.postMessage({ type: 'command', command: 'rustyPlatform.assistant.setupModel' }));
     document.getElementById('unload').addEventListener('click', () => vscode.postMessage({ type: 'command', command: 'rustyPlatform.assistant.unloadModel' }));
+    // The switch. The checkbox is not the state — the host's snapshot is — so a failed turn-on snaps it back
+    // when the panel is refreshed rather than leaving a checkbox that claims something untrue.
+    document.getElementById('assistOn').addEventListener('change', () => vscode.postMessage({ type: 'command', command: 'rustyPlatform.assistant.toggle' }));
+    document.getElementById('stopAtStartup').addEventListener('change', (event) => {
+        vscode.postMessage({ type: 'save', settings: { stopServersAtStartup: event.target.checked } });
+    });
     document.getElementById('openEditorTab').addEventListener('click', () => vscode.postMessage({ type: 'command', command: 'rustyPlatform.assistant.openEditor' }));
     document.getElementById('save').addEventListener('click', () => {
         const now = {
@@ -771,6 +799,9 @@ export class AiChatViewProvider implements vscode.WebviewViewProvider {
         // nothing.
         const cfg = configView('rustyPlatform.assistant');
         try {
+            if (typeof settings.stopServersAtStartup === 'boolean') {
+                await cfg.update('stopServersAtStartup', settings.stopServersAtStartup);
+            }
             if (typeof settings.backend === 'string') await cfg.update('backend', settings.backend);
             if (typeof settings.endpoint === 'string') await cfg.update('endpoint', settings.endpoint);
             if (typeof settings.model === 'string') await cfg.update('model', settings.model);
@@ -801,6 +832,7 @@ export function registerAiChatView(context: vscode.ExtensionContext): vscode.Dis
         vscode.commands.registerCommand('rustyPlatform.assistant.addModel', () => addModelFromHub(context)),
         vscode.commands.registerCommand('rustyPlatform.assistant.removeAddedModel', () => removeAddedModel()),
         vscode.commands.registerCommand('rustyPlatform.assistant.unloadModel', () => unloadLoadedModel()),
+        ...registerAssistantSwitchCommands(context),
         vscode.commands.registerCommand('rustyPlatform.assistant.openEditor', () => openChatPanel(context)),
         // Bring the editor-tab chat back after a reload or a restart — including the copy the user dragged onto
         // a second monitor, which VS Code re-opens as its own window and then asks for the panel's contents

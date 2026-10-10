@@ -416,9 +416,15 @@ export interface LoadedNow {
  * `known: false` means no source could answer — a foreign server, or an unparsed table. The status line is
  * then omitted rather than claiming "nothing is loaded", because that claim is the one a developer acts on.
  */
-export async function loadedNow(cli = findLmsCli()): Promise<LoadedNow> {
+export async function loadedNow(cli = findLmsCli(), opts: { probeCli?: boolean } = {}): Promise<LoadedNow> {
     const api = await readApi();
     if (api) return { known: true, ids: api.ids.filter((m) => isModelLoaded(m.state)).map((m) => m.id) };
+    // Asking through the CLI can *start* LM Studio's service (the first `lms` call of a session does), which is
+    // right for a status line and wrong for anything enforcing "the assistant is off": switching it off must not
+    // be the thing that brings a runtime up. Callers that must not have that side effect pass `probeCli: false`,
+    // and an API that does not answer then means exactly what it says — nothing is loaded, because the runtime
+    // holding models is not running.
+    if (opts.probeCli === false) return { known: false, ids: [] };
     if (!cli) return { known: false, ids: [] };
     const ps = await run(cli, ['ps']);
     // The parser only recognises the "nothing loaded" answer; a table of running models is not parsed here,

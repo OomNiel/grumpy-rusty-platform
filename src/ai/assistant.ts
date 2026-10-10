@@ -36,6 +36,24 @@ export type AssistantBackend = 'off' | 'external' | 'bundled';
 
 /** The settings shape after normalisation (see `normalizeAssistantConfig`). */
 export interface AssistantConfig {
+    /**
+     * The switch: true means the assistant is on.
+     *
+     * Off is the default and it means *off* — a window that starts with the switch down unloads the models and
+     * stops the llama-server rather than merely refusing to start one (see `ai/assistantSwitch.ts`). It is a
+     * setting of its own rather than a reuse of `backend` because "which backend" and "on or off" are separate
+     * questions: turning the switch off must remember what to turn back on.
+     */
+    enabled: boolean;
+    /**
+     * Whether a window that starts with the switch off enforces that.
+     *
+     * On by default — the switch says off, and a seventeen-gigabyte server still running is not what off
+     * means — but switchable, because someone who runs their own llama-server for other work does not want an
+     * editor stopping it at every launch. The panel puts this next to the switch; stopping a server the window
+     * did not start still asks first, once per window.
+     */
+    stopServersAtStartup: boolean;
     backend: AssistantBackend;
     /** Base URL of an OpenAI-compatible API, e.g. `http://127.0.0.1:1234/v1`. For `bundled` the
      *  runtime fills this in at request time — the request shape is identical either way. */
@@ -76,6 +94,8 @@ export interface AssistantConfig {
 
 /** Raw settings as they come out of the manifest (every field possibly undefined/wrong-typed). */
 export interface RawAssistantSettings {
+    enabled?: unknown;
+    stopServersAtStartup?: unknown;
     backend?: unknown;
     endpoint?: unknown;
     model?: unknown;
@@ -125,6 +145,12 @@ export function normalizeAssistantConfig(raw: RawAssistantSettings): AssistantCo
     const backend: AssistantBackend =
         raw.backend === 'external' ? 'external' : raw.backend === 'bundled' ? 'bundled' : 'off';
     return {
+        // Only an explicit `true` switches the assistant on: a missing setting is the documented default (off)
+        // and junk must never look like consent to start a server.
+        enabled: raw.enabled === true,
+        // The other way round, like `showDiff`: only an explicit `false` turns the startup enforcement off,
+        // because the default is the one the switch's own semantics imply.
+        stopServersAtStartup: raw.stopServersAtStartup !== false,
         backend,
         endpoint: normalizeEndpoint(typeof raw.endpoint === 'string' ? raw.endpoint : DEFAULT_ENDPOINT),
         model: typeof raw.model === 'string' ? raw.model.trim() : '',
@@ -147,6 +173,8 @@ export function normalizeAssistantConfig(raw: RawAssistantSettings): AssistantCo
 /** True when the user has switched the feature on *and* there is somewhere to send requests: either a
  *  server they pointed at, or the bundled runtime that fills the endpoint in itself. */
 export function assistantEnabled(cfg: AssistantConfig): boolean {
+    // The switch comes first: an assistant that is off does not answer, whatever backend is configured.
+    if (!cfg.enabled) return false;
     if (cfg.backend === 'off') return false;
     if (cfg.backend === 'bundled') return true;
     return cfg.endpoint.length > 0;

@@ -3,7 +3,7 @@
     "displayName": "Grumpy's Rusty Platform for VS Code",
     "description": "PlatformIO-style embedded Rust development for RP2040/RP2350 (Raspberry Pi Pico) and ESP32/ESP32-S3 boards, using Embassy, esp-hal, probe-rs and espflash.",
     "icon": "resources/grumpy.png",
-    "version": "0.0.69",
+    "version": "0.0.70",
     "publisher": "grumpy",
     "license": "MIT OR Apache-2.0",
     "repository": {
@@ -258,6 +258,12 @@
                 "title": "Choose a Local Model\u2026",
                 "category": "Rusty AI",
                 "icon": "$(server-process)"
+            },
+            {
+                "command": "rustyPlatform.assistant.toggle",
+                "title": "Toggle On/Off",
+                "category": "Rusty AI",
+                "icon": "$(sparkle)"
             },
             {
                 "command": "rustyPlatform.assistant.unloadModel",
@@ -523,6 +529,16 @@
                     "type": "boolean",
                     "default": true,
                     "markdownDescription": "Show the terminal when a build/flash/monitor command starts."
+                },
+                "rustyPlatform.assistant.enabled": {
+                    "type": "boolean",
+                    "default": false,
+                    "markdownDescription": "The AI assistant's switch. **Off** (the default) unloads every local model it can find and stops the `llama-server` serving the configured endpoint — including a server this window did not start, after asking once per window. **On** starts the configured backend and loads its model. The switch is also in the AI Assist panel, and `Rusty AI: Toggle On/Off` toggles it from the palette."
+                },
+                "rustyPlatform.assistant.stopServersAtStartup": {
+                    "type": "boolean",
+                    "default": true,
+                    "markdownDescription": "When a window starts with the assistant switched off, unload the models and stop the `llama-server`. On by default, because that is what \"off\" means; turn it off if you run your own `llama-server` for other work and do not want an editor stopping it at launch. A server this window did not start is still only stopped after asking once."
                 },
                 "rustyPlatform.assistant.backend": {
                     "type": "string",

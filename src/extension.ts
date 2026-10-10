@@ -23,6 +23,7 @@ import { backupProject } from './commands/backupCommand';
 import { registerAiChatView } from './ui/aiChatView';
 import { initModelRuntime } from './ai/runtime';
 import { initLlamaServer, registerLlamaServerCommands } from './ai/llamaServer';
+import { enforceOffAtStartup } from './ai/assistantSwitch';
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
     const output = vscode.window.createOutputChannel("Grumpy's Rusty Platform");
@@ -34,6 +35,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // chat's "No server answered" really was (2026-10-04).
     initModelRuntime(context);
     initLlamaServer(context);
+    // A window that opens with the assistant switched off enforces that (unload the models, stop the server)
+    // when the option says so. Not awaited: it can put a question on screen about a server this window did not
+    // start, and activation must not wait for an answer.
+    void enforceOffAtStartup();
     const state = new RustyState(output);
     const boardsView = new BoardsViewProvider();
     const projectView = new ProjectViewProvider(state);

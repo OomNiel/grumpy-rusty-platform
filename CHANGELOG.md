@@ -11,6 +11,40 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.70] - 2026-10-09
+
+### Added
+
+- **An On/Off switch for the AI Assistant**, at the top of the AI Assist panel and in the palette as
+  `Rusty AI: Toggle On/Off` (so it can be bound to a key). **Off is the default**, and it means what it
+  says: every model that can be named is unloaded (LM Studio's `lms unload --all`) and the `llama-server`
+  serving the configured endpoint is stopped — including one this window did not start, after asking once per
+  window. **On** starts what the settings say to start: a server already answering the endpoint is adopted, the
+  configured `llama-server` unit is started, or the bundled runtime is started with the model the settings
+  name. A completely unpinned setup opens the model picker rather than pretending to be on.
+- **`Stop the local servers when a window starts with the assist off`** — a checkbox under the switch
+  (`rustyPlatform.assistant.stopServersAtStartup`, on by default), because "off" should mean the models are
+  unloaded and the server is stopped even at launch, but someone who runs their own `llama-server` for other
+  work may not want an editor deciding that. The startup question offers "Stop asking at startup", which turns
+  the option off for you.
+
+### Changed
+
+- `rustyPlatform.assistant.backend` no longer decides by itself whether the assistant answers: the new
+  `rustyPlatform.assistant.enabled` switch is read first, so an assistant that is off does not answer however
+  well the endpoint is configured. The panel's "pinned" line says the switch is off instead of looking ready.
+- Stopping a server asks **once per window**, and the answer is remembered either way — including "leave it
+  running", which is not asked again. A server this window started, and the models a runtime is holding, are
+  never a question.
+
+### Notes
+
+- A systemd **system** unit is still refused rather than attempted (it needs root), and the report says which
+  `sudo systemctl stop` to run; a port whose owner cannot be identified is named as such instead of being
+  signalled on a guess.
+- The suite is at 859, with nine new tests over the off-decision, the consent memory and the two settings'
+  defaults.
+
 ## [0.0.69] - 2026-10-09
 
 ### Added
