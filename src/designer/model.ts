@@ -762,11 +762,10 @@ function propertyProblem(
  * is an image that silently never appears on the glass.
  */
 export function sdImageSourceProblems(widget: DesignerWidget): string[] {
-    const source = widget.props.src;
-    if (typeof source !== 'string' || !source.startsWith('sd:')) {
+    const path = cardSourcePath(widget.props.src);
+    if (path === undefined) {
         return [];
     }
-    const path = source.slice('sd:'.length).replace(/^\//, '');
     if (path === '') {
         return ['the SD card path is empty, so there is no file to read'];
     }
@@ -793,12 +792,24 @@ export function sdImageSourceProblems(widget: DesignerWidget): string[] {
 export function sdImagesNeedingCard(widgets: readonly DesignerWidget[]): string[] {
     return widgets
         .filter(
-            (widget) =>
-                widget.tag === 'image' &&
-                typeof widget.props.src === 'string' &&
-                widget.props.src.startsWith('sd:'),
+            (widget) => widget.tag === 'image' && cardSourcePath(widget.props.src) !== undefined,
         )
         .map((widget) => widget.id);
+}
+
+/**
+ * The card path an image source names, or `undefined` when it names a file in the project instead.
+ *
+ * The `sd:` prefix is matched without regard to case, and it is matched in one place so the checks that hang off
+ * it -- is this name a short one, does this board have a socket, is the pixels' file missing -- all agree with
+ * the parser in a generated project. `SD:PIC1.BMP` is what a card in a file manager is called; treating it as an
+ * asset would ask the build machine for a file that only exists on the card.
+ */
+export function cardSourcePath(source: unknown): string | undefined {
+    if (typeof source !== 'string' || source.slice(0, 3).toLowerCase() !== 'sd:') {
+        return undefined;
+    }
+    return source.slice(3).replace(/^\//, '');
 }
 
 /** The tags the Toolbox offers, in catalogue order, for a board whose panel this is. */

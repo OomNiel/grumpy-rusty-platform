@@ -60,6 +60,21 @@ fn get_bool_prop(node: &KdlNode, name: &str) -> Option<bool> {
     node.get(name).and_then(|v| v.as_bool())
 }
 
+/// The path in a source written as `sd:NAME.BMP`, or `None` when the source is not one.
+///
+/// The prefix is matched without regard to case. The catalogue writes `sd:` and a design usually follows it, but
+/// `SD:` is what a card in a file manager is called, and a source that missed this check would be treated as a
+/// file to embed in the flash instead -- a different feature with a different failure. Three ASCII bytes are
+/// compared, and `get` keeps the slicing safe for a source that is not ASCII.
+fn strip_card_prefix(source: &str) -> Option<&str> {
+    let prefix = source.get(..3)?;
+    if prefix.eq_ignore_ascii_case("sd:") {
+        Some(source.get(3..)?)
+    } else {
+        None
+    }
+}
+
 /// Parses an SVG path definition string (e.g. `M 10 20 C 15 25 30 40 50 20 Z` or `M0,0 L20,20 Z`) into PathVerbDefs.
 pub fn parse_svg_path_d(d: &str) -> Vec<PathVerbDef> {
     let mut verbs = Vec::new();
@@ -728,7 +743,7 @@ pub fn parse_widget(node: &KdlNode) -> Result<(GridPlacementDef, WidgetDef), Cod
             // `sd:` is the design saying "this file is on the card the firmware mounts", which is a different
             // thing from an asset: it must not be looked for on the build machine, and the pixels arrive at
             // runtime. Everything after the prefix is the path the card driver is given.
-            if let Some(path) = source.strip_prefix("sd:") {
+            if let Some(path) = strip_card_prefix(&source) {
                 return Ok((
                     placement,
                     WidgetDef::SdImage {

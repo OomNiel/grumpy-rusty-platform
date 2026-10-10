@@ -11,7 +11,7 @@ use std::cell::RefCell;
 
 use embedded_gui::prelude::{CustomCanvas, CustomWidget, GuiError, Rect, Rgb565};
 use embedded_gui::style::{VisualState, WidgetStyle};
-use rusty_gui_widgets::{BmpImage, ByteSource, MAX_ROW_PIXELS};
+use rusty_gui_widgets::{BmpImage, ByteSource, MAX_ROW_PIXELS, MAX_SOURCE_PIXELS};
 
 // The file the stub reader serves, per test thread: `#[test]` runs each case on its own thread, so a
 // thread-local file cannot leak from one case into another the way a shared static would.
@@ -153,6 +153,32 @@ fn build_16_bit_565(width: u32, height: i32, rows: &[Vec<u16>]) -> Vec<u8> {
     out
 }
 
+/// A 16-bit BMP whose header is the 124-byte `BITMAPV5HEADER` a modern editor writes, masks inside it.
+///
+/// The shape that was found on hardware: the header is 84 bytes longer than the 40-byte one above, its masks
+/// still sit at offset 54, and the pixels only start at 138. A reader that assumed the short header would read
+/// the colour space as mask bits and then invent pixels out of the first rows.
+fn build_16_bit_565_v5(width: u32, height: i32, rows: &[Vec<u16>]) -> Vec<u8> {
+    let stride = ((16 * width + 31) / 32) * 4;
+    let offset = 138u32;
+    let mut out = bmp_header(width, height, 16, 3, offset, offset + stride * rows.len() as u32);
+    out[14..18].copy_from_slice(&124u32.to_le_bytes()); // the info header is a V5, not a 40-byte one
+    out.extend_from_slice(&0xF800u32.to_le_bytes());
+    out.extend_from_slice(&0x07E0u32.to_le_bytes());
+    out.extend_from_slice(&0x001Fu32.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes()); // alpha, which this widget treats as opaque
+    // The rest of the V5 header: colour space, endpoints, gamma. Nothing a reader of these pixels needs.
+    out.extend(std::iter::repeat_n(0u8, (offset as usize) - out.len()));
+    assert_eq!(out.len(), offset as usize, "the V5 header ends where the pixels are declared to start");
+    for row in rows {
+        for pixel in row {
+            out.extend_from_slice(&pixel.to_le_bytes());
+        }
+        out.extend(std::iter::repeat_n(0u8, (stride as usize) - row.len() * 2));
+    }
+    out
+}
+
 fn image(path: &'static str, stretch: bool) -> BmpImage {
     BmpImage {
         path,
@@ -269,7 +295,40 @@ fn a_16_bit_565_file_converts_its_colours() {
 }
 
 #[test]
-fn a_file_that_is_missing_broken_or_too_wide_draws_nothing() {
+fn a_source_wider_than_its_cell_is_decimated_as_the_row_is_read() {
+    // 1000 pixels into a 250-pixel cell: destination column `dx` shows source column `4 * dx`, so the row is
+    // read forward once and three pixels in every four are converted and dropped. This is the case that used to
+    // be refused outright, and it is what a photo on the card looks like -- 1122 pixels is a phone snapshot.
+    let width = 1000usize;
+    let mut row = vec![0u16; width];
+    row[0] = 0xF800; // red at column 0, the first sample
+    row[4] = 0x07E0; // green at column 4, the second sample
+    row[996] = 0x001F; // blue at column 996, the last sample a 250-pixel row takes
+    install(build_16_bit_565(width as u32, 1, &[row]));
+    let mock = paint(true, Rect::new(0, 0, 250, 1));
+    assert_eq!(pixel_at(&mock, 0, 0), Some(RED), "the first sample is the file's first pixel");
+    assert_eq!(pixel_at(&mock, 1, 0), Some(GREEN), "and the next is four columns further in");
+    assert_eq!(pixel_at(&mock, 249, 0), Some(BLUE), "the last sample comes from the far end of the row");
+}
+
+#[test]
+fn a_v5_header_hides_its_masks_in_a_header_eighty_four_bytes_longer() {
+    // What a modern editor writes, and what the hardware found: a 124-byte header, so the masks are 54 bytes in
+    // and the pixels only start at 138 -- and a row wider than the cell, so the samples come from far apart.
+    let width = 600usize;
+    let mut row = vec![0u16; width];
+    row[0] = 0xF800; // destination column 0
+    row[3] = 0x07E0; // destination column 2, whose sample names source column 3
+    row[598] = 0x001F; // destination column 399, the last sample of a 400-pixel cell
+    install(build_16_bit_565_v5(width as u32, 1, &[row]));
+    let mock = paint(true, Rect::new(0, 0, 400, 1));
+    assert_eq!(pixel_at(&mock, 0, 0), Some(RED), "five-bit red, from the start of the row");
+    assert_eq!(pixel_at(&mock, 2, 0), Some(GREEN), "five-bit green, sampled past a dropped column");
+    assert_eq!(pixel_at(&mock, 399, 0), Some(BLUE), "five-bit blue, from the far end");
+}
+
+#[test]
+fn a_file_that_is_missing_broken_or_absurd_draws_nothing() {
     // Missing: the reader has no file at all.
     FILE.with(|file| *file.borrow_mut() = None);
     assert!(paint(true, Rect::new(0, 0, 4, 4)).rects.is_empty(), "no file, no paint");
@@ -286,11 +345,12 @@ fn a_file_that_is_missing_broken_or_too_wide_draws_nothing() {
     let mock = paint(true, Rect::new(0, 0, 4, 4));
     assert!(mock.rects.len() < 4 * 4, "the missing rows are simply not drawn");
 
-    // Wider than the row buffer: refused rather than drawn with the wrong stride.
-    install(build_24_bit(MAX_ROW_PIXELS as u32 + 1, 1, &[vec![RED_BYTES; MAX_ROW_PIXELS + 1]]));
+    // A header past all reason: the width would wrap the stride arithmetic, so it is refused rather than
+    // multiplied out. A real file is nowhere near this.
+    install(bmp_header(MAX_SOURCE_PIXELS + 1, 1, 24, 0, 54, 54));
     assert!(
         paint(true, Rect::new(0, 0, 8, 1)).rects.is_empty(),
-        "an image wider than the buffer is not guessed at"
+        "a corrupt width is not believed"
     );
 }
 

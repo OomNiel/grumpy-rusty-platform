@@ -5395,3 +5395,89 @@ calling that "on" would be a lie.
 Nine in the t1 layer (`ai-assistant-switch.test.js`) over the plan, the consent memory, the refusal reasons and
 the two settings' defaults and tolerance; two existing `assistantEnabled` tests were updated to the new
 semantics (the switch is the first gate). The suite is at 859.
+
+---
+
+## 113. Why the photo on the card did not draw (2026-10-09)
+
+"*I placed a 16 bit bmp image in the root of the SD card and entered its name (SD:Malee_24.bmp) in the box. It is
+not rendering. This file is also in this machine's Pictures folder. Nothin renders. My test app testV69.*"
+
+The file was on the machine, so the whole question could be settled by measuring it rather than by asking for
+another flash. `/home/niel/Pictures/Malee_24.bmp`:
+
+| Field | Value |
+|---|---|
+| size | 3 146 226 bytes, and the pixels account for all of it: `138 + 2244 × 1402` |
+| info header | **124 bytes** -- a `BITMAPV5HEADER`, not the 40-byte one |
+| geometry | **1122 × 1402**, height positive, so the rows are stored bottom-up |
+| pixels | 16 bpp, compression 3 (`BI_BITFIELDS`), masks `0xF800`/`0x07E0`/`0x001F` -- 5-6-5 |
+| pixels start | 138 |
+
+`testV69` was correct at every step before the widget: `designer/panel.ui.json` holds `"src": "sd:Malee_24.bmp"`,
+`src/ui.kdl` line 4 carries it, `src/main.rs:81` calls `sd::init(SPI3, GPIO5, 18, 23, 19)`, its generated
+`src/sd.rs` mounts volume 0 and opens the file by short name, and its vendored `codegen/` has the `SdImage`
+variant. Nothing was wrong with the design, the mount or the wiring.
+
+### The cause: `width > MAX_ROW_PIXELS` returned `Err`, and `Err` draws nothing
+
+`BmpHeader::parse` refused any source wider than **480** -- the widest panel the platform drives -- because
+`read_row` filled a `[Rgb565; MAX_ROW_PIXELS]` with one converted row of the *source*. A 1122-pixel row does not
+fit, so the file was refused before a single byte of its pixels was read, and `BmpImage::render` turns any error
+into "leave the cell alone". On the glass that is indistinguishable from a card that never mounted. The control
+the user ran settles it: **the same image as a PNG from flash rendered** -- so the panel, the cell and the draw
+path were fine, and the difference was the file.
+
+The fix keeps the same 960 bytes of stack and drops the limit: the row cache now holds one colour per
+*destination* column, and the source row is decimated as it is read. Sample `i` is source column
+`i × width / samples` (nearest neighbour, the same rule the painter already used the other way round), the
+columns the samples name only ever move forward, so a single forward pass picks them out and the bytes in
+between are converted and dropped. `width > 1_000_000` is still refused -- not as a drawing limit but because
+`bits × width` would wrap a `u32` -- and a header that absurd is a corrupt file, not a large one.
+
+### Proved on the real file, not just on headers built by a test
+
+A temporary probe read the actual 3 MB BMP through the widget into a 244 × 440 cell and compared it with an
+independent Python decode of the same file at the same nearest-neighbour coordinates. Seven of seven matched,
+including both ends of the diagonal:
+
+| destination | source | file pixel | colour drawn |
+|---|---|---|---|
+| (0, 0) | (0, 0) | `0x6B2B` | (13, 25, 11) |
+| (243, 439) | (1117, 1398) | `0x0021` | (0, 1, 1) |
+| (122, 220) | (561, 701) | `0x9A68` | (19, 19, 8) |
+
+That single run also measured what drawing costs: **80 762 runs** (`fill_rect` calls, so a photograph is grouped
+into runs as designed) and **25 173 reads** -- which is the whole file, 3 146 226 / 128 = 24 580, and the extra is
+the header. Nothing is skipped, because `embedded-sdmmc` 0.8 has no `seek`: reaching row 1000 means reading the
+962 rows before it. The probe was removed before the commit; the two header shapes it complements (a 16-bit 565
+file and the 124-byte V5 header, both *wider than their cell*) are permanent tests in `tests/sd_image.rs`.
+
+### The second half: 400 kHz is fine for a handshake and wrong for a photo
+
+25 173 reads are 6 145 SD blocks, and a 512-byte block at 400 kHz is about 11 ms: **roughly seventy seconds** of a
+frozen screen for this one image, once per draw. The generated module's own comment had claimed a clock hook
+existed in `AcquireOpts` and that nothing needed it; both halves were wrong. `embedded-sdmmc` 0.8's
+`SdCard::spi` is the hook -- *"Useful if you need to re-clock the SPI"* -- so `init` now raises the bus to
+**10 MHz** once `num_bytes()` has answered, through `ExclusiveDevice::bus_mut()` and esp-hal's
+`apply_config`. A refusal is logged and leaves the card at 400 kHz and readable. 10 MHz is deliberately under
+the 25 MHz SPI mode allows: a marginal read fails as "nothing to draw" rather than as an error anyone sees, so
+the margin is worth more than the last few megabytes a second. Same 3 MB photo: about **4 seconds**.
+
+That is in the generated `src/sd.rs`, which is written **once**, when the project is made -- so `testV69` gets the
+widget from *Update Crates* (the crates are vendored, and the prompt already offers) but keeps its 400 kHz
+module until the module is regenerated. Verified the way §111 was: the new `src/sd.rs` and the new widget, with
+all three crates refreshed, `cargo check` for `xtensa-esp32-none-elf` -- `Finished dev profile in 1.95s`, exit 0.
+
+### `SD:` was a trap worth closing
+
+The user wrote `SD:Malee_24.bmp`; the design that reached disk says `sd:`. Nothing normalises it, so the lower
+case was retyped or the panel was edited -- but a prefix check that is case-sensitive turns `SD:x` into "a file to
+embed in the flash", a different feature that fails a different way (the asset check reports a missing file, and
+the macro refuses the path). `embedded-sdmmc`'s `ShortFileName::create_from_str` already upper-cases the *name*,
+so no case of the file name ever mattered; only the prefix did. It is now matched without regard to case in the
+generated parser (`strip_card_prefix`) and in one designer helper (`cardSourcePath`) that the three checks share,
+so the panel, the asset check and the codegen cannot drift apart on it.
+
+Suite: **859 passed, 0 skipped**; the vendored widget crate is at **29** tests (14 circle, 5 path, 10 card image,
+two of them new), the codegen fork at 23.

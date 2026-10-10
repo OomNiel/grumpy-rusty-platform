@@ -665,12 +665,20 @@ pub trait ByteSource {
 /// its whole read inside this one call, which is what makes the borrow legal without any global state here.
 pub type WithFile = fn(&str, &mut dyn FnMut(&mut dyn ByteSource) -> Result<(), ()>) -> Result<(), ()>;
 
-/// The widest image this widget can draw, in pixels.
+/// How many converted pixels of a row are held at a time, which is the widest panel the platform supports.
 ///
-/// One row of converted pixels is held on the stack so that a source row feeding several destination rows is
-/// read once, and the buffer is what sets this limit. It is the widest panel the platform supports (480), and
-/// a wider file is refused rather than drawn wrong.
+/// One row of *destination* colours is held on the stack so that a source row feeding several destination rows
+/// is read once, and the buffer is what sets this limit. It is not a limit on the file: a source wider than the
+/// cell is decimated while its row is read, so a 1122-pixel photo draws with the same 960 bytes of stack as a
+/// 112-pixel one, and only the colours a destination column actually shows are kept.
 pub const MAX_ROW_PIXELS: usize = 480;
+
+/// The largest width or height this widget will believe a header, before calling it corrupt.
+///
+/// Not a drawing limit -- any file the panel can show is decimated as it is read. It is a bound on the
+/// arithmetic a header feeds: a stride is computed as `bits * width`, so a width of four billion would wrap
+/// and a truncated file would be read as if it were enormous. A real image is far below this.
+pub const MAX_SOURCE_PIXELS: u32 = 1_000_000;
 
 /// Bytes read from the card at a time while converting a row. A multiple of four keeps the reads aligned with
 /// the FAT cluster the driver is fetching anyway.
@@ -803,7 +811,7 @@ impl BmpHeader {
 
         let top_down = raw_height < 0;
         let height = raw_height.unsigned_abs();
-        if width == 0 || height == 0 || width > MAX_ROW_PIXELS as u32 {
+        if width == 0 || height == 0 || width > MAX_SOURCE_PIXELS || height > MAX_SOURCE_PIXELS {
             return Err(());
         }
         let (red, green, blue) = match (bits, compression) {
@@ -901,6 +909,10 @@ impl BmpImage {
         stream.skip(header.data_offset.saturating_sub(header_bytes_read(&header)))?;
 
         let bytes_per_pixel = header.bytes_per_pixel();
+        // One converted row of the destination: a colour per destination column, and never more than the widest
+        // panel. A source wider than that is decimated as its row is read rather than refused, which is what
+        // keeps a phone photo to the same stack as a small icon.
+        let samples = (area.w as usize).min(MAX_ROW_PIXELS);
         let mut row = [Rgb565::new(0, 0, 0); MAX_ROW_PIXELS];
         let mut scratch = [0u8; READ_CHUNK];
 
@@ -928,12 +940,12 @@ impl BmpImage {
                     return Ok(());
                 }
                 stream.skip(ahead as u32 * header.stride)?;
-                read_row(&mut stream, &header, bytes_per_pixel, &mut row, &mut scratch)?;
+                read_row(&mut stream, &header, bytes_per_pixel, samples as u32, &mut row, &mut scratch)?;
                 cached = Some(file_row);
             }
             // An enlarged image feeds one source row to several destination rows; the row is still cached, so
             // those cost a paint rather than another read.
-            draw_row(canvas, &header, &row, area, dy);
+            draw_row(canvas, &row, samples, area, dy);
         }
         Ok(())
     }
@@ -949,24 +961,32 @@ fn header_bytes_read(header: &BmpHeader) -> u32 {
     }
 }
 
-/// Reads one whole source row into `row`, converting as it goes and throwing the padding away.
+/// Reads one source row forward, keeping only the colour samples the destination row needs.
 ///
 /// A row is longer than the read buffer for any real image, so a pixel can straddle two reads. The carry is what
 /// keeps that from losing its bytes: without it a 64-pixel row comes out right for the first 42 pixels and
 /// shifted after that, which is a picture rather than an error.
+///
+/// Sample `i` is the colour of source column `i * width / samples` -- nearest-neighbour, the same rule the
+/// painter uses the other way round. A source wider than the destination, wider than the buffer and wider than
+/// any panel is therefore reduced while it is read: a 1122-pixel photo fills 244 samples in one forward pass and
+/// the bytes between them are converted and dropped. The columns the samples name only ever move forward, which
+/// is what lets a single pass pick them out of the row.
 fn read_row(
     stream: &mut Stream<'_>,
     header: &BmpHeader,
     bytes_per_pixel: u32,
+    samples: u32,
     row: &mut [Rgb565; MAX_ROW_PIXELS],
     scratch: &mut [u8; READ_CHUNK],
 ) -> Result<(), ()> {
     let bytes = bytes_per_pixel as usize;
     let mut carry = [0u8; 4];
     let mut carried = 0usize;
-    let mut x = 0usize;
+    let mut column = 0u64;
+    let mut next = 0u32;
     let mut remaining = header.stride;
-    while remaining > 0 {
+    while remaining > 0 && next < samples {
         let step = (remaining as usize).min(scratch.len());
         stream.read_exact(&mut scratch[..step])?;
         remaining -= step as u32;
@@ -977,30 +997,44 @@ fn read_row(
             carried += take;
             offset += take;
             if carried == bytes {
-                if x < header.width as usize {
-                    row[x] = header.colour(&carry[..bytes]);
-                    x += 1;
+                // Every sample this pixel has reached, which is what skips the columns a shrunken image does
+                // not show and repeats the ones an enlarged one shows twice.
+                let colour = header.colour(&carry[..bytes]);
+                while next < samples
+                    && next as u64 * header.width as u64 / samples as u64 <= column
+                {
+                    row[next as usize] = colour;
+                    next += 1;
                 }
+                column += 1;
                 carried = 0;
             }
         }
     }
-    Ok(())
+    // The row's padding, and any columns past the last sample, are read past rather than parsed.
+    stream.skip(remaining)
 }
 
 /// Paints one converted source row across the destination row it belongs to, one run per colour change.
+///
+/// `row` holds `samples` colours spanning the source's width, so destination column `dx` takes sample
+/// `dx * samples / area.w`: the row is repeated where the image is enlarged and jumped through where it is
+/// shrunk. Runs are grouped so an even area costs one fill rather than one per pixel.
 fn draw_row(
     canvas: &mut dyn CustomCanvas,
-    header: &BmpHeader,
-    row: &[Rgb565; MAX_ROW_PIXELS],
+    row: &[Rgb565],
+    samples: usize,
     area: Rect,
     destination_y: u32,
 ) {
     let mut run_start = 0u32;
     let mut run_colour = row[0];
     for dx in 1..=area.w {
-        let source = (dx as u64 * header.width as u64 / area.w as u64) as usize;
-        let colour = if source < header.width as usize { row[source] } else { run_colour };
+        let colour = if dx == area.w {
+            row[samples - 1]
+        } else {
+            row[(dx as u64 * samples as u64 / area.w as u64) as usize]
+        };
         let changed = dx == area.w || colour != run_colour;
         if changed {
             let run_width = dx.saturating_sub(run_start);
