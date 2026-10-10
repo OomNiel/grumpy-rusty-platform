@@ -424,7 +424,16 @@ pub fn parse_widget(node: &KdlNode) -> Result<(GridPlacementDef, WidgetDef), Cod
                 .unwrap_or("")
                 .to_string();
             let checked = get_bool_prop(node, "checked").unwrap_or(false);
-            WidgetDef::Toggle { id, label, checked }
+            // The one colour `add_toggle` bakes in as a near-black literal; absent means the
+            // board's own default, not "transparent".
+            let off_color = get_string_prop(node, "off_color").map(str::to_string);
+            WidgetDef::Toggle {
+                id,
+                label,
+                checked,
+                off_color,
+                style,
+            }
         }
         "checkbox" => {
             let label = get_string_prop(node, "label")
@@ -432,7 +441,18 @@ pub fn parse_widget(node: &KdlNode) -> Result<(GridPlacementDef, WidgetDef), Cod
                 .unwrap_or("")
                 .to_string();
             let checked = get_bool_prop(node, "checked").unwrap_or(false);
-            WidgetDef::Checkbox { id, label, checked }
+            // `0` is not a size the designer can ask for; it is the sentinel that asks the
+            // widget for its own rule (`inner.h.min(8)`), which is what the old builder passed.
+            let box_size = get_i64_prop(node, "box_size").unwrap_or(0).clamp(0, 255) as u8;
+            let box_color = get_string_prop(node, "box_color").map(str::to_string);
+            WidgetDef::Checkbox {
+                id,
+                label,
+                checked,
+                box_size,
+                box_color,
+                style,
+            }
         }
         "slider" => {
             let min = get_i64_prop(node, "min").unwrap_or(0) as i32;
@@ -479,6 +499,7 @@ pub fn parse_widget(node: &KdlNode) -> Result<(GridPlacementDef, WidgetDef), Cod
                 id,
                 options,
                 selected,
+                style,
             }
         }
         "scale" | "gauge" => {
@@ -490,6 +511,14 @@ pub fn parse_widget(node: &KdlNode) -> Result<(GridPlacementDef, WidgetDef), Cod
             let value = get_f64_prop(node, "value").unwrap_or(min as f64) as f32;
             let major_ticks = get_i64_prop(node, "major_ticks").unwrap_or(5).max(1) as u8;
             let minor_ticks = get_i64_prop(node, "minor_ticks").unwrap_or(2).max(1) as u8;
+            // The sweep and the tick/needle switches used to be baked into `add_scale`; the
+            // defaults here are exactly the values that builder passed.
+            let start_angle = get_i64_prop(node, "start_angle").unwrap_or(135) as i16;
+            let end_angle = get_i64_prop(node, "end_angle").unwrap_or(45) as i16;
+            let show_labels = get_bool_prop(node, "show_labels").unwrap_or(true);
+            let show_needle = get_bool_prop(node, "show_needle").unwrap_or(true);
+            let tick_color = get_string_prop(node, "tick_color").map(str::to_string);
+            let needle_color = get_string_prop(node, "needle_color").map(str::to_string);
             WidgetDef::Scale {
                 id,
                 mode,
@@ -498,6 +527,13 @@ pub fn parse_widget(node: &KdlNode) -> Result<(GridPlacementDef, WidgetDef), Cod
                 value,
                 major_ticks,
                 minor_ticks,
+                start_angle,
+                end_angle,
+                show_labels,
+                show_needle,
+                tick_color,
+                needle_color,
+                style,
             }
         }
         "spinbox" => {
@@ -506,6 +542,10 @@ pub fn parse_widget(node: &KdlNode) -> Result<(GridPlacementDef, WidgetDef), Cod
             let value = get_i64_prop(node, "value").unwrap_or(min as i64) as i32;
             let digits = get_i64_prop(node, "digits").unwrap_or(4).max(1) as u8;
             let decimals = get_i64_prop(node, "decimals").unwrap_or(0) as u8;
+            // Upstream's `add_spinbox` hard-codes `CSS_CYAN`/`CSS_GRAY`; `None` keeps the
+            // board on those literals rather than inventing a palette here.
+            let accent_color = get_string_prop(node, "accent_color").map(str::to_string);
+            let chevron_color = get_string_prop(node, "chevron_color").map(str::to_string);
             WidgetDef::Spinbox {
                 id,
                 min,
@@ -513,11 +553,14 @@ pub fn parse_widget(node: &KdlNode) -> Result<(GridPlacementDef, WidgetDef), Cod
                 value,
                 digits,
                 decimals,
+                accent_color,
+                chevron_color,
+                style,
             }
         }
         "progress" | "progress_bar" => {
             let value = get_f64_prop(node, "value").unwrap_or(0.0) as f32;
-            WidgetDef::ProgressBar { id, value }
+            WidgetDef::ProgressBar { id, value, style }
         }
         "sweeping_arc" | "arc" => {
             let start_angle = get_i64_prop(node, "start_angle").unwrap_or(0) as i16;

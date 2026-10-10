@@ -25,9 +25,11 @@ rusty-gui-widgets = { path = "../../crates/rusty-gui-widgets" }
 embedded-gui-codegen = "0.2.7"
 
 # The shapes fork codegen to emit `add_custom_widget(&rusty_gui_widgets::..)` rather than `add_panel`
-# stubs. The patch is scoped to this sim crate.
+# stubs, and the runtime fork whose builders carry the values a design can name. The patch is scoped to this
+# sim crate; a generated project writes the same two lines against its own `codegen/` copies.
 [patch.crates-io]
 embedded-gui-codegen = { path = "../../crates/embedded-gui-codegen" }
+embedded-gui = { path = "../../crates/embedded-gui" }
 
 [[bin]]
 name = "designer-sim"

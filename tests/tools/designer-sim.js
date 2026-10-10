@@ -333,8 +333,12 @@ function main() {
             // A property that travels *inside* the style expression is cleared the same way, or the widget would
             // look identical in both renders and the difference would be attributed to nothing.
             for (const property of widgetSpec(widget.tag)?.props ?? []) {
-                if (property.viaStyle === true) {
-                    props[property.name] = '';
+                // A via-style value is cleared to "not set": the empty string for a colour, and zero for the
+                // two numbers (a border width and a corner radius), where zero is this designer's own way of
+                // saying "keep the base style's". A number cleared to `''` would not even validate.
+                if (property.viaStyle !== undefined || property.kind === 'font') {
+                    props[property.name] =
+                        property.kind === 'int' || property.kind === 'float' ? 0 : '';
                 }
                 // A shape's ink is its own colours: strip them and the board paints nothing there, which is
                 // what lets the diff attribute every pixel inside the cell to the shape.
@@ -415,7 +419,7 @@ function main() {
     );
     const tinted = document.widgets.filter((widget) =>
         (widgetSpec(widget.tag)?.props ?? []).some(
-            (property) => property.viaStyle === true && widget.props[property.name] !== '',
+            (property) => property.viaStyle !== undefined && widget.props[property.name] !== '',
         ),
     );
     // Shapes are measured by the same difference: strip their colours and they paint nothing, so every pixel

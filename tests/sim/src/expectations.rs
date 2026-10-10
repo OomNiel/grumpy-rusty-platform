@@ -53,6 +53,10 @@ pub fn check(
     one("styled", widgets.styled, 200, 200, 90, 30);
     one("grid", widgets.grid, 0, 234, 200, 44);
     one("tinted", widgets.tinted, 300, 200, 90, 30);
+    one("check", widgets.check, 0, 155, 150, 26);
+    one("spin", widgets.spin, 0, 185, 150, 26);
+    one("roll", widgets.roll, 0, 215, 150, 18);
+    one("gauge", widgets.gauge, 390, 120, 90, 90);
     one("trib", widgets.trib, 300, 260, 40, 40);
     one("rule", widgets.rule, 300, 305, 80, 4);
     problems

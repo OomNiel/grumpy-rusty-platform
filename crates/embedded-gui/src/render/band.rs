@@ -1,0 +1,449 @@
+use core::convert::Infallible;
+use embedded_graphics_core::{
+    Pixel,
+    draw_target::DrawTarget,
+    geometry::{OriginDimensions, Point, Size},
+    pixelcolor::{Rgb565, RgbColor},
+};
+
+use crate::{
+    geometry::Rect,
+    render::{
+        PixelRead, WindowedDrawTarget,
+        task::{DrawTaskQueue, SoftwareDrawUnit, dispatch_draw_tasks},
+    },
+};
+
+/// A fixed-capacity row-band buffer for partial rendering.
+/// Allows rendering large displays in narrow horizontal slices (e.g. 10-20 lines),
+/// requiring only a small fraction of the SRAM (e.g., 2–8 KB instead of 150 KB).
+#[derive(Clone, Debug)]
+pub struct PartialBandBuffer<const N: usize> {
+    buffer: [Rgb565; N],
+    width: usize,
+    height: usize,
+}
+
+impl<const N: usize> PartialBandBuffer<N> {
+    pub const fn new(width: usize, height: usize) -> Self {
+        Self {
+            buffer: [Rgb565::BLACK; N],
+            width,
+            height,
+        }
+    }
+
+    pub const fn width(&self) -> usize {
+        self.width
+    }
+
+    pub const fn height(&self) -> usize {
+        self.height
+    }
+
+    pub fn buffer(&self) -> &[Rgb565] {
+        &self.buffer[..self.width * self.height]
+    }
+
+    pub fn buffer_mut(&mut self) -> &mut [Rgb565] {
+        let len = self.width * self.height;
+        &mut self.buffer[..len]
+    }
+
+    pub fn clear_color(&mut self, color: Rgb565) {
+        let len = self.width * self.height;
+        self.buffer[..len].fill(color);
+    }
+
+    /// Renders draw tasks overlapping `dirty_rect` in horizontal slices of height `self.height`,
+    /// flushing each rendered band directly to a [`WindowedDrawTarget`].
+    pub fn render_tasks_banded<D, const CAP: usize>(
+        &mut self,
+        _viewport: Rect,
+        dirty_rect: Rect,
+        tasks: &DrawTaskQueue<'_, CAP>,
+        target: &mut D,
+        clear_color: Option<Rgb565>,
+    ) -> Result<(), D::Error>
+    where
+        D: WindowedDrawTarget<Color = Rgb565>,
+    {
+        if dirty_rect.w == 0 || dirty_rect.h == 0 {
+            return Ok(());
+        }
+
+        let mut y = dirty_rect.y;
+        let y_end = dirty_rect.y + dirty_rect.h as i32;
+
+        while y < y_end {
+            let band_h = ((y_end - y) as u32).min(self.height as u32);
+            let band_rect = Rect::new(dirty_rect.x, y, dirty_rect.w, band_h);
+
+            let len = self.width * self.height;
+            if let Some(c) = clear_color {
+                self.buffer[..len].fill(c);
+            } else {
+                self.buffer[..len].fill(Rgb565::BLACK);
+            }
+
+            // Render tasks that intersect this band
+            for task in tasks.as_slice() {
+                let tb = task.bounds();
+                let overlap = tb.intersection(band_rect);
+                if !overlap.is_empty() {
+                    // Create task clipped to band buffer local coordinates
+                    let mut local_target = BandTargetWrapper {
+                        parent: self,
+                        band_origin: Point::new(band_rect.x, band_rect.y),
+                    };
+                    let mut fallback = SoftwareDrawUnit;
+                    let mut queue = DrawTaskQueue::<1>::new();
+                    let _ = queue.push(*task);
+                    let mut units = [];
+                    let _ =
+                        dispatch_draw_tasks(&queue, &mut local_target, &mut units, &mut fallback);
+                }
+            }
+
+            // Set window on hardware controller and flush band slice
+            let eg_rect = embedded_graphics_core::primitives::Rectangle::new(
+                Point::new(band_rect.x, band_rect.y),
+                Size::new(band_rect.w, band_rect.h),
+            );
+            target.set_window(&eg_rect)?;
+
+            // Stream active pixels
+            let count = (band_rect.w * band_rect.h) as usize;
+            target.fill_contiguous(&eg_rect, self.buffer[..count].iter().copied())?;
+
+            y += band_h as i32;
+        }
+
+        Ok(())
+    }
+}
+
+impl<const N: usize> OriginDimensions for PartialBandBuffer<N> {
+    fn size(&self) -> Size {
+        Size::new(self.width as u32, self.height as u32)
+    }
+}
+
+impl<const N: usize> DrawTarget for PartialBandBuffer<N> {
+    type Color = Rgb565;
+    type Error = Infallible;
+
+    fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
+    where
+        I: IntoIterator<Item = Pixel<Self::Color>>,
+    {
+        for Pixel(coord, color) in pixels {
+            if coord.x >= 0
+                && coord.y >= 0
+                && (coord.x as usize) < self.width
+                && (coord.y as usize) < self.height
+            {
+                let idx = (coord.y as usize) * self.width + (coord.x as usize);
+                if idx < N {
+                    self.buffer[idx] = color;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn fill_solid(
+        &mut self,
+        area: &embedded_graphics_core::primitives::Rectangle,
+        color: Self::Color,
+    ) -> Result<(), Self::Error> {
+        let intersect = area.intersection(&embedded_graphics_core::primitives::Rectangle::new(
+            Point::zero(),
+            self.size(),
+        ));
+        if intersect.is_zero_sized() {
+            return Ok(());
+        }
+        let x0 = intersect.top_left.x as usize;
+        let y0 = intersect.top_left.y as usize;
+        let w = intersect.size.width as usize;
+        let h = intersect.size.height as usize;
+        let stride = self.width;
+
+        for row in 0..h {
+            let start = (y0 + row) * stride + x0;
+            if start + w <= N {
+                self.buffer[start..start + w].fill(color);
+            }
+        }
+        Ok(())
+    }
+
+    fn fill_contiguous<I>(
+        &mut self,
+        area: &embedded_graphics_core::primitives::Rectangle,
+        colors: I,
+    ) -> Result<(), Self::Error>
+    where
+        I: IntoIterator<Item = Self::Color>,
+    {
+        let mut colors = colors.into_iter();
+        let stride = self.width;
+        let x_end = area.top_left.x + area.size.width as i32;
+        let y_end = area.top_left.y + area.size.height as i32;
+
+        for y in area.top_left.y..y_end {
+            for x in area.top_left.x..x_end {
+                if let Some(c) = colors.next() {
+                    if x >= 0 && y >= 0 && (x as usize) < self.width && (y as usize) < self.height {
+                        let idx = (y as usize) * stride + (x as usize);
+                        if idx < N {
+                            self.buffer[idx] = c;
+                        }
+                    }
+                } else {
+                    return Ok(());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn clear(&mut self, color: Self::Color) -> Result<(), Self::Error> {
+        self.clear_color(color);
+        Ok(())
+    }
+}
+
+impl<const N: usize> PixelRead for PartialBandBuffer<N> {
+    fn get_pixel(&self, point: Point) -> Self::Color {
+        if point.x >= 0
+            && point.y >= 0
+            && (point.x as usize) < self.width
+            && (point.y as usize) < self.height
+        {
+            let idx = (point.y as usize) * self.width + (point.x as usize);
+            if idx < N {
+                return self.buffer[idx];
+            }
+        }
+        Rgb565::BLACK
+    }
+}
+
+/// Helper wrapper that translates global coordinates into local band buffer coordinates.
+struct BandTargetWrapper<'a, const N: usize> {
+    parent: &'a mut PartialBandBuffer<N>,
+    band_origin: Point,
+}
+
+impl<'a, const N: usize> OriginDimensions for BandTargetWrapper<'a, N> {
+    fn size(&self) -> Size {
+        self.parent.size()
+    }
+}
+
+impl<'a, const N: usize> DrawTarget for BandTargetWrapper<'a, N> {
+    type Color = Rgb565;
+    type Error = Infallible;
+
+    fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
+    where
+        I: IntoIterator<Item = Pixel<Self::Color>>,
+    {
+        let ox = self.band_origin.x;
+        let oy = self.band_origin.y;
+        let w = self.parent.width;
+        let h = self.parent.height;
+        for Pixel(coord, color) in pixels {
+            let lx = coord.x - ox;
+            let ly = coord.y - oy;
+            if lx >= 0 && ly >= 0 && (lx as usize) < w && (ly as usize) < h {
+                let idx = (ly as usize) * w + (lx as usize);
+                if idx < N {
+                    self.parent.buffer[idx] = color;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn fill_solid(
+        &mut self,
+        area: &embedded_graphics_core::primitives::Rectangle,
+        color: Self::Color,
+    ) -> Result<(), Self::Error> {
+        let ox = self.band_origin.x;
+        let oy = self.band_origin.y;
+        let local_rect = embedded_graphics_core::primitives::Rectangle::new(
+            Point::new(area.top_left.x - ox, area.top_left.y - oy),
+            area.size,
+        );
+        self.parent.fill_solid(&local_rect, color)
+    }
+
+    fn fill_contiguous<I>(
+        &mut self,
+        area: &embedded_graphics_core::primitives::Rectangle,
+        colors: I,
+    ) -> Result<(), Self::Error>
+    where
+        I: IntoIterator<Item = Self::Color>,
+    {
+        let ox = self.band_origin.x;
+        let oy = self.band_origin.y;
+        let local_rect = embedded_graphics_core::primitives::Rectangle::new(
+            Point::new(area.top_left.x - ox, area.top_left.y - oy),
+            area.size,
+        );
+        self.parent.fill_contiguous(&local_rect, colors)
+    }
+}
+
+impl<'a, const N: usize> PixelRead for BandTargetWrapper<'a, N> {
+    fn get_pixel(&self, point: Point) -> Rgb565 {
+        let lx = point.x - self.band_origin.x;
+        let ly = point.y - self.band_origin.y;
+        self.parent.get_pixel(Point::new(lx, ly))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::render::task::DrawTask;
+    use embedded_graphics_core::primitives::Rectangle;
+
+    struct MockWindowedTarget {
+        pixels: [Rgb565; 400],
+        window: Option<Rectangle>,
+    }
+
+    impl OriginDimensions for MockWindowedTarget {
+        fn size(&self) -> Size {
+            Size::new(20, 20)
+        }
+    }
+
+    impl DrawTarget for MockWindowedTarget {
+        type Color = Rgb565;
+        type Error = Infallible;
+
+        fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
+        where
+            I: IntoIterator<Item = Pixel<Self::Color>>,
+        {
+            for Pixel(pt, color) in pixels {
+                if pt.x >= 0 && pt.y >= 0 && pt.x < 20 && pt.y < 20 {
+                    self.pixels[(pt.y * 20 + pt.x) as usize] = color;
+                }
+            }
+            Ok(())
+        }
+    }
+
+    impl WindowedDrawTarget for MockWindowedTarget {
+        fn set_window(&mut self, rect: &Rectangle) -> Result<(), Self::Error> {
+            self.window = Some(*rect);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn test_partial_band_buffer_render() {
+        let mut band = PartialBandBuffer::<100>::new(20, 5);
+        assert_eq!(band.width(), 20);
+        assert_eq!(band.height(), 5);
+
+        let mut queue = DrawTaskQueue::<2>::new();
+        queue
+            .push(DrawTask::Fill {
+                rect: Rect::new(0, 0, 20, 10),
+                color: Rgb565::GREEN,
+                radius: 0,
+                opacity: 255,
+            })
+            .unwrap();
+
+        let mut target = MockWindowedTarget {
+            pixels: [Rgb565::BLACK; 400],
+            window: None,
+        };
+
+        band.render_tasks_banded(
+            Rect::new(0, 0, 20, 20),
+            Rect::new(0, 0, 20, 10),
+            &queue,
+            &mut target,
+            Some(Rgb565::BLACK),
+        )
+        .unwrap();
+
+        assert_eq!(target.pixels[0], Rgb565::GREEN);
+        assert_eq!(target.pixels[20 * 9 + 5], Rgb565::GREEN);
+        assert_eq!(target.pixels[20 * 11 + 5], Rgb565::BLACK);
+    }
+
+    #[test]
+    fn test_partial_band_buffer_direct_drawing() {
+        let mut band = PartialBandBuffer::<20>::new(5, 4);
+        assert_eq!(band.size(), Size::new(5, 4));
+        assert_eq!(band.buffer().len(), 20);
+        band.clear_color(Rgb565::RED);
+        assert_eq!(band.buffer()[0], Rgb565::RED);
+        band.buffer_mut()[1] = Rgb565::GREEN;
+        assert_eq!(band.buffer()[1], Rgb565::GREEN);
+
+        band.draw_iter([Pixel(Point::new(1, 1), Rgb565::BLUE)])
+            .unwrap();
+        assert_eq!(band.buffer()[6], Rgb565::BLUE);
+        band.draw_iter([Pixel(Point::new(99, 99), Rgb565::WHITE)])
+            .unwrap();
+        band.draw_iter([Pixel(Point::new(-1, 0), Rgb565::WHITE)])
+            .unwrap();
+
+        let area = Rectangle::new(Point::new(-1, -1), Size::new(10, 10));
+        band.fill_solid(&area, Rgb565::YELLOW).unwrap();
+        assert_eq!(band.buffer()[0], Rgb565::YELLOW);
+
+        let mut band2 = PartialBandBuffer::<20>::new(5, 4);
+        let area2 = Rectangle::new(Point::new(1, 1), Size::new(2, 2));
+        band2
+            .fill_contiguous(
+                &area2,
+                [Rgb565::RED, Rgb565::GREEN, Rgb565::BLUE, Rgb565::WHITE],
+            )
+            .unwrap();
+        assert_eq!(band2.get_pixel(Point::new(1, 1)), Rgb565::RED);
+        assert_eq!(band2.get_pixel(Point::new(2, 2)), Rgb565::WHITE);
+        assert_eq!(band2.get_pixel(Point::new(50, 50)), Rgb565::BLACK);
+        band2.clear(Rgb565::CYAN).unwrap();
+        assert_eq!(band2.buffer()[0], Rgb565::CYAN);
+    }
+
+    #[test]
+    fn test_band_target_wrapper_geometry() {
+        let mut band = PartialBandBuffer::<20>::new(5, 4);
+        let mut wrapper = BandTargetWrapper {
+            parent: &mut band,
+            band_origin: Point::new(10, 20),
+        };
+        wrapper
+            .draw_iter([Pixel(Point::new(11, 21), Rgb565::RED)])
+            .unwrap();
+        assert_eq!(wrapper.parent.get_pixel(Point::new(1, 1)), Rgb565::RED);
+
+        wrapper
+            .draw_iter([Pixel(Point::new(99, 99), Rgb565::RED)])
+            .unwrap();
+
+        let area = Rectangle::new(Point::new(10, 20), Size::new(2, 2));
+        wrapper.fill_solid(&area, Rgb565::GREEN).unwrap();
+        assert_eq!(wrapper.parent.get_pixel(Point::new(1, 1)), Rgb565::GREEN);
+
+        let area2 = Rectangle::new(Point::new(11, 21), Size::new(1, 1));
+        wrapper.fill_contiguous(&area2, [Rgb565::BLUE]).unwrap();
+        assert_eq!(wrapper.parent.get_pixel(Point::new(1, 1)), Rgb565::BLUE);
+        assert_eq!(wrapper.get_pixel(Point::new(11, 21)), Rgb565::BLUE);
+    }
+}

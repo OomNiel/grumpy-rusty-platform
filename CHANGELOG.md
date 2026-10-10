@@ -11,6 +11,48 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.67] - 2026-10-09
+
+### Added
+
+- **The six controls that had no appearance settings now have them.** A **Toggle**, **Checkbox**, **Roller**,
+  **Progress bar**, **Spinbox** and **Gauge** can each be given a background, a border colour and width, a
+  corner radius and their own text/accent colours; a Gauge also gains its tick and needle colours, its tick
+  counts, the start and end of its sweep and whether its labels and needle are drawn. Until now the generated
+  code passed a *constant* style for all six — `Style::default()`, which is a plain label with no background and
+  no border — so none of the colours the design named could reach the board at all.
+- **A Gauge's value can be changed from firmware.** `ScaleWidget` implements `Value`/`Min`/`Max` accessors but
+  the engine's node dispatch had no arm for a scale, so `set_widget_property(gauge, PropertyKey::Value, …)`
+  answered `NotFound` for the one widget whose whole purpose is to show a number that moves.
+- A **Spinbox's Digit and Decimal fields now reach the board.** The generated call fixed both at 4 and 0, so the
+  panel's own fields did nothing: a design asking for six digits still rendered four.
+- The **Spinbox** and the **Gauge** are now previewed on the canvas instead of as a placeholder outline: the
+  spinbox's value, its focused-digit underline and its `-`/`+` buttons, and the gauge's ticks, labels and needle
+  for all three of its modes.
+
+### Changed
+
+- The **Checkbox's box is no longer capped at eight pixels**. The crate computes it as `inner.h.min(8)`, which is
+  why it looked lost in anything taller than a row; the design can now name a size (still capped to the row, so
+  it can never draw outside its own cell).
+- The **runtime is vendored alongside the codegen fork** (`codegen/embedded-gui`), because a few of the values
+  above are read inside its renderers where no markup can reach them: a checkbox's box size, a toggle's
+  off-track colour, a gauge's tick and needle colours, and the two colours inside a spinbox. An alternative —
+  drawing these controls with `add_custom_widget`, as the shapes are — was rejected on evidence: the engine does
+  not forward `get_property`/`set_property` to a custom widget, so such a checkbox could not be read or set and
+  such a gauge could not be given a value.
+- A colour in the panel is applied **on the style that tag already wore**, so naming one colour changes one
+  thing: a border *colour* asks for a border (one pixel, unless a width is named), a width on its own thickens
+  the border the widget already had, and a corner radius of `0` keeps the widget's own corners rather than
+  squaring them. A background clears the base style's gradient, which would otherwise paint over it.
+
+### Notes
+
+- Every change in the vendored runtime is additive and defaults to upstream's own constants, so a project whose
+  markup says nothing about appearance renders exactly as before — measured, not asserted: the host simulator's
+  fixture was extended with a checkbox, a spinbox, a roller and a gauge carrying colours that appear nowhere
+  else, and stripping those colours changes 61390 pixels inside those widgets and none of the 79900 outside them.
+
 ## [0.0.66] - 2026-10-09
 
 ### Added

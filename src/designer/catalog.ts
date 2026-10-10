@@ -20,7 +20,7 @@
  * No `vscode` import and no `fs` import, so the t1 layer can test the catalogue as plain data.
  */
 
-import { NAMED_STYLES } from './appearance';
+import { NAMED_STYLES, type StyleField } from './appearance';
 import type { FontSupport } from './fonts';
 
 /**
@@ -44,15 +44,18 @@ export type KdlPropertyKind =
 
 export interface KdlProperty {
     /**
-     * True when the value does not travel as its own attribute, but is folded into the widget's `style`
-     * expression.
+     * The `Style` field this property is written into, when the value does not travel as its own attribute but
+     * is folded into the widget's `style` expression.
      *
-     * A widget whose markup has no colour attribute of its own -- a label's text colour, where the parser reads
-     * no colour property at all -- can still be given one, because the crate paints text from `style.text`. The
-     * value has to be written into the same expression that carries the base style and the font, since a widget
-     * can only have one `style`.
+     * A widget whose markup has no colour attribute of its own -- a label's text colour, a toggle's accent --
+     * can still be given one, because the crate paints from the resolved `Style`: `style.text`, `style.accent`,
+     * `style.background`, `style.border` and `style.corner_radius` are all `pub`. They have to be written into
+     * the same expression that carries the base style and the font, since a widget can only have one `style`.
+     *
+     * The value is the field rather than a flag because the field is what the emitter has to name, and because
+     * the canvas has to resolve the same overrides to stay WYSIWYG (see `src/designer/appearance.ts`).
      */
-    viaStyle?: boolean;
+    viaStyle?: StyleField;
     /** The KDL attribute name, exactly as the parser reads it. */
     name: string;
     kind: KdlPropertyKind;
@@ -300,7 +303,56 @@ const TEXT_COLOUR_PROPERTY: KdlProperty = {
     kind: 'color',
     label: 'Text colour',
     defaultValue: '',
-    viaStyle: true,
+    viaStyle: 'text',
+};
+
+/**
+ * The surface a widget is painted on: its background, its border and its corners.
+ *
+ * These are `style.background`, `style.border` and `style.corner_radius`, which the crate's `Block` paints for
+ * every widget it draws a block for -- so they reach the board for a tag whose markup has no colour attribute
+ * of its own. A border *colour* is what asks for a border: the plain base style has a width of zero, so a
+ * design that picked only a width would see nothing (see `resolveStyleValues`).
+ */
+const APPEARANCE_BLOCK: KdlProperty[] = [
+    { name: 'bg', kind: 'color', label: 'Background', defaultValue: '', viaStyle: 'background' },
+    { name: 'border_color', kind: 'color', label: 'Border colour', defaultValue: '', viaStyle: 'border' },
+    {
+        name: 'border_width',
+        kind: 'int',
+        label: 'Border width',
+        defaultValue: 0,
+        min: 0,
+        max: 16,
+        viaStyle: 'borderWidth',
+    },
+    {
+        name: 'corner_radius',
+        kind: 'int',
+        label: 'Corner radius',
+        defaultValue: 0,
+        min: 0,
+        max: 64,
+        viaStyle: 'radius',
+    },
+];
+
+/** The colour the widget's own contents are drawn in: a progress bar's fill, a slider's knob. */
+const APPEARANCE_FILL: KdlProperty = {
+    name: 'fg',
+    kind: 'color',
+    label: 'Fill',
+    defaultValue: '',
+    viaStyle: 'foreground',
+};
+
+/** The colour the crate calls the accent: a toggle that is on, a checkbox that is ticked, a chosen row. */
+const APPEARANCE_ACCENT: KdlProperty = {
+    name: 'accent',
+    kind: 'color',
+    label: 'Accent',
+    defaultValue: '',
+    viaStyle: 'accent',
 };
 
 /** The colour pairs a clickable widget carries, with the parser's own defaults where it has none. */
@@ -383,9 +435,21 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         label: 'Toggle',
         category: 'input',
         defaultSize: { width: 64, height: 28 },
+        note:
+            'A switch, drawn from its own colours. Its border is the widget\'s frame; the track itself has no ' +
+            'outline in the crate.',
         props: [
             { name: 'label', kind: 'text', label: 'Label', defaultValue: 'Toggle' },
             { name: 'checked', kind: 'bool', label: 'Checked', defaultValue: false },
+            APPEARANCE_ACCENT,
+            // The track's colour while the switch is off. The crate hard-coded a near-black literal here, which
+            // is why an off toggle is hard to see on a dark panel; the runtime fork reads this instead.
+            // `#392852` is the crate's own off-track literal (`Rgb565::new(7, 10, 10)`) written as the
+            // `#rrggbb` this field takes: the 5/6/5 reduction of it is exactly (7, 10, 10) again, so a design
+            // that never touches this field renders the colour the crate always used.
+            { name: 'off_color', kind: 'color', label: 'Off track', defaultValue: '#392852' },
+            ...APPEARANCE_BLOCK,
+            TEXT_COLOUR_PROPERTY,
         ],
         events: ['valueChanged', 'clicked'],
     },
@@ -395,9 +459,24 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         label: 'Checkbox',
         category: 'input',
         defaultSize: { width: 96, height: 24 },
+        note:
+            'A box and a label. The box is eight pixels unless a size is named here -- the crate capped it at ' +
+            'the row height, which is why it looked lost in anything taller.',
         props: [
             { name: 'label', kind: 'text', label: 'Label', defaultValue: 'Checkbox' },
             { name: 'checked', kind: 'bool', label: 'Checked', defaultValue: false },
+            {
+                name: 'box_size',
+                kind: 'int',
+                label: 'Box size',
+                defaultValue: 0,
+                min: 0,
+                max: 64,
+            },
+            { name: 'box_color', kind: 'color', label: 'Box colour', defaultValue: '' },
+            APPEARANCE_ACCENT,
+            ...APPEARANCE_BLOCK,
+            TEXT_COLOUR_PROPERTY,
         ],
         events: ['valueChanged', 'clicked'],
     },
@@ -432,7 +511,12 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         category: 'input',
         defaultSize: { width: 80, height: 80 },
         children: 'options',
-        props: [{ name: 'selected', kind: 'int', label: 'Selected index', defaultValue: 0, min: 0 }],
+        props: [
+            { name: 'selected', kind: 'int', label: 'Selected index', defaultValue: 0, min: 0 },
+            APPEARANCE_ACCENT,
+            ...APPEARANCE_BLOCK,
+            TEXT_COLOUR_PROPERTY,
+        ],
         events: ['valueChanged', 'scroll'],
     },
     {
@@ -447,6 +531,12 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
             { name: 'value', kind: 'int', label: 'Value', defaultValue: 0 },
             { name: 'digits', kind: 'int', label: 'Digits', defaultValue: 4, min: 1, max: 10 },
             { name: 'decimals', kind: 'int', label: 'Decimals', defaultValue: 0, min: 0, max: 6 },
+            // The two colours inside the crate's own spinbox are literals in its renderer, so they are fields
+            // here rather than style expressions; the runtime fork reads them.
+            { name: 'accent_color', kind: 'color', label: 'Focused digit', defaultValue: '#00ffff' },
+            { name: 'chevron_color', kind: 'color', label: 'Chevron outline', defaultValue: '#808080' },
+            ...APPEARANCE_BLOCK,
+            TEXT_COLOUR_PROPERTY,
         ],
         events: ['valueChanged'],
     },
@@ -486,7 +576,12 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         label: 'Progress bar',
         category: 'value',
         defaultSize: { width: 160, height: 20 },
-        props: [{ name: 'value', kind: 'float', label: 'Value', defaultValue: 0 }],
+        note: 'A bar that fills from the left. The track is its background and the fill its own colour.',
+        props: [
+            { name: 'value', kind: 'float', label: 'Value', defaultValue: 0 },
+            APPEARANCE_FILL,
+            ...APPEARANCE_BLOCK,
+        ],
         events: [],
     },
     {
@@ -508,6 +603,23 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
             { name: 'value', kind: 'float', label: 'Value', defaultValue: 0 },
             { name: 'major_ticks', kind: 'int', label: 'Major ticks', defaultValue: 5, min: 1, max: 255 },
             { name: 'minor_ticks', kind: 'int', label: 'Minor ticks', defaultValue: 2, min: 1, max: 255 },
+            {
+                name: 'start_angle',
+                kind: 'int',
+                label: 'Start angle',
+                defaultValue: 135,
+                min: -360,
+                max: 360,
+            },
+            { name: 'end_angle', kind: 'int', label: 'End angle', defaultValue: 45, min: -360, max: 360 },
+            { name: 'show_labels', kind: 'bool', label: 'Tick labels', defaultValue: true },
+            { name: 'show_needle', kind: 'bool', label: 'Needle', defaultValue: true },
+            // The gauge's own colours are fields on the widget the crate already carried but never let a
+            // builder set: `add_scale` hard-coded grey ticks and a red needle.
+            { name: 'tick_color', kind: 'color', label: 'Tick colour', defaultValue: '#808080' },
+            { name: 'needle_color', kind: 'color', label: 'Needle colour', defaultValue: '#ff0000' },
+            ...APPEARANCE_BLOCK,
+            TEXT_COLOUR_PROPERTY,
         ],
         events: ['valueChanged'],
     },
@@ -895,9 +1007,20 @@ export function widgetAddressable(tag: string): boolean {
  * a new property cannot arrive without help.
  */
 const PROPERTY_HELP: Record<string, string> = {
+    accent: 'Colour of the part that shows the control is on, chosen or focused',
+    accent_color: 'Colour of the underline under the digit being changed',
     active: 'Whether the spinner is turning',
+    border_width: 'How thick the border is, in pixels. A border colour asks for a border; this thickens it',
+    box_color: 'Colour of the checkbox\'s own box outline',
+    box_size: 'How big the checkbox\'s box is, in pixels. Zero keeps the crate\'s own eight-pixel rule',
+    chevron_color: 'Colour of the outline around the minus and plus buttons',
+    needle_color: 'Colour of the gauge\'s needle',
+    off_color: 'Colour of a switch\'s track while it is off',
+    show_labels: 'Whether the numbers beside the gauge\'s major ticks are drawn',
+    show_needle: 'Whether the gauge\'s needle is drawn at all',
+    tick_color: 'Colour of the gauge\'s ticks',
     align: 'Where the parts sit inside the widget',
-    bg: 'Background colour',
+    bg: 'Background colour, drawn instead of the base style\'s fill',
     border_color: 'Colour of the border',
     camera_distance: 'How far the camera sits from the model',
     checked: 'Whether it starts switched on',
@@ -911,7 +1034,7 @@ const PROPERTY_HELP: Record<string, string> = {
     disabled_fg: 'Foreground while it cannot be used',
     end_angle: 'Where the arc stops, in degrees clockwise from the top',
     fade: 'Whether the items fade out towards the edges',
-    fg: 'Foreground colour',
+    fg: 'Colour of the part that fills or moves: a progress bar\'s fill, a slider\'s knob',
     fill: 'Fill colour',
     fit: 'How the image is fitted into its box',
     focused_bg: 'Background while it has focus',
@@ -973,6 +1096,8 @@ const PROPERTY_HELP: Record<string, string> = {
 
 /** The properties whose meaning depends on the widget they belong to. */
 const TAG_PROPERTY_HELP: Record<string, string> = {
+    'checkbox.box_size': 'Zero keeps the crate\'s own rule: the row height, up to eight pixels',
+    'scale.start_angle': 'Degrees clockwise from the right, so 135 starts at the lower left and 270 at the top',
     'scale.mode': 'A dial, or a bar that runs down or across',
     'chart.mode': 'A line through the points, or bars',
     'image.mode': 'How the pixels are interpreted, e.g. colour or monochrome',

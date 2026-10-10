@@ -5074,3 +5074,101 @@ Not done, and deliberately: the six fields in the Properties panel are six numbe
 rather than a little triangle widget of their own, and a vertex snaps to whole pixels rather than to the 4-pixel
 grid the box moves on -- a *point* is the fine placement tool, and grid-snapping it would fight the user who is
 trying to aim it.
+
+## 109. Six controls that could not be coloured (2026-10-09)
+
+The report was short and specific: *"Spinbox - Still only draws an outline / Toggle - Does not draw the toggle
+borders, No settings for border width or any colour settings / Checkbox - check box renders way to small and no
+way to change its size or colours / Roler - No colour settings / Progress bar - No border or colour settings /
+Gauge - Still only draws an outline - no colour settings. If these issues are not fixable we will have to create
+those widgits/controls in our own crate."*
+
+### The verdict, read off the crate rather than guessed
+
+Four root causes, and only one of them was the canvas:
+
+1. **No colour could reach the board at all.** The codegen fork emitted a *constant* style per tag --
+   `Style::panel()` for roller, spinbox and scale, `Style::default()` for toggle, checkbox and progress -- and
+   nothing in the design could change it. `Style::default()` is `Style::new()`, which is a label: no background,
+   border width zero, no padding. That is why a Toggle had "no borders" and a Progress bar had no track: the
+   fork had never given them one, whatever the canvas drew.
+2. **Four values were literals inside the runtime's renderers**, where no markup and no style could reach:
+   the checkbox's box is `inner.h.min(8)` (`widgets/mod.rs:1458`), the toggle's track while off is
+   `Rgb565::new(7, 10, 10)` (`:1426`), the spinbox's focused-digit underline is `CSS_CYAN` and its chevron
+   outlines `CSS_GRAY` (`widgets/spinbox.rs:167,179-180`), and `add_scale` bakes in `CSS_GRAY` ticks, a `CSS_RED`
+   needle, the tick counts, the 135°/45° sweep and the label/needle switches.
+3. **A gauge's value could not be changed after it was built.** `ScaleWidget` implements
+   `Widget::get_property`/`set_property` for `Value`/`Min`/`Max` (`widgets/scale.rs:339-363`), but the node
+   dispatch in `widgets/mod.rs` had no arm for `WidgetKind::Scale`, so `set_widget_property(.., Value, ..)`
+   answered `NotFound` for the one widget whose whole purpose is to display a changing number.
+4. **The canvas painted two of them as nothing.** `previewWidget` had no arm for `spinbox` or `scale`, so both
+   fell through to the "type name in a rounded rectangle" placeholder -- "still only draws an outline".
+
+### Why the runtime is vendored, and not our own widgets
+
+The fallback in the report was to write the controls ourselves in `rusty-gui-widgets`, as the shapes already
+are. That was rejected after reading the engine: `WidgetKind::Custom` forwards `focusable()` to the widget
+(`widgets/mod.rs:588`) but **not** `get_property`/`set_property` -- there is no `Custom` arm in either match. A
+custom checkbox could therefore never be read with `checked_value` or set with `set_checked`, and a custom gauge
+could never be given a value at all. Interactivity is the entire point of those two controls, so the *runtime*
+is patched instead: a third vendored crate, `crates/embedded-gui`, redirected by `[patch.crates-io]` exactly
+like the codegen fork.
+
+Every change there is additive, and the defaults reproduce upstream's literals to the bit, so a project that
+patches to this fork but writes plain upstream markup renders identically. `crates/embedded-gui/README.md` lists
+the four builder additions (`add_checkbox_sized`, `add_toggle_colored`, `add_spinbox_styled`,
+`add_scale_styled`) and the one defect fixed (the missing `Scale` property arms). Four new tests in that crate
+render through the real `GuiContext` and read pixels back: **227 unit tests pass**, upstream's 223 included.
+
+### How a colour travels now
+
+`src/designer/appearance.ts` gained the notion of a *style field*: a catalogue property marked
+`viaStyle: 'accent'` (rather than this module's old `viaStyle: true`) is folded into the same `style`
+expression that already carried the base style and the font. The expression is built **on the style that tag
+wears when the design says nothing** -- `ownStyleOf`, mirroring the fork's per-tag fallback -- because a design
+that names only an accent must not also lose the roller's panel surface.
+
+Three rules make a half-filled form do the obvious thing, and they live in `resolveStyleValues` so that the
+canvas and the emitter cannot disagree about them:
+
+* a colour that is set is applied, and one that is not leaves the base style alone (every colour defaults to
+  the empty string, not black);
+* **a border colour asks for a border**, one pixel wide unless a width is named -- the plain base style has a
+  width of zero, so a design that picked only a colour would otherwise see nothing;
+* a border *width* on its own thickens the border the base has, and a corner radius of `0` means "keep the
+  base's corners" -- a number whose default has to mean "unset". A square corner is asked for with the Plain
+  base style, which is what that style is.
+
+Setting a background also clears the gradient, because `Block::render` paints the gradient *instead of* the
+background (`block.rs:177-186`): without that, a flat colour chosen on a panel-based widget would never be seen.
+
+### What the tests pin now
+
+* **Runtime** (`cargo test -p embedded-gui`): 228, including five new ones that assert a 16-pixel box draws more
+  outline than the default 8-pixel one, that a box taller than its row is capped to the row, that an off switch
+  paints its design's track colour and an on one the style accent, that the spinbox's underline and chevrons are
+  the named colours, that a six-digit spinbox paints more text than a one-digit one, and that a gauge's value
+  can be read, set and clamped after it is built.
+* **Codegen fork** (`cargo test -p embedded-gui-codegen`): 21, including one that compiles a design setting every
+  new attribute -- the spinbox's `digits` and `decimals` among them, which the old builder fixed at 4 and 0 --
+  and asserts the exact builder calls, and that a design naming none still emits upstream's defaults.
+* **Hermetic suite**: 834, including the appearance rules above, the base style of each tag, and seven canvas
+  tests that paint all six controls and assert the colours and the box size the design named.
+* **The engine**, end to end: the simulator's fixture grew a checkbox, a spinbox, a roller and a gauge, each
+  with colours that appear nowhere else, and the `--font` mode strips every via-style colour and measures the
+  difference. **17 regions, 61390 pixels changed inside their own widgets, none of the 79900 outside them** --
+  which is the assertion that the colours travel designer -> KDL -> fork -> runtime -> glass. All five simulator
+  modes pass.
+
+### Not done, deliberately
+
+* A toggle's *track* still has no outline of its own: its `border_color`/`border_width` frame the widget, which
+  is what "border" means for every other control. Outlining the switch itself would be a new field with no
+  upstream equivalent.
+* The gauge's value is set from firmware with `gui.set_widget_property(gauge, PropertyKey::Value,
+  PropertyValue::Float(..))`, which works now but is the crate's generic spelling rather than a `set_scale_value`
+  helper; adding one would be a runtime convenience, not a fix.
+* A Spinbox's `step` is parsed by the fork and not offered in the panel: the crate's renderer steps by the
+  focused *digit* (`10^focused_digit`), so `step` is a field nothing reads. `digits` and `decimals` were offered
+  in the panel all along and were being dropped by the builder, which this release also fixed -- a six-digit
+  spinbox now formats six digits on the glass, and the canvas draws the same number.

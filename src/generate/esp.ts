@@ -399,10 +399,13 @@ panel-gc9a01 = []
     const vendored =
         template === 'designer'
             ? `
-# Vendored alongside every Designer project (see crates/ in this extension): the shapes widget crate, and
-# the codegen fork that emits add_custom_widget calls for shapes instead of add_panel/add_spacer stubs.
+# Vendored alongside every Designer project (see crates/ in this extension): the shapes widget crate, the
+# codegen fork that emits add_custom_widget calls for shapes instead of add_panel/add_spacer stubs, and the
+# runtime fork that lets a design name values its renderers used to hard-code (a checkbox's box size, a gauge's
+# tick and needle colours). Patched together because the fork's builders are what the fork's emitter calls.
 [patch.crates-io]
 embedded-gui-codegen = { path = "codegen/embedded-gui-codegen" }
+embedded-gui = { path = "codegen/embedded-gui" }
 `
             : '';
 
