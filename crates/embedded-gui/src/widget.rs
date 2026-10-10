@@ -250,6 +250,41 @@ pub trait CustomCanvas {
         color: embedded_graphics_core::pixelcolor::Rgb565,
         font: crate::font::FontId,
     ) -> Result<(), crate::GuiError>;
+
+    /// Fills a one-row rectangle from a slice of colours, `pixels[i]` being the colour of `rect.x + i`.
+    ///
+    /// A custom widget that has a row of pixels in memory -- a picture decoded from a card, a meter's graph --
+    /// offers it here instead of one `fill_rect` per run of equal colour. The two paint the same pixels; what
+    /// changes is how many address windows the display is asked for, which for a photograph is the difference
+    /// between a few hundred and tens of thousands.
+    ///
+    /// The default *is* that run loop, so a canvas that cannot do better still works and a widget never has to
+    /// ask which kind of canvas it has. `RenderCtxCanvas` overrides it and emits one window for the whole row.
+    fn fill_row(
+        &mut self,
+        rect: Rect,
+        pixels: &[embedded_graphics_core::pixelcolor::Rgb565],
+    ) -> Result<(), crate::GuiError> {
+        let count = (rect.w as usize).min(pixels.len());
+        if count == 0 {
+            return Ok(());
+        }
+        let mut start = 0usize;
+        let mut colour = pixels[0];
+        for i in 1..=count {
+            if i == count || pixels[i] != colour {
+                self.fill_rect(
+                    Rect::new(rect.x + start as i32, rect.y, (i - start) as u32, 1),
+                    colour,
+                )?;
+                if i < count {
+                    start = i;
+                    colour = pixels[i];
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// A safe `#![no_std]` extension point allowing user code to define

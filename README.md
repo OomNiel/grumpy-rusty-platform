@@ -178,7 +178,9 @@ designer for the active project. Either way it works on a board that carries a p
   the same card) and the board reads it as it draws, a row at a time, so a full-screen picture costs a row of RAM
   instead of a copy in the firmware. Uncompressed BMP is what the card holds — 24- and 32-bit, and 16-bit in
   either the 5-5-5 layout `BI_RGB` means or the 5-6-5 one a bitfield header declares — and a file larger than the
-  cell is reduced to it as it is read, so a photo straight off a phone draws without being resized first.
+  cell is reduced to it as it is read, rows the cell does not show are stepped over rather than transferred, and
+  the card is read at 10 MHz once it has answered — so a photo straight off a phone draws without being resized
+  first, in about what it shows.
   Projects on boards with a card socket (the ESP32-035) get a generated `src/sd.rs` that mounts
   it; the panel says so if the board has no socket, if the project predates the module, or if the name is not
   one the driver can look up (FAT short names, 8.3, from the root).

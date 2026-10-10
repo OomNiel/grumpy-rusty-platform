@@ -137,8 +137,6 @@ dependencies = [
 [[package]]
 name = "embedded-gui"
 version = "0.2.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2cedc02109054589aca9949c464c4b703c2ca7a00675f8870f4972a8f26c1188"
 dependencies = [
  "critical-section",
  "embedded-draw-target",

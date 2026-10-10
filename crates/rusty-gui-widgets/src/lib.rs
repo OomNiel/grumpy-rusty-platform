@@ -656,6 +656,27 @@ impl CustomWidget for VectorPath {
 /// short-read rule: fewer bytes than asked for means the end of the stream.
 pub trait ByteSource {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, ()>;
+
+    /// Moves forward `count` bytes that the caller has no use for.
+    ///
+    /// The default reads and discards, which is all a plain stream can do, and a stream that cannot move at all
+    /// still works: this is an offer, not a requirement. A reader that *can* move -- the generated project's card
+    /// reader seeks through the FAT -- overrides it, and that is what makes a photograph larger than its cell
+    /// cheap, because the source rows no destination row can use are jumped over rather than transferred. A
+    /// failed move must leave the position where it was, so a stream may fall back to reading.
+    fn skip(&mut self, count: u32) -> Result<(), ()> {
+        let mut scratch = [0u8; SKIP_CHUNK];
+        let mut left = count;
+        while left > 0 {
+            let step = (left as usize).min(scratch.len());
+            let read = self.read(&mut scratch[..step])?;
+            if read == 0 {
+                return Err(());
+            }
+            left -= read as u32;
+        }
+        Ok(())
+    }
 }
 
 /// Opens a file and hands it to `use_file` for as long as it is needed.
@@ -680,9 +701,20 @@ pub const MAX_ROW_PIXELS: usize = 480;
 /// and a truncated file would be read as if it were enormous. A real image is far below this.
 pub const MAX_SOURCE_PIXELS: u32 = 1_000_000;
 
-/// Bytes read from the card at a time while converting a row. A multiple of four keeps the reads aligned with
-/// the FAT cluster the driver is fetching anyway.
-const READ_CHUNK: usize = 128;
+/// Bytes read from the card at a time while converting a row.
+///
+/// **One FAT block**, not a round number of pixels: the driver in a generated project reads a 512-byte block off
+/// the card for *every* call to it and keeps no cache between them (`embedded_sdmmc` 0.8's
+/// `VolumeManager::read`), so a 128-byte request costs exactly the same wire time as a 512-byte one. Asking for
+/// the block size is what turns four redundant transfers of the same block into one, and it is why this is not
+/// simply "big enough for a row".
+const READ_CHUNK: usize = 512;
+
+/// Bytes thrown away at a time by the default [`ByteSource::skip`].
+///
+/// Small, because it is only ever used by a stream that cannot move, and the only reason it is not one byte is
+/// that a stream with a slow per-call cost should still make progress in useful steps.
+const SKIP_CHUNK: usize = 128;
 
 /// An image read from a BMP file when it is drawn, streamed a row at a time.
 ///
@@ -759,14 +791,11 @@ impl<'a> Stream<'a> {
     }
 
     /// Reads and throws away, for the rows and padding between the ones being drawn.
-    fn skip(&mut self, mut count: u32) -> Result<(), ()> {
-        let mut scratch = [0u8; READ_CHUNK];
-        while count > 0 {
-            let step = (count as usize).min(scratch.len());
-            self.read_exact(&mut scratch[..step])?;
-            count -= step as u32;
-        }
-        Ok(())
+    ///
+    /// Handed to the source rather than done here, because a card can move its read position for the price of a
+    /// few FAT sectors while reading the bytes costs the bytes. See [`ByteSource::skip`].
+    fn skip(&mut self, count: u32) -> Result<(), ()> {
+        self.source.skip(count)
     }
 
     fn u16(&mut self) -> Result<u16, ()> {
@@ -1015,11 +1044,14 @@ fn read_row(
     stream.skip(remaining)
 }
 
-/// Paints one converted source row across the destination row it belongs to, one run per colour change.
+/// Paints one converted source row across the destination row it belongs to.
 ///
-/// `row` holds `samples` colours spanning the source's width, so destination column `dx` takes sample
-/// `dx * samples / area.w`: the row is repeated where the image is enlarged and jumped through where it is
-/// shrunk. Runs are grouped so an even area costs one fill rather than one per pixel.
+/// The row buffer already holds **one colour per destination column** whenever the cell is no wider than a panel
+/// (`samples == area.w`), which is every real case, so the row is offered to the canvas whole: the engine emits
+/// one display window for the row where the run loop below emits one per run of colour -- a few hundred against
+/// tens of thousands for a photograph. The canvas decides what it can do with it (`CustomCanvas::fill_row`'s
+/// default is exactly this loop). Only a cell wider than the buffer still has samples to spread out, and it
+/// walks runs.
 fn draw_row(
     canvas: &mut dyn CustomCanvas,
     row: &[Rgb565],
@@ -1027,6 +1059,11 @@ fn draw_row(
     area: Rect,
     destination_y: u32,
 ) {
+    if samples == area.w as usize {
+        let rect = Rect::new(area.x, area.y + destination_y as i32, area.w, 1);
+        let _ = canvas.fill_row(rect, &row[..samples]);
+        return;
+    }
     let mut run_start = 0u32;
     let mut run_colour = row[0];
     for dx in 1..=area.w {

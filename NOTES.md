@@ -5481,3 +5481,109 @@ so the panel, the asset check and the codegen cannot drift apart on it.
 
 Suite: **859 passed, 0 skipped**; the vendored widget crate is at **29** tests (14 circle, 5 path, 10 card image,
 two of them new), the codegen fork at 23.
+
+---
+
+## 114. Making an image from the card fast (2026-10-09)
+
+"*I scaled the image down to 160x200 and then it rendered, but very slowly. We need to implement some method to
+speed rendering up dramatically. Use a ram buffer, or are there some other tricks we can try?*"
+
+A 64 KB file should not be slow, which is what made this answerable by measurement rather than by guessing: the
+cost was not the size of the picture but the *number of times* the card was asked for anything. Reading the crate
+found three multiplied costs, and the generator's own engine had already solved the fourth for its own images.
+
+### 1. Every read was a block transfer, whatever was asked for
+
+`embedded_sdmmc` 0.8.2's `VolumeManager::read` (`volume_mgr.rs:624`) reads **one 512-byte block per call** and
+keeps no cache between calls -- `let mut blocks = [Block::new()]; self.block_device.read(&mut blocks, block_idx,
+"read")`. So a 128-byte request costs exactly what a 512-byte request costs, on the wire and in card time. The
+widget asked for 128 bytes at a time (`READ_CHUNK`), which fetched the same block **four times**. It now asks for
+`Block::LEN` (512), which is the one number that matters: one call, one transfer, no redundancy.
+
+The FAT walk per call is *not* the problem it looks like: `find_data_on_disk` advances from the file's current
+cluster (the manager keeps `current_cluster` as an offset-and-cluster pair), so it is amortised over the clusters
+rather than restarting at the file's first cluster.
+
+### 2. Rows nobody sees were transferred anyway
+
+A photograph is usually larger than the cell it is drawn into, and the reader visits source rows in file order,
+so a destination row that samples every third source row still had to *consume* the two in between -- there is no
+`seek` in `VolumeManager`... except that there is: `file_seek_from_start` / `file_seek_from_current` /
+`file_seek_from_end` (`volume_mgr.rs:849`-`870`), and `find_data_on_disk` walks the FAT forward for a jump, one
+`BlockCache` for the whole walk. A jump over 2 MB is a few FAT sectors; reading it is 2 MB. So the widget's
+`skip` is now offered to the source instead of done by reading:
+
+```rust
+pub trait ByteSource {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, ()>;
+    // Reads and discards by default: a stream that cannot move still works.
+    fn skip(&mut self, count: u32) -> Result<(), ()> { ... }
+}
+```
+
+and the generated card reader overrides it with `file_seek_from_current` (`seek_from_current` validates before it
+mutates, so a failed move leaves the position alone -- which is why a file that is shorter than its header claims
+stops the draw rather than shifting it).
+
+### 3. Every run of colour was an address window
+
+`CustomCanvas` could only be drawn on rectangle by rectangle, and a photograph is ~180 runs of colour per row:
+the engine's fast path is `fill_solid` per rect, which on the ST7796 is one CASET/RASET/RAMWR window per call. A
+244×440 draw was **80 762** `fill_rect` calls. The engine's own image path (`draw_image_region`,
+`render/mod.rs:1531`) already knew the answer -- its fast blit is one `fill_contiguous` **per row** -- so the
+canvas gained the same thing as an opt-in:
+
+```rust
+// CustomCanvas, with the run loop as the default so every existing canvas still works
+fn fill_row(&mut self, rect: Rect, pixels: &[Rgb565]) -> Result<(), GuiError>;
+```
+
+`RenderCtx::fill_row` emits one window for the row where the clip, the transform and the layer allow it, and
+falls back to the per-pixel path otherwise (the same honesty the non-solid fill path already had). The widget
+handed over its row without changing what it computes: the row buffer already holds *one colour per destination
+column*, so `samples == area.w` is the whole row, stretched, ready to blit. **440 windows now, not 80 762.**
+
+The widget crate's own manifest gained a `[patch.crates-io] embedded-gui = { path = "../embedded-gui" }`, because
+`fill_row` is a fork method: in a project the root manifest's patch does the same thing, and standalone the crate
+now builds and tests against the same runtime a project builds against. `cargo check` for the generated project
+reports no warning about the non-root patch -- it is ignored there, which is what it is for.
+
+### The measurements
+
+Two files, both 16-bit 565 with a 124-byte V5 header, drawn into a 244×440 cell: the reconstructed full-size
+photo, and the 160×200 one the user made. Counted with a source that records requests, and a canvas that counts
+calls.
+
+| Source | Bytes | Reads asked | Bytes asked | 512-B blocks | Bytes skipped | Canvas calls |
+|---|---|---|---|---|---|---|
+| 1122×1402 | 3 146 154 | 2 218 | 987 426 | **1 929** | 2 158 728 | **440** |
+| 160×200 | 64 066 | 218 | 64 066 | **126** | 0 | 440 |
+
+Against what the same draw asked for before: the full-size photo passed **3 146 154 bytes in 128-byte requests,
+which is 24 580 block transfers** (12.7× more), and the 160×200 file passed 64 066 bytes in 501 of them (4×
+more). The display side is 80 762 calls against 440 (184×). At 512 bytes on the wire, one block is ~10.2 ms at
+400 kHz and ~0.5 ms at 10 MHz (§113's re-clock), so a 64 KB image goes from roughly six seconds in the card path
+to roughly sixty milliseconds, plus the display work that is no longer per run.
+
+### Why not a RAM buffer
+
+The user's instinct was a good one and the answer is that the row *is* buffered -- that is what makes the
+one-window blit possible -- but a bigger buffer is not where this time was going. Two reasons to leave a decoded
+cache out:
+
+* **It does not fit.** A 244×440 cell in RGB565 is 214 KB, and the ESP32 has about 300 KB of DRAM in total, with
+  the panel, the touch driver, the GUI and the WiFi stack already in it. A cache that only exists for small
+  images is a cache that helps nobody who complained.
+* **It would rarely be used.** The engine repaints by damage: `DamageTracker` keeps a quadtree of dirty regions
+  and a widget is only re-rendered where its bounds intersect one, so the image is decoded when it is shown and
+  when a screen change covers it -- not on every touch. A cache would buy those handful of redraws at the price
+  of the largest allocation in the firmware.
+
+If a specific case wants instant redraws, the honest shape is a **bounded** cache (a thumbnail budget in bytes,
+decoded once and scaled on the way out), and it should be added when there is a screen that needs it.
+
+Suite: **859 passed, 0 skipped**; the vendored widget crate is at **31** tests (12 card image), the runtime fork
+at **236** (four for `fill_row`: its pixels, its clip offset, a right-clipped row and a short slice), the codegen
+fork at 23. The generated project was re-checked under the ESP toolchain for `xtensa-esp32-none-elf`: `Finished
+dev profile`, exit 0.

@@ -251,6 +251,22 @@ impl rusty_gui_widgets::ByteSource for CardFile<'_> {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, ()> {
         self.volumes.read(self.file, buf).map_err(|_| ())
     }
+
+    /// Moves the read position forward without transferring the bytes.
+    ///
+    /// This is what makes a photograph larger than its cell cheap: the image widget asks for the source rows it
+    /// will actually show and jumps over the rest, and a jump costs a walk along the FAT -- a handful of sectors
+    /// -- where reading those rows would cost every one of them. \`file_seek_from_current\` fails only when the
+    /// target is past the end of the file, and it leaves the position untouched when it does, so a file shorter
+    /// than its header claims stops the draw instead of shifting it.
+    fn skip(&mut self, count: u32) -> Result<(), ()> {
+        if count > i32::MAX as u32 {
+            return Err(());
+        }
+        self.volumes
+            .file_seek_from_current(self.file, count as i32)
+            .map_err(|_| ())
+    }
 }
 `;
 }
