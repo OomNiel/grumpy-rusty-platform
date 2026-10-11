@@ -23,6 +23,21 @@ Two things are worth knowing before the steps:
 
 Save. With **A server I run**, also fill in the **Endpoint** (for example `http://127.0.0.1:1234/v1`).
 
+### Turning it off, and the server that comes back at login
+
+Turning the switch **off** unloads the models and stops the `llama-server` serving your endpoint. A server this
+window did not start is stopped only after a dialog says what it is and what stopping it costs.
+
+If that server is a **systemd user unit** that is enabled, the dialog has a third button: **Disable it so it
+doesn't come back**. It stops the server *and* takes the unit out of your login target
+(`systemctl --user disable llama-server`), so it no longer starts by itself when you log in — which matters,
+because an idle `llama-server` is not free: with `-c 16384` the KV cache alone is pre-allocated at roughly
+1.6 GB whether or not anything is being asked of it. The switch still starts the unit on demand when you turn the
+assistant on.
+
+Nothing is guessed: the button is offered only for a *user* unit that `systemctl` reports as enabled. A system
+unit cannot be disabled without root, and the dialog says so instead.
+
 ## 2. Get a model
 
 Three ways, and none of them need you to have installed anything first:

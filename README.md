@@ -46,7 +46,11 @@ it on.
   started with the model the settings name. Turning it **off** unloads every model it can find (LM Studio's
   `lms unload --all`) and stops the `llama-server`; a server this window did **not** start is stopped only
   after it tells you what it is and what stopping it costs, and that answer is remembered for the rest of the
-  window.
+  window. When what answers is an **enabled systemd user unit** — the usual way a developer runs one, so that it
+  is there after a reboot — that dialog offers a third button, *"Disable it so it doesn't come back"*: it stops
+  the server **and** takes the unit out of your login target (`systemctl --user disable`), so it stops reappearing
+  at every login. The switch can still start it on demand, and nothing is guessed: the button appears only for a
+  user unit `systemctl` reports as enabled.
 - **`Stop the local servers when a window starts with the assist off`** is the checkbox under the switch
   (`rustyPlatform.assistant.stopServersAtStartup`, on by default). Off is what the switch says, so a window
   that opens with it down unloads and stops; the option is there because someone who runs their own

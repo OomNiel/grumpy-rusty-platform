@@ -11,6 +11,22 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.76] - 2026-10-09
+
+### Added
+
+- **"Disable it so it doesn't come back" -- a third button in the assistant's stop dialog.** A `llama-server` run
+  as an *enabled* systemd user unit returns at every login by design, which is the point of enabling it and a
+  surprise every time: the dialog said so ("the unit is enabled, so it comes back at your next login") and then
+  stopped it anyway. Now it offers to end that: the button stops the server **and** takes the unit out of the
+  login target (`systemctl --user disable`), so the assistant's switch becomes the only thing that starts it.
+  Offered only where it can act -- a **user** unit that `systemctl` reports as **enabled**; a system unit needs
+  root, and a unit whose state could not be read is not guessed at. The README and `AI_ASSIST.md` say the same,
+  and the decision is pure data (`assistantSwitchPlan.disableOfferFor` / `disableUnitCommand`), so it is asserted
+  rather than clicked.
+- The dialog explains the button where it appears: disabling stops the server now and keeps it from starting by
+  itself, while the assistant can still start it on demand.
+
 ## [0.0.75] - 2026-10-09
 
 ### Fixed

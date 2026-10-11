@@ -39,6 +39,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { disableUnitCommand } from './assistantSwitchPlan';
 import { log, logError } from './log';
 import { canInspectServerOwner, resolveStartTarget } from './localModels';
 import { configView } from './settings';
@@ -650,6 +651,31 @@ export async function stopLlamaServerConfirmed(
         ok: true, message: `The llama-server (pid ${owner.pid}) has been stopped${gone ? '' : ' (the port is still closing)'}`
             + `${freed ? ` — ${freed} GB freed` : ''}.`
     };
+}
+
+/**
+ * Takes a `systemd --user` unit out of the login target, so it does not come back at the next login.
+ *
+ * The other half of "stop this": `disable` removes the symlink start-up follows and stops nothing, which is why
+ * the caller stops the server first -- a unit that has been disabled keeps running until it is stopped. Only a
+ * *user* unit is reachable from here, and the caller only offers this for one that is enabled (see
+ * `disableOfferFor`); a system unit would need root, as everywhere else in this file.
+ *
+ * The unit can still be started on demand afterwards (`systemctl --user start`, which is what the assistant's
+ * switch does when it is turned on), so this takes away the surprise, not the option.
+ */
+export async function disableLlamaUnit(unit: string): Promise<{ ok: boolean; message: string }> {
+    const { command, args } = disableUnitCommand(unit);
+    const result = await runStatus(command, [...args], 30000);
+    if (result.code === null) {
+        return { ok: false, message: 'systemctl is not available on this machine, so the unit cannot be disabled.' };
+    }
+    if (result.code !== 0) {
+        const why = (result.err || result.out).trim().split(/\r?\n/).filter(Boolean).slice(-2).join(' · ');
+        return { ok: false, message: `systemctl --user disable ${unit} failed${why ? `: ${why}` : ''}.` };
+    }
+    forgetOwnerCache();
+    return { ok: true, message: `disabled ${unit}, so it will not start at your next login` };
 }
 
 /** Wait until a stopped server has released its port (or is at least gone as a process). */

@@ -5856,3 +5856,88 @@ core, so a full-frame repaint stalls them, which is the "everything freezes whil
 **Deferred**: the plan, with the API, the stack size, the bus-sharing constraint (`RefCellDevice` must become a
 `CriticalSectionDevice` because the panel/touch bus is shared), the calibration wrinkle and the hardware test, is
 `plans/touch-on-core1.md`. Nothing about the generated firmware changed for this note.
+
+---
+
+## 119. A stop dialog that can end the question (2026-10-09)
+
+"*make the assistant's stop dialog offer that as a third button -- 'Disable it so it doesn't come back'. ...
+The server eats about 1.7 Gb of ram even when doing nothing which is totally unacceptable on systems with
+limited ram.*"
+
+The dialog already knew the situation and did nothing about it: `consequenceOf` appends *"the unit is enabled,
+so it comes back at your next login"* (§118's finding), and then the only options were stop-this-run, leave it,
+or stop asking. A server that returns at every login and holds gigabytes while idle needs a fourth answer.
+
+### The decision is data, as everywhere else on this switch
+
+`assistantSwitchPlan.ts` gained two pure functions, so the button's existence, its wording and the command it
+runs are all asserted without a window:
+
+```ts
+export function disableOfferFor(step: OffStep): { unit: string; label: string } | undefined
+export function disableUnitCommand(unit: string): { command: string; args: readonly string[] }
+```
+
+`disableOfferFor` is offered for exactly one case: a **user** unit that is **enabled**. Not a system unit (root,
+and `offPlan` already refuses those with the `sudo` line), not a unit that is not enabled (nothing to undo), and
+crucially not one whose state is `undefined` — `detectServerOwner` only sets `enabled` when `systemctl show`
+said `UnitFileState`, and "we could not tell" must not become an offer to change something unverified. The label
+lives in the plan module rather than in the dialog for the same reason the rest of the file exists: the wording
+of the action and the decision to show it are one thing.
+
+`disableUnitCommand` exists so the one part of the doing worth pinning -- the verb and the scope -- is testable
+from a `no-vscode` module. It is consumed by `disableLlamaUnit` in `llamaService.ts`, which mirrors the stop
+that always precedes it:
+
+```
+systemctl --user stop    llama-server.service      (stopLlamaServerConfirmed, unchanged)
+systemctl --user disable llama-server.service      (disableLlamaUnit, new)
+```
+
+### The flow
+
+`askToStopForeign` now builds its buttons from the offer (`Stop it`, `Leave it running`, the offer's label when
+there is one, `Stop asking at startup`) and returns `'stop' | 'leave' | 'disable'`. "Disable" is recorded as
+consent to stop as well -- the button says it stops it now -- so the caller runs the ordinary stop and then the
+disable, and reports both:
+
+> Done: llama-server.service has been stopped -- 1.7 GB freed; disabled llama-server.service, so it will not
+> start at your next login.
+
+A failed stop does not skip the disable: taking the unit out of the login target is the part that survives this
+window, and it is reported on its own line whether the stop worked or not. The dialog explains the button in the
+same breath, including that the switch can still start it on demand -- `systemctl --user start` works on a
+disabled unit, which is what makes "disable" safe to offer rather than a way to break the user's setup.
+
+### Why it matters: what the idle server is holding
+
+Measured on this machine, from systemd's own accounting rather than a guess:
+
+```
+llama-server.service: Consumed 2.457s CPU time, 1.6G memory peak, 0B memory swap peak.
+```
+
+That is the unit of §118: `-c 16384` on a 30 B Qwen3-Coder MoE, loaded with `-ngl 0` (CPU only). The model file
+is 17 GB and is **mmap'd**, so it lives in page cache and is reclaimable — which is why an earlier investigation
+found 14.5 GiB charged to `user@1000.service` after the server exited. What is *resident* is the KV cache, and
+it is pre-allocated at load:
+
+| | |
+|---|---|
+| Qwen3-30B-A3B | 48 layers, 4 KV heads, head_dim 128 |
+| per token | 48 x 4 x 128 x 2 (K and V) x 2 B (f16) = 98 304 B |
+| x 16 384 tokens (`-c 16384`) | **1.50 GiB** |
+
+1.5 GiB of cache + buffers + the touched part of the mapping is the 1.6-1.7 GB the user sees, with no request
+in flight. The levers are all in the unit's own `ExecStart`, not in this extension: `-c 4096` cuts it to about
+0.38 GiB, and a quantised cache (`--cache-type-k q8_0 --cache-type-v q8_0`) halves or quarters it again -- at
+the cost of context the assistant's prompts have to fit in. Disabling the unit is the other answer, and the one
+this button makes one click.
+
+### Tests
+
+Two in `t1-logic/ai-assistant-switch.test.js`, on the pure functions: the offer appears for an enabled user unit
+with the requested wording and for nothing else (disabled, unknown state, plain process, a `stopOwn` step, and a
+system unit that `offPlan` turns into a refusal before any dialog), and the command is
+`systemctl --user disable <unit>` in that order. Suite: **868 passed, 0 skipped**.
