@@ -34,6 +34,7 @@ import {
 } from './llamaServer';
 import {
     detectServerOwner,
+    disableLlamaUnit,
     forgetOwnerCache,
     resolveLlamaUnit,
     startLlamaServerByChoice,
@@ -44,6 +45,7 @@ import {
 import { configView } from './settings';
 import {
     describeOffStep,
+    disableOfferFor,
     offPlan,
     startupShouldStop,
     type OffFacts,
@@ -156,13 +158,10 @@ export async function turnAssistantOff(opts: { reason?: string } = {}): Promise<
                     break;
                 }
                 case 'stopForeign': {
-                    const consent = await askToStopForeign(step);
-                    if (consent !== 'stop') {
-                        skipped.push(
-                            consent === 'leave'
-                                ? `left ${describeForeign(step.owner)} running (you chose to)`
-                                : `left ${describeForeign(step.owner)} running`
-                        );
+                    const offer = disableOfferFor(step);
+                    const consent = await askToStopForeign(step, offer);
+                    if (consent === 'leave') {
+                        skipped.push(`left ${describeForeign(step.owner)} running (you chose to)`);
                         break;
                     }
                     // The stop flow asks again by default; consent was just given here, so it is told not to.
@@ -174,6 +173,13 @@ export async function turnAssistantOff(opts: { reason?: string } = {}): Promise<
                     forgetRunningProbe();
                     if (outcome.ok) done.push(outcome.message);
                     else skipped.push(outcome.message);
+                    if (consent === 'disable' && offer !== undefined) {
+                        // Both halves of what the button says, and the disable is reported whatever the stop did:
+                        // taking it out of the login target is the part that survives this window.
+                        const disabled = await disableLlamaUnit(offer.unit);
+                        if (disabled.ok) done.push(disabled.message);
+                        else skipped.push(disabled.message);
+                    }
                     break;
                 }
                 case 'cannotStop': {
@@ -222,24 +228,43 @@ function describeForeign(owner: EndpointOwner): string {
  * window does not own, and someone who has read it once does not need it at every launch — the panel has the
  * same option as a checkbox, and the dialog points at it rather than hiding it in the settings JSON.
  */
-async function askToStopForeign(step: Extract<OffStep, { kind: 'stopForeign' }>): Promise<'stop' | 'leave'> {
+async function askToStopForeign(
+    step: Extract<OffStep, { kind: 'stopForeign' }>,
+    // The third button, computed by the caller from the same step so that the button and the action it takes
+    // cannot disagree. It exists only where there is something to undo — an enabled user unit that follows the
+    // login target. A server that reserves gigabytes while it is idle is the case for it (asked 2026-10-09):
+    // "Stop it" ends this run, and this ends the question.
+    offer: { unit: string; label: string } | undefined
+): Promise<'stop' | 'leave' | 'disable'> {
     if (step.needsConsent === false) {
         return decided.get(step.key) === true ? 'stop' : 'leave';
     }
+    const buttons = ['Stop it', 'Leave it running'];
+    if (offer !== undefined) {
+        buttons.push(offer.label);
+    }
+    buttons.push('Stop asking at startup');
     const pick = await vscode.window.showWarningMessage(
         `Turn the AI assistant off and stop ${describeForeign(step.owner)}?\n\n`
             + `${whatItIs(step.owner)}\n`
             + `Stopping it: ${consequenceOf(step.owner)}.\n\n`
+            + (offer === undefined
+                ? ''
+                : `Disabling it stops it now and takes ${offer.unit} out of your login target, so it will not `
+                    + 'start by itself again. The assistant can still start it on demand when it is on.\n\n')
             + 'This window did not start it, so it asks once. The answer is remembered until the window closes.',
         { modal: true },
-        'Stop it',
-        'Leave it running',
-        'Stop asking at startup'
+        ...buttons
     );
     if (pick === 'Stop asking at startup') {
         decided.set(step.key, false);
         await configView(SETTINGS).update('stopServersAtStartup', false);
         return 'leave';
+    }
+    if (offer !== undefined && pick === offer.label) {
+        // Stopping is part of it, so the same consent covers both: the caller stops it, then disables it.
+        decided.set(step.key, true);
+        return 'disable';
     }
     if (pick === 'Stop it') {
         decided.set(step.key, true);

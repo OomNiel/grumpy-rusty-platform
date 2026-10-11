@@ -113,6 +113,44 @@ export function isNoopPlan(steps: readonly OffStep[]): boolean {
     return steps.length === 0;
 }
 
+/**
+ * The third button of the stop dialog: "Disable it so it doesn't come back".
+ *
+ * Offered only for what it can actually do — a **user** unit that is currently **enabled**. That is the only
+ * case where "it comes back at your next login" is true and undoable from here:
+ *
+ * - a *system* unit needs root (`offPlan` already refuses those, with the `sudo` line to run);
+ * - a unit that is not enabled has nothing to undo, and `enabled` is left `undefined` when `systemctl show` did
+ *   not say, which is deliberately not the same as `false`: an offer to change something unverified is worse
+ *   than no offer;
+ * - a plain process and this window's own server have no login target at all.
+ *
+ * The label lives here rather than in the dialog for the same reason the rest of this file exists: the wording
+ * of what the button does, and the decision to show it, are one thing, and the test suite pins both without a
+ * window. Asking was the user's request (2026-10-09), and the case behind it is a server reserving gigabytes
+ * while idle -- the point of the button is that it need not run at all.
+ */
+export function disableOfferFor(step: OffStep): { unit: string; label: string } | undefined {
+    if (step.kind !== 'stopForeign' || step.owner.kind !== 'unit') {
+        return undefined;
+    }
+    if (step.owner.scope !== 'user' || step.owner.enabled !== true) {
+        return undefined;
+    }
+    return { unit: step.owner.unit, label: "Disable it so it doesn't come back" };
+}
+
+/**
+ * The command that takes a user unit out of the login target, as data.
+ *
+ * The inverse of `systemctl --user enable`, and the reason it is *here* is that everything which touches
+ * systemd is otherwise in a module that imports `vscode`: this is the one part of the disable worth asserting
+ * (the verb and the scope, in the right order) and the doing is a single call with it.
+ */
+export function disableUnitCommand(unit: string): { command: string; args: readonly string[] } {
+    return { command: 'systemctl', args: ['--user', 'disable', unit] };
+}
+
 /** One line naming what a step does, for the progress line and the panel's message. */
 export function describeOffStep(step: OffStep): string {
     switch (step.kind) {

@@ -18,6 +18,8 @@ const {
     offPlan,
     ownerKey,
     describeOffStep,
+    disableOfferFor,
+    disableUnitCommand,
     isNoopPlan,
     startupShouldStop,
 } = compiled('ai/assistantSwitchPlan');
@@ -91,6 +93,53 @@ test('unloading still happens when the server is somebody else’s and they said
         new Map([['unit:user:u.service', false]])
     );
     equal(plan.map((step) => step.kind).join(','), 'unloadModels', 'the models still go');
+});
+
+test('the offer to disable is made only where it can do something', () => {
+    // The user's request (2026-10-09): a third button in the stop dialog, "Disable it so it doesn't come back",
+    // for the server that reserves gigabytes while idle. It is offered for exactly one thing — an enabled *user*
+    // unit, the only case where "it comes back at your next login" is both true and undoable from here.
+    const stopForeign = (owner) => offPlan(facts({ owner }))[0];
+    const offer = (owner) => disableOfferFor(stopForeign(owner));
+
+    const enabled = offer({ kind: 'unit', unit: 'llama-server.service', scope: 'user', pid: 42, enabled: true });
+    equal(enabled?.unit, 'llama-server.service', 'an enabled user unit is the case it exists for');
+    equal(enabled?.label, "Disable it so it doesn't come back", 'with the words the user asked for');
+
+    equal(
+        offer({ kind: 'unit', unit: 'llama-server.service', scope: 'user', enabled: false }),
+        undefined,
+        'a unit that is not enabled has nothing to undo',
+    );
+    equal(
+        offer({ kind: 'unit', unit: 'llama-server.service', scope: 'user' }),
+        undefined,
+        'and an unknown state is not a yes: the offer is not made for what systemctl did not confirm',
+    );
+    equal(
+        offer({ kind: 'process', pid: 42, command: 'llama-server' }),
+        undefined,
+        'a plain process has no login target',
+    );
+    // The window's own server never reaches the dialog at all: it is a `stopOwn` step, which is not a question.
+    equal(
+        disableOfferFor(offPlan(facts({ ownServer: true }))[0]),
+        undefined,
+        'nor has this window’s own server',
+    );
+
+    // A system unit never reaches the dialog at all: `offPlan` refuses it with the command to run as root.
+    const system = offPlan(facts({ owner: { kind: 'unit', unit: 'llama-server.service', scope: 'system' } }));
+    equal(system[0].kind, 'cannotStop', 'a system unit is a refusal, not a question');
+    equal(disableOfferFor(system[0]), undefined, 'so there is no offer to make');
+});
+
+test('disabling a unit is `systemctl --user disable`, and nothing else', () => {
+    // The one part of the disable worth asserting without a machine: the verb, the scope, and the order. The
+    // doing is a single call with this in `llamaService`, next to the `stop` that always precedes it.
+    const command = disableUnitCommand('llama-server.service');
+    equal(command.command, 'systemctl', 'systemctl');
+    equal(command.args.join(' '), '--user disable llama-server.service', 'user scope, disable, the unit');
 });
 
 test('every step has one line that says what it does', () => {
