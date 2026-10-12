@@ -5,7 +5,7 @@ use heapless::String;
 use crate::{
     block::Block,
     geometry::Rect,
-    render::{CHAR_WIDTH, Compositor, RenderCtx, TextAlign, TextStyle},
+    render::{Compositor, RenderCtx, TextAlign, TextStyle},
     style::{Border, VisualState, WidgetStyle},
     widget::{PropertyError, PropertyKey, PropertyValue, Widget},
 };
@@ -143,7 +143,10 @@ impl SpinboxWidget {
         let mut formatted: String<16> = String::new();
         self.format_text(&mut formatted);
 
-        let char_w = CHAR_WIDTH;
+        // The chosen face's own advance, not the four-pixel grid the crate's smallest font has: measuring with
+        // a constant while drawing with `resolved.font` clips the number and underlines the wrong digit as soon
+        // as a design asks for anything but the default.
+        let char_w = resolved.font.advance();
         let line_h = resolved.font.line_height();
 
         let total_chars = formatted.len() as u32;
@@ -295,23 +298,19 @@ mod tests {
             Some(PropertyValue::Int(100))
         );
         assert_eq!(spin.get_property(PropertyKey::Text), None);
-        assert!(
-            spin.set_property(PropertyKey::Value, PropertyValue::Int(200))
-                .is_ok()
-        );
+        assert!(spin
+            .set_property(PropertyKey::Value, PropertyValue::Int(200))
+            .is_ok());
         assert_eq!(spin.value, 100);
-        assert!(
-            spin.set_property(PropertyKey::Min, PropertyValue::Int(-5))
-                .is_ok()
-        );
-        assert!(
-            spin.set_property(PropertyKey::Max, PropertyValue::Int(500))
-                .is_ok()
-        );
-        assert!(
-            spin.set_property(PropertyKey::Text, PropertyValue::Str("x"))
-                .is_err()
-        );
+        assert!(spin
+            .set_property(PropertyKey::Min, PropertyValue::Int(-5))
+            .is_ok());
+        assert!(spin
+            .set_property(PropertyKey::Max, PropertyValue::Int(500))
+            .is_ok());
+        assert!(spin
+            .set_property(PropertyKey::Text, PropertyValue::Str("x"))
+            .is_err());
     }
 
     #[test]

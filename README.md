@@ -72,6 +72,15 @@ it on.
 - **The compiler is the oracle.** `Rusty AI: Fix the Build…` runs `cargo check`, takes the first error,
   rewrites the function it points at, rebuilds, keeps what helped — reverts what did not, skips what nothing
   can fix, and lists the rest. *Fix with the AI assist* also appears as a Quick Fix on compiler diagnostics.
+- **It says when a request is beyond it, instead of guessing.** Every prompt is measured against the model's
+  own window before it is sent: a request that does not fit, a file too large to be written into, one function
+  longer than the model can rewrite, or a sentence asking for a whole file or the whole project is **refused
+  before anything is sent**, with the numbers and the reason — and with *Send it anyway* for when you disagree.
+- **…and it can hand the job to your own agent instead.** With the Poolside CLI installed
+  (`rustyPlatform.assistant.handoff`, `pool` by default), a refusal offers to hand the request to the `pool`
+  agent: a much larger model, working on the project directly, told to build what it changes. It asks first,
+  in a dialog that names exactly what leaves your machine, reports each step as it works, and continues the
+  same conversation on the next hand-off. The local model itself never sends anything anywhere.
 - **It is told what your board actually is.** The prompt carries the board profile (the LED hangs off the
   CYW43 on a Pico W; a Sunton board's panel SPI pins; the crate list from `Cargo.toml`), because a small
   local model otherwise invents pin numbers that the compiler cannot catch.

@@ -230,3 +230,26 @@ export function firstCargoError(stderr: string): string | undefined {
     }
     return undefined;
 }
+
+/**
+ * Why a build failed *before* the compiler looked at any code, and what to do about it.
+ *
+ * A build-script failure is not a diagnostic, so the repair loop has nothing to hand a fixer — and the line
+ * cargo prints for it (`error: failed to run custom build command for …`) blames the project for what is an
+ * environment problem. On these boards the cause is almost always the same one: espup's Xtensa linker exists,
+ * but its environment is not in the PATH of the process that ran cargo, because `espup install` puts it in
+ * `~/export-esp.sh` for a *shell* to source. Found on a real project (2026-10-12), where it made "Fix the
+ * Build" look broken: it had no errors to fix because the build never started.
+ */
+export function environmentFailure(stderr: string): string | undefined {
+    const text = String(stderr ?? '');
+    if (/xtensa[-\w]*-elf-(gcc|ld)/i.test(text) && /not found|no such file/i.test(text)) {
+        return (
+            'The build stopped before it reached any Rust: the Xtensa linker is not on the PATH of the process ' +
+            'that ran cargo, so this is the ESP toolchain environment and not a code error — there is nothing ' +
+            'for the AI to fix. Install it (or refresh it) with "Rusty: Install ESP Toolchain", which is what ' +
+            'writes ~/export-esp.sh, then run this again.'
+        );
+    }
+    return undefined;
+}

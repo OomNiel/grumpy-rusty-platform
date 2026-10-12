@@ -477,15 +477,33 @@ pub fn parse_widget(node: &KdlNode) -> Result<(GridPlacementDef, WidgetDef), Cod
                 .unwrap_or("")
                 .to_string();
             let checked = get_bool_prop(node, "checked").unwrap_or(false);
-            // `0` is not a size the designer can ask for; it is the sentinel that asks the
+            // `box_size` is the older, single number: a design written before the box had two sides names it,
+            // so it still sets both. `0` is not a size a design can ask for; it is the sentinel that asks the
             // widget for its own rule (`inner.h.min(8)`), which is what the old builder passed.
-            let box_size = get_i64_prop(node, "box_size").unwrap_or(0).clamp(0, 255) as u8;
+            let box_size = get_i64_prop(node, "box_size").unwrap_or(0).clamp(0, 255);
+            let box_width = get_i64_prop(node, "box_width")
+                .unwrap_or(box_size)
+                .clamp(0, 255) as u8;
+            let box_height = get_i64_prop(node, "box_height")
+                .unwrap_or(box_size)
+                .clamp(0, 255) as u8;
+            // Normalised here rather than at the emitter, so a hand-edited design serialises back to the four
+            // names the crate knows instead of keeping a typo forever.
+            let label_position = match get_string_prop(node, "label_position") {
+                Some("left") => "left",
+                Some("top") => "top",
+                Some("bottom") => "bottom",
+                _ => "right",
+            }
+            .to_string();
             let box_color = get_string_prop(node, "box_color").map(str::to_string);
             WidgetDef::Checkbox {
                 id,
                 label,
                 checked,
-                box_size,
+                box_width,
+                box_height,
+                label_position,
                 box_color,
                 style,
             }
@@ -518,6 +536,7 @@ pub fn parse_widget(node: &KdlNode) -> Result<(GridPlacementDef, WidgetDef), Cod
                 id,
                 options,
                 selected,
+                style,
             }
         }
         "roller" => {
@@ -610,7 +629,9 @@ pub fn parse_widget(node: &KdlNode) -> Result<(GridPlacementDef, WidgetDef), Cod
             let frame_inset = get_i64_prop(node, "frame_inset")
                 .unwrap_or(14)
                 .clamp(0, u16::MAX as i64) as u16;
-            let corner_radius = get_i64_prop(node, "corner_radius").unwrap_or(4).clamp(0, 255) as u8;
+            let corner_radius = get_i64_prop(node, "corner_radius")
+                .unwrap_or(4)
+                .clamp(0, 255) as u8;
             // The three colours `add_sweeping_arc` used to hard-code; a design that names none keeps them.
             let bg_color = get_string_prop(node, "bg_color")
                 .unwrap_or("#101010")
@@ -707,6 +728,7 @@ pub fn parse_widget(node: &KdlNode) -> Result<(GridPlacementDef, WidgetDef), Cod
                 title,
                 message,
                 dialog_type,
+                style,
             }
         }
         "content_indicator" => {
@@ -903,7 +925,9 @@ pub fn parse_widget(node: &KdlNode) -> Result<(GridPlacementDef, WidgetDef), Cod
             // `0..=1000`. Absent, they are the isosceles triangle the designer has always dropped (apex at the
             // top centre, base along the bottom), so a design written before they existed is unchanged.
             let point = |name: &str, default: i16| {
-                get_i64_prop(node, name).unwrap_or(default as i64).clamp(0, 1000) as i16
+                get_i64_prop(node, name)
+                    .unwrap_or(default as i64)
+                    .clamp(0, 1000) as i16
             };
             let stroke_width = get_i64_prop(node, "stroke_width").unwrap_or(1).max(0) as u8;
             let fill_color = get_string_prop(node, "fill").map(|s| s.to_string());
@@ -953,7 +977,12 @@ pub fn parse_widget(node: &KdlNode) -> Result<(GridPlacementDef, WidgetDef), Cod
                     }
                 }
             }
-            WidgetDef::Table { id, headers, rows }
+            WidgetDef::Table {
+                id,
+                headers,
+                rows,
+                style,
+            }
         }
         other => return Err(CodegenError::UnknownNode(other.to_string())),
     };

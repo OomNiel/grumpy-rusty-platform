@@ -213,6 +213,10 @@ export function defaultProps(tag: string): Record<string, string | number | bool
     const spec = widgetSpec(tag);
     const props: Record<string, string | number | boolean> = {};
     for (const property of spec?.props ?? []) {
+        // A superseded property is not part of a new widget: it exists so a design that names it still loads.
+        if (property.legacy === true) {
+            continue;
+        }
         props[property.name] = property.defaultValue;
     }
     return props;
@@ -577,7 +581,7 @@ export function validateDocument(document: DesignerDocument): string[] {
                 // ignored, it would be compiled -- and a hand-edited design file is exactly where one appears.
                 problems.push(
                     `${where}: "${style}" is not a base style the crate knows ` +
-                        `(${NAMED_STYLES.map((named) => named.id).join(', ')})`,
+                    `(${NAMED_STYLES.map((named) => named.id).join(', ')})`,
                 );
             }
             const font = widget.props.font;
@@ -588,7 +592,7 @@ export function validateDocument(document: DesignerDocument): string[] {
                     if (!supportsFontStyle(spec.fontSupport)) {
                         problems.push(
                             `${where}: the crate has no style handle for a ${spec.label.toLowerCase()}, ` +
-                                `so the built-in font "${font}" could not reach it`,
+                            `so the built-in font "${font}" could not reach it`,
                         );
                     }
                 } else if (!fontIds.has(font)) {
@@ -600,7 +604,7 @@ export function validateDocument(document: DesignerDocument): string[] {
                     // `font` for labels and carousels, so a button or a table would drop it without a word.
                     problems.push(
                         `${where}: the crate reads a declared font for labels and carousels only, so ` +
-                            `"${font}" would be ignored on a ${spec.label.toLowerCase()}`,
+                        `"${font}" would be ignored on a ${spec.label.toLowerCase()}`,
                     );
                 }
             }
@@ -624,7 +628,7 @@ export function validateDocument(document: DesignerDocument): string[] {
         } else if (widget.x + widget.width > canvas.width || widget.y + widget.height > canvas.height) {
             problems.push(
                 `${where}: ${widget.width}x${widget.height} at (${widget.x}, ${widget.y}) runs past the ` +
-                    `${canvas.width}x${canvas.height} canvas`,
+                `${canvas.width}x${canvas.height} canvas`,
             );
         }
     }
@@ -675,7 +679,7 @@ function childrenProblems(
         if (typeof selected === 'number' && children.values.length > 0 && selected >= children.values.length) {
             problems.push(
                 `"${widget.id}": the selected index ${selected} is past the end of the ` +
-                    `${children.values.length}-option list`,
+                `${children.values.length}-option list`,
             );
         }
         return problems;
@@ -689,7 +693,7 @@ function childrenProblems(
         if (children.rows.some((row) => row.length !== children.headers.length)) {
             problems.push(
                 `"${widget.id}": every row must have ${children.headers.length} cells, ` +
-                    `the same as the ${children.headers.length} headers`,
+                `the same as the ${children.headers.length} headers`,
             );
         }
         return problems;
@@ -777,7 +781,7 @@ export function sdImageSourceProblems(widget: DesignerWidget): string[] {
     if (!/^[A-Za-z0-9_]{1,8}(\.[A-Za-z0-9_]{1,3})?$/.test(path)) {
         return [
             `"${path}" is not a short file name, and the card is read without long-name support: use something ` +
-                'like sd:PIC1.BMP',
+            'like sd:PIC1.BMP',
         ];
     }
     return [];

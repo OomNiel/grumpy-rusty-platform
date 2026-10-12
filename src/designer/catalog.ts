@@ -87,6 +87,15 @@ export interface KdlProperty {
      */
     optional?: boolean;
     /**
+     * True when the property is still read but no longer offered.
+     *
+     * The checkbox's single `box_size` is the case: the box has a width and a height of its own now, and a
+     * design written before that names `box_size`. Dropping it from the catalogue would turn every such design
+     * into one with a property the validator does not know, so it stays -- accepted, emitted when it is
+     * present, and left out of the panel and out of a newly dropped widget's defaults.
+     */
+    legacy?: boolean;
+    /**
      * True when the parser reads the property but the generator throws it away.
      *
      * The shapes are why this exists. `embedded-gui-codegen` emits
@@ -438,6 +447,7 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
             'outline in the crate.',
         props: [
             { name: 'label', kind: 'text', label: 'Label', defaultValue: 'Toggle' },
+            { name: 'font', kind: 'font', label: 'Font', defaultValue: '' },
             { name: 'checked', kind: 'bool', label: 'Checked', defaultValue: false },
             APPEARANCE_ACCENT,
             // The track's colour while the switch is off. The crate hard-coded a near-black literal here, which
@@ -460,6 +470,7 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
             ...APPEARANCE_BLOCK,
             TEXT_COLOUR_PROPERTY,
         ],
+        fontSupport: 'style',
         events: ['valueChanged', 'clicked'],
     },
     {
@@ -468,21 +479,43 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         label: 'Checkbox',
         category: 'input',
         defaultSize: { width: 96, height: 24 },
+        fontSupport: 'style',
         note:
-            'A box and a label. The box is eight pixels unless a size is named here -- the crate capped it at ' +
-            'the row height, which is why it looked lost in anything taller.',
+            'A tick box and a label, and the label can go on any of the box\'s four sides. The box is eight '
+            + 'pixels unless a size is named here -- the crate capped it at the row height, which is why it '
+            + 'looked lost in anything taller. The tick scales with the box.',
         props: [
             { name: 'label', kind: 'text', label: 'Label', defaultValue: 'Checkbox' },
             { name: 'checked', kind: 'bool', label: 'Checked', defaultValue: false },
+            // Both zero means the crate's own rule rather than a size, exactly as the single `box_size` did.
+            { name: 'box_width', kind: 'int', label: 'Box width', defaultValue: 0, min: 0, max: 64 },
+            { name: 'box_height', kind: 'int', label: 'Box height', defaultValue: 0, min: 0, max: 64 },
+            {
+                name: 'label_position',
+                kind: 'enum',
+                label: 'Label side',
+                defaultValue: 'right',
+                options: ['left', 'right', 'top', 'bottom'],
+            },
+            // Only the crate's own fonts reach a checkbox: it is not a label or a carousel, so the `font`
+            // attribute is not read for it. That is what `fontSupport: 'style'` says, and the validator uses it
+            // to refuse a declared font rather than let the emitter drop it in silence.
+            { name: 'font', kind: 'font', label: 'Label font', defaultValue: '' },
+            { name: 'box_color', kind: 'color', label: 'Box colour', defaultValue: '' },
+            // Superseded by the two sizes above: a design written before the box had a width and a height of
+            // its own names this, and it still sets both. Kept, not offered.
             {
                 name: 'box_size',
                 kind: 'int',
-                label: 'Box size',
+                label: 'Box size (superseded)',
                 defaultValue: 0,
                 min: 0,
                 max: 64,
+                legacy: true,
+                // The crate defaults it, so a design that does not name it -- every design dropped after this
+                // change -- is complete rather than missing a property.
+                optional: true,
             },
-            { name: 'box_color', kind: 'color', label: 'Box colour', defaultValue: '' },
             APPEARANCE_ACCENT,
             ...APPEARANCE_BLOCK,
             TEXT_COLOUR_PROPERTY,
@@ -515,7 +548,13 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         category: 'input',
         defaultSize: { width: 120, height: 28 },
         children: 'options',
-        props: [{ name: 'selected', kind: 'int', label: 'Selected index', defaultValue: 0, min: 0 }],
+        props: [
+            { name: 'selected', kind: 'int', label: 'Selected index', defaultValue: 0, min: 0 },
+            { name: 'font', kind: 'font', label: 'Font', defaultValue: '' },
+        ],
+        // The dropdown's style used to be dropped by the emitter, which hard-coded `Style::panel()` and
+        // discarded the one the markup carried -- so there was no route to a font at all. It is carried now.
+        fontSupport: 'style',
         events: ['valueChanged'],
     },
     {
@@ -527,10 +566,12 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         children: 'options',
         props: [
             { name: 'selected', kind: 'int', label: 'Selected index', defaultValue: 0, min: 0 },
+            { name: 'font', kind: 'font', label: 'Font', defaultValue: '' },
             APPEARANCE_ACCENT,
             ...APPEARANCE_BLOCK,
             TEXT_COLOUR_PROPERTY,
         ],
+        fontSupport: 'style',
         events: ['valueChanged', 'scroll'],
     },
     {
@@ -564,6 +605,7 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
             { name: 'value', kind: 'int', label: 'Value', defaultValue: 0 },
             { name: 'digits', kind: 'int', label: 'Digits', defaultValue: 4, min: 1, max: 10 },
             { name: 'decimals', kind: 'int', label: 'Decimals', defaultValue: 0, min: 0, max: 6 },
+            { name: 'font', kind: 'font', label: 'Font', defaultValue: '' },
             // The two colours inside the crate's own spinbox are literals in its renderer, so they are fields
             // here rather than style expressions; the runtime fork reads them.
             { name: 'accent_color', kind: 'color', label: 'Focused digit', defaultValue: '#00ffff' },
@@ -571,6 +613,7 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
             ...APPEARANCE_BLOCK,
             TEXT_COLOUR_PROPERTY,
         ],
+        fontSupport: 'style',
         events: ['valueChanged'],
     },
     {
@@ -587,7 +630,9 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
             { name: 'max', kind: 'int', label: 'Maximum', defaultValue: 100 },
             { name: 'value', kind: 'int', label: 'Value', defaultValue: 0 },
             { name: 'unit', kind: 'text', label: 'Unit', defaultValue: '' },
+            { name: 'font', kind: 'font', label: 'Font', defaultValue: '' },
         ],
+        fontSupport: 'style',
         events: ['valueChanged'],
     },
     {
@@ -602,12 +647,14 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
             { name: 'minute', kind: 'int', label: 'Minute', defaultValue: 0, min: 0, max: 59 },
             { name: 'is_12h', kind: 'bool', label: '12-hour clock', defaultValue: true },
             { name: 'is_pm', kind: 'bool', label: 'PM', defaultValue: false },
+            { name: 'font', kind: 'font', label: 'Font', defaultValue: '' },
             // The crate's clock paints the field being edited in its accent, which is the one colour of its
             // own that its renderer reads from the style.
             APPEARANCE_ACCENT,
             TEXT_COLOUR_PROPERTY,
             ...APPEARANCE_BLOCK,
         ],
+        fontSupport: 'style',
         events: ['valueChanged'],
     },
     {
@@ -658,9 +705,11 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
             // builder set: `add_scale` hard-coded grey ticks and a red needle.
             { name: 'tick_color', kind: 'color', label: 'Tick colour', defaultValue: '#808080' },
             { name: 'needle_color', kind: 'color', label: 'Needle colour', defaultValue: '#ff0000' },
+            { name: 'font', kind: 'font', label: 'Font', defaultValue: '' },
             ...APPEARANCE_BLOCK,
             TEXT_COLOUR_PROPERTY,
         ],
+        fontSupport: 'style',
         events: ['valueChanged'],
     },
     {
@@ -743,9 +792,11 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         defaultSize: { width: 240, height: 24 },
         props: [
             { name: 'time', kind: 'text', label: 'Time', defaultValue: '12:00' },
+            { name: 'font', kind: 'font', label: 'Font', defaultValue: '' },
             TEXT_COLOUR_PROPERTY,
             ...APPEARANCE_BLOCK,
         ],
+        fontSupport: 'style',
         events: [],
     },
     {
@@ -810,7 +861,11 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
                 // The parser keeps any string; the palette maps the warning spellings to yellow.
                 options: ['info', 'warning', 'error'],
             },
+            { name: 'font', kind: 'font', label: 'Font', defaultValue: '' },
         ],
+        // The dialog's style used to be dropped by the emitter; it is carried now, so its title and body can
+        // be drawn in a font the design chose.
+        fontSupport: 'style',
         events: ['opened', 'closed'],
     },
     {
@@ -820,11 +875,13 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         category: 'container',
         defaultSize: { width: 240, height: 120 },
         children: 'table',
-        // No Font property: the table's emitter arm hard-codes `Style::panel()` and drops any `style` the
-        // markup carries, so there is no route to a font for it at all. Offering one would be a field that
-        // does nothing, which is the trap this catalogue exists to avoid.
-        note: 'A table is drawn with the panel style and its own cells; the markup has no handle for its appearance.',
-        props: [],
+        note:
+            'A table is drawn with the panel style and its own cells; its headers and cells are drawn in the ' +
+            'font chosen here.',
+        props: [{ name: 'font', kind: 'font', label: 'Font', defaultValue: '' }],
+        // The table's emitter arm used to hard-code `Style::panel()` and drop any `style` the markup carried,
+        // which is why this catalogue had no font field for it. The style is carried through now.
+        fontSupport: 'style',
         events: ['scroll'],
     },
     {
@@ -1120,7 +1177,10 @@ const PROPERTY_HELP: Record<string, string> = {
     frame_color: 'Colour of the arc\'s frame',
     border_width: 'How thick the border is, in pixels. A border colour asks for a border; this thickens it',
     box_color: 'Colour of the checkbox\'s own box outline',
-    box_size: 'How big the checkbox\'s box is, in pixels. Zero keeps the crate\'s own eight-pixel rule',
+    box_width: 'How wide the box is, in pixels. Zero keeps the crate\'s own eight-pixel rule',
+    box_height: 'How tall the box is, in pixels. Zero keeps the crate\'s own eight-pixel rule',
+    box_size: 'Superseded by the box width and height, and still read so an older design keeps its size',
+    label_position: 'Which side of the box the label is drawn on',
     chevron_color: 'Colour of the outline around the minus and plus buttons',
     clockwise: 'Which way the arc sweeps',
     colour: 'Colour to stroke the path in',

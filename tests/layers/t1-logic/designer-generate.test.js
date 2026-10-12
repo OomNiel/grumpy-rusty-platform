@@ -20,6 +20,8 @@ const {
     emitUiRs,
     emitHandlersRs,
     appendHandlerStubs,
+    pruneHandlerStubs,
+    syncHandlerStubs,
     requiredHandlers,
     handlerName,
     missingFromGeneratedCode,
@@ -134,6 +136,17 @@ test('a design with no events still generates a match that compiles', () => {
     contains(rust, 'No widget in this design raises an event yet.', 'the placeholder arm');
     contains(rust, '_ => {}', 'and the catch-all');
     equal(requiredHandlers(document).length, 0, 'nothing to declare');
+
+    // And it builds without a warning. With no arms, nothing in the file reads `widgets`, so the compiler calls
+    // the handle dead — which is a warning in every generated project whose design raises no event (found by
+    // building one, 2026-10-12). The attribute is conditional, so a design that *does* raise an event still
+    // hears about the handle if it is genuinely unused.
+    contains(rust, '#[allow(dead_code)]\n    pub widgets:', 'the handle is allowed to be unread');
+    notContains(
+        emitUiRs(starterDocument({ ...CYD, rotation: 3 })),
+        '#[allow(dead_code)]\n    pub widgets:',
+        'a design with an event reads it, so no allow is needed',
+    );
 });
 
 // ---------------------------------------------------------------- the handler file
@@ -170,6 +183,50 @@ test('a newly ticked event is appended, and only the missing one', () => {
     contains(after, 'pub fn on_go_long_pressed()', 'and the new one was appended');
     equal(after.split('pub fn on_go_clicked').length - 1, 1, 'exactly once');
     equal(appendHandlerStubs(after, document), after, 'and appending again changes nothing');
+});
+
+// A deleted widget takes its generated stub with it (asked 2026-10-12) -- but only the stub. A handler someone
+// has written in is theirs, and a widget going away must not erase it.
+test('deleting a widget removes its generated stub, and nothing else', () => {
+    const document = starterDocument({ ...CYD, rotation: 3 });
+    const withStubs = emitHandlersRs(document);
+    const withoutGo = { ...document, widgets: document.widgets.filter((widget) => widget.id !== 'go') };
+    equal(requiredHandlers(withoutGo).length, 0, 'nothing needs a handler once the widget is gone');
+
+    const pruned = pruneHandlerStubs(withStubs, withoutGo);
+    notContains(pruned, 'pub fn on_go_clicked', 'the stub is gone');
+    notContains(pruned, 'design: on_go_clicked fired', 'and so is its body');
+    contains(pruned, HANDLERS_MARKER, 'while the file itself is still marked as ours');
+    equal(pruneHandlerStubs(pruned, withoutGo), pruned, 'and pruning again changes nothing');
+
+    // The same deletion, on a handler that now does something: it stays.
+    const written = withStubs.replace(
+        'pub fn on_go_clicked() {\n    log::info!("design: on_go_clicked fired");\n}',
+        'pub fn on_go_clicked() {\n    self.level += 1;\n}',
+    );
+    equal(pruneHandlerStubs(written, withoutGo), written, 'a handler that does something is never removed');
+
+    // And a handler the design still needs is not touched at all.
+    equal(pruneHandlerStubs(withStubs, document), withStubs, 'nothing to prune while the widget is there');
+});
+
+test('one save both appends what is new and prunes what is gone', () => {
+    const document = starterDocument({ ...CYD, rotation: 3 });
+    const before = emitHandlersRs(document);
+    const title = document.widgets.find((widget) => widget.id === 'title');
+    // The same save: the button is deleted, and the label gains an event.
+    const next = {
+        ...document,
+        widgets: [
+            ...document.widgets.filter((widget) => widget.id !== 'go'),
+            { ...title, events: ['clicked'] },
+        ],
+    };
+
+    const after = syncHandlerStubs(before, next);
+    contains(after, 'pub fn on_title_clicked()', 'the new event got its stub');
+    notContains(after, 'pub fn on_go_clicked', 'and the deleted widget\'s stub went with it');
+    equal(syncHandlerStubs(after, next), after, 'a second save changes nothing');
 });
 
 test('a handler name follows the widget id into snake case', () => {

@@ -124,6 +124,11 @@ const view = new CanvasView(canvasElement, {
         root.addEventListener('click', () => hideContextMenu(root), { once: true });
         showContextMenu(root, x, y, widgetMenu(state, id, panels));
     },
+    onRevealHandler(id) {
+        // A middle-click asks for the widget's own code. Opening the file is the extension's to do -- the panel
+        // has no filesystem -- so it travels as a message like every other action.
+        host.postMessage({ type: 'action', action: 'revealHandler', widgetId: id });
+    },
 });
 
 const panels = {
@@ -393,7 +398,7 @@ function report(message: DesignerReport): void {
     if (problems.length === 0) {
         status(
             message.note ??
-                (message.kdl === undefined ? 'Saved.' : `Saved. Markup is ${message.kdl.split('\n').length} lines.`),
+            (message.kdl === undefined ? 'Saved.' : `Saved. Markup is ${message.kdl.split('\n').length} lines.`),
             false,
         );
         return;

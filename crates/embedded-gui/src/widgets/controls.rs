@@ -88,6 +88,53 @@ impl<'a> Widget for ToggleWidget<'a> {
     }
 }
 
+/// Where a checkbox's label sits relative to its box.
+///
+/// The box and the label are two things in one widget, and the arrangement used to be fixed: the label was
+/// always drawn to the right of the box. Naming the side is what lets a design put the label above a box that
+/// is wider than any row, or to its left where a thumb reaches from the other side.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CheckboxLabelPosition {
+    /// The label to the left of the box.
+    Left,
+    /// The label to the right of the box -- the crate's own arrangement, so a design that says nothing keeps
+    /// the layout it has always had.
+    Right,
+    /// The label above the box.
+    Top,
+    /// The label below the box.
+    Bottom,
+}
+
+impl Default for CheckboxLabelPosition {
+    fn default() -> Self {
+        Self::Right
+    }
+}
+
+impl CheckboxLabelPosition {
+    /// The name the markup uses, which is also the name this reports back under.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Left => "left",
+            Self::Right => "right",
+            Self::Top => "top",
+            Self::Bottom => "bottom",
+        }
+    }
+
+    /// Parses the markup's name. Anything unrecognised is the crate's own arrangement, which is what a design
+    /// written before this field existed expects.
+    pub fn from_name(name: &str) -> Self {
+        match name {
+            "left" => Self::Left,
+            "top" => Self::Top,
+            "bottom" => Self::Bottom,
+            _ => Self::Right,
+        }
+    }
+}
+
 /// Checkbox widget.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CheckboxWidget<'a> {

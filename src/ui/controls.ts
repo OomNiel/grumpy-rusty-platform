@@ -81,7 +81,7 @@ export const OPEN_DESIGNER_CONTROL: ControlDescriptor = {
 };
 
 /** In status-bar order; the sidebar section renders the same list in the same order. */
-const ACTIONS: readonly ControlDescriptor[] = [
+export const ACTION_CONTROLS: readonly ControlDescriptor[] = [
     {
         // The two builds the user asked for (2026-10-06): the debug one is what a probe-rs session can
         // step through, the release one is what a finished device runs. The single "Build" and the
@@ -200,7 +200,7 @@ export const FLASH_PROFILE_CONTROLS: readonly ControlDescriptor[] = [
  * in it would crowd a strip that has to stay readable. They are rows in the Controls section, which is what the
  * request asked for (2026-10-05).
  */
-export const CONTROLS: readonly ControlDescriptor[] = [HEALTH_CONTROL, ...ACTIONS];
+export const CONTROLS: readonly ControlDescriptor[] = [HEALTH_CONTROL, ...ACTION_CONTROLS];
 
 /** How a status bar item spells a control: the codicon, then the label. */
 export function iconText(icon: string, label: string): string {
@@ -212,10 +212,6 @@ export function statusBarText(control: ControlDescriptor): string {
     return iconText(control.icon, control.label);
 }
 
-/**
- * The controls that apply right now. Stop is left out unless a probe-rs session is running: it is
- * only meaningful then, and another debugger's session is not ours to kill.
- */
 /**
  * Wording that changes with the silicon.
  *
@@ -241,6 +237,20 @@ const ESP_WORDING: Record<string, Pick<ControlDescriptor, 'detail' | 'tooltip'>>
 };
 
 /**
+ * The wording overrides for a family, applied to whichever controls name a route. `unknown` (and any
+ * family that is not ESP) keeps the Raspberry Pi wording, the one every line was written for.
+ */
+function withEspWording(controls: ControlDescriptor[], family: HealthFamily): ControlDescriptor[] {
+    if (family !== 'esp') {
+        return controls;
+    }
+    return controls.map((control) => {
+        const wording = ESP_WORDING[control.command];
+        return wording === undefined ? control : { ...control, ...wording };
+    });
+}
+
+/**
  * The controls that apply now, worded for the board in front of the user.
  *
  * The family defaults to `unknown`, which keeps the Raspberry Pi wording: it is the one every line was
@@ -261,13 +271,31 @@ export function visibleControls(
         ...FLASH_PROFILE_CONTROLS,
         ...PACKAGE_CONTROLS,
     ].filter((control) => control.sessionOnly !== true || sessionRunning);
-    if (family !== 'esp') {
-        return controls;
+    return withEspWording(controls, family);
+}
+
+/**
+ * The status bar's *action* controls for the current window -- everything in `CONTROLS` except the health
+ * row, which the status bar keeps whether or not a project is open.
+ *
+ * The actions are about doing something *to a project*, so while the window holds no Rusty Platform project
+ * they are hidden rather than left showing dead: pressing Build with nothing to build only reaches the
+ * "No Rusty Platform project found" warning. Hiding them also stops the strip from advertising Flash and
+ * Monitor in a window that has no board in it at all.
+ *
+ * `projectOpen` is `RustyState.hasProject` -- a workspace folder with a `Cargo.toml`, the same rule the
+ * Project view's "No Rusty Platform project in this workspace" uses.
+ */
+export function statusBarActions(
+    projectOpen: boolean,
+    sessionRunning: boolean,
+    family: HealthFamily = 'unknown',
+): ControlDescriptor[] {
+    if (!projectOpen) {
+        return [];
     }
-    return controls.map((control) => {
-        const wording = ESP_WORDING[control.command];
-        return wording === undefined ? control : { ...control, ...wording };
-    });
+    const actions = ACTION_CONTROLS.filter((control) => control.sessionOnly !== true || sessionRunning);
+    return withEspWording(actions, family);
 }
 
 /**

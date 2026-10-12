@@ -1081,6 +1081,30 @@ export function contextForBudget(requestedContext: number, maxTokens: number): n
     return Math.max(DEFAULT_CONTEXT_SIZE, Math.round(maxTokens) + 2048);
 }
 
+/**
+ * A sentence for the developer when the answer has almost no room left, or `undefined` when it has.
+ *
+ * "Only accepts 180 tokens", asked 2026-10-12, is this: the window is shared, the prompt is read first, and the
+ * answer gets the remainder. There is no fixed 180 anywhere — it was 4096 minus whatever the function, the file
+ * header, the crates and the house rules came to, minus the slack. The answer is what gets cut, so the numbers
+ * are the only way to point at the setting that fixes it.
+ */
+export function squeezedAnswerNotice(
+    budget: { maxTokens: number; reduced: boolean; room: number },
+    contextSize: number,
+    promptTokens: number,
+    /** Below this the answer cannot hold a rewritten function, so it is worth interrupting for. */
+    floor = 512
+): string | undefined {
+    if (!budget.reduced || budget.maxTokens >= floor) return undefined;
+    return (
+        `The prompt is about ${promptTokens} tokens of a ${contextSize}-token window, so only ` +
+        `${budget.maxTokens} are left for the answer — too few to rewrite a function, and the usual reason one ` +
+        'comes back cut short. Raise "rustyPlatform.assistant.contextSize" (or lower "maxTokens"), or ask for ' +
+        'a smaller function.'
+    );
+}
+
 // ---------------- how big a prompt may be (asked 2026-09-16) ----------------
 //
 // The user's aim, in their words: *"limit the length of the prompt to ensure the model's response does not take

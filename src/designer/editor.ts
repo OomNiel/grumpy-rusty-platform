@@ -34,6 +34,7 @@ import {
     type DesignerDocument,
 } from './model';
 import { loadDocument, missingAssets, planAssetImport, renderDesign } from './store';
+import { emitUiRs, handlerName, syncHandlerStubs } from './generate';
 import { sdImagesNeedingCard } from './model';
 import {
     copyVendoredCrates,
@@ -168,7 +169,7 @@ class DesignerPanel {
         );
         output.appendLine(
             `[designer] ${folderName}: canvas ${designCanvasSize(document.panelWidth, document.panelHeight, document.rotation).width}x` +
-                `${designCanvasSize(document.panelWidth, document.panelHeight, document.rotation).height} at rotation ${document.rotation}`,
+            `${designCanvasSize(document.panelWidth, document.panelHeight, document.rotation).height} at rotation ${document.rotation}`,
         );
     }
 
@@ -203,7 +204,11 @@ class DesignerPanel {
             return;
         }
         if (message.type === 'action') {
-            await this.act(message.action);
+            if (message.action === 'revealHandler') {
+                await this.revealHandler(message.widgetId);
+            } else {
+                await this.act(message.action);
+            }
         }
         if (message.type === 'pickAsset') {
             await this.pickAsset(message.requestId, message.kind);
@@ -329,8 +334,7 @@ class DesignerPanel {
             // `sd` is a property of an ESP board profile, like `touch`, so the union has to be narrowed first.
             if (this.board?.kind !== 'esp' || this.board.sd === undefined) {
                 return [
-                    `"${id}": this image comes from the SD card, and ${
-                        this.board?.name ?? 'this board'
+                    `"${id}": this image comes from the SD card, and ${this.board?.name ?? 'this board'
                     } has no card socket`,
                 ];
             }
@@ -338,7 +342,7 @@ class DesignerPanel {
             if (!fs.existsSync(module)) {
                 return [
                     `"${id}": this project has no src/sd.rs, so nothing can read the card. Recreate the project ` +
-                        'with this version of the extension, or add the module and its init call to src/main.rs',
+                    'with this version of the extension, or add the module and its init call to src/main.rs',
                 ];
             }
             return [];
@@ -353,6 +357,8 @@ class DesignerPanel {
             await writeProjectFile(this.folder, DESIGNER_KDL_PATH, rendered.kdl);
         }
         await this.syncRotation(document.rotation);
+        await this.syncHandlers(document);
+        await this.syncModule(document);
 
         const report: DesignerReport = {
             type: 'report',
@@ -361,6 +367,47 @@ class DesignerPanel {
             wroteDocument: true,
         };
         await this.panel.webview.postMessage(report);
+    }
+
+    /**
+     * Keeps the project's code-behind in step with the design.
+     *
+     * A handler is *appended* for an event the design has gained and never rewritten, so a function the user has
+     * already filled in survives every save. A handler the design has *lost* -- a deleted widget, an unticked
+     * event -- has its stub removed, but only while it is still exactly the stub this wrote, because deleting a
+     * widget must not delete someone's work.
+     *
+     * The wizard owns creating this file. A project without one is left alone rather than handed a stub file
+     * with no header, which would be a worse file than none at all.
+     */
+    private async syncHandlers(document: DesignerDocument): Promise<void> {
+        const uri = vscode.Uri.joinPath(this.folder, DESIGNER_HANDLERS_PATH);
+        const existing = await readText(uri);
+        if (existing === undefined) {
+            return;
+        }
+        const next = syncHandlerStubs(existing, document, this.touchEnabled);
+        if (next !== existing) {
+            await writeProjectFile(this.folder, DESIGNER_HANDLERS_PATH, next);
+        }
+    }
+
+    /**
+     * Keeps the generated Rust module in step with the design.
+     *
+     * `src/ui.rs` is generated, carries no user code, and is the file that *names* the widgets and calls their
+     * handlers — so it has to be rewritten whenever the design changes. Only the wizard ever wrote it, which
+     * left a project whose markup and module disagreed as soon as a widget was renamed or its events changed.
+     * Found on a real project (2026-10-12): a stale `crate::ui_handlers::on_go_clicked()` call for a widget
+     * that had become a `busy_wheel`, which is an `E0425` the moment that handler is pruned. The markup and
+     * the module have to move together or the project stops building for a reason nothing in the design says.
+     */
+    private async syncModule(document: DesignerDocument): Promise<void> {
+        const uri = vscode.Uri.joinPath(this.folder, DESIGNER_MODULE_PATH);
+        const next = emitUiRs(document, this.touchEnabled);
+        if ((await readText(uri)) !== next) {
+            await writeProjectFile(this.folder, DESIGNER_MODULE_PATH, next);
+        }
     }
 
     /** Keeps the project's own rotation setting in step with the design it was drawn for. */
@@ -404,8 +451,46 @@ class DesignerPanel {
         } catch {
             void vscode.window.showWarningMessage(
                 `${relative} does not exist yet: it is written as soon as the design is valid. ` +
-                    `The generated project also needs ${DESIGNER_MODULE_PATH} and ${DESIGNER_HANDLERS_PATH}.`,
+                `The generated project also needs ${DESIGNER_MODULE_PATH} and ${DESIGNER_HANDLERS_PATH}.`,
             );
+        }
+    }
+
+    /**
+     * Opens the code behind one widget's event, with the cursor on the handler.
+     *
+     * The panel asks for this when a widget is middle-clicked. A handler is a function in the project's own
+     * `src/ui_handlers.rs` -- the one generated file the designer only ever appends to -- so "the code behind
+     * this widget" means opening that file at `on_<widget>_<event>`. The first event is the one a widget was
+     * given first, which is the order the handler stubs were appended in.
+     */
+    private async revealHandler(widgetId: string): Promise<void> {
+        const widget = this.document.widgets.find((candidate) => candidate.id === widgetId);
+        const event = widget?.events[0];
+        if (widget === undefined || event === undefined) {
+            return;
+        }
+        const name = handlerName(widget.id, event);
+        const uri = vscode.Uri.joinPath(this.folder, DESIGNER_HANDLERS_PATH);
+        let text: string;
+        try {
+            text = Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf8');
+        } catch {
+            void vscode.window.showWarningMessage(
+                `${DESIGNER_HANDLERS_PATH} is written when the design is saved, and it is not there yet.`,
+            );
+            return;
+        }
+        // The same test `appendHandlerStubs` uses to decide a handler exists, so "it is in the file" and "the
+        // designer will not add a second copy" cannot disagree.
+        const line = text
+            .split('\n')
+            .findIndex((candidate) => new RegExp(`\\bfn\\s+${name}\\s*[(<]`).test(candidate));
+        const editor = await vscode.window.showTextDocument(uri, { preview: false });
+        if (line >= 0) {
+            const position = new vscode.Position(line, 0);
+            editor.selection = new vscode.Selection(position, position);
+            editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenter);
         }
     }
 

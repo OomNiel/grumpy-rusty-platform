@@ -432,7 +432,7 @@ fn appearance_attributes_reach_the_generated_code() {
 screen id="Styled" width=320 height=240 theme="dark" {
     grid cols="1fr" rows="1fr 1fr 1fr 1fr 1fr 1fr" gap=0 padding=0 {
         toggle id="t" label="x" checked=true off_color="#ff0000" style="Style::panel()" col=0 row=0
-        checkbox id="c" label="x" checked=true box_size=14 box_color="#ff0000" style="{ let mut style = Style::panel(); style.border.width = 2; style }" col=0 row=1
+        checkbox id="c" label="x" checked=true box_width=14 box_height=10 label_position="left" box_color="#ff0000" style="{ let mut style = Style::panel(); style.border.width = 2; style }" col=0 row=1
         progress id="p" value=0.25 style="Style::panel()" col=0 row=2
         roller id="r" selected=1 style="Style::panel()" col=0 row=3 {
             option "a"
@@ -454,9 +454,9 @@ screen id="Styled" width=320 height=240 theme="dark" {
     );
     assert!(
         generated.contains(
-            "gui.add_checkbox_sized(cells[1], \"x\", true, 14, Some(Rgb565::new(31, 0, 0)), { let mut style = Style::panel(); style.border.width = 2; style })"
+            "gui.add_checkbox_sized(cells[1], \"x\", true, 14, 10, CheckboxLabelPosition::Left, Some(Rgb565::new(31, 0, 0)), { let mut style = Style::panel(); style.border.width = 2; style })"
         ),
-        "the checkbox's size, outline colour and style expression must reach the board: {generated}"
+        "the checkbox's box size, label side, outline colour and style expression must reach the board: {generated}"
     );
     assert!(
         generated.contains("gui.add_progress_bar(cells[2], 0.25, Style::panel())"),

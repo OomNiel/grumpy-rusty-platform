@@ -144,7 +144,12 @@ pub enum WidgetDef {
         id: Option<String>,
         label: String,
         checked: bool,
-        box_size: u8,
+        /// How wide the box is, in pixels. `0` asks the crate for its own rule.
+        box_width: u8,
+        /// How tall the box is, in pixels. `0` asks the crate for its own rule.
+        box_height: u8,
+        /// Which side of the box the label is drawn on: `left`, `right`, `top` or `bottom`.
+        label_position: String,
         box_color: Option<String>,
         style: Option<String>,
     },
@@ -159,6 +164,7 @@ pub enum WidgetDef {
         id: Option<String>,
         options: Vec<String>,
         selected: usize,
+        style: Option<String>,
     },
     Roller {
         id: Option<String>,
@@ -197,6 +203,7 @@ pub enum WidgetDef {
         id: Option<String>,
         headers: Option<Vec<String>>,
         rows: Vec<Vec<String>>,
+        style: Option<String>,
     },
     ProgressBar {
         id: Option<String>,
@@ -263,6 +270,7 @@ pub enum WidgetDef {
         title: String,
         message: String,
         dialog_type: String,
+        style: Option<String>,
     },
     ContentIndicator {
         id: Option<String>,

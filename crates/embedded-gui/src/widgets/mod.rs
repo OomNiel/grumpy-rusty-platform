@@ -46,10 +46,10 @@ pub mod timeline;
 pub mod wearable;
 
 pub use segmented::{
-    SEG_7_A, SEG_7_B, SEG_7_C, SEG_7_D, SEG_7_DP, SEG_7_E, SEG_7_F, SEG_7_G, SEG_14_A1, SEG_14_A2,
-    SEG_14_B, SEG_14_C, SEG_14_D1, SEG_14_D2, SEG_14_E, SEG_14_F, SEG_14_G1, SEG_14_G2, SEG_14_H,
-    SEG_14_J, SEG_14_K, SEG_14_L, SEG_14_M, SEG_14_N, SegmentStyle, SevenSegmentDisplay,
-    encode_7seg, encode_14seg,
+    encode_14seg, encode_7seg, SegmentStyle, SevenSegmentDisplay, SEG_14_A1, SEG_14_A2, SEG_14_B,
+    SEG_14_C, SEG_14_D1, SEG_14_D2, SEG_14_E, SEG_14_F, SEG_14_G1, SEG_14_G2, SEG_14_H, SEG_14_J,
+    SEG_14_K, SEG_14_L, SEG_14_M, SEG_14_N, SEG_7_A, SEG_7_B, SEG_7_C, SEG_7_D, SEG_7_DP, SEG_7_E,
+    SEG_7_F, SEG_7_G,
 };
 
 pub use action_menu::{ActionMenuError, ActionMenuItem, ActionMenuWidget};
@@ -57,7 +57,7 @@ pub use bandmeter::{BandMeterWidget, MeterOrientation};
 pub use basic::{ButtonWidget, LabelWidget, PanelWidget, SpacerWidget};
 pub use cinematic::GlanceTileWidget;
 pub use compass::{CompassMode, CompassWidget};
-pub use controls::{CheckboxWidget, SliderWidget, ToggleWidget};
+pub use controls::{CheckboxLabelPosition, CheckboxWidget, SliderWidget, ToggleWidget};
 pub use data::ListWidget;
 pub use dialog::{
     ActionableDialogWidget, ConfirmationDialogWidget, DialogAction, DialogError, DialogType,
@@ -273,9 +273,15 @@ pub enum WidgetKind<'a> {
     Checkbox {
         label: &'a str,
         checked: bool,
-        /// How big the box is, in pixels. `0` keeps upstream's rule (`inner.h.min(8)`), which caps the box at
+        /// How wide the box is, in pixels. `0` keeps upstream's rule (`inner.h.min(8)`), which caps the box at
         /// eight pixels however tall the widget is -- the reason a designer checkbox looked tiny.
-        box_size: u8,
+        box_width: u8,
+        /// How tall the box is, in pixels. `0` keeps upstream's rule, exactly as `box_width` does. The two are
+        /// separate so a design can ask for a wide box rather than only a square one, and the tick inside
+        /// scales with them.
+        box_height: u8,
+        /// Which side of the box the label is drawn on.
+        label_position: CheckboxLabelPosition,
         /// The box's outline. `None` keeps upstream's `style.text`, which the label shares.
         box_color: Option<Rgb565>,
     },
@@ -819,7 +825,9 @@ impl<'a> WidgetNode<'a> {
             #[cfg(feature = "rich-widgets")]
             (
                 PropertyKey::Value,
-                WidgetKind::Scale { value, min, max, .. },
+                WidgetKind::Scale {
+                    value, min, max, ..
+                },
                 PropertyValue::Float(v),
             ) => {
                 *value = v.clamp(*min, *max);
@@ -843,7 +851,9 @@ impl<'a> WidgetNode<'a> {
             #[cfg(feature = "rich-widgets")]
             (
                 PropertyKey::Value,
-                WidgetKind::NumberPicker { value, min, max, .. },
+                WidgetKind::NumberPicker {
+                    value, min, max, ..
+                },
                 PropertyValue::Int(v),
             ) => {
                 *value = v.clamp((*min).min(*max), (*min).max(*max));
@@ -852,7 +862,9 @@ impl<'a> WidgetNode<'a> {
             #[cfg(feature = "rich-widgets")]
             (
                 PropertyKey::Min,
-                WidgetKind::NumberPicker { value, min, max, .. },
+                WidgetKind::NumberPicker {
+                    value, min, max, ..
+                },
                 PropertyValue::Int(m),
             ) => {
                 *min = m;
@@ -863,7 +875,9 @@ impl<'a> WidgetNode<'a> {
             #[cfg(feature = "rich-widgets")]
             (
                 PropertyKey::Max,
-                WidgetKind::NumberPicker { value, min, max, .. },
+                WidgetKind::NumberPicker {
+                    value, min, max, ..
+                },
                 PropertyValue::Int(m),
             ) => {
                 *max = m;
@@ -1010,14 +1024,18 @@ impl<'a> WidgetNode<'a> {
             WidgetKind::Checkbox {
                 label,
                 checked,
-                box_size,
+                box_width,
+                box_height,
+                label_position,
                 box_color,
             } => render_checkbox(
                 ctx,
                 rect,
                 label,
                 checked,
-                box_size,
+                box_width,
+                box_height,
+                label_position,
                 box_color,
                 self.style,
                 state,
@@ -1207,9 +1225,7 @@ impl<'a> WidgetNode<'a> {
             ),
             WidgetKind::Spinner { phase } => render_spinner(ctx, rect, phase, self.style, state),
             #[cfg(feature = "rich-widgets")]
-            WidgetKind::StatusBar { time } => {
-                render_status_bar(ctx, rect, time, self.style, state)
-            }
+            WidgetKind::StatusBar { time } => render_status_bar(ctx, rect, time, self.style, state),
             #[cfg(feature = "rich-widgets")]
             WidgetKind::TimePicker {
                 hour,
@@ -1684,6 +1700,7 @@ where
     }
     bar.foreground_color = resolved.text;
     bar.accent_color = resolved.accent;
+    bar.font = resolved.font;
     // `StatusBarWidget::render` reports draw failures as its own `StatusBarError`, which the node's
     // `D::Error` return cannot carry; the background has already been painted by the time one can happen.
     let _ = bar.render(ctx, rect);
@@ -1717,6 +1734,7 @@ where
     }
     picker.text_color = resolved.text;
     picker.focus_color = resolved.accent;
+    picker.font = resolved.font;
     let _ = picker.render(ctx, rect);
     Ok(())
 }
@@ -1740,7 +1758,10 @@ where
     Block::styled(resolved).render(rect, ctx)?;
     // No colour field exists on `NumberPickerWidget` for a style to override; its rounded card paints over
     // the block, so the value simply renders in the crate's own colours.
-    let picker = NumberPickerWidget::new(min, max, value, unit);
+    let mut picker = NumberPickerWidget::new(min, max, value, unit);
+    // The picker paints its own card and reads no colours from the style, but the face the value is drawn in
+    // is the design's to choose, so it is handed over rather than left at the crate's smallest.
+    picker.font = resolved.font;
     let _ = picker.render(ctx, rect);
     Ok(())
 }
@@ -1801,7 +1822,9 @@ fn render_checkbox<D, C>(
     rect: Rect,
     label: &str,
     checked: bool,
-    box_size: u8,
+    box_width: u8,
+    box_height: u8,
+    label_position: CheckboxLabelPosition,
     box_color: Option<Rgb565>,
     style: WidgetStyle,
     state: VisualState,
@@ -1815,35 +1838,103 @@ where
     block.render(rect, ctx)?;
     let inner = block.inner(rect);
     // `0` is upstream's rule, so a design that says nothing about the size renders exactly as before. A named
-    // size is still capped by the row: a box taller than the widget would draw outside its own cell, where the
+    // size is still capped by the cell: a box wider or taller than the widget would draw outside it, where the
     // engine clips it and the designer's canvas could not show it.
-    let box_size = if box_size == 0 {
+    let box_w = if box_width == 0 {
+        inner.w.min(8)
+    } else {
+        (box_width as u32).min(inner.w)
+    };
+    let box_h = if box_height == 0 {
         inner.h.min(8)
     } else {
-        (box_size as u32).min(inner.h)
+        (box_height as u32).min(inner.h)
     };
-    let box_rect = Rect::new(
-        inner.x,
-        inner.y + (inner.h.saturating_sub(box_size) as i32 / 2),
-        box_size,
-        box_size,
-    );
+    // The crate's own spacing between box and label, kept so an unconfigured checkbox is unchanged.
+    let gap = 3u32;
+    let text_h = style.font.line_height().min(inner.h).max(1);
+
+    // Where the box goes and which rect the label is drawn in. A left or right label shares the row with the
+    // box; a top or bottom label stacks, and the box is centred in the band the label leaves rather than being
+    // pushed off the widget when it is taller than that band.
+    let (box_rect, label_rect) = match label_position {
+        CheckboxLabelPosition::Right => (
+            Rect::new(
+                inner.x,
+                inner.y + (inner.h.saturating_sub(box_h) as i32 / 2),
+                box_w,
+                box_h,
+            ),
+            Rect::new(
+                inner.x + box_w as i32 + gap as i32,
+                inner.y,
+                inner.w.saturating_sub(box_w + gap),
+                inner.h,
+            ),
+        ),
+        CheckboxLabelPosition::Left => {
+            let label_w = inner.w.saturating_sub(box_w + gap);
+            (
+                Rect::new(
+                    inner.x + label_w as i32 + gap as i32,
+                    inner.y + (inner.h.saturating_sub(box_h) as i32 / 2),
+                    box_w,
+                    box_h,
+                ),
+                Rect::new(inner.x, inner.y, label_w, inner.h),
+            )
+        }
+        CheckboxLabelPosition::Top => {
+            let label_h = text_h;
+            let band_h = inner.h.saturating_sub(label_h + gap);
+            (
+                Rect::new(
+                    inner.x + (inner.w.saturating_sub(box_w) as i32 / 2),
+                    inner.y
+                        + label_h as i32
+                        + gap as i32
+                        + (band_h.saturating_sub(box_h) as i32 / 2),
+                    box_w,
+                    box_h,
+                ),
+                Rect::new(inner.x, inner.y, inner.w, label_h),
+            )
+        }
+        CheckboxLabelPosition::Bottom => {
+            let label_h = text_h;
+            let band_h = inner.h.saturating_sub(label_h + gap);
+            (
+                Rect::new(
+                    inner.x + (inner.w.saturating_sub(box_w) as i32 / 2),
+                    inner.y + (band_h.saturating_sub(box_h) as i32 / 2),
+                    box_w,
+                    box_h,
+                ),
+                Rect::new(
+                    inner.x,
+                    inner.y + inner.h.saturating_sub(label_h) as i32,
+                    inner.w,
+                    label_h,
+                ),
+            )
+        }
+    };
     ctx.stroke_rect(box_rect, Border::one(box_color.unwrap_or(style.text)))?;
-    if checked && box_size > 4 {
-        ctx.fill_rect(
-            box_rect.inset(crate::geometry::EdgeInsets::all(2)),
-            style.accent,
-        )?;
+    // The tick is inset by a quarter of the box's shorter side, so it grows and shrinks with the box instead of
+    // being a fixed two pixels that a large box would swallow and a small one would leave no room in.
+    let inset = ((box_w.min(box_h) / 4).max(1)) as i16;
+    let tick = box_rect.inset(crate::geometry::EdgeInsets::all(inset));
+    if checked && tick.w > 0 && tick.h > 0 {
+        ctx.fill_rect(tick, style.accent)?;
     }
     ctx.draw_text_in(
-        Rect::new(
-            inner.x + box_size as i32 + 3,
-            inner.y,
-            inner.w.saturating_sub(box_size + 3),
-            inner.h,
-        ),
+        label_rect,
         label,
-        TextStyle::new(style.text).with_font(style.font),
+        // Centred on the side it was given rather than pushed to that side's start: the label is one thing
+        // sitting beside (or above, or below) the box, and hugging the far edge of a wide band reads as a
+        // misplaced label rather than as a deliberate one. `centered()` sets both axes, so a left or right
+        // label is centred on the box's own line and a top or bottom one is centred over the box.
+        TextStyle::new(style.text).with_font(style.font).centered(),
     )
 }
 
@@ -4309,11 +4400,9 @@ mod tests {
             progress.get_property(PropertyKey::Value),
             Some(PropertyValue::Float(0.25))
         );
-        assert!(
-            progress
-                .set_property(PropertyKey::Progress, PropertyValue::Float(2.0))
-                .is_ok()
-        );
+        assert!(progress
+            .set_property(PropertyKey::Progress, PropertyValue::Float(2.0))
+            .is_ok());
         assert_eq!(
             progress.get_property(PropertyKey::Value),
             Some(PropertyValue::Float(1.0))
@@ -4324,18 +4413,14 @@ mod tests {
             label.get_property(PropertyKey::Text),
             Some(PropertyValue::Str("hi"))
         );
-        assert!(
-            label
-                .set_property(PropertyKey::Text, PropertyValue::Str("yo"))
-                .is_ok()
-        );
+        assert!(label
+            .set_property(PropertyKey::Text, PropertyValue::Str("yo"))
+            .is_ok());
 
         let mut button = node(WidgetKind::Button("a"));
-        assert!(
-            button
-                .set_property(PropertyKey::Text, PropertyValue::Str("b"))
-                .is_ok()
-        );
+        assert!(button
+            .set_property(PropertyKey::Text, PropertyValue::Str("b"))
+            .is_ok());
         assert_eq!(
             button.get_property(PropertyKey::Text),
             Some(PropertyValue::Str("b"))
@@ -4354,11 +4439,9 @@ mod tests {
             slider.get_property(PropertyKey::Max),
             Some(PropertyValue::Float(10.0))
         );
-        assert!(
-            slider
-                .set_property(PropertyKey::Value, PropertyValue::Float(99.0))
-                .is_ok()
-        );
+        assert!(slider
+            .set_property(PropertyKey::Value, PropertyValue::Float(99.0))
+            .is_ok());
         assert_eq!(
             slider.get_property(PropertyKey::Value),
             Some(PropertyValue::Float(10.0))
@@ -4371,11 +4454,9 @@ mod tests {
             track_border: None,
             track_border_width: 0,
         });
-        assert!(
-            toggle
-                .set_property(PropertyKey::State, PropertyValue::Bool(true))
-                .is_ok()
-        );
+        assert!(toggle
+            .set_property(PropertyKey::State, PropertyValue::Bool(true))
+            .is_ok());
         assert_eq!(
             toggle.get_property(PropertyKey::State),
             Some(PropertyValue::Bool(true))
@@ -4384,14 +4465,14 @@ mod tests {
         let mut checkbox = node(WidgetKind::Checkbox {
             label: "c",
             checked: true,
-            box_size: 0,
+            box_width: 0,
+            box_height: 0,
+            label_position: CheckboxLabelPosition::Right,
             box_color: None,
         });
-        assert!(
-            checkbox
-                .set_property(PropertyKey::State, PropertyValue::Bool(false))
-                .is_ok()
-        );
+        assert!(checkbox
+            .set_property(PropertyKey::State, PropertyValue::Bool(false))
+            .is_ok());
         assert_eq!(
             checkbox.get_property(PropertyKey::State),
             Some(PropertyValue::Bool(false))
@@ -4403,10 +4484,9 @@ mod tests {
             offset: 0,
             visible_rows: 2,
         });
-        assert!(
-            list.set_property(PropertyKey::Selected, PropertyValue::Usize(1))
-                .is_ok()
-        );
+        assert!(list
+            .set_property(PropertyKey::Selected, PropertyValue::Usize(1))
+            .is_ok());
         assert_eq!(
             list.get_property(PropertyKey::Selected),
             Some(PropertyValue::Usize(1))
@@ -4416,10 +4496,9 @@ mod tests {
             labels: &["a", "b"],
             selected: 0,
         });
-        assert!(
-            tabs.set_property(PropertyKey::Selected, PropertyValue::Usize(1))
-                .is_ok()
-        );
+        assert!(tabs
+            .set_property(PropertyKey::Selected, PropertyValue::Usize(1))
+            .is_ok());
 
         let cells = [
             MenuCell::new("one").with_subtitle("sub"),
@@ -4435,10 +4514,9 @@ mod tests {
             rich.get_property(PropertyKey::Selected),
             Some(PropertyValue::Usize(0))
         );
-        assert!(
-            rich.set_property(PropertyKey::Selected, PropertyValue::Usize(5))
-                .is_ok()
-        );
+        assert!(rich
+            .set_property(PropertyKey::Selected, PropertyValue::Usize(5))
+            .is_ok());
         assert_eq!(
             rich.get_property(PropertyKey::Selected),
             Some(PropertyValue::Usize(1))
@@ -4446,11 +4524,9 @@ mod tests {
 
         let mut spacer = node(WidgetKind::Spacer);
         assert_eq!(spacer.get_property(PropertyKey::Value), None);
-        assert!(
-            spacer
-                .set_property(PropertyKey::Value, PropertyValue::Float(0.0))
-                .is_err()
-        );
+        assert!(spacer
+            .set_property(PropertyKey::Value, PropertyValue::Float(0.0))
+            .is_err());
     }
 
     #[test]
@@ -4493,11 +4569,9 @@ mod tests {
         let mut hidden = node(WidgetKind::Button("x"));
         hidden.flags.insert(WidgetFlags::HIDDEN);
         assert!(hidden.render(&mut ctx, VisualState::Normal).is_ok());
-        assert!(
-            hidden
-                .render_at(&mut ctx, Rect::new(0, 0, 5, 5), VisualState::Pressed)
-                .is_ok()
-        );
+        assert!(hidden
+            .render_at(&mut ctx, Rect::new(0, 0, 5, 5), VisualState::Pressed)
+            .is_ok());
     }
 
     #[test]
@@ -4520,10 +4594,9 @@ mod tests {
             accept_newline: true,
         };
         let node = WidgetNode::new(WidgetId::new(2), Rect::new(0, 0, 100, 60), ta, Style::new());
-        assert!(
-            node.render_at(&mut ctx, Rect::new(0, 0, 100, 60), VisualState::Focused)
-                .is_ok()
-        );
+        assert!(node
+            .render_at(&mut ctx, Rect::new(0, 0, 100, 60), VisualState::Focused)
+            .is_ok());
 
         let empty_buf = [0u8; TEXTAREA_CAPACITY];
         let placeholder_ta = WidgetKind::TextArea {
@@ -4543,11 +4616,9 @@ mod tests {
             placeholder_ta,
             Style::new(),
         );
-        assert!(
-            placeholder_node
-                .render_at(&mut ctx, Rect::new(0, 60, 100, 40), VisualState::Normal)
-                .is_ok()
-        );
+        assert!(placeholder_node
+            .render_at(&mut ctx, Rect::new(0, 60, 100, 40), VisualState::Normal)
+            .is_ok());
 
         let keys = ['a', 'b', 'c', 'd', 'e', 'f'];
         let alt_keys = ['A', 'B', 'C', 'D', 'E', 'F'];
@@ -4570,11 +4641,9 @@ mod tests {
                 kb,
                 Style::new(),
             );
-            assert!(
-                kb_node
-                    .render_at(&mut ctx, Rect::new(0, 110, 100, 60), VisualState::Focused)
-                    .is_ok()
-            );
+            assert!(kb_node
+                .render_at(&mut ctx, Rect::new(0, 110, 100, 60), VisualState::Focused)
+                .is_ok());
         }
 
         let empty_kb = WidgetKind::Keyboard {
@@ -4591,11 +4660,9 @@ mod tests {
             empty_kb,
             Style::new(),
         );
-        assert!(
-            empty_node
-                .render_at(&mut ctx, Rect::new(0, 180, 50, 20), VisualState::Normal)
-                .is_ok()
-        );
+        assert!(empty_node
+            .render_at(&mut ctx, Rect::new(0, 180, 50, 20), VisualState::Normal)
+            .is_ok());
     }
 
     #[test]
@@ -4620,9 +4687,8 @@ mod tests {
             menu,
             Style::new(),
         );
-        assert!(
-            node.render_at(&mut ctx, Rect::new(0, 0, 100, 60), VisualState::Focused)
-                .is_ok()
-        );
+        assert!(node
+            .render_at(&mut ctx, Rect::new(0, 0, 100, 60), VisualState::Focused)
+            .is_ok());
     }
 }

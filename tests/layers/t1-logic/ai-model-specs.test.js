@@ -37,16 +37,24 @@ test('a GPU build falls back to the CPU one, and the CPU build does not retry', 
 });
 
 test('the argv is the one the sidecar parses', () => {
-    const argv = specs.sidecarArgs({ modelPath: '/m/x.gguf', port: 8123, ctx: 4096, gpuLayers: 0, backend: 'cpu' });
+    // `contextSize`, not `ctx`: the test asked for `ctx` and so was asserting the default by accident, which
+    // held while the default happened to equal the number it expected (2026-10-12).
+    const argv = specs.sidecarArgs({ modelPath: '/m/x.gguf', port: 8123, contextSize: 4096, gpuLayers: 0, backend: 'cpu' });
     // Every option is always present, so the log line is the evidence of what was asked for.
     equal(argv[0], '--model');
     equal(argv[1], '/m/x.gguf');
     equal(argv[2], '--port');
     equal(argv[3], '8123');
-    contains(argv.join(' '), '--ctx 4096');
+    contains(argv.join(' '), '--ctx 4096', 'the window it was told to use');
     contains(argv.join(' '), '--gpu-layers 0');
     contains(argv.join(' '), '--backend cpu');
     notOk(argv.includes('--threads'), 'no thread count when none was chosen');
+    // And with no size asked for, the floor is the one the answer needs room inside (8192 since 2026-10-12).
+    contains(
+        specs.sidecarArgs({ modelPath: '/m/x.gguf', port: 1 }).join(' '),
+        `--ctx ${specs.DEFAULT_CONTEXT_SIZE}`,
+        'an unset window is the default, not zero'
+    );
 });
 
 test('a chosen thread count is passed through', () => {

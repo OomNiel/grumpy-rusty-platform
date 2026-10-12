@@ -49,6 +49,13 @@ export interface CanvasCallbacks {
     /** A right-click on a widget, with where it happened so the menu can open there. */
     onContextMenu(id: string, x: number, y: number): void;
     /**
+     * A middle-click on a widget, which asks for the code behind it.
+     *
+     * The handler lives in the project's own `src/ui_handlers.rs` and only the extension can open a file, so
+     * this is a message like any other rather than something the canvas can do itself.
+     */
+    onRevealHandler(id: string): void;
+    /**
      * A drag or a drop finished.
      *
      * Live edits arrive through `onEdit` while the pointer is down, and the panel deliberately does not
@@ -104,6 +111,7 @@ export class CanvasView {
         });
         this.element.addEventListener('drop', (event) => this.drop(event));
         this.element.addEventListener('contextmenu', (event) => this.contextMenu(event));
+        this.element.addEventListener('auxclick', (event) => this.auxClick(event));
     }
 
     setState(state: DesignerState): void {
@@ -214,6 +222,11 @@ export class CanvasView {
     }
 
     private pointerDown(event: PointerEvent): void {
+        // Only the left button drags. A middle-click asks for the code behind the widget and a right-click
+        // opens its menu, and neither should move anything while the button is held.
+        if (event.button !== 0) {
+            return;
+        }
         const state = this.state;
         if (state === undefined) {
             return;
@@ -232,8 +245,8 @@ export class CanvasView {
                         target.vertex !== undefined
                             ? 'vertex'
                             : target.handle === undefined
-                              ? 'move'
-                              : 'resize',
+                                ? 'move'
+                                : 'resize',
                     id: target.id,
                     handle: target.handle,
                     vertex: target.vertex,
@@ -318,6 +331,37 @@ export class CanvasView {
         this.callbacks.onSelect(target.id);
         this.draw();
         this.callbacks.onContextMenu(target.id, event.clientX, event.clientY);
+    }
+
+    /**
+     * A middle-click: open the code behind the widget under the pointer, if it has any.
+     *
+     * Only a widget that raises an event has a handler, and a widget with none has nothing to show -- so the
+     * click is ignored there rather than opening a file to show nothing. The selection follows the click for
+     * the same reason a right-click's does: the panel's own view should agree with what was just acted on.
+     */
+    private auxClick(event: MouseEvent): void {
+        if (event.button !== 1) {
+            return;
+        }
+        const state = this.state;
+        if (state === undefined) {
+            return;
+        }
+        const { x, y } = this.point(event);
+        const target = hitTest(state.document, x, y, this.selected);
+        if (target === undefined) {
+            return;
+        }
+        const widget = state.document.widgets.find((candidate) => candidate.id === target.id);
+        if (widget === undefined || widget.events.length === 0) {
+            return;
+        }
+        event.preventDefault();
+        this.selected = target.id;
+        this.callbacks.onSelect(target.id);
+        this.draw();
+        this.callbacks.onRevealHandler(target.id);
     }
 
     /** A widget dragged out of the Toolbox and dropped on the canvas. */

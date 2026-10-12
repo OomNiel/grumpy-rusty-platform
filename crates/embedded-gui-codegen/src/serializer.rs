@@ -251,7 +251,9 @@ pub fn serialize_kdl_screen(screen: &ScreenDef) -> String {
                 id,
                 label,
                 checked,
-                box_size,
+                box_width,
+                box_height,
+                label_position,
                 box_color,
                 style,
             } => {
@@ -269,11 +271,13 @@ pub fn serialize_kdl_screen(screen: &ScreenDef) -> String {
                     .unwrap_or_default();
                 let _ = writeln!(
                     &mut out,
-                    "        checkbox{} label=\"{}\" checked={} box_size={}{}{}{} col={} row={}",
+                    "        checkbox{} label=\"{}\" checked={} box_width={} box_height={} label_position=\"{}\"{}{}{} col={} row={}",
                     id_attr,
                     label,
                     checked,
-                    box_size,
+                    box_width,
+                    box_height,
+                    label_position,
                     box_color_attr,
                     style_attr,
                     span_attrs,
@@ -306,15 +310,20 @@ pub fn serialize_kdl_screen(screen: &ScreenDef) -> String {
                 id,
                 options,
                 selected,
+                style,
             } => {
                 let id_attr = id
                     .as_ref()
                     .map(|s| format!(" id=\"{}\"", s))
                     .unwrap_or_default();
+                let style_attr = style
+                    .as_ref()
+                    .map(|s| format!(" style=\"{}\"", s))
+                    .unwrap_or_default();
                 let _ = writeln!(
                     &mut out,
-                    "        dropdown{} selected={}{} col={} row={} {{",
-                    id_attr, selected, span_attrs, p.col, p.row
+                    "        dropdown{} selected={}{}{} col={} row={} {{",
+                    id_attr, selected, style_attr, span_attrs, p.col, p.row
                 );
                 for opt in options {
                     let _ = writeln!(&mut out, "            option \"{}\"", opt);
@@ -622,15 +631,20 @@ pub fn serialize_kdl_screen(screen: &ScreenDef) -> String {
                 title,
                 message,
                 dialog_type,
+                style,
             } => {
                 let id_attr = id
                     .as_ref()
                     .map(|s| format!(" id=\"{}\"", s))
                     .unwrap_or_default();
+                let style_attr = style
+                    .as_ref()
+                    .map(|s| format!(" style=\"{}\"", s))
+                    .unwrap_or_default();
                 let _ = writeln!(
                     &mut out,
-                    "        dialog{} title=\"{}\" message=\"{}\" type=\"{}\"{} col={} row={}",
-                    id_attr, title, message, dialog_type, span_attrs, p.col, p.row
+                    "        dialog{} title=\"{}\" message=\"{}\" type=\"{}\"{}{} col={} row={}",
+                    id_attr, title, message, dialog_type, style_attr, span_attrs, p.col, p.row
                 );
             }
             WidgetDef::ContentIndicator {
@@ -1028,15 +1042,24 @@ pub fn serialize_kdl_screen(screen: &ScreenDef) -> String {
                     p.row
                 );
             }
-            WidgetDef::Table { id, headers, rows } => {
+            WidgetDef::Table {
+                id,
+                headers,
+                rows,
+                style,
+            } => {
                 let id_attr = id
                     .as_ref()
                     .map(|s| format!(" id=\"{}\"", s))
                     .unwrap_or_default();
+                let style_attr = style
+                    .as_ref()
+                    .map(|s| format!(" style=\"{}\"", s))
+                    .unwrap_or_default();
                 let _ = writeln!(
                     &mut out,
-                    "        table{}{} col={} row={} {{",
-                    id_attr, span_attrs, p.col, p.row
+                    "        table{}{}{} col={} row={} {{",
+                    id_attr, style_attr, span_attrs, p.col, p.row
                 );
                 if let Some(h) = headers {
                     let quoted: Vec<String> = h.iter().map(|s| format!("\"{}\"", s)).collect();

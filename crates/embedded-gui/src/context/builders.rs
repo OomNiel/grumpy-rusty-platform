@@ -9,8 +9,8 @@ use crate::{
     style::{Style, WidgetStyle},
     widget::{FocusGroupId, StyleClassId, Widget, WidgetId},
     widgets::{
-        CarouselSpec, ChartMode, CompositeIconSpec, KeyboardLayout, MenuCell, NotificationLevel,
-        ScaleMode, SurfaceState, WidgetKind,
+        CarouselSpec, ChartMode, CheckboxLabelPosition, CompositeIconSpec, KeyboardLayout,
+        MenuCell, NotificationLevel, ScaleMode, SurfaceState, WidgetKind,
     },
 };
 use embedded_graphics_core::pixelcolor::{Rgb565, WebColors};
@@ -276,21 +276,32 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
     where
         S: Into<WidgetStyle>,
     {
-        self.add_checkbox_sized(rect, label, checked, 0, None, style)
+        self.add_checkbox_sized(
+            rect,
+            label,
+            checked,
+            0,
+            0,
+            CheckboxLabelPosition::Right,
+            None,
+            style,
+        )
     }
 
-    /// A checkbox whose box has a size and an outline of its own.
+    /// A checkbox whose box has a size of its own and whose label can be put on any of its four sides.
     ///
-    /// `box_size` of `0` means upstream's rule -- `inner.h.min(8)` -- and is what `add_checkbox` passes, so
-    /// nothing changes for markup that says nothing. `box_color` of `None` keeps upstream's outline colour,
-    /// which is `style.text`, the same colour the label is drawn in.
+    /// A `box_width` or `box_height` of `0` means upstream's rule -- `inner.h.min(8)` -- and is what
+    /// `add_checkbox` passes, so nothing changes for markup that says nothing. `box_color` of `None` keeps
+    /// upstream's outline colour, which is `style.text`, the same colour the label is drawn in.
     #[cfg(feature = "rich-widgets")]
     pub fn add_checkbox_sized<S>(
         &mut self,
         rect: impl Into<Rect>,
         label: &'a str,
         checked: bool,
-        box_size: u8,
+        box_width: u8,
+        box_height: u8,
+        label_position: CheckboxLabelPosition,
         box_color: Option<Rgb565>,
         style: S,
     ) -> Result<WidgetId, GuiError>
@@ -302,7 +313,9 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
             WidgetKind::Checkbox {
                 label,
                 checked,
-                box_size,
+                box_width,
+                box_height,
+                label_position,
                 box_color,
             },
             style,
@@ -1787,7 +1800,16 @@ mod fork_tests {
         // box. A design can now name the size.
         let mut small = gui();
         small
-            .add_checkbox_sized(Rect::new(0, 0, 80, 20), "x", true, 0, None, Style::label())
+            .add_checkbox_sized(
+                Rect::new(0, 0, 80, 20),
+                "x",
+                true,
+                0,
+                0,
+                CheckboxLabelPosition::Right,
+                None,
+                Style::label(),
+            )
             .unwrap();
         let big = {
             let mut gui = gui();
@@ -1796,6 +1818,8 @@ mod fork_tests {
                 "x",
                 true,
                 16,
+                16,
+                CheckboxLabelPosition::Right,
                 None,
                 Style::label(),
             )
@@ -1821,7 +1845,16 @@ mod fork_tests {
         // And a box taller than its row cannot escape it: the engine clips, and the canvas could not show it.
         let mut capped = gui();
         capped
-            .add_checkbox_sized(Rect::new(0, 0, 80, 12), "x", false, 40, None, Style::label())
+            .add_checkbox_sized(
+                Rect::new(0, 0, 80, 12),
+                "x",
+                false,
+                40,
+                40,
+                CheckboxLabelPosition::Right,
+                None,
+                Style::label(),
+            )
             .unwrap();
         let pixels = render(&capped);
         assert_eq!(
@@ -1829,7 +1862,11 @@ mod fork_tests {
             Some(Rgb565::WHITE),
             "a 40-pixel box in a 12-pixel row is capped to the row, and its outline is on the last row"
         );
-        assert_eq!(pixels.pixel_at(0, 12), Some(Rgb565::BLACK), "and nothing is below it");
+        assert_eq!(
+            pixels.pixel_at(0, 12),
+            Some(Rgb565::BLACK),
+            "and nothing is below it"
+        );
     }
 
     #[test]
@@ -1863,10 +1900,20 @@ mod fork_tests {
                 .flat_map(|y| (0..80).map(move |x| (x, y)))
                 .any(|(x, y)| buffer.pixel_at(x, y) == Some(Rgb565::CSS_BLUE))
         };
-        assert!(has_blue(&off), "an off switch paints its design's track colour");
+        assert!(
+            has_blue(&off),
+            "an off switch paints its design's track colour"
+        );
         // The on colour is `style.accent`, as upstream, so the design's colour is *replaced* rather than added.
-        assert!(!has_blue(&on), "an on switch uses the style's accent, not the off colour");
-        assert_eq!(style.accent, Style::new().accent, "and the two agree on what that is");
+        assert!(
+            !has_blue(&on),
+            "an on switch uses the style's accent, not the off colour"
+        );
+        assert_eq!(
+            style.accent,
+            Style::new().accent,
+            "and the two agree on what that is"
+        );
     }
 
     #[test]
@@ -1895,11 +1942,26 @@ mod fork_tests {
                 .flat_map(|y| (0..100).map(move |x| (x, y)))
                 .any(|(x, y)| buffer.pixel_at(x, y) == Some(colour))
         };
-        assert!(has(&plain, Rgb565::CSS_CYAN), "upstream's underline is still the default");
-        assert!(has(&plain, Rgb565::CSS_GRAY), "and so are its chevron outlines");
-        assert!(has(&styled, Rgb565::CSS_ORANGE), "the design's underline is used");
-        assert!(has(&styled, Rgb565::CSS_PURPLE), "and the design's chevron colour");
-        assert!(!has(&styled, Rgb565::CSS_CYAN), "instead of the upstream one");
+        assert!(
+            has(&plain, Rgb565::CSS_CYAN),
+            "upstream's underline is still the default"
+        );
+        assert!(
+            has(&plain, Rgb565::CSS_GRAY),
+            "and so are its chevron outlines"
+        );
+        assert!(
+            has(&styled, Rgb565::CSS_ORANGE),
+            "the design's underline is used"
+        );
+        assert!(
+            has(&styled, Rgb565::CSS_PURPLE),
+            "and the design's chevron colour"
+        );
+        assert!(
+            !has(&styled, Rgb565::CSS_CYAN),
+            "instead of the upstream one"
+        );
     }
 
     #[test]
@@ -1998,7 +2060,10 @@ mod fork_tests {
                 .flat_map(|y| (0..100).map(move |x| (x, y)))
                 .any(|(x, y)| buffer.pixel_at(x, y) == Some(colour))
         };
-        assert!(drawn(Rgb565::CSS_ORANGE), "the ticks are the design's colour");
+        assert!(
+            drawn(Rgb565::CSS_ORANGE),
+            "the ticks are the design's colour"
+        );
         assert!(drawn(Rgb565::CSS_BLUE), "and the needle is too");
         assert!(!drawn(Rgb565::CSS_GRAY), "not upstream's grey ticks");
     }
@@ -2007,7 +2072,11 @@ mod fork_tests {
     fn cell_has_ink(buffer: &TestBuffer, rect: Rect) -> bool {
         (rect.y..rect.bottom())
             .flat_map(|y| (rect.x..rect.right()).map(move |x| (x, y)))
-            .any(|(x, y)| buffer.pixel_at(x, y).is_some_and(|pixel| pixel != Rgb565::BLACK))
+            .any(|(x, y)| {
+                buffer
+                    .pixel_at(x, y)
+                    .is_some_and(|pixel| pixel != Rgb565::BLACK)
+            })
     }
 
     fn cell_has_colour(buffer: &TestBuffer, rect: Rect, colour: Rgb565) -> bool {
@@ -2035,7 +2104,10 @@ mod fork_tests {
                 Style::new(),
             )
             .unwrap();
-        assert!(has_red(&outlined), "the track outlines in the colour asked for");
+        assert!(
+            has_red(&outlined),
+            "the track outlines in the colour asked for"
+        );
 
         // Neither a missing colour nor a zero width may draw an outline: `add_toggle` passes `None, 0`, so
         // its output has to stay exactly what upstream drew.
@@ -2054,17 +2126,16 @@ mod fork_tests {
         assert!(!has_red(&absent), "no colour means no outline");
 
         let mut zero = gui();
-        zero
-            .add_toggle_colored(
-                Rect::new(0, 0, 80, 20),
-                "x",
-                false,
-                Rgb565::CSS_BLUE,
-                Some(red),
-                0,
-                Style::new(),
-            )
-            .unwrap();
+        zero.add_toggle_colored(
+            Rect::new(0, 0, 80, 20),
+            "x",
+            false,
+            Rgb565::CSS_BLUE,
+            Some(red),
+            0,
+            Style::new(),
+        )
+        .unwrap();
         assert!(!has_red(&zero), "a zero width means no outline");
     }
 
@@ -2076,7 +2147,9 @@ mod fork_tests {
         let number = Rect::new(0, 46, 120, 18);
         let content = Rect::new(140, 0, 40, 30);
         let crumbs = Rect::new(140, 40, 40, 20);
-        design.add_status_bar(status, "10:42", Style::new()).unwrap();
+        design
+            .add_status_bar(status, "10:42", Style::new())
+            .unwrap();
         design
             .add_time_picker(time, 10, 30, true, false, Style::new())
             .unwrap();
@@ -2091,8 +2164,14 @@ mod fork_tests {
             .unwrap();
 
         let buffer = render(&design);
-        assert!(cell_has_ink(&buffer, status), "a status bar paints its strip");
-        assert!(cell_has_ink(&buffer, time), "a time picker paints its cells");
+        assert!(
+            cell_has_ink(&buffer, status),
+            "a status bar paints its strip"
+        );
+        assert!(
+            cell_has_ink(&buffer, time),
+            "a time picker paints its cells"
+        );
         assert!(
             cell_has_ink(&buffer, number),
             "a number picker paints its card"

@@ -830,6 +830,115 @@ export function codeBlockLabel(code: string): string {
 }
 
 /**
+ * A placeholder where code should be — the model saying "and the rest stays as it is".
+ *
+ * This is the one thing that must never reach a file. A whole-file answer that leaves the existing code out as
+ * `// ...` is not a file, and writing it deletes everything the answer did not bother to reproduce. That is
+ * what happened to a real `main.rs` on 2026-10-12: the answer carried `// ... initialization code ...`, and the
+ * guard that decides whether an answer *is* a file saw `use` lines beside `fn main` and said yes.
+ *
+ * Only comments and bare lines are matched. Three dots are legal Rust — `0..100`, `..Default::default()`, `..`
+ * in a struct update — so a pattern that matched a dot anywhere would refuse half the language.
+ */
+export function elisionMarker(code: string): string | undefined {
+    const text = String(code ?? '');
+    const patterns: RegExp[] = [
+        // A comment that is nothing but an ellipsis, with or without brackets.
+        /^\s*\/\/\s*(\[\.\.\.\]|\.\.\.|…)\s*$/m,
+        // An ellipsis *anywhere* in a comment. This is the shape a model reaches for when it does not want to
+        // reproduce something — `// ... initialization code ...` — and prose is the only place three dots are
+        // not legal Rust, so the trade is worth it: a false positive costs a re-ask, a miss costs a file.
+        /\/\/[^\n]*(\.\.\.|…)/,
+        // A comment that says, in words, that something was left out.
+        /\/\/[^\n]*(\brest of (the )?(code|file|function|method)\b|\bexisting code\b|\bunchanged\b|\bsame as (before|above)\b|\bremainder of\b|\byour code here\b)/i,
+        // A bare line of three dots, which is what an elided block becomes when the fence is stripped.
+        /^\s*\.\.\.\s*$/m,
+        /\/\*[^*]*(\.\.\.|…|\brest of\b|\bunchanged\b|\bexisting code\b)/,
+        // A body that panics is a body that was not written.
+        /\btodo!\(\s*\)/,
+        /\bunimplemented!\(\s*\)/,
+    ];
+    for (const pattern of patterns) {
+        const found = pattern.exec(text);
+        if (found) return (found[0] ?? '...').trim().replace(/\s+/g, ' ').slice(0, 48);
+    }
+    return undefined;
+}
+
+/**
+ * The names of the top-level items a block of Rust declares: `fn flash_led`, `struct Config`, `impl Display`.
+ *
+ * Used to *prove* a whole-file answer rather than to guess at one. A replacement that does not contain every
+ * item the file already had is not a replacement; it is a rewrite that lost things.
+ */
+export function itemNames(text: string): string[] {
+    const names: string[] = [];
+    const pattern =
+        /^[ \t]*(?:pub(?:\s*\([^)]*\))?\s+)?(?:async\s+|unsafe\s+|extern\s+"[^"]*"\s+)?\b(fn|struct|enum|trait|impl|mod|union|type|const|static)\s+([A-Za-z_]\w*)/gm;
+    for (const match of String(text ?? '').matchAll(pattern)) {
+        const name = match[2];
+        if (name !== undefined && !names.includes(name)) names.push(name);
+    }
+    return names;
+}
+
+/** True when `code` still carries every item `original` had. An empty original cannot lose anything. */
+export function keepsEveryItem(original: string, code: string): boolean {
+    const before = itemNames(original);
+    if (before.length === 0) return true;
+    const after = new Set(itemNames(code));
+    return before.every((name) => after.has(name));
+}
+
+/**
+ * Why an answer must not be applied as it stands, or `undefined` when it is safe.
+ *
+ * Two failures, both of them a file on disk losing code that nobody asked to lose:
+ *  - the answer leaves code out behind a placeholder, so applying it deletes what the placeholder stands for;
+ *  - the answer claims to be the file but has dropped items the file already had.
+ *
+ * Returned as a sentence rather than a boolean because every caller shows it to the developer, and the fix is
+ * always the same advice: ask for the change, not for a rewritten file.
+ */
+export function chatCodeProblem(original: string, code: string): string | undefined {
+    const marker = elisionMarker(code);
+    if (marker !== undefined) {
+        return (
+            `The answer leaves code out (${marker}), so it is not the whole file it looks like — applying it ` +
+            'would delete whatever that stands for. Ask again for the change only, or put the ✎ AI block inside ' +
+            'the function you want changed.'
+        );
+    }
+    if (!looksLikeWholeFile(code) || keepsEveryItem(original, code)) return undefined;
+    const after = new Set(itemNames(code));
+    const lost = itemNames(original).filter((name) => !after.has(name));
+    return (
+        `The answer looks like a whole file but is missing ${lost.length} of this file's own ` +
+        `item(s): ${lost.slice(0, 5).join(', ')}${lost.length > 5 ? ', …' : ''}. Applying it would delete them. ` +
+        'Ask for the change to one function instead.'
+    );
+}
+
+/**
+ * What a proposal does to a file, counted in lines.
+ *
+ * Line sets rather than a real diff: the question a review has to answer is "is this a change or a
+ * replacement?", and for that a count of what goes and what arrives is enough. `lossy` is the warning line —
+ * a proposal that removes far more than it adds is a rewrite, and a rewrite is what nobody asked for.
+ */
+export function changeSummary(before: string, after: string): { added: number; removed: number; lossy: boolean } {
+    const lines = (text: string) =>
+        new Set(String(text ?? '').split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== ''));
+    const old = lines(before);
+    const fresh = lines(after);
+    let removed = 0;
+    for (const line of old) if (!fresh.has(line)) removed += 1;
+    let added = 0;
+    for (const line of fresh) if (!old.has(line)) added += 1;
+    return { added, removed, lossy: removed > 20 && removed > added };
+}
+
+/**
  * The file's text after `code` has been put into it.
  *
  * An **item** (the common case: the answer returns one function) goes where it belongs — replacing the
@@ -838,7 +947,14 @@ export function codeBlockLabel(code: string): string {
  * mood.
  */
 export function insertChatCode(text: string, code: string): string {
-    if (looksLikeWholeFile(code)) return code;
+    // Nothing is placed from an answer that left code out. Twice over, because the two placements destroy
+    // different things: as a whole file it deletes every other item, and as an item it replaces the very
+    // function the placeholder was vague about — the file survives, and the function's body does not. The
+    // caller refuses first and explains (`chatCodeProblem`); this is the last line of defence.
+    if (elisionMarker(code) !== undefined) return text;
+    // Whole file only when it is *proven* to be one: it carries no placeholder, and it has not dropped an item
+    // the file already had. Otherwise it is treated as items, which cannot lose the rest of the file.
+    if (looksLikeWholeFile(code) && keepsEveryItem(text, code)) return code;
     const parsed = parseNewItemAnswer(code, '');
     const item = unwrapItem(parsed.item).item;
     const named = /(?:^|\n)\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:unsafe\s+)?fn\s+([A-Za-z_]\w*)/.exec(item);

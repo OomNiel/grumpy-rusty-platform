@@ -186,6 +186,18 @@ export function emitUiRs(document: DesignerDocument, touch = true): string {
         }),
     );
     const armText = arms.length === 0 ? '                // No widget in this design raises an event yet.' : arms.join('\n');
+    // The `widgets` field is the app's handle to its own widgets, and a design that raises no event has
+    // nothing in this file reading it — so the compiler calls it dead and a generated project builds with a
+    // warning it did not ask for. Allowed only when there are no arms, so a design that does raise events
+    // still hears about the handle if it really is unused (found by building a real project whose design had
+    // no events at all, 2026-10-12).
+    const widgetsField =
+        arms.length > 0
+            ? '    pub widgets: '
+            : '    // Nothing in this file reads it, because the design below raises no event — and the app\'s own\n' +
+            '    // code may still drive the widgets by the names the design gave them.\n' +
+            '    #[allow(dead_code)]\n' +
+            '    pub widgets: ';
 
     return `// Grumpy's Rusty Platform -- the design's Rust side.
 //
@@ -224,7 +236,7 @@ ${touch ? '' : `///
 `}pub struct Designer {
     gui: GuiContext<'static, NODES, EVENTS, DIRTY>,
     /// The widget ids, named the way the design names them.
-    pub widgets: ${PINNED_SCREEN_ID}Widgets,
+${widgetsField}${PINNED_SCREEN_ID}Widgets,
     down: bool,
     painted: bool,
 }
@@ -383,6 +395,50 @@ pub fn ${name}(${parameters}) {
 }
 
 /**
+ * The one line a stub body holds, which is what makes a block the designer's to remove.
+ *
+ * Written as a test rather than an equality on the whole block because the block also carries the doc comment
+ * and, on a board with no touch controller, an `#[allow(dead_code)]`.
+ */
+function isUntouchedStub(body: string, name: string): boolean {
+    const lines = body
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line !== '');
+    return lines.length === 1 && lines[0] === `log::info!("design: ${name} fired");`;
+}
+
+/**
+ * Removes the stub of every handler the design no longer needs -- a widget that was deleted, an event that was
+ * unticked.
+ *
+ * Only what the designer itself wrote is removed: a block whose body is still exactly the `log::info!` line
+ * above. A handler that has been filled in, renamed, or moved into a module is the user's code, and deleting a
+ * widget must not delete someone's work -- so those stay, and the compiler says what to do about them.
+ */
+export function pruneHandlerStubs(existing: string, document: DesignerDocument): string {
+    const wanted = new Set(requiredHandlers(document));
+    // One block per handler: an optional `#[allow(dead_code)]`, the doc comment, the signature, and a body with
+    // no braces of its own. A function whose body does have braces is one the user wrote, and it is returned
+    // untouched -- the match stops early, which is why the body is non-greedy rather than counted.
+    const block = /(?:#\[allow\(dead_code\)\]\n)?(?:\/\/\/[^\n]*\n)*pub fn (\w+)\s*\([^)]*\)\s*\{\n([\s\S]*?)\n\}\n?/g;
+    return existing.replace(block, (matched, name: string, body: string) =>
+        wanted.has(name) || !isUntouchedStub(body, name) ? matched : '',
+    );
+}
+
+/**
+ * The code-behind for a design: the stubs it needs, minus the ones it no longer does.
+ *
+ * One call so a caller cannot add without pruning -- which is what left a deleted widget's handler behind for
+ * ever, and what made "the designer appends a stub for an event that has none" true of this module and false
+ * of the extension, since nothing called it between the wizard and the next save.
+ */
+export function syncHandlerStubs(existing: string, document: DesignerDocument, touch = true): string {
+    return pruneHandlerStubs(appendHandlerStubs(existing, document, touch), document);
+}
+
+/**
  * Every widget the design places must be one the generated code can name.
  *
  * The spacer is the exception, and it raises no events, so nothing is dispatched to it. This exists because
@@ -394,7 +450,7 @@ export function missingFromGeneratedCode(document: DesignerDocument): string[] {
     if (document.screenId !== PINNED_SCREEN_ID) {
         problems.push(
             `the screen id must stay "${PINNED_SCREEN_ID}" in a generated project: src/ui.rs names the ` +
-                `generated types after it`,
+            `generated types after it`,
         );
     }
     for (const widget of document.widgets) {

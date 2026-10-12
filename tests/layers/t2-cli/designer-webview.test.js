@@ -104,7 +104,7 @@ test('the designer panel boots, builds itself from the catalogue, and posts its 
     const titleWidget = document.widgets.find((widget) => widget.id === 'title');
     all()
         .find((element) => element.tagName === 'CANVAS')
-        .emit('pointerdown', { clientX: titleWidget.x + 2, clientY: titleWidget.y + 2, pointerId: 1 });
+        .emit('pointerdown', { clientX: titleWidget.x + 2, clientY: titleWidget.y + 2, pointerId: 1, button: 0 });
     const fontSelect = all().find(
         (element) =>
             element.tagName === 'SELECT' &&
@@ -181,7 +181,7 @@ test('the designer panel boots, builds itself from the catalogue, and posts its 
     const button = document.widgets.find((widget) => widget.id === 'go');
     const centreX = button.x + Math.floor(button.width / 2);
     const centreY = button.y + Math.floor(button.height / 2);
-    canvasElement.emit('pointerdown', { clientX: centreX, clientY: centreY, pointerId: 1 });
+    canvasElement.emit('pointerdown', { clientX: centreX, clientY: centreY, pointerId: 1, button: 0 });
     ok(
         all().some((element) => element.value === 'go'),
         'the property panel shows the pressed widget',
@@ -288,7 +288,7 @@ test('the designer panel boots, builds itself from the catalogue, and posts its 
 
     // And editing a property -- the point of the panel on the right -- posts the new value. Adding a widget
     // selected it, so the button has to be selected again first, which is also what a user would do.
-    canvasElement.emit('pointerdown', { clientX: moved.x + 5, clientY: moved.y + 5, pointerId: 1 });
+    canvasElement.emit('pointerdown', { clientX: moved.x + 5, clientY: moved.y + 5, pointerId: 1, button: 0 });
     const textField = all().find((element) => element.value === 'Press me');
     ok(textField !== undefined, 'the button text is in a field');
     messages.length = 0;
@@ -311,7 +311,7 @@ test('the designer panel boots, builds itself from the catalogue, and posts its 
         .emit('contextmenu', {
             clientX: menuButton.x + 5,
             clientY: menuButton.y + 5,
-            preventDefault() {},
+            preventDefault() { },
         });
     const menu = all().find((element) => element.classList.contains('context-menu'));
     ok(menu !== undefined, 'a right-click opens a menu');
@@ -345,7 +345,7 @@ test('the designer panel boots, builds itself from the catalogue, and posts its 
     const label = afterMenuDelete.document.widgets.find((widget) => widget.tag === 'label');
     all()
         .find((element) => element.tagName === 'CANVAS')
-        .emit('contextmenu', { clientX: label.x + 3, clientY: label.y + 3, preventDefault() {} });
+        .emit('contextmenu', { clientX: label.x + 3, clientY: label.y + 3, preventDefault() { } });
     const secondMenu = all().find((element) => element.classList.contains('context-menu'));
     ok(secondMenu !== undefined, 'the menu opens again');
     secondMenu.children.find((item) => item.textContent === 'Duplicate').emit('click');
@@ -394,7 +394,7 @@ test('a circle tool renders as an arc and edits through its own fields', () => {
 
     // Pressing the circle selects it and rebuilds the property panel around the circle's own fields: centre and
     // radius geometry, then the four appearance properties -- and not the rectangle's X/Y/Width/Height.
-    canvasElement.emit('pointerdown', { clientX: 132, clientY: 132, pointerId: 1 });
+    canvasElement.emit('pointerdown', { clientX: 132, clientY: 132, pointerId: 1, button: 0 });
     const labels = all()
         .filter((element) => element.classList.contains('field-label'))
         .map((element) => String(element.textContent));
@@ -456,7 +456,7 @@ test('rectangle, line and triangle paint their own primitive and edit through th
             .filter((element) => element.classList.contains('field-label'))
             .map((element) => String(element.textContent));
     const select = (x, y, label) => {
-        canvasElement.emit('pointerdown', { clientX: x, clientY: y, pointerId: 1 });
+        canvasElement.emit('pointerdown', { clientX: x, clientY: y, pointerId: 1, button: 0 });
         const seen = labels();
         ok(seen.includes(label), `the panel offers ${label} for the selected shape`);
         for (const name of ['Centre X', 'Centre Y', 'Radius']) {
@@ -527,7 +527,7 @@ test('a triangle paints its own points, and a point can be dragged wherever the 
     ok(called('lineTo').includes('147,147'), 'and the third the bottom right');
 
     // Selecting it shows the six offsets as one group of fields, beside the ordinary geometry and colours.
-    canvasElement.emit('pointerdown', { clientX: 120, clientY: 120, pointerId: 1 });
+    canvasElement.emit('pointerdown', { clientX: 120, clientY: 120, pointerId: 1, button: 0 });
     canvasElement.emit('pointerup', { clientX: 120, clientY: 120, pointerId: 1 });
     const labels = all()
         .filter((element) => element.classList.contains('field-label'))
@@ -549,7 +549,7 @@ test('a triangle paints its own points, and a point can be dragged wherever the 
     // right, outside the box it started in. The box has to follow, or a point could never reach the glass's
     // edges.
     messages.length = 0;
-    canvasElement.emit('pointerdown', { clientX: 147, clientY: 100, pointerId: 2 });
+    canvasElement.emit('pointerdown', { clientX: 147, clientY: 100, pointerId: 2, button: 0 });
     canvasElement.emit('pointermove', { clientX: 180, clientY: 60, pointerId: 2 });
     canvasElement.emit('pointerup', { clientX: 180, clientY: 60, pointerId: 2 });
     const changed = messages.filter((message) => message.type === 'changed');
@@ -569,6 +569,63 @@ test('a triangle paints its own points, and a point can be dragged wherever the 
         y: moved.y + Math.floor((moved.props.p2y * moved.height) / 1000),
     };
     equal(`${second.x},${second.y}`, '100,147', 'the second point is still on the pixel it was on');
+});
+
+// A middle-click on a widget asks for the code behind it: the handler for the widget's first event, which lives
+// in the project's own `src/ui_handlers.rs`. Only the extension can open a file, so the panel's whole part is
+// the message -- which is what is asserted here (2026-10-12).
+test('a middle-click asks for the widget\'s handler, and only when it has one', () => {
+    const { root, messages, window } = dom.install();
+    // The bundle is cached by Node and binds its listeners to the window it first sees, so clear it.
+    delete require.cache[require.resolve(BUNDLE)];
+    require(BUNDLE);
+
+    const document = starterDocument({
+        boardId: 'sunton-3248s035r',
+        panelWidth: 320,
+        panelHeight: 480,
+        rotation: 3,
+    });
+    window.emit('message', {
+        data: {
+            type: 'init',
+            document,
+            canvas: { width: 480, height: 320 },
+            paths: { document: 'designer/panel.ui.json', kdl: 'src/ui.kdl' },
+            touchBoard: true,
+            touchEnabled: true,
+        },
+    });
+
+    const all = () => root.descendants();
+    const canvasElement = all().find((element) => element.tagName === 'CANVAS');
+    const button = document.widgets.find((widget) => widget.id === 'go');
+    // The starter's label raises nothing, so it is the case with no code behind it.
+    const label = document.widgets.find((widget) => widget.id === 'title');
+
+    messages.length = 0;
+    canvasElement.emit('pointerdown', { clientX: button.x + 5, clientY: button.y + 5, pointerId: 1, button: 1 });
+    canvasElement.emit('pointermove', { clientX: button.x + 40, clientY: button.y + 5, pointerId: 1 });
+    ok(!messages.some((message) => message.type === 'changed'), 'the middle button does not drag the widget');
+
+    canvasElement.emit('auxclick', {
+        clientX: button.x + 5,
+        clientY: button.y + 5,
+        button: 1,
+        preventDefault() { },
+    });
+    const asked = messages.filter((message) => message.type === 'action' && message.action === 'revealHandler');
+    equal(asked.length, 1, 'the middle-click asks for the handler');
+    equal(asked[0].widgetId, 'go', 'naming the widget under the pointer');
+
+    messages.length = 0;
+    canvasElement.emit('auxclick', {
+        clientX: label.x + 2,
+        clientY: label.y + 2,
+        button: 1,
+        preventDefault() { },
+    });
+    equal(messages.length, 0, 'a widget that raises no event has no handler to ask for');
 });
 
 // ---------------------------------------------------------------------------

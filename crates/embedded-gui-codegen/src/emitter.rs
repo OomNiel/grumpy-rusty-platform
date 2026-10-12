@@ -293,7 +293,9 @@ pub fn generate_rust_code(screen: &ScreenDef) -> String {
             WidgetDef::Checkbox {
                 label,
                 checked,
-                box_size,
+                box_width,
+                box_height,
+                label_position,
                 box_color,
                 style,
                 ..
@@ -301,12 +303,14 @@ pub fn generate_rust_code(screen: &ScreenDef) -> String {
                 let st = style_expr(style.as_deref(), "Style::default()");
                 let _ = writeln!(
                     &mut out,
-                    "        let {} = gui.add_checkbox_sized(cells[{}], \"{}\", {}, {}, {}, {})?;",
+                    "        let {} = gui.add_checkbox_sized(cells[{}], \"{}\", {}, {}, {}, CheckboxLabelPosition::{}, {}, {})?;",
                     var_name,
                     idx,
                     label,
                     checked,
-                    box_size,
+                    box_width,
+                    box_height,
+                    label_position_variant(label_position),
                     opt_rgb565(box_color),
                     st
                 );
@@ -328,17 +332,21 @@ pub fn generate_rust_code(screen: &ScreenDef) -> String {
                 );
             }
             WidgetDef::Dropdown {
-                options, selected, ..
+                options,
+                selected,
+                style,
+                ..
             } => {
                 let opts_joined = options
                     .iter()
                     .map(|s| format!("\"{}\"", s))
                     .collect::<Vec<_>>()
                     .join(", ");
+                let st = style_expr(style.as_deref(), "Style::panel()");
                 let _ = writeln!(
                     &mut out,
-                    "        let {} = gui.add_dropdown(cells[{}], &[{}], {}, Style::panel())?;",
-                    var_name, idx, opts_joined, selected
+                    "        let {} = gui.add_dropdown(cells[{}], &[{}], {}, {})?;",
+                    var_name, idx, opts_joined, selected, st
                 );
             }
             WidgetDef::Roller {
@@ -561,11 +569,17 @@ pub fn generate_rust_code(screen: &ScreenDef) -> String {
                     var_name, idx, min, max, value, unit, st
                 );
             }
-            WidgetDef::Dialog { title, message, .. } => {
+            WidgetDef::Dialog {
+                title,
+                message,
+                style,
+                ..
+            } => {
+                let st = style_expr(style.as_deref(), "Style::panel()");
                 let _ = writeln!(
                     &mut out,
-                    "        let {} = gui.add_dialog(cells[{}], \"{}\", \"{}\", Style::panel())?;",
-                    var_name, idx, title, message
+                    "        let {} = gui.add_dialog(cells[{}], \"{}\", \"{}\", {})?;",
+                    var_name, idx, title, message, st
                 );
             }
             WidgetDef::ContentIndicator {
@@ -684,10 +698,18 @@ pub fn generate_rust_code(screen: &ScreenDef) -> String {
                 );
                 emit_custom_widget(&mut out, &var_name, idx, "Rectangle", &fields);
             }
-            WidgetDef::LineShape { stroke_width, color, .. } => {
+            WidgetDef::LineShape {
+                stroke_width,
+                color,
+                ..
+            } => {
                 // The `line` tag carries a colour and a thickness; the board derives the line's direction
                 // from the cell rect. Forked from `add_spacer` to `add_custom_widget(rusty_gui_widgets::Line)`.
-                let fields = format!("stroke_width: {}, color: {}", stroke_width, opt_rgb565(&color));
+                let fields = format!(
+                    "stroke_width: {}, color: {}",
+                    stroke_width,
+                    opt_rgb565(&color)
+                );
                 emit_custom_widget(&mut out, &var_name, idx, "Line", &fields);
             }
             WidgetDef::CircleShape {
@@ -731,7 +753,12 @@ pub fn generate_rust_code(screen: &ScreenDef) -> String {
                 );
                 emit_custom_widget(&mut out, &var_name, idx, "Triangle", &fields);
             }
-            WidgetDef::Table { headers, rows, .. } => {
+            WidgetDef::Table {
+                headers,
+                rows,
+                style,
+                ..
+            } => {
                 // The parser collects the design's header row and body rows; this arm used to pass `&[]` and
                 // drop both, so a table painted its panel and nothing else however carefully it was written.
                 // `add_table` takes `&[&[&str]]` and the renderer has no separate header concept -- a header is
@@ -744,15 +771,20 @@ pub fn generate_rust_code(screen: &ScreenDef) -> String {
                 let joined = all
                     .iter()
                     .map(|cols| {
-                        let cells = cols.iter().map(|cell| format!("{cell:?}")).collect::<Vec<_>>().join(", ");
+                        let cells = cols
+                            .iter()
+                            .map(|cell| format!("{cell:?}"))
+                            .collect::<Vec<_>>()
+                            .join(", ");
                         format!("&[{cells}]")
                     })
                     .collect::<Vec<_>>()
                     .join(", ");
+                let st = style_expr(style.as_deref(), "Style::panel()");
                 let _ = writeln!(
                     &mut out,
-                    "        let {} = gui.add_table(cells[{}], &[{}], Style::panel())?;",
-                    var_name, idx, joined
+                    "        let {} = gui.add_table(cells[{}], &[{}], {})?;",
+                    var_name, idx, joined, st
                 );
             }
             WidgetDef::Carousel {
@@ -1624,6 +1656,19 @@ fn opt_rgb565(token: &Option<String>) -> String {
     }
 }
 
+/// The crate's variant name for the markup's `label_position`.
+///
+/// The parser normalises the value, so the fallback is only for a `String` that did not come from it; it is
+/// the crate's own arrangement, which is what a design written before the field existed expects.
+fn label_position_variant(name: &str) -> &'static str {
+    match name {
+        "left" => "Left",
+        "top" => "Top",
+        "bottom" => "Bottom",
+        _ => "Right",
+    }
+}
+
 /// The colour a design named, or the numeric literal the runtime used to hard-code for this field.
 fn rgb565_or(token: &Option<String>, default: &str) -> String {
     match token {
@@ -1636,13 +1681,7 @@ fn rgb565_or(token: &Option<String>, default: &str) -> String {
 /// call. The `static` (rather than an inline temporary) is what lets the borrowed
 /// `&dyn CustomWidget` outlive the gui: the cell rect is what gives the shape its
 /// geometry, so the widget carries only style.
-fn emit_custom_widget(
-    out: &mut String,
-    var_name: &str,
-    idx: usize,
-    type_name: &str,
-    fields: &str,
-) {
+fn emit_custom_widget(out: &mut String, var_name: &str, idx: usize, type_name: &str, fields: &str) {
     let _ = writeln!(
         out,
         "        static __shape_{var}: rusty_gui_widgets::{type_name} = rusty_gui_widgets::{type_name} {{ {fields} }};\n        let {var} = gui.add_custom_widget(cells[{i}], &__shape_{var}, Style::default())?;",

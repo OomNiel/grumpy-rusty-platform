@@ -75,10 +75,9 @@ pub use visual_widgets::{SpectrumAnalyzerWidget, TouchInputFilter};
 
 pub use adapter::{ColorConvertedDrawTarget, DrawTargetColorExt};
 pub use animation::{
-    Animation, AnimationError, AnimationHandlers, AnimationId, AnimationManager,
+    apply_easing, Animation, AnimationError, AnimationHandlers, AnimationId, AnimationManager,
     AnimationManagerCallbacks, AnimationState, Easing, InertiaAnimator, PathAnimator, PathPoint,
-    RepeatMode, SPRING_TOLERANCE_DISTANCE, SPRING_TOLERANCE_VELOCITY, SpringAnimator, Timer, Tween,
-    apply_easing,
+    RepeatMode, SpringAnimator, Timer, Tween, SPRING_TOLERANCE_DISTANCE, SPRING_TOLERANCE_VELOCITY,
 };
 pub use animation_timeline::{
     AnimationGroup, AnimationSequence, ComposedAnimation, ComposedAnimationCallbacks,
@@ -87,9 +86,9 @@ pub use animation_timeline::{
     SequenceRepeatMode, TimelineError, TimelineStep,
 };
 pub use animation_timing::{
-    DEFAULT_DURATION_MS, FRAME_INTERVAL_MS, MOOOK_DURATION_MS, NORMALIZED_MAX,
-    PORT_HOLE_DURATION_MS, SHUTTER_DURATION_MS, interpolate_moook, moook_curve, moook_duration_ms,
-    timing_half_phase, timing_scaled, timing_shutter_phase,
+    interpolate_moook, moook_curve, moook_duration_ms, timing_half_phase, timing_scaled,
+    timing_shutter_phase, DEFAULT_DURATION_MS, FRAME_INTERVAL_MS, MOOOK_DURATION_MS,
+    NORMALIZED_MAX, PORT_HOLE_DURATION_MS, SHUTTER_DURATION_MS,
 };
 pub use colors::ColorOps;
 pub use gradient::{ColorStop, MultiStopGradient};
@@ -98,11 +97,11 @@ pub use nine_slice::{BorderRect, NineSlice, NineSliceLayout, SlicePair, SliceSca
 pub use power::{PowerConfig, PowerEvent, PowerManager, PowerState};
 pub use profiler::{DirtyRectVisualizer, FrameBudgetTracker};
 pub use quantize::{
-    BAYER_2X2, BAYER_4X4, DirtyBandAccumulator, bayer_1bit, bayer_2bit, bayer_4bit,
-    bayer_dither_rgb565,
+    bayer_1bit, bayer_2bit, bayer_4bit, bayer_dither_rgb565, DirtyBandAccumulator, BAYER_2X2,
+    BAYER_4X4,
 };
 pub use spline::CatmullRomSpline;
-pub use widgets::segmented::{SegmentStyle, SevenSegmentDisplay, encode_7seg, encode_14seg};
+pub use widgets::segmented::{encode_14seg, encode_7seg, SegmentStyle, SevenSegmentDisplay};
 
 /// Canonical pixel color type for the active target configuration.
 ///
@@ -126,10 +125,11 @@ pub type Pixel = ActiveColor;
 
 pub use block::Block;
 pub use cinematic::{
-    CardDeckDirection, CardDeckState, CardStory, CardStoryTransition, CinematicPreset,
-    GlanceTileSpec, MotionTokens, PeekRevealSpec, TimelineMotionPreset, animate_glance_focus,
-    animate_peek_reveal, apply_carddeck_visibility, setup_card_story, setup_launcher_glance,
-    setup_launcher_glance_with_tokens, setup_peek_timeline, setup_peek_timeline_with_tokens,
+    animate_glance_focus, animate_peek_reveal, apply_carddeck_visibility, setup_card_story,
+    setup_launcher_glance, setup_launcher_glance_with_tokens, setup_peek_timeline,
+    setup_peek_timeline_with_tokens, CardDeckDirection, CardDeckState, CardStory,
+    CardStoryTransition, CinematicPreset, GlanceTileSpec, MotionTokens, PeekRevealSpec,
+    TimelineMotionPreset,
 };
 pub use completion::{CompletionSlot, WaitTransfer, WaitTransferFuture};
 pub use context::{
@@ -143,8 +143,8 @@ pub use display_backend::{
 #[cfg(feature = "embassy")]
 pub use embassy::{EmbassyWaitTransfer, EmbassyWaitTransferFuture, FrameClock};
 pub use embedded_graphics_framebuf::{
-    FrameBuf,
     backends::{DMACapableFrameBufferBackend, EndianCorrectedBuffer, EndianCorrection},
+    FrameBuf,
 };
 pub use font::{BitmapFont, Font, FontId, PackedFont};
 pub use framebuffer::{
@@ -153,8 +153,8 @@ pub use framebuffer::{
 pub use geometry::{Anchor, DirtyTracker, EdgeInsets, HorizontalAlign, Rect};
 #[cfg(all(feature = "std", feature = "image-decode"))]
 pub use image::{
-    BasicImageDecoder, EncodedImageFormat, ImageDecodeError, ImageDecoder, decode_image_auto,
-    decode_image_with, decode_ppm_ascii,
+    decode_image_auto, decode_image_with, decode_ppm_ascii, BasicImageDecoder, EncodedImageFormat,
+    ImageDecodeError, ImageDecoder,
 };
 pub use image::{
     ImageAtlas, ImageAtlasEntry, ImageFit, ImageRef, ReelFrame, ReelPlayer, SpriteSheet, TileMode,
@@ -173,32 +173,32 @@ pub use palette::{DisplayMode, DisplayPalette, InkRole, RoleColors};
 pub use pdc::{PdcCommand, PdcCommandType, PdcImage, PdcPrecisePoint};
 pub use present::PresentRegion;
 pub use render::{
-    AntiAliasMode, Blend, BlendMode, CHAR_HEIGHT, CHAR_WIDTH, ColorFormat, Compositor, Dither,
+    dispatch_draw_tasks, AntiAliasMode, Blend, BlendMode, ColorFormat, Compositor, Dither,
     DrawTask, DrawTaskQueue, DrawUnit, EllipsisMode, Hardware2DAccelerator, LayerState,
     PartialBandBuffer, PathVerb, PixelRead, RenderBackendCaps, RenderCtx, RenderQuality,
     Software2DAccelerator, SoftwareDrawUnit, StrokeCap, StrokeDash, StrokeJoin, StrokeStyle,
     TextAlign, TextMetrics, TextOverflow, TextOverflowPolicy, TextStyle, TextWrap, Transform2D,
-    VectorPath, VerticalAlign, dispatch_draw_tasks,
+    VectorPath, VerticalAlign, CHAR_HEIGHT, CHAR_WIDTH,
 };
 pub use render::{LineBufferRenderer, ScanlineTarget};
-pub use round::{UnobstructedArea, circle_chord_width, round_screen_line_bounds};
+pub use round::{circle_chord_width, round_screen_line_bounds, UnobstructedArea};
 pub use screen::{
     Screen, ScreenCommand, ScreenId, ScreenLifecycleEvent, ScreenStack, ScreenStackError,
     ScreenTransition,
 };
 pub use screen_transition::{
-    ActiveScreenTransition, ScreenTransitionEffect, ScreenTransitionOrigin, ScreenTransitionRunner,
-    ScreenTransitionSample, ScreenTransitionSpec, composite_framebuffer_fade,
-    composite_framebuffer_scaled_y, fade_outgoing_opacity, render_transition_pair,
+    composite_framebuffer_fade, composite_framebuffer_scaled_y, fade_outgoing_opacity,
+    render_transition_pair, ActiveScreenTransition, ScreenTransitionEffect, ScreenTransitionOrigin,
+    ScreenTransitionRunner, ScreenTransitionSample, ScreenTransitionSpec,
 };
 pub use state::{
     CallbackSlot, FeedTimelineState, GuiModel, ListState, ModelChange, PropertySignal, ScrollState,
     Signal, SliceModel, SliderState, StateTransition, TabsState, WidgetStateMachine,
 };
 pub use style::{
-    AlphaLinearGradient, AlphaRadialGradient, Border, GradientDirection, LinearGradient,
-    MultiPartStyle, PartStyleRule, Shadow, StateStyle, Style, StyleTransition, Theme, VisualState,
-    VisualStateMask, WidgetPart, WidgetStyle, lerp_style,
+    lerp_style, AlphaLinearGradient, AlphaRadialGradient, Border, GradientDirection,
+    LinearGradient, MultiPartStyle, PartStyleRule, Shadow, StateStyle, Style, StyleTransition,
+    Theme, VisualState, VisualStateMask, WidgetPart, WidgetStyle,
 };
 pub use swapchain::{StandardSwapChain, SwapChain};
 #[cfg(feature = "triple-buffering")]
@@ -220,14 +220,15 @@ pub use widget_animation::{
 };
 pub use widgets::{
     ActionBarSlot, ActionBarWidget, ActionMenuError, ActionMenuItem, ActionMenuWidget,
-    ActionableDialogWidget, ArcGaugeWidget, BandMeterWidget, BatteryState, CompassMode,
-    CompassWidget, ConfirmationDialogWidget, ContentIndicatorDirection, ContentIndicatorWidget,
-    CrumbsIndicatorWidget, DialogAction, DialogError, DialogType, GaugeThreshold, InverterWidget,
-    MatrixWidget, MeterOrientation, NotificationAction, NotificationError, NotificationPriority,
-    NotificationSheetWidget, NumberPickerWidget, PeekBannerWidget, PickerError, ProgressBarWidget,
-    RepeaterWidget, RichTextError, RichTextNodeWidget, ScaleMode, ScaleWidget, SelectionWidget,
-    SparklineWidget, SpinboxWidget, StatusBarError, StatusBarMode, StatusBarWidget, TableWidget,
-    TextSpan, TimeFormat, TimePickerField, TimePickerWidget, TimelineNodeState, TimelineNodeWidget,
+    ActionableDialogWidget, ArcGaugeWidget, BandMeterWidget, BatteryState, CheckboxLabelPosition,
+    CompassMode, CompassWidget, ConfirmationDialogWidget, ContentIndicatorDirection,
+    ContentIndicatorWidget, CrumbsIndicatorWidget, DialogAction, DialogError, DialogType,
+    GaugeThreshold, InverterWidget, MatrixWidget, MeterOrientation, NotificationAction,
+    NotificationError, NotificationPriority, NotificationSheetWidget, NumberPickerWidget,
+    PeekBannerWidget, PickerError, ProgressBarWidget, RepeaterWidget, RichTextError,
+    RichTextNodeWidget, ScaleMode, ScaleWidget, SelectionWidget, SparklineWidget, SpinboxWidget,
+    StatusBarError, StatusBarMode, StatusBarWidget, TableWidget, TextSpan, TimeFormat,
+    TimePickerField, TimePickerWidget, TimelineNodeState, TimelineNodeWidget,
 };
 pub use widgets::{
     CarouselSpec, ChartMode, CompositeIconSpec, KeyboardLayout, MenuCell, NotificationLevel,
@@ -240,6 +241,10 @@ pub mod prelude {
     pub use embedded_graphics_core::pixelcolor::Rgb565;
 
     pub use crate::{
+        animate_glance_focus, animate_peek_reveal, apply_carddeck_visibility, apply_easing,
+        bayer_1bit, bayer_2bit, bayer_4bit, bayer_dither_rgb565, colors, encode_14seg, encode_7seg,
+        lerp_style, presets, render_transition_pair, setup_card_story, setup_launcher_glance,
+        setup_launcher_glance_with_tokens, setup_peek_timeline, setup_peek_timeline_with_tokens,
         ActionBarSlot, ActionBarWidget, ActiveColor, ActiveScreenTransition, Align,
         AlphaLinearGradient, AlphaRadialGradient, AnimatedProperty, Animation,
         AnimationConflictPolicy, AnimationError, AnimationGroup, AnimationHandlers, AnimationId,
@@ -247,27 +252,27 @@ pub mod prelude {
         AntiAliasMode, ArcGaugeWidget, Axis, BandMeterWidget, BasicTextShaper, BindingSnapshot,
         BitmapFont, Blend, BlendMode, Block, Border, BorderRect, CallbackSlot, CanvasColor,
         CardDeckDirection, CardDeckState, CardStory, CardStoryTransition, CarouselSpec,
-        CatmullRomSpline, ChartMode, CinematicPreset, ColorConvertedDrawTarget, ColorFormat,
-        ColorOps, ColorStop, CompassMode, CompassWidget, ComposedAnimation,
-        ComposedAnimationCallbacks, ComposedAnimationPlayer, ComposedAnimationStatus,
-        CompositeIconSpec, CompositionControls, CompositionMode, Compositor, Constraint,
-        CustomCanvas, CustomWidget, CustomWidgetRef, DirtyBandAccumulator, DirtyRectVisualizer,
-        DirtyTracker, Dither, DrawTargetColorExt, Easing, EdgeInsets, EllipsisMode, EventContext,
-        EventPhase, EventPhaseMask, EventPolicy, FeedTimelineState, FlexBuilder, FluentBuilder,
-        FocusGroupId, Font, FontId, FrameBudgetTracker, Framebuffer, FramebufferGray8,
-        FramebufferRgba8888, FramebufferSlice, GaugeThreshold, GlanceTileSpec, GradientDirection,
-        GridLayout, GridPlacement, GridTrack, GuiContext, GuiError, GuiModel, HapticPattern,
-        HapticSequencer, Hardware2DAccelerator, IconAlign, IconPart, ImageAtlas, ImageAtlasEntry,
-        ImageFit, ImageRef, InertiaAnimator, InputEvent, InverterWidget, KeyBindingAction,
-        KeyboardLayout, Keyframe, KeyframeTrack, KeyframeTrackCallbacks, LanguageId,
-        LargeGuiContext, LayerState, LayoutItem, Length, Line, LineBufferRenderer, LinearGradient,
-        LinearLayout, ListState, MatrixWidget, MenuCell, MenuContract, MeterOrientation,
-        ModelChange, MonoBitmap, MotionTokens, MultiStopGradient, NavDirection, NineSlice,
-        NineSliceLayout, NotificationLevel, PackedFont, PathAnimator, PathPoint, PathVerb,
-        PeekRevealSpec, PixelRead, PlaybackMode, PointerButton, PointerState, PowerConfig,
-        PowerEvent, PowerManager, PowerState, PresentRegion, PressTiming, ProgressBarWidget,
-        PropertySignal, Rect, ReelFrame, ReelPlayer, Render, RenderBackendCaps, RenderCtx,
-        RenderQuality, RepeatMode, RepeaterWidget, Rgba8888, ScaleMode, ScaleWidget,
+        CatmullRomSpline, ChartMode, CheckboxLabelPosition, CinematicPreset,
+        ColorConvertedDrawTarget, ColorFormat, ColorOps, ColorStop, CompassMode, CompassWidget,
+        ComposedAnimation, ComposedAnimationCallbacks, ComposedAnimationPlayer,
+        ComposedAnimationStatus, CompositeIconSpec, CompositionControls, CompositionMode,
+        Compositor, Constraint, CustomCanvas, CustomWidget, CustomWidgetRef, DirtyBandAccumulator,
+        DirtyRectVisualizer, DirtyTracker, Dither, DrawTargetColorExt, Easing, EdgeInsets,
+        EllipsisMode, EventContext, EventPhase, EventPhaseMask, EventPolicy, FeedTimelineState,
+        FlexBuilder, FluentBuilder, FocusGroupId, Font, FontId, FrameBudgetTracker, Framebuffer,
+        FramebufferGray8, FramebufferRgba8888, FramebufferSlice, GaugeThreshold, GlanceTileSpec,
+        GradientDirection, GridLayout, GridPlacement, GridTrack, GuiContext, GuiError, GuiModel,
+        HapticPattern, HapticSequencer, Hardware2DAccelerator, IconAlign, IconPart, ImageAtlas,
+        ImageAtlasEntry, ImageFit, ImageRef, InertiaAnimator, InputEvent, InverterWidget,
+        KeyBindingAction, KeyboardLayout, Keyframe, KeyframeTrack, KeyframeTrackCallbacks,
+        LanguageId, LargeGuiContext, LayerState, LayoutItem, Length, Line, LineBufferRenderer,
+        LinearGradient, LinearLayout, ListState, MatrixWidget, MenuCell, MenuContract,
+        MeterOrientation, ModelChange, MonoBitmap, MotionTokens, MultiStopGradient, NavDirection,
+        NineSlice, NineSliceLayout, NotificationLevel, PackedFont, PathAnimator, PathPoint,
+        PathVerb, PeekRevealSpec, PixelRead, PlaybackMode, PointerButton, PointerState,
+        PowerConfig, PowerEvent, PowerManager, PowerState, PresentRegion, PressTiming,
+        ProgressBarWidget, PropertySignal, Rect, ReelFrame, ReelPlayer, Render, RenderBackendCaps,
+        RenderCtx, RenderQuality, RepeatMode, RepeaterWidget, Rgba8888, ScaleMode, ScaleWidget,
         ScanlineTarget, Screen, ScreenCommand, ScreenId, ScreenLifecycleEvent, ScreenStack,
         ScreenStackError, ScreenTransition, ScreenTransitionEffect, ScreenTransitionOrigin,
         ScreenTransitionRunner, ScreenTransitionSample, ScreenTransitionSpec, ScrollState,
@@ -284,17 +289,13 @@ pub mod prelude {
         VisualState, WidgetAnimationCallbacks, WidgetAnimationError, WidgetAnimator,
         WidgetDispatchPolicy, WidgetEvent, WidgetEventFilter, WidgetEventKind, WidgetFlags,
         WidgetId, WidgetKeyBindings, WidgetKeyInputPolicy, WidgetKeyframeState, WidgetKind,
-        WidgetNode, WidgetPropertyKeyframe, WidgetStateMachine, WidgetStyle, animate_glance_focus,
-        animate_peek_reveal, apply_carddeck_visibility, apply_easing, bayer_1bit, bayer_2bit,
-        bayer_4bit, bayer_dither_rgb565, colors, encode_7seg, encode_14seg, lerp_style, presets,
-        render_transition_pair, setup_card_story, setup_launcher_glance,
-        setup_launcher_glance_with_tokens, setup_peek_timeline, setup_peek_timeline_with_tokens,
+        WidgetNode, WidgetPropertyKeyframe, WidgetStateMachine, WidgetStyle,
     };
 
     #[cfg(all(feature = "std", feature = "image-decode"))]
     pub use crate::{
-        BasicImageDecoder, EncodedImageFormat, ImageDecodeError, ImageDecoder, LayerCanvas,
-        TestBuffer, decode_image_auto, decode_image_with, decode_ppm_ascii,
+        decode_image_auto, decode_image_with, decode_ppm_ascii, BasicImageDecoder,
+        EncodedImageFormat, ImageDecodeError, ImageDecoder, LayerCanvas, TestBuffer,
     };
 
     #[cfg(all(feature = "std", not(feature = "image-decode")))]

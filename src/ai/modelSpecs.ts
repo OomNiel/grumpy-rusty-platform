@@ -36,7 +36,11 @@ export interface ModelSpec {
 export const MODEL_FOLDER = 'models';
 
 /** Context window handed to the sidecar. Big enough for header + method + a 900-token answer. */
-export const DEFAULT_CONTEXT_SIZE = 4096;
+// The window the bundled runtime is started with by default. It was 4096 while the answer budget defaulted to
+// 4096 as well, which left the prompt nothing and is the reason an "Implement in function" answer came back
+// cut short (found 2026-10-12). 8192 holds a rewritten 120-line method plus the file header, the crate list and
+// the house rules, with room to answer.
+export const DEFAULT_CONTEXT_SIZE = 8192;
 
 /** The sidecar prints this on stdout once it is listening (mirrors `PREVIEWER_HOST_READY`). */
 export const READY_PREFIX = 'MODEL_HOST_READY';

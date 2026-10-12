@@ -30,7 +30,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { test, ok, equal } = require('../../lib/harness');
+const { test, ok, equal, contains } = require('../../lib/harness');
 const { repoRoot } = require('../../lib/harness');
 
 const ASSISTANT = 'rustyPlatform.assistant.';
@@ -56,6 +56,38 @@ const ALL_TEXT = SOURCES.map((s) => s.text).join('\n');
 const declaredCommands = new Set(PACKAGE.contributes.commands.map((c) => c.command));
 const declaredSettings = new Set(Object.keys(PACKAGE.contributes.configuration.properties));
 const viewIds = new Set(Object.values(PACKAGE.contributes.views).flat().map((v) => v.id));
+
+// An ESP project cannot build without espup's environment, and the extension host has never sourced
+// `~/export-esp.sh`. A cargo the extension starts *itself* must be handed `espEnv()` or it dies inside
+// `build.rs`, reports no diagnostics at all, and leaves the repair loop with nothing to fix — which is exactly
+// how "Fix the Build" came to look broken on a real project (2026-10-12).
+test('a build the extension starts itself is handed espup\'s environment', () => {
+    const text = sourceOf('src/ai/editor.ts');
+    ok(text !== '', 'the AI editor is where the in-process builds live');
+    // The calls are one line each; the declaration carries no `mode:`, so it filters itself out.
+    const calls = (text.match(/buildProject\([^\n]*/g) ?? []).filter((call) => /mode:\s*'(check|build)'/.test(call));
+    ok(calls.length >= 2, `the check and the repair loop both build in-process (found ${calls.length})`);
+    for (const call of calls) {
+        ok(call.includes('espEnv()'), `every in-process build needs the ESP environment: ${call.trim()}`);
+    }
+});
+
+// `src/ui.rs` names the widgets and calls their handlers, so it is part of the design and has to be rewritten
+// with it. It used to be written only by the wizard, so a project whose design changed kept a module calling a
+// handler the design no longer had — an `E0425` that nothing in the design explains (2026-10-12).
+test('the designer regenerates src/ui.rs as well as the markup', () => {
+    const text = sourceOf('src/designer/editor.ts');
+    ok(text !== '', 'the designer host is where a save is written');
+    contains(text, 'emitUiRs(document', 'the generated module comes from the design');
+    contains(text, 'DESIGNER_MODULE_PATH', 'and is written to the module the project builds');
+    contains(text, 'await this.syncModule(document)', 'on every save, beside the handlers and the rotation');
+});
+
+/** One source file, as text, for the checks that are about a particular place. */
+function sourceOf(relative) {
+    const entry = SOURCES.find((s) => s.file === relative);
+    return entry === undefined ? '' : entry.text;
+}
 
 test('every AI command the source runs is one the extension declares', () => {
     const executed = new Set();

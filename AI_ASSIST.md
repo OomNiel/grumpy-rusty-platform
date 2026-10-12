@@ -99,7 +99,10 @@ context. Follow-up questions keep the thread.
 (one per block, labelled by the item it defines). Pressing it writes that code into the Rust file you have
 open — replacing the function of the same name where there is one, adding it to the file where there is not,
 and replacing the file only when the answer is a whole file (it starts with `#![…]` or has `use` lines beside
-`fn main`). Your file's own attributes and signature are kept, so a refactored `main` cannot lose
+`fn main`) — which asks first, in a dialog that names the file, because that shape is exactly how a file
+silently loses everything the model did not reproduce. An answer that elides anything (`...`, `// ...`) is
+refused outright rather than spliced: what is not in the answer cannot be applied.
+Your file's own attributes and signature are kept, so a refactored `main` cannot lose
 `#[embassy_executor::main]`. The result opens as a **diff** and nothing is written until you press **Apply**
 — the same review step as §4. No Rust file open? It asks which file, or offers to create one.
 
@@ -136,6 +139,56 @@ naming, `#[cfg(test)]` modules), shows the evidence next to each one (*"41 of 41
 ones you tick. Accepted rules go into every prompt afterwards. They live in
 `rustyPlatform.assistant.conventions`.
 
+## 7. When the local model cannot do what you asked
+
+**Every request is checked before it is sent.** A small local model has a window, and a prompt that does not
+fit in it is not a hard question — it is an impossible one: what the model cannot read it invents, and an
+answer produced that way looks exactly like a good one. So the six things below are checked *first*, and when
+one of them fires **nothing is sent** and the view says why, with the numbers.
+
+| Check | What it means |
+|---|---|
+| **The prompt does not fit** | The request is bigger than the space the window leaves for a prompt (the answer gets its share first). Ask for less at once, raise `contextSize`, or lower `maxTokens`. |
+| **The file is too big** | The answer would have to be written into a file that does not fit either. A 41 KB `main.rs` is ~10,386 tokens against ~4,032 of prompt room — no wording of the request changes that. |
+| **The item is too long** | One function is past the ~120 lines a model this size can rewrite reliably. Ask for a smaller helper beside it. |
+| **A whole file was asked for** | "rewrite the whole file", "give me the entire file". An answer of that shape loses every item the model did not reproduce. |
+| **The work spans files** | "refactor the whole project", "add a crate", "write me a complete app". |
+| **The answer has no room** | The prompt took nearly the whole window, so what is left cannot hold a function. |
+
+The four size checks are arithmetic, so the numbers in the message are the evidence. The two sentence checks
+are **heuristics** — they quote what they read (*"read as: refactor the whole project"*) and they can be wrong
+in both directions, which is why every refusal offers **Send it anyway** as well as Cancel. In the chat the
+refusal appears as its own block in the conversation, so a request that was not sent does not look like a
+reply that never came; in the editor's own flows it is a dialog.
+
+### Handing the job to the pool agent instead
+
+When a request is beyond the local model, the refusal offers **Hand it to the pool agent** — the
+[Poolside CLI](https://poolside.ai) — which has its own far larger model and works on the project directly.
+Set `rustyPlatform.assistant.handoff` to `pool` (the default) and have `pool` on your PATH, logged in
+(`pool login`). What happens when you press it:
+
+1. **A consent dialog**, every time, naming what will be sent: your request as you wrote it, the file in
+   focus in full, the facts about the board and the crates, and the rough token count. It also says that the
+   agent may edit files and run commands **without asking first** (`poolAutoAllow`), which a non-interactive
+   run cannot do otherwise.
+2. **The agent works in your project** — `pool exec -o json -d <project>` — with a scripted prompt that
+   carries the request, why it came to the agent instead of the local model, your project's measured house
+   rules, and an instruction to *build it and fix what the compiler reports* rather than assert success.
+   Every tool call it makes is reported on the progress line as it happens; Cancel stops it.
+3. **What it did comes back into the conversation**: the steps it took, its closing paragraph, and the
+   outcome — *done*, *it reported it could not finish* (pool's own exit code 4, which is not the same as a
+   broken hand-off), *it failed*, *it timed out*, or *you stopped it*.
+
+A second hand-off **continues the same conversation** (`poolResume`, on by default): the run's own ID is
+remembered per workspace and passed as `--continue`, so the agent already knows what it did last time.
+**Rusty AI: Forget the Handed-off Conversation** starts a fresh one instead.
+
+The prompt is written to the agent on **stdin**, never as a command-line argument, so your code never appears
+in the process list. One thing the extension cannot offer: `pool exec` has no model flag (its `-m` is obsolete
+and points at `--agent-name`), so the model is the platform's own choice — the settings name an **agent**, not
+a model.
+
 ---
 
 ## Commands
@@ -153,6 +206,7 @@ The two that matter outside this document: **Rusty AI: Open the Assistant in an 
 | **Choose a Local Model…** | Pick and set up a model (downloads if needed) |
 | **Unload the Loaded Model** | Free the model's memory |
 | **Status and Hardware Check** | What is configured, and what this machine can run |
+| **Forget the Handed-off Conversation** | The next hand-off to the pool agent starts a fresh conversation instead of continuing the last one |
 
 Two commands have no palette entry because they are offered where you need them — **Send the Prompt in the
 ✎ AI Block** (`Ctrl+Alt+Enter`) and **Discard the ✎ AI Block** (`Ctrl+Alt+Escape`), plus **Apply/Discard the
@@ -178,7 +232,25 @@ by default, a child process elsewhere), plus `gpuVramGb` for a card the extensio
 | `timeoutSeconds` | `60` | How long the model may go **without producing anything** before the request is treated as dead |
 | `conventions` | `[]` | The house rules you accepted |
 | `ignoreHostCheck` | `false` | Run local inference even when the hardware check says this machine is too small |
+| `handoff` | `pool` | Where a request the local model cannot take goes: `pool` (the Poolside agent) or `off` (warn and stop) |
+| `poolCommand` | `pool` | The Poolside CLI executable — a name on the PATH or a full path |
+| `poolAgent` | *(empty)* | Which Poolside agent to ask for (`-a`); empty uses pool's own default |
+| `poolAutoAllow` | `true` | Let the handed-off agent use its tools **without asking you first**. A non-interactive run cannot answer an approval prompt, so with this off a hand-off that needs to edit a file stops and does nothing |
+| `poolTimeoutSeconds` | `900` | How long a handed-off run may take. Whatever it changed up to then stays on disk, and continuing picks up from there |
+| `poolResume` | `true` | Continue the last handed-off conversation (`--continue`) instead of starting a fresh one |
 | `modelPath`, `threads`, `contextSize`, `gpuLayers`, `bundledBackend` | | The bundled runtime's model and how it is started |
+
+## What leaves your machine
+
+Worth being plain about, because "a local model" is a promise and a hand-off is not:
+
+- **The local model never sends anything anywhere.** The bundled runtime runs on this machine, and a server you
+  point `endpoint` at is one you chose.
+- **A hand-off does send your code to Poolside's service.** That is where the agent's own model runs (the API
+  in *your* `pool` configuration — `inference.poolside.ai` by default). It happens only when you press
+  **Hand it to the pool agent** and confirm the dialog that names what is being sent, and there is no setting
+  that makes it happen silently. If you would rather it never be offered, set `handoff` to `off`: the scope
+  checks still run and still warn, and the warning is then the end of it.
 
 ## Two things the assistant will not do
 

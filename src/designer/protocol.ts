@@ -102,6 +102,13 @@ export type HostToDesigner = DesignerInit | DesignerReport | DesignerAssetPicked
  * editor, and asking the extension to build the project.
  */
 export type DesignerAction =
-    | { type: 'action'; action: 'revealKdl' | 'revealDocument' | 'build' | 'revealProject' };
+    | { type: 'action'; action: 'revealKdl' | 'revealDocument' | 'build' | 'revealProject' }
+    /**
+     * A middle-click on a widget that has code behind it.
+     *
+     * The panel knows which widget was clicked and the extension knows where the handlers are written, so the
+     * message carries the id and the extension does the opening.
+     */
+    | { type: 'action'; action: 'revealHandler'; widgetId: string };
 
 export type DesignerInbound = DesignerToHost | DesignerAction;

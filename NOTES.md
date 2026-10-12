@@ -5941,3 +5941,207 @@ Two in `t1-logic/ai-assistant-switch.test.js`, on the pure functions: the offer 
 with the requested wording and for nothing else (disabled, unknown state, plain process, a `stopOwn` step, and a
 system unit that `offPlan` turns into a refusal before any dialog), and the command is
 `systemctl --user disable <unit>` in that order. Suite: **868 passed, 0 skipped**.
+
+## 120. A Tick Box that can be sized, labelled, and styled (2026-10-12)
+
+Asked in one sentence, with a clarification a moment later: *"We must design a new Tick Box widget. The new Tick
+box must be identical to the existing one but the box size (the tick mark must scale accordingly) must be
+settable to any width/height the user selects, the label must be placeable to the left, right, top or bottom of
+the tick box and the label Font and colour must be selectable. Remove the old tick box from the list."* — and
+then simply *"Tick box, also known as Checkbox."*
+
+Three decisions came out of that, none of them spelled out in the request:
+
+1. **The old entry is gone, not deprecated beside the new one.** "Remove the old tick box from the list" means
+   the toolbox shows one Checkbox. A second entry that does the same thing except for the parts it cannot do is
+   how a toolbox becomes a quiz.
+2. **The old designs must keep working.** `box_size` was the single number the old widget took, and a design
+   written with it stores it in its `.ui.kdl`. Deleting the property from the catalogue would have validated
+   those designs as "unknown property" and silently given them a box of a size nobody chose. So the catalogue
+   keeps it as `{ legacy: true }`: **hidden from the property form, still accepted by the validator, still read
+   by the codegen** as the fallback for both sides (`parser.rs`: *"box_size is the older, single number: a design
+   written before the box had two sides names it"*). The property form skips anything marked `legacy`
+   (`panels.ts`), which is the one place that flag is read.
+3. **The label is centred on its side, not left where it lands.** Asked for separately as *"The Checkbox label
+   must be justified to the centre of the selected side of the box"* — it is a visible difference and the reason
+   `CheckboxLabelPosition` is a type rather than a flag.
+
+What moved: the catalogue (`box_width`, `box_height`, `label_position`, `font`, `box_color`), the crate
+(`CheckboxWidget`, `add_checkbox_sized`, `CheckboxLabelPosition`, and a tick that scales with the box), the
+codegen (parser, serializer, emitter), and the designer's own canvas — `preview.ts` draws the control for the
+canvas and had to be taught the same four label sides and the scaling tick, or the preview would have been a
+second, wrong opinion about what the board will show.
+
+## 121. A font for the widgets that actually read one (2026-10-12)
+
+The same request, one clause on: *"Add a Font selector for all Widgets that can display text (labels etc.)"*.
+
+The trap is in "that can display text". `RenderCtx::draw_text` hard-codes the built-in `Tiny3x5` face — so a
+widget that accepts a `font` attribute and calls `draw_text` **ignores it**, and a font selector there would be a
+control that does nothing. Two consequences:
+
+- the crate needed a way to draw with a chosen face at all (`draw_text_with_font`), which is why it appears in
+  `widgets/mod.rs`, `picker.rs`, `status_bar.rs` and `render/mod.rs` and not in one place;
+- the catalogue needed to say *where a font is real*, which is what `fontSupport` is for: `'both'` where the
+  widget passes the style on itself, `'style'` where it reads `style.font` (or `resolved.font`) inside its own
+  text call. The validator uses the same flag, so a design cannot set a font that the renderer will drop.
+
+The third piece was duller and nearly missed: the codegen had to **carry `style` through** the builders for the
+dropdown, the dialog and the table. Without that the property validated, the emitter emitted it, and the
+firmware drew the small face anyway.
+
+## 122. The middle button, a menu that was black on black, and a diff that could be implemented later (2026-10-12)
+
+Three separate complaints in one request, all in the designer's own UI:
+
+- **"A middle button click on a widget with code behind must shift focus to the handler code."** `auxclick`
+  with `button === 1` in `canvas.ts` → `onRevealHandler` → the extension opens `src/ui_handlers.rs` at the item.
+  The primary button still selects, and `pointerDown` now requires `button === 0`, because a canvas that moves
+  to another file on a left click is not a canvas anybody can drag in.
+- **"The right-click context menu (for dropped widgets) always renders some rows in Black."** `.context-item`
+  had no `color` of its own. A `<button>` does not inherit the menu's foreground — only `.danger` and `:hover`
+  set one — so every other row was drawn in the platform default, which on a dark menu is black on black. The
+  fix is a `color: var(--vscode-menu-foreground, var(--vscode-foreground))` on the class, and the *test* asserts
+  the rule rather than a colour, because jsdom has no layout and no theme and could never have caught the
+  original.
+- **"When using the AI Assist feature the prompt to accept and implement a diff is only shown for a brief period
+  and then disappears. Thereafter there is no way to implement the diff. Add an Implement Diff button in the
+  task bar."** Correct as reported: Apply/Discard lived on a notification and a code lens, and a dismissed
+  notification left a proposal that could not be applied at all. Now there is a `$(diff) Implement Diff` status
+  bar item while *any* proposal exists (`anyProposal()`), alongside `closeProposal()` and `describeProposal()` so
+  a proposal opened from the chat, the fix flow or a repair pass all behave identically.
+
+## 123. The assistant that erased a main.rs (2026-10-12)
+
+The most expensive bug in this log so far, and the one that produced §125.
+
+A test project's `src/main.rs` was 41,542 bytes — **~10,386 tokens** of Rust — and the assistant's window was
+8192 with 4096 reserved for the answer, leaving **~4,032 for the prompt**. The model was asked for a change and
+answered with a *whole file*: it could not fit the file it was editing into its own window, so it invented the
+parts it could not see, and every item it did not reproduce was deleted. The request was not badly worded. It was
+arithmetically impossible, and nothing in the extension said so (§125 is that sentence).
+
+What was fixed here, before the gate existed:
+
+- **An elided answer is refused, not spliced.** `elisionMarker()` spots `...`, `// ...` and friends;
+  `keepsEveryItem()` counts the items in the file against the items in the answer. The second hole was found by
+  the suite, not by a user: an elided answer spliced as *one item* still wiped the function it was vague about,
+  so `insertChatCode` now returns the text unchanged for **any** elided answer.
+- **A whole-file-shaped answer is confirmed in a modal** that names the file (`looksLikeWholeFile`: an inner
+  attribute, or `fn main` beside a `use`), instead of being applied because it parsed.
+- **The prompt asks for the changed item only** (`chatSystem` in `aiChatView.ts`): leave every other item out
+  entirely, never write a placeholder for code you did not write, never reproduce a file "to keep it unchanged".
+- **The window and the answer budget are one decision.** The window is shared and the answer gets what the
+  prompt left (`answerBudget`), `contextForBudget` — which existed and was never called — is now what the
+  runtime is started with, `DEFAULT_CONTEXT_SIZE` went 4096 → 8192, and `squeezedAnswerNotice` says so with the
+  numbers when the answer is cut short. "Only accepts 180 tokens" (the user's words) was never a cap: it was
+  4096 minus whatever the prompt took, minus the slack.
+
+## 124. "Fix the Build" did nothing, for three unrelated reasons (2026-10-12)
+
+Reported as *"The AI generated code with some errors, Fix the build does not work."* All three causes were real,
+none of them was the model:
+
+1. **The build ran without the ESP environment.** An ESP32 project cannot link without the Xtensa linker that
+   `source ~/export-esp.sh` puts on the PATH, and the extension host has never sourced it — so cargo died in
+   `build.rs` (`Xtensa linker ... not found on PATH`) with **no diagnostics**, and the repair loop had nothing to
+   fix. Both in-process build paths now read and parse that file (`espEnv()`), the same one the terminal commands
+   use. The failure was also unreadable in the report, which is what `environmentFailure()` in `cargoMessages.ts`
+   is for.
+2. **The designer wrote `src/ui.kdl` but never regenerated `src/ui.rs`.** A save that removed a widget left the
+   generated module still calling `on_go_clicked()` for a widget that no longer existed — `E0425`, a build error
+   no AI can fix, because the file it would have to fix is generated. The module is now rewritten on every
+   designer save (`syncModule()`), with the markup it belongs to.
+3. **Every error sat inside an 852-line `main`**, over `MAX_METHOD_LINES = 120`, so each one was skipped in
+   silence and the report read "nothing-fixable" when the truth was duller. `fixOne` now pushes the reason into
+   `skipped[]` and the summary prints it.
+
+Fixing the third one surfaced a generator gap of the extension's own making: with no event arms in a design,
+nothing in the generated file reads the `widgets` handle, so a fresh project built with
+`warning: field 'widgets' is never read`. `emitUiRs` now emits `#[allow(dead_code)]` **only when there are no
+arms**, so a design that does raise an event still hears about a handle with genuinely nothing reading it.
+
+The one-line fix in the test project's `src/ui.rs` (the stale arm) is what `syncModule` prevents from coming
+back. After it: `cargo check` clean, no warnings of the extension's making.
+
+## 125. Ask before the model cannot answer, and hand the job to the pool agent (2026-10-12)
+
+The instruction, in the user's words: *"The extension must inspect each ask prompt to verify that it is within the
+scope of the ai model capabilities. If not, warn the user and abort."* — plus one question: *"Also, can we hand
+off the prompt (after warning the user) to a listening cloud api agent?"*
+
+### What counts as beyond scope, and how far to trust it
+
+Six checks in `ai/scope.ts`, worst-first, and they are deliberately **two different kinds of thing**:
+
+| Kind | Checks | Trust |
+|---|---|---|
+| Arithmetic | `prompt-overflow`, `file-too-big`, `item-too-long`, `answer-starved` | measured against the window the model was really started with — the numbers in the message are the evidence |
+| Intent (heuristic) | `whole-file-intent`, `beyond-model` | reads the developer's sentence, quotes what it read (*"read as: ..."*), and can be wrong both ways |
+
+The three answers the user chose, when asked: hand off to a cloud agent (answered with *pool*, below), **ask
+every time showing what will be sent**, and *"size arithmetic + intent phrases, with an override"*. The override
+is why every refusal offers **Send it anyway**: a heuristic that cannot be overridden is wrong eventually and
+infuriating when it is.
+
+Two traps found while writing it. A named file in a sentence is **not** an intent match — "rewrite src/main.rs"
+belongs to the arithmetic, which measures the file, or a 20-line `ui_handlers.rs` would be refused for its verb.
+And the chat measures the file **only for a change request** (`looksLikeChangeRequest`): a clipped view of a file
+is enough to *explain* something, so refusing "why does this deadlock?" would be the wrong kind of strict, while
+"add a timeout to this loop" genuinely needs the whole file to be changed safely.
+
+### The hand-off, measured rather than assumed
+
+The user has **Poolside's `pool` CLI** (1.0.16) on this machine, already authenticated, which is a much better
+answer than an HTTP API: it is an agent with tools and a far larger model. Every part of the contract was
+verified against the real binary before a line was written:
+
+| Fact | Value |
+|---|---|
+| Run non-interactively | `pool exec -o json -d <project> -p -` (prompt on **stdin**, never argv) |
+| Stdout | NDJSON: `assistantMessage` = the answer, `toolCall` = work, `exit`(`args.success`) = its own verdict |
+| Exit codes | **0** done · **4** "I ran and could not" · anything else an error |
+| Continue | `--continue <Run ID>`; the ID is the UUID in `~/.local/state/poolside/trajectories/trajectory-*_<uuid>.ndjson` |
+| Non-interactive acting | `--unsafe-auto-allow`, or a run that needs to edit a file stops and asks nobody |
+| **Model** | **not selectable**: `-m` is obsolete on `exec` and errors pointing at `--agent-name`, so the platform owns the model choice — the settings name an **agent** |
+
+Three bugs the suite caught, all of which would have shipped as "the hand-off is broken":
+
+1. **The closing paragraph was thrown away.** pool sends its `exit` tool call *after* the agent's summary, and
+   the parser treated any tool call as the end of the preamble — so `final` was `''` on every successful run.
+   Only a non-`exit` call resets it now.
+2. **A run could be reported for the wrong run id.** Two trajectory files written in the same millisecond made
+   the choice depend on `readdir` order, and it picked a file written *before* the run. Ties are broken by the
+   id, which is a UUIDv7 and therefore time-ordered by construction.
+3. **A 1.5 s timeout took 30 s.** `pool` is a wrapper, so the process the handle names is not the only one
+   holding the pipes — a `sleep` or a compiler underneath inherits them, and killing the wrapper left the promise
+   waiting for the grandchild. The run is now spawned `detached` and stopped as a **process group**, and a run
+   that was stopped finishes on `exit` rather than `close`. Measured after: ~1.5 s.
+
+### Where the code lives, and why there
+
+`ai/scope.ts` (pure, no `vscode`) decides; `ai/pool.ts` (pure + one spawn) knows the CLI; `ai/handoff.ts` talks to
+the user — consent, progress, report, workspace state. Two placement decisions were forced by the test suite:
+
+- the **hand-off settings normaliser lives in `pool.ts`**, not `handoff.ts`, because `handoff.ts` imports `vscode`
+  and a module that imports `vscode` cannot be loaded by the suite at all — and "what does this setting mean" is
+  exactly what deserves an assertion;
+- `pool.ts` loads `ai/log.ts` with a **local `log()` that `require`s it lazily**: a top-level import made the
+  module unloadable in the t2 layer (`Cannot find module 'vscode'`), and a log line is not worth making a module
+  untestable for.
+
+The t2 layer drives a **fake `pool`** (`tests/layers/t2-cli/shims/pool`) as a real child process — it reports the
+byte count of the prompt it read from stdin, so "the prompt never goes through argv" is asserted rather than
+assumed — with modes for success, task-failure, error, junk output and a run that will not finish.
+
+### Not sent quietly
+
+A hand-off sends the developer's code to Poolside's service (`inference.poolside.ai`, the API in their own pool
+configuration) and lets an agent change files without asking. Both are disclosed in the consent dialog on every
+run — there is no "remember my answer" path — and `handoff: "off"` removes the offer while keeping the checks.
+Auto-allow defaults to on because a non-interactive run cannot answer an approval prompt, which makes the
+alternative "stops and does nothing".
+
+Suite after all of this (run per layer, not as one suite): **t1 838, t2 74, t3 4, 0 failed**; `npm run compile`
+and the PROBLEMS pane clean. One verification worth keeping: the panel's script is a line inside a TypeScript
+template literal, so `tsc` cannot see a syntax error in it — it is parsed separately (242 lines) before a release.

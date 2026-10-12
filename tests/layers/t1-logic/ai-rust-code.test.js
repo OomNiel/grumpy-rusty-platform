@@ -480,16 +480,113 @@ test('an item from the chat replaces its own function and leaves the rest of the
     equal(out.split('fn flash_led').length - 1, 1);
 });
 
-test('a brand-new function is added to the file, and the whole file replaces it', () => {
+test('a brand-new function is added to the file, and a whole file replaces it', () => {
     const rc = compiled('ai/rustCode');
     const file = 'fn existing() {\n    // ...\n}\n';
     const added = rc.insertChatCode(file, 'fn added_from_chat() {\n    // new\n}\n');
     contains(added, 'fn existing()');
     contains(added, 'fn added_from_chat()');
 
-    const replaced = rc.insertChatCode(file, '#![no_std]\n\nfn main() {\n    loop {}\n}\n');
-    notContains(replaced, 'fn existing()', 'a whole file is a whole file');
-    contains(replaced, '#![no_std]');
+    // A whole file still replaces the file — but only one that *keeps* what the file had. This answer drops
+    // `fn existing`, so it is no longer allowed to stand in for the file it would empty (2026-10-12).
+    const lossy = '#![no_std]\n\nfn main() {\n    loop {}\n}\n';
+    ok(rc.chatCodeProblem(file, lossy) !== undefined, 'and the caller is told why');
+    contains(rc.insertChatCode(file, lossy), 'fn existing()', 'so the file keeps what it had');
+
+    // Nothing lost, so the replacement is what happens.
+    const faithful = '#![no_std]\n\nfn existing() {\n    // kept\n}\n';
+    equal(rc.insertChatCode(file, faithful), faithful, 'a whole file that is whole replaces the file');
+});
+
+// The failure this exists for (2026-10-12): "add this to the main loop" came back as a reconstructed
+// `main.rs` carrying `// ... initialization code ...`, `looksLikeWholeFile` said yes (a `use` beside `fn main`),
+// and the proposal deleted every existing line of the file.
+test('an answer that leaves code out is refused, however much it looks like a file', () => {
+    const rc = compiled('ai/rustCode');
+    const main = [
+        'use embassy_executor::Spawner;',
+        '',
+        '#[embassy_executor::main]',
+        'async fn main(spawner: Spawner) {',
+        '    let p = embassy_rp::init(Default::default());',
+        '    let mut scale = MyScale::new(0..100);',
+        '    loop {',
+        '        scale.update();',
+        '    }',
+        '}',
+        ''
+    ].join('\n');
+    const answer = [
+        'use embassy_time::{Duration, Timer};',
+        'use embedded_gui::widgets::MyScale;',
+        '',
+        'struct ScaleSwing { value: i16 }',
+        '',
+        '#[embassy::main]',
+        'async fn main(_spawner: embassy_executor::Spawner) {',
+        '    // ... initialization code ...',
+        '    loop {',
+        '        Timer::after(Duration::from_secs(1)).await;',
+        '    }',
+        '}',
+        ''
+    ].join('\n');
+
+    ok(rc.looksLikeWholeFile(answer), 'it is shaped like a file, which is what let the old guard through');
+    ok(rc.elisionMarker(answer) !== undefined, 'but it carries a placeholder');
+    const problem = rc.chatCodeProblem(main, answer);
+    ok(problem !== undefined, 'so it is refused');
+    contains(problem, '...', 'naming what it left out');
+    // And even if a caller ignored the refusal, the file it was about survives: the answer is treated as items
+    // to place, not as the file to become.
+    contains(
+        rc.insertChatCode(main, answer),
+        'let mut scale = MyScale::new(0..100);',
+        'the file the answer was about is still there'
+    );
+});
+
+test('only the placeholders that mean code was left out are seen as one', () => {
+    const rc = compiled('ai/rustCode');
+    // Legal Rust. Three dots appear in ranges and in struct updates, so a pattern matching a dot anywhere would
+    // refuse half the language.
+    equal(rc.elisionMarker('let n = 0..100;'), undefined);
+    equal(rc.elisionMarker('Config { interval, ..Default::default() }'), undefined);
+    equal(rc.elisionMarker('for i in 1..=10 {}'), undefined);
+    equal(rc.elisionMarker('// a normal comment about the loop'), undefined);
+    equal(rc.elisionMarker('fn main() {\n    work();\n}'), undefined);
+
+    // The shapes a model uses to say "and so on".
+    ok(rc.elisionMarker('// ...') !== undefined);
+    ok(rc.elisionMarker('    // ...') !== undefined);
+    ok(rc.elisionMarker('...') !== undefined);
+    ok(rc.elisionMarker('// rest of the code stays the same') !== undefined);
+    ok(rc.elisionMarker('/* ... */') !== undefined);
+    ok(rc.elisionMarker('todo!()') !== undefined);
+    ok(rc.elisionMarker('unimplemented!()') !== undefined);
+});
+
+test('a proof that a whole file is whole is the file\'s own items', () => {
+    const rc = compiled('ai/rustCode');
+    // The name is the first identifier after the keyword, which is the trait for `impl Display for B` — enough
+    // to tell one item from another, which is all a loss check needs.
+    equal(rc.itemNames('fn a() {}\nstruct B;\nimpl Display for B {}\nconst C: u32 = 1;').join(','), 'a,B,Display,C');
+    equal(rc.itemNames('').length, 0, 'nothing declared, nothing to lose');
+    ok(rc.keepsEveryItem('fn a() {}', 'fn a() {\n    changed();\n}'), 'the same item, rewritten, loses nothing');
+    notOk(rc.keepsEveryItem('fn a() {}\nfn b() {}', 'fn a() {}'), 'a dropped item is a loss');
+    ok(rc.keepsEveryItem('', '#![no_std]\nfn main() {}'), 'an empty file cannot lose anything');
+});
+
+test('a proposal says what it adds and what it removes', () => {
+    const rc = compiled('ai/rustCode');
+    const before = ['fn a() {', '    one();', '}', 'fn b() {', '    two();', '}'].join('\n');
+    const after = ['fn a() {', '    one();', '}', 'fn b() {', '    three();', '}'].join('\n');
+    equal(rc.changeSummary(before, after), { added: 1, removed: 1, lossy: false }, 'a change is a change');
+
+    const big = Array.from({ length: 60 }, (_, i) => `    line_${i}();`).join('\n');
+    const lossy = rc.changeSummary(big, 'fn main() {\n    only_this();\n}');
+    ok(lossy.lossy, 'a proposal that removes far more than it adds is a replacement, and is said so');
+    ok(!rc.changeSummary('', 'fn main() {}').lossy, 'a file that was empty has nothing to lose');
 });
 
 test('the file\'s own signature and attributes outrank the model\'s', () => {

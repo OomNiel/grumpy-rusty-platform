@@ -33,6 +33,8 @@ import { log, logError } from '../ai/log';
 import { readActiveProject } from '../project/activeProject';
 import { panelState } from '../ai/panel';
 import { applyChatCode, assistantConfig, chatWithRescue } from '../ai/editor';
+import { checkScope, looksLikeChangeRequest, namedRustFile, scopeLogLine } from '../ai/scope';
+import { handOff, handoffConfig, poolStatus, reportText } from '../ai/handoff';
 import { findRunningLlamaServer } from '../ai/llamaServer';
 import { endpointMismatchHint } from '../ai/localModels';
 
@@ -167,19 +169,110 @@ function post(message: unknown): void {
     for (const surface of surfaces) void surface.postMessage(message);
 }
 
-/** The project context a question is answered against: the board, the crates, and the active file. */
-async function contextBlock(): Promise<string> {
+/** The project facts both the local prompt and a hand-off carry: the board and the crates. */
+async function projectFacts(): Promise<string> {
     const project = await readActiveProject();
     const parts: string[] = [];
     if (project?.board) parts.push(boardFacts(project.board, project.chip));
     if (project) parts.push(`Cargo.toml dependencies:\n${crateList(project.cargoToml)}`);
-    const editor = vscode.window.activeTextEditor;
-    if (editor && editor.document.languageId === 'rust') {
-        const text = editor.document.getText();
-        const clipped = text.length > 12_000 ? `${text.slice(0, 12_000)}\n// … (file clipped)` : text;
-        parts.push(`The file the developer is looking at (${vscode.workspace.asRelativePath(editor.document.uri)}):\n\`\`\`rust\n${clipped}\n\`\`\``);
-    }
     return parts.join('\n\n');
+}
+
+/** The file the developer is looking at, clipped to what a small local model can afford to read. */
+function fileBlock(): string {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor || editor.document.languageId !== 'rust') return '';
+    const text = editor.document.getText();
+    const clipped = text.length > 12_000 ? `${text.slice(0, 12_000)}\n// … (file clipped)` : text;
+    return `The file the developer is looking at (${vscode.workspace.asRelativePath(editor.document.uri)}):\n\`\`\`rust\n${clipped}\n\`\`\``;
+}
+
+/** The project context a question is answered against: the board, the crates, and the active file. */
+async function contextBlock(): Promise<string> {
+    return [await projectFacts(), fileBlock()].filter(Boolean).join('\n\n');
+}
+
+/**
+ * The file a size check — or a hand-off — should measure, when there is one worth measuring.
+ *
+ * Three cases, and the reason they are separated is that measuring the wrong thing is worse than measuring
+ * nothing:
+ *   - a **selection** is the request's own scope: the prompt carries the selection, so a 41 KB file around it is
+ *     irrelevant and nothing is refused;
+ *   - a file **named in the sentence** is measured from disk, whether or not it is open — that is the arithmetic
+ *     behind "rewrite src/main.rs" being a refusal rather than an instruction to guess;
+ *   - a **change request with no selection** is measured against the file in front of the developer, because the
+ *     answer has to be written *into* that file. A question is not measured at all: a clipped view is enough to
+ *     explain something, and refusing explanations would be the wrong kind of strict (2026-10-12).
+ */
+async function askTarget(text: string): Promise<{ path: string; text: string } | undefined> {
+    const editor = vscode.window.activeTextEditor;
+    const openRust = editor && editor.document.languageId === 'rust';
+    if (openRust && !editor.selection.isEmpty) return undefined;
+
+    const named = namedRustFile(text);
+    if (named) {
+        const found = await vscode.workspace.findFiles(
+            `**/${named}`,
+            '**/{target,.git,.dsh-worktrees,node_modules}/**',
+            1
+        );
+        const uri = found[0];
+        if (!uri) return undefined;
+        try {
+            const bytes = await vscode.workspace.fs.readFile(uri);
+            return { path: named, text: Buffer.from(bytes).toString('utf8') };
+        } catch {
+            return undefined;
+        }
+    }
+
+    if (openRust && looksLikeChangeRequest(text)) {
+        return {
+            path: vscode.workspace.asRelativePath(editor.document.uri),
+            text: editor.document.getText()
+        };
+    }
+    return undefined;
+}
+
+/**
+ * The refusal the view's hand-off button refers to.
+ *
+ * Held here rather than sent to the webview and back, so what leaves the machine is what the extension decided
+ * to refuse — not a round trip through HTML that a stale page could get wrong.
+ */
+let pendingHandoff: { request: string; refused: string; target?: { path: string; text: string } } | undefined;
+
+/** Runs the hand-off the developer asked for from a refusal, and puts what it did into the conversation. */
+async function runHandoff(): Promise<void> {
+    if (!pendingHandoff) {
+        post({ type: 'error', message: 'That offer is no longer current — ask again and it will be back.' });
+        return;
+    }
+    const pending = pendingHandoff;
+    pendingHandoff = undefined;
+    const chat = ensureActive();
+    post({ type: 'busy', busy: true, message: 'handing this to the pool agent…' });
+    try {
+        const report = await handOff({
+            request: pending.request,
+            refused: pending.refused,
+            facts: await projectFacts(),
+            target: pending.target,
+            directory: (await readActiveProject())?.folder.fsPath ?? vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd()
+        });
+        const text = reportText(report);
+        chat.turns.push({ role: 'assistant', text });
+        remember();
+        postChats();
+        post({ type: 'turn', role: 'assistant', text, final: true, index: chat.turns.length - 1 });
+    } catch (error) {
+        logError(error);
+        post({ type: 'error', message: `The hand-off failed: ${error instanceof Error ? error.message : String(error)}` });
+    } finally {
+        post({ type: 'busy', busy: false });
+    }
 }
 
 /** The system message for a free-form question. */
@@ -191,6 +284,17 @@ function chatSystem(context: string): ChatMessage {
             'Embassy async framework. Answer in short, concrete Rust. Never invent a crate, a pin or an ' +
             'API that is not in the context below; if something is missing, say what is missing. Prefer ' +
             'showing the code to describing it.\n\n' +
+            // The shape of the answer, spelled out because the shape is what decides whether applying it is
+            // safe. A model that answers "add this to the loop" with a reconstructed whole file deletes
+            // everything it did not feel like reproducing (2026-10-12), and a placeholder is the same mistake
+            // with a comment on it.
+            'When asked to change code, return ONLY the item that changes — the one `fn`, `impl` or `struct` — ' +
+            'and leave every other item out of your answer entirely. Do not return the whole file unless the ' +
+            'developer asks for the whole file. Never write `...`, `// ...` or any other placeholder for code ' +
+            'you did not write: if something is too long to include, say so in a sentence instead of guessing. ' +
+            'Never reproduce a file from the context to "keep it unchanged" — leaving it out is how it stays ' +
+            'unchanged. Keep the file\'s own attributes, signature and names as they are; put any `use` a new ' +
+            'path needs inside the function body, which is legal Rust.\n\n' +
             context
     };
 }
@@ -213,7 +317,6 @@ async function ask(text: string): Promise<void> {
     remember();
     postChats();
     post({ type: 'turn', role: 'user', text });
-    post({ type: 'busy', busy: true, message: 'thinking…' });
 
     busy = true;
     try {
@@ -222,6 +325,43 @@ async function ask(text: string): Promise<void> {
             chatSystem(context),
             ...chat.turns.map((t) => ({ role: t.role, content: t.text }))
         ];
+
+        // THE GATE (asked 2026-10-12): *"the extension must inspect each ask prompt to verify that it is within
+        // the scope of the ai model capabilities. If not, warn the user and abort."* It runs before anything is
+        // sent and before the "thinking…" line appears, because a request that is going nowhere should not
+        // first look like it is going somewhere. The refusal is drawn as its own block with a hand-off button;
+        // `pendingHandoff` holds what the button will send.
+        const target = await askTarget(text);
+        const verdict = checkScope({
+            messages,
+            contextSize: cfg.contextSize,
+            maxTokens: cfg.maxTokens,
+            request: text,
+            target
+        });
+        log(`assistant: chat ${scopeLogLine(verdict)}`);
+        if (!verdict.ok) {
+            pendingHandoff = { request: text, refused: verdict.message ?? '', target };
+            // The refusal is stored too, not only posted: a transcript with a question and no answer looks like a
+            // lost reply when the panel is reopened, and it is also useful context for the next question.
+            chat.turns.push({
+                role: 'assistant',
+                text: `⛔ ${verdict.message ?? ''}${verdict.advice ? `\n\n${verdict.advice}` : ''}`
+            });
+            remember();
+            postChats();
+            post({
+                type: 'scope',
+                problem: verdict.problem,
+                message: verdict.message,
+                advice: verdict.advice,
+                handoff: handoffConfig().target !== 'off'
+            });
+            return;
+        }
+        pendingHandoff = undefined;
+        post({ type: 'busy', busy: true, message: 'thinking…' });
+
         const controller = new AbortController();
         // `chatWithRescue` resolves `bundled`'s endpoint (it only exists once the runtime is up) and, when the
         // address has nothing behind it, gets a llama-server up and sends the question again — the extension is
@@ -275,6 +415,11 @@ async function pushState(fresh = false): Promise<void> {
     try {
         const state = await panelState(fresh);
         const cfg = assistantConfig();
+        const handoff = handoffConfig();
+        // The probe is cached per command (see `handoff.poolStatus`), so this is one spawn per session rather
+        // than one per refresh — and the answer is what lets the form say "not installed" before a hand-off is
+        // ever attempted.
+        const poolVersionText = handoff.target === 'off' ? '' : ((await poolStatus(handoff.command)) ?? '');
         post({
             type: 'state',
             state: {
@@ -284,6 +429,10 @@ async function pushState(fresh = false): Promise<void> {
                 showDiff: cfg.showDiff,
                 assistantOn: cfg.enabled,
                 stopAtStartup: cfg.stopServersAtStartup,
+                handoff: handoff.target,
+                poolCommand: handoff.command,
+                poolAutoAllow: handoff.autoAllow,
+                poolVersion: poolVersionText,
                 hint: state.hint,
                 pinned: state.pinned,
                 enabled: state.enabled,
@@ -306,6 +455,12 @@ interface SettingsSnapshot {
     endpoint: string;
     model: string;
     showDiff: boolean;
+    /** Where a request the local model cannot take is handed off to, and how (`2026-10-12`). */
+    handoff: string;
+    poolCommand: string;
+    poolAutoAllow: boolean;
+    /** The version `pool --version` reported, or `''` when the command is not there. */
+    poolVersion: string;
     hint: string;
     pinned: string;
     enabled: boolean;
@@ -444,6 +599,13 @@ function html(webview: vscode.Webview): string {
     .turn pre { background: var(--vscode-textCodeBlock-background); padding: 6px; border-radius: 4px; overflow-x: auto; }
     .busy { opacity: .8; font-style: italic; }
     .error { color: var(--vscode-errorForeground); white-space: pre-wrap; }
+    /* A request the local model cannot take (2026-10-12). It is drawn as a block rather than as prose so it
+       reads as the answer to the question, and the conversation does not look like it simply stopped. */
+    .scope { border: 1px solid var(--vscode-inputValidation-warningBorder, var(--vscode-panel-border));
+        border-left: 3px solid var(--vscode-editorWarning-foreground, #d7a12c); border-radius: 4px; padding: 8px; }
+    .scope .advice { opacity: .9; margin-top: 6px; font-size: .95em; }
+    .scope button { margin-top: 8px; }
+    .scope button[disabled] { opacity: .6; cursor: default; }
     textarea, input, select { width: 100%; box-sizing: border-box; background: var(--vscode-input-background);
         color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border, transparent); border-radius: 3px; padding: 4px; }
     textarea { resize: vertical; min-height: 64px; }
@@ -497,6 +659,15 @@ function html(webview: vscode.Webview): string {
         <input id="model" type="text" placeholder="qwen2.5-coder-7b-instruct">
         <label><input id="showDiff" type="checkbox" style="width:auto"> Show a diff before applying</label>
         <label title="A window that opens with the assistant off unloads the models and stops the llama-server"><input id="stopAtStartup" type="checkbox" style="width:auto"> Stop the local servers when a window starts with the assist off</label>
+        <label>When a request is beyond the local model</label>
+        <select id="handoff" title="A request the local model cannot take: warn and stop, or hand it to the pool agent">
+            <option value="off">Warn me and stop</option>
+            <option value="pool">Hand it to the pool agent</option>
+        </select>
+        <label>The pool command</label>
+        <input id="poolCommand" placeholder="pool" title="The Poolside CLI executable. Its own model is the platform's choice, not a setting here.">
+        <div id="poolStatus" class="busy" hidden></div>
+        <label title="A non-interactive run cannot answer an approval prompt, so with this off a hand-off that needs to edit a file stops and does nothing"><input id="poolAutoAllow" type="checkbox" style="width:auto"> Let the handed-off agent use its tools without asking</label>
         <div class="row" style="margin-top:8px">
             <button id="save">Save</button>
             <button id="choose" class="secondary">Choose a local model…</button>
@@ -569,6 +740,36 @@ function html(webview: vscode.Webview): string {
         addTurn(role, text, false, turn);
     }
 
+    // The refusal block: what the model could not do, what to do instead, and the hand-off button when there is
+    // somewhere to hand the job to. Clearing the current turn matters — without it the next streamed answer
+    // would be appended into this block instead of replacing it.
+    function showScope(msg) {
+        const div = document.createElement('div');
+        div.className = 'turn assistant scope';
+        const head = document.createElement('div');
+        head.textContent = '⛔ ' + (msg.message || 'That request is beyond what the local model can do.');
+        div.appendChild(head);
+        if (msg.advice) {
+            const advice = document.createElement('div');
+            advice.className = 'advice';
+            advice.textContent = msg.advice;
+            div.appendChild(advice);
+        }
+        if (msg.handoff) {
+            const button = document.createElement('button');
+            button.textContent = 'Hand it to the pool agent…';
+            button.addEventListener('click', () => {
+                // One press is one hand-off: the server holds what to send, and asks for consent before it goes.
+                button.disabled = true;
+                vscode.postMessage({ type: 'handoff' });
+            });
+            div.appendChild(button);
+        }
+        log.appendChild(div);
+        current = null;
+        log.scrollTop = log.scrollHeight;
+    }
+
     function setBusy(busy, message) {
         if (busy) {
             progress.hidden = false;
@@ -591,7 +792,7 @@ function html(webview: vscode.Webview): string {
     // is what stops a form that has not caught up from writing a stale address over a fresh pin: on
     // 2026-10-04 the view still held LM Studio's 1234 after "use the llama-server on 8080", the user pressed
     // Save, and every prompt after that failed with "No server answered" (see refreshAssistantView).
-    let applied = { backend: '', endpoint: '', model: '', showDiff: false };
+    let applied = { backend: '', endpoint: '', model: '', showDiff: false, handoff: '', poolCommand: '', poolAutoAllow: false };
 
     window.addEventListener('message', (event) => {
         const msg = event.data;
@@ -605,6 +806,20 @@ function html(webview: vscode.Webview): string {
             // because "off" here stops servers rather than merely pausing requests.
             setting('assistOn', s.assistantOn);
             setting('stopAtStartup', s.stopAtStartup);
+            // The hand-off fields, and the one piece of news about them: whether the command is actually there.
+            setting('handoff', s.handoff);
+            setting('poolCommand', s.poolCommand);
+            setting('poolAutoAllow', s.poolAutoAllow);
+            const poolStatusEl = document.getElementById('poolStatus');
+            if (poolStatusEl) {
+                const show = s.handoff === 'pool';
+                poolStatusEl.hidden = !show;
+                poolStatusEl.textContent = !show
+                    ? ''
+                    : s.poolVersion
+                        ? 'pool ' + s.poolVersion + ' found — a hand-off will run it in this project'
+                        : 'Not found: install the Poolside CLI, or set the command above to its full path';
+            }
             const switchLabel = document.getElementById('assistOnLabel');
             if (switchLabel) {
                 switchLabel.textContent = s.assistantOn
@@ -615,7 +830,10 @@ function html(webview: vscode.Webview): string {
                 backend: s.backend === undefined || s.backend === null ? '' : String(s.backend),
                 endpoint: s.endpoint === undefined || s.endpoint === null ? '' : String(s.endpoint),
                 model: s.model === undefined || s.model === null ? '' : String(s.model),
-                showDiff: !!s.showDiff
+                showDiff: !!s.showDiff,
+                handoff: s.handoff === undefined || s.handoff === null ? '' : String(s.handoff),
+                poolCommand: s.poolCommand === undefined || s.poolCommand === null ? '' : String(s.poolCommand),
+                poolAutoAllow: !!s.poolAutoAllow
             };
         } else if (msg.type === 'status') {
             document.getElementById('status').textContent = msg.text || '';
@@ -633,6 +851,8 @@ function html(webview: vscode.Webview): string {
             addTurn('assistant', msg.text, true);
         } else if (msg.type === 'busy') {
             setBusy(msg.busy, msg.message);
+        } else if (msg.type === 'scope') {
+            showScope(msg);
         } else if (msg.type === 'error') {
             addTurn('assistant', '⚠ ' + msg.message, false);
             const div = log.lastElementChild;
@@ -683,9 +903,12 @@ function html(webview: vscode.Webview): string {
             backend: document.getElementById('backend').value,
             endpoint: document.getElementById('endpoint').value,
             model: document.getElementById('model').value,
-            showDiff: document.getElementById('showDiff').checked
+            showDiff: document.getElementById('showDiff').checked,
+            handoff: document.getElementById('handoff').value,
+            poolCommand: document.getElementById('poolCommand').value,
+            poolAutoAllow: document.getElementById('poolAutoAllow').checked
         };
-        // Only the fields the user actually changed. Sending all four would make a form that is showing
+        // Only the fields the user actually changed. Sending all of them would make a form that is showing
         // yesterday's endpoint overwrite the one a load just pinned.
         const settings = {};
         for (const key of Object.keys(now)) {
@@ -729,6 +952,9 @@ export class AiChatViewProvider implements vscode.WebviewViewProvider {
             }
             case 'ask':
                 if (message.text) await ask(message.text);
+                return;
+            case 'handoff':
+                await runHandoff();
                 return;
             case 'newChat': {
                 active = freshChat();

@@ -1049,16 +1049,16 @@ test('the six point attributes are the ones the whole chain spells the same way'
     );
     equal(
         defaultProps('triangle').p1x +
-            ',' +
-            defaultProps('triangle').p1y +
-            ',' +
-            defaultProps('triangle').p2x +
-            ',' +
-            defaultProps('triangle').p2y +
-            ',' +
-            defaultProps('triangle').p3x +
-            ',' +
-            defaultProps('triangle').p3y,
+        ',' +
+        defaultProps('triangle').p1y +
+        ',' +
+        defaultProps('triangle').p2x +
+        ',' +
+        defaultProps('triangle').p2y +
+        ',' +
+        defaultProps('triangle').p3x +
+        ',' +
+        defaultProps('triangle').p3y,
         DEFAULT_TRIANGLE_POINTS.join(','),
         'which is the same one the catalogue drops and the parser falls back to',
     );
@@ -1114,19 +1114,39 @@ test('a button gets a WidgetStyle, because the emitter chains its colours onto t
 });
 
 test('a font is only offered where the crate reads one', () => {
-    // A declared font is read for labels and carousels; a built-in one needs a style handle, which a table and
-    // a panel do not have (the table's emitter arm hard-codes `Style::panel()`). A field that does nothing is
-    // worse than no field, so these tags must not offer one.
-    for (const tag of ['label', 'carousel', 'button']) {
+    // Two routes reach a widget: the `font` attribute, which the parser reads for labels and carousels only,
+    // and a `style` expression, which every widget whose renderer draws its text in `style.font` can take.
+    // A field that does nothing is worse than no field, so a widget with no text -- or with text no face can
+    // change -- must not offer one (2026-10-12).
+    for (const tag of [
+        'label',
+        'carousel',
+        'button',
+        'toggle',
+        'checkbox',
+        'dropdown',
+        'roller',
+        'spinbox',
+        'number_picker',
+        'time_picker',
+        'scale',
+        'status_bar',
+        'dialog',
+        'table',
+    ]) {
         ok(
             widgetSpec(tag).props.some((property) => property.name === 'font'),
             `${tag} can be given a font and must offer one`,
         );
+        ok(
+            ['style', 'both'].includes(widgetSpec(tag).fontSupport),
+            `${tag} needs a style handle for a built-in font to reach it`,
+        );
     }
-    for (const tag of ['table', 'panel', 'rect']) {
+    for (const tag of ['panel', 'rect', 'circle', 'line', 'triangle', 'path', 'spacer', 'image', 'icon', 'slider', 'progress', 'plotter', 'arc', 'busy_wheel', 'crumbs', 'content_indicator']) {
         notOk(
             widgetSpec(tag).props.some((property) => property.name === 'font'),
-            `${tag} has no route to a font and must not offer one`,
+            `${tag} draws no text a font could change and must not offer one`,
         );
         ok(widgetSpec(tag).fontSupport === undefined, `${tag} claims no font support`);
     }
@@ -1281,9 +1301,19 @@ test('a triangle\'s six points are one group of optional properties', () => {
         equal(property.max, 1000, `${property.name} stops at the box's far edge`);
     }
     equal(new Set(points.map((property) => property.group)).size, 1, 'and they all share the one heading');
-    // Nothing else in the catalogue is optional: a shape's points are the case this exists for.
-    const optional = KDL_WIDGETS.flatMap((entry) => entry.props).filter((property) => property.optional === true);
-    equal(optional.length, 6, 'only the triangle\'s points are optional so far');
+    // Nothing else in the catalogue is optional apart from one superseded field: a shape's points are the case
+    // this exists for, and the checkbox's old `box_size` joined them because the crate defaults it and every
+    // widget dropped now leaves it out. Named rather than counted, so adding an optional property has to be a
+    // deliberate act instead of something that slips in.
+    const optional = KDL_WIDGETS.flatMap((entry) => entry.props)
+        .filter((property) => property.optional === true)
+        .map((property) => property.name)
+        .sort();
+    equal(
+        optional.join(','),
+        ['box_size', ...TRIANGLE_POINT_NAMES].sort().join(','),
+        'the triangle\'s points and the checkbox\'s superseded box size are the only optional properties',
+    );
 });
 
 test('every property and every widget has a hover description', () => {

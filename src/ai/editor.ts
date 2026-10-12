@@ -24,8 +24,10 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import {
+    answerBudget,
     assistantEnabled,
     chatDetailed,
+    contextForBudget,
     describeEmptyAnswer,
     describeModel,
     describeProgress,
@@ -36,6 +38,7 @@ import {
     methodTooLong,
     normalizeAssistantConfig,
     probeServer,
+    squeezedAnswerNotice,
     type AssistantConfig,
     type ChatMessage,
     type ChatOutcome,
@@ -46,6 +49,8 @@ import {
     buildFixPrompt,
     buildGeneratePrompt,
     buildImplementPrompt,
+    changeSummary,
+    chatCodeProblem,
     crateList,
     detectEol,
     enclosingFnSpan,
@@ -53,6 +58,7 @@ import {
     fnSignatures,
     itemOffsets,
     insertChatCode,
+    looksLikeWholeFile,
     moduleHeader,
     parseNewItemAnswer,
     preserveSignature,
@@ -76,7 +82,10 @@ import { hostBlockMessage, hostGate } from './hostCheck';
 import { configView, updateSetting } from './settings';
 import { configWithEndpoint } from './runtime';
 import { readActiveProject, type ActiveProject } from '../project/activeProject';
+import { espEnv } from '../commands/terminal';
 import { log, logError } from './log';
+import { checkScope, scopeLogLine } from './scope';
+import { handOff, handoffConfig, lastRunId, forgetRunId, type HandoffReport } from './handoff';
 
 /** The settings section every AI key lives under. */
 export const SETTINGS = 'rustyPlatform.assistant';
@@ -160,6 +169,67 @@ function activeProposal(): { uri: vscode.Uri; proposal: Proposal } | undefined {
 }
 
 /**
+ * The proposal to apply, whichever editor is in front.
+ *
+ * `activeProposal` is right when the user is *in* the diff, which is all the notification needed, because it
+ * only offered Apply while it was on screen. The status bar button can be pressed with the cursor anywhere --
+ * which is the point of it -- so when the diff is not focused the newest open proposal is the one it means.
+ */
+function anyProposal(): { uri: vscode.Uri; proposal: Proposal } | undefined {
+    const active = activeProposal();
+    if (active) return active;
+    const newest = [...proposals.entries()].pop();
+    return newest === undefined ? undefined : { uri: vscode.Uri.parse(newest[0]), proposal: newest[1] };
+}
+
+/**
+ * The status bar button that applies the open proposal.
+ *
+ * The notification offering Apply is transient: the next notification dismisses it, and reading a diff takes
+ * longer than it stays. That left a reviewed proposal with no way to accept it except the Command Palette, so
+ * the button appears with the proposal and leaves with it.
+ */
+let proposalBar: vscode.StatusBarItem | undefined;
+
+function showProposalBar(summary: string): void {
+    if (proposalBar === undefined) {
+        proposalBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 93);
+        proposalBar.command = 'rustyPlatform.assistant.applyProposal';
+        proposalBar.text = '$(diff) Implement Diff';
+    }
+    proposalBar.tooltip =
+        `${summary}\nWrite the AI proposal that is open in the diff into its file. An ordinary edit: Ctrl+Z ` +
+        'undoes it. Discard it instead from the Command Palette.';
+    proposalBar.show();
+}
+
+/**
+ * One line saying what a proposal does, before it is opened.
+ *
+ * The diff shows *what* changes; this is what tells the reviewer whether it is a change at all. A proposal
+ * that removes far more than it adds is a rewrite, and a rewrite is what a request like "add this to the main
+ * loop" never asked for (2026-10-12).
+ */
+async function describeProposal(original: vscode.Uri, text: string): Promise<string> {
+    const where = path.basename(original.fsPath);
+    try {
+        const before = (await vscode.workspace.openTextDocument(original)).getText();
+        const change = changeSummary(before, text);
+        return (
+            `${where}: +${change.added} / -${change.removed} lines` +
+            `${change.lossy ? ' — this replaces most of the file' : ''}`
+        );
+    } catch (error) {
+        logError(error);
+        return `${where}: a proposed change`;
+    }
+}
+
+function hideProposalBar(): void {
+    proposalBar?.hide();
+}
+
+/**
  * Shows the model's text as a diff against the file, and offers Apply / Discard.
  *
  * `vscode.diff` is used rather than a custom webview because the diff editor already has the one thing a
@@ -170,10 +240,14 @@ export async function showProposal(original: vscode.Uri, text: string, title: st
     const uri = proposalUri(path.basename(original.fsPath));
     proposals.set(uri.toString(), { original, text, title });
     proposalContent.fire(uri);
-    await vscode.commands.executeCommand('vscode.diff', original, uri, title);
+    // Worked out before the diff opens, so the count is in the tab's title and in the button's tooltip as well
+    // as in the message: the numbers are what a reviewer needs, and they should not scroll away.
+    const summary = await describeProposal(original, text);
+    await vscode.commands.executeCommand('vscode.diff', original, uri, `${title} · ${summary}`);
     await vscode.commands.executeCommand('setContext', 'rustyPlatform.proposalPending', true);
+    showProposalBar(summary);
     const pick = await vscode.window.showInformationMessage(
-        `${title} — review the diff, then apply it.`,
+        `${title} — ${summary}. Review the diff, then apply it.`,
         'Apply',
         'Discard'
     );
@@ -199,7 +273,7 @@ async function writeDocument(uri: vscode.Uri, text: string): Promise<boolean> {
 
 /** Writes the proposal into the file it came from. A normal edit: Ctrl+Z undoes it. */
 export async function applyProposal(): Promise<void> {
-    const active = activeProposal();
+    const active = anyProposal();
     if (!active) {
         void vscode.window.showWarningMessage('There is no AI proposal open — generate one first.');
         return;
@@ -208,7 +282,8 @@ export async function applyProposal(): Promise<void> {
     const ok = await writeDocument(proposal.original, proposal.text);
     proposals.delete(uri.toString());
     await vscode.commands.executeCommand('setContext', 'rustyPlatform.proposalPending', false);
-    await closeDiffEditors();
+    hideProposalBar();
+    await closeProposal(uri);
     if (ok) {
         log(`assistant: applied proposal (${proposal.title})`);
         // `verifyAfterApply` is the user's answer to "should every applied proposal cost a build?" — a
@@ -230,17 +305,32 @@ export async function applyProposal(): Promise<void> {
 }
 
 export async function discardProposal(): Promise<void> {
-    const active = activeProposal();
+    const active = anyProposal();
     if (active) proposals.delete(active.uri.toString());
     await vscode.commands.executeCommand('setContext', 'rustyPlatform.proposalPending', false);
-    await closeDiffEditors();
+    hideProposalBar();
+    if (active) await closeProposal(active.uri);
 }
 
-async function closeDiffEditors(): Promise<void> {
-    // Closing the active editor closes the proposal side of the diff; the original is what is left, which is
-    // exactly where the developer wants to be.
-    if (vscode.window.activeTextEditor?.document.uri.scheme === PROPOSAL_SCHEME) {
-        await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+/**
+ * Closes the diff that shows one proposal, wherever it is.
+ *
+ * Closing the *active* editor was enough while the notification was the only way in, because that meant the
+ * diff was focused. The status bar button can be pressed with the cursor anywhere, so the tab holding this
+ * proposal is what is looked for -- the original file is what is left, which is where the user wants to be.
+ */
+async function closeProposal(uri: vscode.Uri): Promise<void> {
+    try {
+        for (const group of vscode.window.tabGroups.all) {
+            for (const tab of group.tabs) {
+                const input = tab.input;
+                if (input instanceof vscode.TabInputTextDiff && input.modified.toString() === uri.toString()) {
+                    await vscode.window.tabGroups.close(tab);
+                }
+            }
+        }
+    } catch (error) {
+        logError(error);
     }
 }
 
@@ -448,6 +538,123 @@ function unreachable(error: unknown): string {
     return `The model could not be reached: ${error instanceof Error ? error.message : String(error)}`;
 }
 
+/**
+ * The optional prompt facts as one block, for a hand-off to carry.
+ *
+ * The agent gets the same facts the local prompt would have had, in the same words: it can read the project
+ * itself, but the conventions measured from the developer's own code and the board's pin facts are expensive to
+ * rediscover and cheap to pass on.
+ */
+function factsText(facts: OptionalFacts | undefined): string | undefined {
+    if (!facts) return undefined;
+    const parts = [
+        facts.target ? `TARGET\n${facts.target}` : '',
+        facts.crates ? `CRATES IN THIS PROJECT\n${facts.crates}` : '',
+        facts.header ? `THE FILE'S OWN HEADER\n${facts.header}` : '',
+        facts.rules ? `HOUSE RULES MEASURED FROM THIS CODE\n${facts.rules}` : '',
+        facts.facts ? `THE BOARD\n${facts.facts}` : ''
+    ].filter(Boolean);
+    return parts.length ? parts.join('\n\n') : undefined;
+}
+
+/** Says what a hand-off did, and offers the only thing worth doing next: check the build. */
+async function showHandoff(report: HandoffReport): Promise<void> {
+    for (const step of report.work) log(`handoff:   ${step}`);
+    if (report.full) log(`handoff: the agent said: ${report.full.slice(0, 2000)}`);
+    if (report.kind === 'declined' || report.kind === 'off') return;
+    if (report.kind === 'done') {
+        const closing = report.answer ? ` ${report.answer.replace(/\s+/g, ' ').slice(0, 160)}` : '';
+        const pick = await vscode.window.showInformationMessage(
+            `The pool agent finished in ${report.seconds} s (${report.work.length} step(s)).${closing}`,
+            'Check the build'
+        );
+        if (pick === 'Check the build') await checkProject();
+        return;
+    }
+    void vscode.window.showWarningMessage(`The hand-off did not finish: ${report.message}`);
+}
+
+/** What a scope check needs from the caller, beyond the settings. */
+interface ScopeGuardInput {
+    cfg: AssistantConfig;
+    /** The messages that would be sent — measured, not estimated from the sentence. */
+    messages: ChatMessage[];
+    /** The developer's own words: what the request is, and the only thing intent can be read from. */
+    request: string;
+    /** The facts the prompt carries, passed on to a hand-off. */
+    facts?: OptionalFacts;
+    /** The item the answer must reproduce, when the request is scoped to one. */
+    item?: { name: string; text: string };
+    /** The file the answer would have to be written into, when it is a whole file. */
+    target?: { path: string; text: string };
+    /** The project a hand-off would work in. */
+    directory?: string;
+}
+
+/**
+ * The pre-flight scope check, as a dialog the developer can answer.
+ *
+ * *"The extension must inspect each ask prompt to verify that it is within the scope of the ai model
+ * capabilities. If not, warn the user and abort."* This is the warning and the abort, with the third answer the
+ * user asked for as well: a **hand-off** to the pool agent, which is what makes the refusal useful rather than
+ * merely correct.
+ *
+ * The three buttons mean three different things and are worth keeping distinct:
+ *   - *Hand it to the pool agent* — the request and its context go to an agent that can hold them, after a
+ *     consent dialog that names what leaves the machine;
+ *   - *Send it anyway* — the developer outranks the check, and the reason is logged so a puzzling answer can be
+ *     traced to the fact that the model never saw the whole prompt;
+ *   - *Cancel* — nothing is sent.
+ *
+ * A check with nothing to hand off to (the setting is `off`, or `pool` is not installed) still refuses: the
+ * point of the gate is that the developer is told *before* an answer arrives that looks authoritative and is
+ * not.
+ */
+async function guardScope(input: ScopeGuardInput): Promise<boolean> {
+    const verdict = checkScope({
+        messages: input.messages,
+        contextSize: input.cfg.contextSize,
+        maxTokens: input.cfg.maxTokens,
+        request: input.request,
+        item: input.item,
+        target: input.target
+    });
+    log(`assistant: ${scopeLogLine(verdict)}`);
+    if (verdict.ok) return true;
+
+    const canHandOff = handoffConfig().target !== 'off';
+    const buttons = canHandOff
+        ? ['Hand it to the pool agent', 'Send it anyway', 'Cancel']
+        : ['Send it anyway', 'Cancel'];
+    const pick = await vscode.window.showWarningMessage(
+        `This is beyond what the local model can do here. ${verdict.message ?? ''}`,
+        {
+            modal: true,
+            detail:
+                `${verdict.advice ?? ''}\n\n` +
+                'Sending it anyway asks the model for an answer about code it cannot see all of, which is how a ' +
+                'file comes back shorter than it went in.'
+        },
+        ...buttons
+    );
+    if (pick === 'Send it anyway') {
+        log(`assistant: scope override — ${verdict.problem} accepted by the developer`);
+        return true;
+    }
+    if (pick === 'Hand it to the pool agent') {
+        await showHandoff(
+            await handOff({
+                request: input.request,
+                refused: verdict.message,
+                facts: factsText(input.facts),
+                target: input.target,
+                directory: input.directory ?? (await readActiveProject())?.folder.fsPath ?? process.cwd()
+            })
+        );
+    }
+    return false;
+}
+
 // ---------------- the flows ----------------
 
 /**
@@ -505,16 +712,20 @@ export async function runImplement(document: vscode.TextDocument, line0: number,
     const lines = text.split(/\r?\n/);
     const caret = Math.min(Math.max(line0 + 1, 1), Math.max(1, lines.length));
     const span = enclosingFnSpan(text, caret);
-    const facts = promptFacts({ document, text, project: await readActiveProject() }, span);
+    const project = await readActiveProject();
+    const facts = promptFacts({ document, text, project }, span);
     const room = Math.max(0, cfg.contextSize - cfg.maxTokens - PROMPT_SLACK);
 
     let messages: ChatMessage[];
     let dropped: string[];
     let apply: (code: string) => string;
+    /** The item the answer must reproduce, when the request is scoped to one: what the scope check measures. */
+    let item: { name: string; text: string } | undefined;
 
     if (span) {
         const offsets = itemOffsets(text, span);
         const func = text.slice(offsets.start, offsets.end);
+        item = { name: span.name, text: func };
         if (methodTooLong(func)) {
             void vscode.window.showWarningMessage(
                 `That function is ${func.split(/\r?\n/).length} lines — more than the ${MAX_METHOD_LINES} a small local ` +
@@ -552,9 +763,40 @@ export async function runImplement(document: vscode.TextDocument, line0: number,
     }
 
     if (dropped.length) log(`assistant: prompt was over the window — dropped ${dropped.join(', ')}`);
+
+    // The gate (2026-10-12). An item longer than the model can rewrite is already refused above with its own
+    // message; this is the rest of it — a prompt that does not fit the window at all, a sentence asking for a
+    // whole file or the whole project — and it is the one place that can offer the hand-off instead.
+    if (!(await guardScope({
+        cfg,
+        messages,
+        request: description,
+        facts,
+        item,
+        directory: project?.folder.fsPath
+    }))) {
+        return false;
+    }
+
+    // The window is shared: the prompt is read first and the answer gets what is left. Worked out here rather
+    // than left to the server, because a prompt that fills the window is the ordinary reason an answer stops
+    // mid-function, and the fix is a setting the developer can only act on if told the numbers.
+    const contextSize = contextForBudget(cfg.contextSize, cfg.maxTokens);
+    const promptTokens = estimateTokens(messages.map((message) => message.content).join('\n'));
+    const budget = answerBudget(cfg.maxTokens, contextSize, promptTokens);
+    const squeezed = squeezedAnswerNotice(budget, contextSize, promptTokens);
+    if (squeezed !== undefined) {
+        log(`assistant: answer budget ${budget.maxTokens} of ${cfg.maxTokens} tokens — prompting ${promptTokens}`);
+        void vscode.window.showWarningMessage(squeezed);
+    }
+
     let answer: ChatOutcome;
     try {
-        answer = await runChat(cfg, messages, span ? `Rewriting ${span.name}…` : 'Writing a new function…');
+        answer = await runChat(
+            { ...cfg, maxTokens: budget.maxTokens },
+            messages,
+            span ? `Rewriting ${span.name}…` : 'Writing a new function…'
+        );
     } catch (error) {
         logError(error);
         void vscode.window.showErrorMessage(unreachable(error));
@@ -663,6 +905,14 @@ export async function applyChatCode(code: string, opts: { label?: string } = {})
     try {
         const document = await vscode.workspace.openTextDocument(target);
         const text = document.getText();
+        // Before anything is proposed: an answer that leaves code out, or that claims to be the file but has
+        // dropped items from it, is refused here rather than shown and applied (2026-10-12).
+        const problem = chatCodeProblem(text, `${snippet}\n`);
+        if (problem !== undefined) {
+            log(`assistant: refused a chat answer — ${problem}`);
+            void vscode.window.showWarningMessage(problem, { modal: true }, 'OK');
+            return false;
+        }
         proposed = insertChatCode(text, `${snippet}\n`);
         if (proposed === text) {
             void vscode.window.showInformationMessage(`That code is already in ${path.basename(target.fsPath)}.`);
@@ -678,6 +928,22 @@ export async function applyChatCode(code: string, opts: { label?: string } = {})
     // user sees *which* file this is about.
     const title = `AI: ${opts.label ?? 'from the chat'} → ${path.basename(target.fsPath)}`;
     const isNew = (await vscode.workspace.openTextDocument(target)).getText().trim() === '';
+
+    // A whole-file answer is the one case that replaces rather than changes, so it is asked about by name. The
+    // button under the answer already says "the whole file"; this is the same fact at the moment it matters,
+    // when the answer is in hand and the file it would overwrite has a size the user can recognise.
+    if (!isNew && looksLikeWholeFile(`${snippet}\n`) && proposed !== `${snippet}\n`) {
+        const lines = (await vscode.workspace.openTextDocument(target)).getText().split(/\r?\n/).length;
+        const pick = await vscode.window.showWarningMessage(
+            `This answer is a whole file, so applying it replaces all ${lines} lines of ` +
+            `${path.basename(target.fsPath)} rather than changing one thing in it.`,
+            { modal: true },
+            'Replace the file',
+            'Cancel'
+        );
+        if (pick !== 'Replace the file') return false;
+    }
+
     if (configView(SETTINGS).get<boolean>('showDiff') === false) {
         if (!(await writeDocument(target, proposed))) {
             void vscode.window.showErrorMessage('The code could not be written — the file may be read-only.');
@@ -711,9 +977,21 @@ export async function fixWithAI(uri: vscode.Uri, line: number, message: string):
     }
     const offsets = itemOffsets(text, span);
     const func = text.slice(offsets.start, offsets.end);
-    const facts = promptFacts({ document, text, project: await readActiveProject() }, span);
+    const project = await readActiveProject();
+    const facts = promptFacts({ document, text, project }, span);
     const room = Math.max(0, cfg.contextSize - cfg.maxTokens - PROMPT_SLACK);
     const { messages } = fitMessages((f) => buildFixPrompt({ ...f, description: message, func }), facts, room);
+
+    if (!(await guardScope({
+        cfg,
+        messages,
+        request: message,
+        facts,
+        item: { name: span.name, text: func },
+        directory: project?.folder.fsPath
+    }))) {
+        return false;
+    }
 
     let answer: ChatOutcome;
     try {
@@ -743,7 +1021,7 @@ export async function checkProject(): Promise<void> {
     }
     const result = await vscode.window.withProgress(
         { location: vscode.ProgressLocation.Notification, title: 'cargo check…', cancellable: false },
-        () => buildProject(project.folder.fsPath, { mode: 'check' })
+        () => buildProject(project.folder.fsPath, { mode: 'check', env: espEnv() })
     );
     publishBuildDiagnostics(result.diagnostics);
     if (result.failure) {
@@ -784,6 +1062,15 @@ export async function repairProjectWithAI(maxPasses = 6): Promise<RepairReport |
     let cancelled = false;
     /** The last edit, so `revert()` can put it back. */
     let last: { uri: vscode.Uri; before: string } | undefined;
+    /**
+     * Why errors were skipped, one per error.
+     *
+     * The loop counts a skip as `no-fix` and moves on, which is right — but "nothing-fixable" then reads as
+     * "these errors are not the kind anything can fix", when the usual reason is duller: the error sits in a
+     * function larger than a small local model can rewrite. Found on a real project (2026-10-12) whose every
+     * error was inside an 852-line `main`, so the report said nothing helpful about any of them.
+     */
+    const skipped: string[] = [];
 
     const report = await vscode.window.withProgress(
         { location: vscode.ProgressLocation.Notification, title: 'Fixing the build…', cancellable: true },
@@ -794,7 +1081,12 @@ export async function repairProjectWithAI(maxPasses = 6): Promise<RepairReport |
             return repairUntilClean(
                 {
                     build: async () => {
-                        const result = await buildProject(dir, { mode: 'check' });
+                        // `espEnv()` for the same reason the terminal path uses it: an ESP project cannot build
+                        // without the Xtensa linker, and it is only on the PATH after espup's
+                        // `~/export-esp.sh` — which the extension host has never sourced. Without this the
+                        // build died in `build.rs`, reported no diagnostics, and the loop had nothing to fix
+                        // (found on a real project, 2026-10-12).
+                        const result = await buildProject(dir, { mode: 'check', env: espEnv() });
                         clearBuildDiagnostics();
                         publishBuildDiagnostics(result.diagnostics);
                         return {
@@ -807,7 +1099,7 @@ export async function repairProjectWithAI(maxPasses = 6): Promise<RepairReport |
                         progress.report({ message: describeCompilerError(error) });
                         return fixOne(cfg, error, project, (uri, before) => {
                             last = { uri, before };
-                        }, () => cancelled);
+                        }, () => cancelled, skipped);
                     },
                     revert: async () => {
                         if (last) await writeDocument(last.uri, last.before);
@@ -833,11 +1125,63 @@ export async function repairProjectWithAI(maxPasses = 6): Promise<RepairReport |
         );
     } else {
         const rest = report.remaining.slice(0, 5).map((d) => `${describeCompilerError(d)}: ${d.message.slice(0, 80)}`);
-        void vscode.window.showWarningMessage(
-            `Stopped with ${report.remaining.length} error(s) left (${report.stoppedBecause}). ${rest.join('; ')}`
+        // "Nothing was attempted" is the case that reads as a broken feature, so it says why.
+        const why = report.applied === 0 && report.reverted === 0 && skipped.length > 0
+            ? ` Nothing was attempted: ${skipped.slice(0, 3).join('; ')}.`
+            : '';
+        // The end of a failed repair run is the one place a hand-off is worth *offering* rather than waiting to
+        // be asked for: every fix this loop could attempt has been attempted, the build is still broken, and the
+        // errors it could not touch are usually exactly the ones that did not fit a small local model — an
+        // 852-line `main`, most often (2026-10-12). One question, at the point the extension has genuinely run
+        // out of ideas, rather than one dialog per error in the loop.
+        const pick = await vscode.window.showWarningMessage(
+            `Stopped with ${report.remaining.length} error(s) left (${report.stoppedBecause}). ${rest.join('; ')}${why}`,
+            ...(handoffConfig().target === 'off' ? [] : ['Hand it to the pool agent'])
         );
+        if (pick === 'Hand it to the pool agent') {
+            const repairFacts: OptionalFacts = {
+                header: '',
+                crates: crateList(project.cargoToml),
+                target: '',
+                sibling: '',
+                rules: conventionsBlock(normaliseConventions(configView(SETTINGS).get('conventions'))),
+                facts: boardFacts(project.board, project.chip)
+            };
+            await showHandoff(
+                await handOff({
+                    request: handOffForRepair(report.remaining),
+                    refused: skipped.length
+                        ? `The local model could not attempt these: ${skipped.slice(0, 5).join('; ')}`
+                        : 'The local model tried and the build is still not clean.',
+                    facts: factsText(repairFacts),
+                    directory: dir
+                })
+            );
+        }
     }
     return report;
+}
+
+/**
+ * The scripted request for a build the local model could not fix.
+ *
+ * Written as a *goal with evidence* rather than as an instruction list: the errors are what the compiler said,
+ * and the one constraint that matters — fix the cause, do not silence it — is the thing a rushed agent does
+ * wrong (an `#[allow]`, or deleting the code that needs to work).
+ */
+function handOffForRepair(remaining: CompilerDiagnostic[]): string {
+    const shown = remaining.slice(0, 10).map((d) => `- ${describeCompilerError(d)}: ${d.message}`);
+    const rest = remaining.length > shown.length ? [`(and ${remaining.length - shown.length} more from the same build)`] : [];
+    return [
+        'Make this project build, without changing what the project is for.',
+        '',
+        '`cargo check` reports:',
+        ...shown,
+        ...rest,
+        '',
+        'Fix the cause of each error rather than silencing it: no `#[allow]` to hide it, and no deleting the code ' +
+        'that needs to work. Keep the project\'s existing conventions.'
+    ].join('\n');
 }
 
 /** One pass of the repair loop: locate the error, ask, write the edit. */
@@ -846,17 +1190,29 @@ async function fixOne(
     error: CompilerDiagnostic,
     project: ActiveProject,
     remember: (uri: vscode.Uri, before: string) => void,
-    cancelled: () => boolean
+    cancelled: () => boolean,
+    /** Collects the reason, for the summary the user reads when nothing could be attempted. */
+    skipped: string[]
 ): Promise<'fixed' | 'no-fix' | 'failed'> {
     try {
         const uri = vscode.Uri.file(error.file);
         const document = await vscode.workspace.openTextDocument(uri);
         const text = document.getText();
         const span = enclosingFnSpan(text, Math.max(1, error.line));
-        if (!span) return 'no-fix';
+        if (!span) {
+            skipped.push(`${describeCompilerError(error)}: no function around it`);
+            return 'no-fix';
+        }
         const offsets = itemOffsets(text, span);
         const func = text.slice(offsets.start, offsets.end);
-        if (methodTooLong(func)) return 'no-fix';
+        if (methodTooLong(func)) {
+            skipped.push(
+                `${describeCompilerError(error)}: its function \`${span.name}\` is ` +
+                `${func.split(/\r?\n/).length} lines, over the ${MAX_METHOD_LINES}-line limit a small local ` +
+                'model can rewrite reliably'
+            );
+            return 'no-fix';
+        }
         const heading = error.code ? `${error.code}: ${error.message}` : error.message;
         const finding = `${heading}\n(at ${path.basename(error.file)}:${error.line}:${error.column})`;
         const facts = promptFacts({ document, text, project }, span);
@@ -1039,6 +1395,26 @@ export async function refreshPanels(): Promise<void> {
 }
 
 /** Everything this layer registers with the extension context. */
+/**
+ * `Rusty AI: Forget the Handed-off Conversation` — the next hand-off starts a new conversation.
+ *
+ * A hand-off continues the last one by default (`poolResume`), which is what makes a second request add to what
+ * the agent already did. The other half of that promise is being able to stop it: a conversation whose context
+ * has gone stale — a different task, or a wrong turn the agent keeps defending — needs a way out that is not
+ * "turn off the hand-off". Saying so when there is nothing to forget is worth a sentence: a command that
+ * silently does nothing reads as broken.
+ */
+export async function forgetPoolRun(): Promise<void> {
+    const had = lastRunId();
+    await forgetRunId();
+    log(`assistant: pool conversation ${had ? `forgotten (${had})` : 'was already empty'}`);
+    void vscode.window.showInformationMessage(
+        had
+            ? 'The next hand-off to the pool agent will start a new conversation.'
+            : 'There was no handed-off conversation to forget.'
+    );
+}
+
 export function registerAssistantEditorCommands(): vscode.Disposable[] {
     return [
         vscode.workspace.registerTextDocumentContentProvider(PROPOSAL_SCHEME, proposalContent),
@@ -1058,8 +1434,11 @@ export function registerAssistantEditorCommands(): vscode.Disposable[] {
         vscode.commands.registerCommand('rustyPlatform.assistant.check', () => checkProject()),
         vscode.commands.registerCommand('rustyPlatform.assistant.learnConventions', () => learnConventions()),
         vscode.commands.registerCommand('rustyPlatform.assistant.status', () => showStatus()),
+        vscode.commands.registerCommand('rustyPlatform.assistant.forgetPoolRun', () => forgetPoolRun()),
         new vscode.Disposable(() => {
             proposalContent.dispose();
+            proposalBar?.dispose();
+            proposalBar = undefined;
             disposeBuildDiagnostics();
             proposals.clear();
         })

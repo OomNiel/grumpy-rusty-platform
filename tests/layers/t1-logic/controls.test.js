@@ -12,6 +12,7 @@ const path = require('path');
 const { test, ok, equal, contains, notContains } = require('../../lib/harness');
 const { compiled, repoRoot } = require('../../lib/harness');
 const {
+    ACTION_CONTROLS,
     CONTROLS,
     FLASH_PROFILE_CONTROLS,
     NEW_PROJECT_CONTROL,
@@ -19,6 +20,7 @@ const {
     HEALTH_CONTROL,
     healthSummary,
     iconText,
+    statusBarActions,
     statusBarText,
     visibleControls,
 } = compiled('ui/controls');
@@ -93,6 +95,36 @@ test('Stop is the only control that comes and goes', () => {
     ok(!without.includes('rustyPlatform.debugStop'), 'with no session there is nothing to stop');
     equal(during.length, without.length + 1, 'during a session exactly one control appears');
     ok(during.includes('rustyPlatform.debugStop'));
+});
+
+// The status bar's action rows are gated on a project being open (2026-10-12): Build, Flash and Monitor have
+// nothing to act on in a window with no Rusty Platform project, so they are hidden rather than left showing
+// dead. The health row is deliberately not one of them -- the status bar keeps it in every window.
+test('the status bar actions appear only while a project is open', () => {
+    equal(statusBarActions(false, false).length, 0, 'no project, no action rows');
+    equal(statusBarActions(false, true).length, 0, 'not even Stop in a project-less window');
+
+    const open = statusBarActions(true, false).map((control) => control.command);
+    equal(
+        open.join(' '),
+        ACTION_CONTROLS.filter((control) => control.sessionOnly !== true).map((control) => control.command).join(' '),
+        'with a project the actions are the whole list but for the session-only row',
+    );
+    ok(!open.includes('rustyPlatform.checkToolchain'), 'the health row is not one of the gated actions');
+    ok(!open.includes('rustyPlatform.debugStop'), 'and Stop still waits for a session');
+
+    const during = statusBarActions(true, true).map((control) => control.command);
+    equal(during.length, open.length + 1, 'a running session adds exactly Stop');
+    ok(during.includes('rustyPlatform.debugStop'));
+
+    // Opening a project changes what is on screen, not what the rows say: the captions are the ones the user
+    // has learned to press, and only the route wording follows the board.
+    const rp = statusBarActions(true, false);
+    const esp = statusBarActions(true, false, 'esp');
+    equal(esp.map((c) => c.command).join(','), rp.map((c) => c.command).join(','), 'same rows on both families');
+    equal(esp.map((c) => c.label).join(','), rp.map((c) => c.label).join(','), 'same captions');
+    contains(esp.find((c) => c.command === 'rustyPlatform.monitor').tooltip, 'espflash monitor');
+    notContains(esp.find((c) => c.command === 'rustyPlatform.monitor').tooltip, 'probe-rs attach');
 });
 
 test('the health row says what is wrong, not just that something is', () => {

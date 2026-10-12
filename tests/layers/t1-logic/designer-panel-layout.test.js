@@ -13,7 +13,7 @@
  * width looks right on a wide window and runs off the side of a narrow one.
  */
 
-const { test, equal, contains, compiled } = require('../../lib/harness');
+const { test, ok, equal, contains, compiled } = require('../../lib/harness');
 const { designerStyles } = compiled('designer/styles');
 
 const css = designerStyles();
@@ -103,4 +103,29 @@ test('a field control is never stretched to nothing and never as wide as its tex
         '28px',
         'and a colour swatch stays big enough to see',
     );
+});
+
+// A `<button>` does not inherit `color`. Left unset it is drawn in the browser's default button text, which is
+// black -- invisible on a dark menu. The right-click menu was the case in point: `.context-item` was the one
+// button class with no colour rule, so only Delete (which sets the error colour) and a hovered row were legible.
+//
+// jsdom cannot catch this (no user-agent stylesheet, no colours), so the rule itself is what is asserted: every
+// class the webview puts on a button names a VS Code theme colour, which is what keeps it contrasting in a light
+// window as well as a dark one.
+test('every button row names its own text colour', () => {
+    for (const selector of [
+        '.tool-button',
+        '.secondary-button',
+        '.toolbox-item',
+        '.layer-name',
+        '.icon-button',
+        '.context-item',
+    ]) {
+        const colour = styleOf(selector)['color'];
+        ok(colour !== undefined, `${selector} must name a text colour, or the browser picks its own`);
+        contains(colour, '--vscode-', `${selector} must take its colour from the theme`);
+    }
+
+    // And the destructive rows stay red rather than the menu's own colour.
+    contains(styleOf('.context-item.danger')['color'], '--vscode-errorForeground');
 });

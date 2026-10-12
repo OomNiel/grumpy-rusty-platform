@@ -3,7 +3,7 @@
     "displayName": "Grumpy's Rusty Platform for VS Code",
     "description": "PlatformIO-style embedded Rust development for RP2040/RP2350 (Raspberry Pi Pico) and ESP32/ESP32-S3 boards, using Embassy, esp-hal, probe-rs and espflash.",
     "icon": "resources/grumpy.png",
-    "version": "0.0.76",
+    "version": "0.0.80",
     "publisher": "grumpy",
     "license": "MIT OR Apache-2.0",
     "repository": {
@@ -251,6 +251,11 @@
             {
                 "command": "rustyPlatform.assistant.status",
                 "title": "Status and Hardware Check",
+                "category": "Rusty AI"
+            },
+            {
+                "command": "rustyPlatform.assistant.forgetPoolRun",
+                "title": "Forget the Handed-off Conversation",
                 "category": "Rusty AI"
             },
             {
@@ -695,6 +700,42 @@
                     "type": "boolean",
                     "default": false,
                     "markdownDescription": "Run the local AI assist even when this machine looks too small for it. Set by the *Use it anyway* button in the hardware warning."
+                },
+                "rustyPlatform.assistant.handoff": {
+                    "type": "string",
+                    "enum": [
+                        "off",
+                        "pool"
+                    ],
+                    "default": "pool",
+                    "markdownDescription": "Where a request goes when the local model cannot take it. `pool` hands it to the **Poolside CLI agent** (`pool exec`), which has its own much larger model and works on the project directly. `off` warns and stops instead. The local model's own limits are checked before every request either way."
+                },
+                "rustyPlatform.assistant.poolCommand": {
+                    "type": "string",
+                    "default": "pool",
+                    "markdownDescription": "The `pool` executable to run. An absolute path works too; install it with Poolside's own instructions and `pool login`."
+                },
+                "rustyPlatform.assistant.poolAgent": {
+                    "type": "string",
+                    "default": "",
+                    "markdownDescription": "The Poolside agent to ask for (`-a`). Empty uses pool's own default. Note that a **model** cannot be chosen here: `pool exec` has no model flag \u2014 the platform's agent owns that choice."
+                },
+                "rustyPlatform.assistant.poolAutoAllow": {
+                    "type": "boolean",
+                    "default": true,
+                    "markdownDescription": "Let the handed-off agent **use its tools without asking you first** (`--unsafe-auto-allow`). A non-interactive run cannot answer an approval prompt, so with this off a hand-off that needs to edit a file stops and does nothing. The consent dialog says so in as many words before every run."
+                },
+                "rustyPlatform.assistant.poolTimeoutSeconds": {
+                    "type": "number",
+                    "default": 900,
+                    "minimum": 30,
+                    "maximum": 7200,
+                    "markdownDescription": "How long a handed-off run may take before it is stopped. Its changes up to that moment stay on disk, and continuing the conversation picks up where it left off."
+                },
+                "rustyPlatform.assistant.poolResume": {
+                    "type": "boolean",
+                    "default": true,
+                    "markdownDescription": "Continue the last handed-off conversation (`--continue`) instead of starting a fresh one, so a second hand-off knows what the first one already did."
                 }
             }
         }

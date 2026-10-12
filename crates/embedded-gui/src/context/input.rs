@@ -12,7 +12,7 @@ use crate::{
     state::{FeedTimelineState, ListState, ScrollState, SliderState, TabsState},
     style::{VisualState, WidgetStyle},
     widget::{EventPhase, EventPolicy, WidgetId},
-    widgets::{KeyboardLayout, TEXTAREA_CAPACITY, WidgetKind, WidgetNode},
+    widgets::{KeyboardLayout, WidgetKind, WidgetNode, TEXTAREA_CAPACITY},
 };
 
 use super::*;
@@ -536,8 +536,24 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
             #[cfg(feature = "rich-widgets")]
             WidgetKind::Toggle { label, .. } => (text_width(label).saturating_add(12), text_height),
             #[cfg(feature = "rich-widgets")]
-            WidgetKind::Checkbox { label, .. } => {
-                (text_width(label).saturating_add(10), text_height)
+            WidgetKind::Checkbox {
+                label,
+                box_width,
+                box_height,
+                ..
+            } => {
+                // The hint has to allow for the box as well as the text, or a design that asks for a wide box
+                // is measured as if it were the old eight-pixel one and the widget is laid out too narrow.
+                let box_w = if box_width == 0 { 8 } else { box_width as u32 };
+                let box_h = if box_height == 0 {
+                    8
+                } else {
+                    box_height as u32
+                };
+                (
+                    text_width(label).saturating_add(box_w + 3),
+                    text_height.max(box_h),
+                )
             }
             #[cfg(feature = "rich-widgets")]
             WidgetKind::ValueLabel { label, .. } => {
@@ -2012,12 +2028,20 @@ pub(crate) fn bump_index_with_wrap(current: &mut usize, len: usize, delta: i8, w
     }
     let next = if delta >= 0 {
         if *current + 1 >= len {
-            if wrap { 0 } else { *current }
+            if wrap {
+                0
+            } else {
+                *current
+            }
         } else {
             *current + 1
         }
     } else if *current == 0 {
-        if wrap { len - 1 } else { *current }
+        if wrap {
+            len - 1
+        } else {
+            *current
+        }
     } else {
         *current - 1
     };

@@ -25,7 +25,7 @@ import * as https from 'https';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { assessHardware, readHardwareFacts, type AssistantConfig } from './assistant';
+import { assessHardware, contextForBudget, readHardwareFacts, type AssistantConfig } from './assistant';
 import { lastPickerFolder, rememberPickerFile } from './pickers';
 import { bindgenClangArgs, freePort, gccIncludeDir, isMissingExecutable, runCmd } from './sys';
 import { augmentedEnv, findExecutable } from '../util/exec';
@@ -322,7 +322,9 @@ class ModelServer {
             modelPath,
             port,
             threads,
-            contextSize: cfg.contextSize,
+            // `contextForBudget` rather than the raw setting: the window has to hold the prompt *and* a full
+            // answer, and the setting's own `0` means "grow it to fit" (see `assistant.ts`).
+            contextSize: contextForBudget(cfg.contextSize, cfg.maxTokens),
             gpuLayers: cfg.gpuLayers,
             backend
         });

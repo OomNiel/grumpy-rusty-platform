@@ -18,6 +18,7 @@ import * as vscode from 'vscode';
 import { augmentedEnv, execFileFn, findExecutable, type ExecFn } from '../util/exec';
 import {
     BUILD_TIMEOUT_MS,
+    environmentFailure,
     firstCargoError,
     parseCargoOutput,
     type BuildResult,
@@ -26,6 +27,7 @@ import {
 
 export {
     BUILD_TIMEOUT_MS,
+    environmentFailure,
     firstCargoError,
     isProjectSource,
     parseCargoMessages,
@@ -89,7 +91,8 @@ export async function buildProject(projectDir: string, options: BuildOptions = {
     const errors = parsed.diagnostics.filter((d) => d.severity === 'error').length + parsed.projectErrors.length;
     const warnings = parsed.diagnostics.filter((d) => d.severity === 'warning').length;
     const failure = result.code !== 0 && errors === 0
-        ? firstCargoError(result.stderr) ?? `\`cargo ${mode}\` exited with code ${result.code}.`
+        ? environmentFailure(result.stderr) ?? firstCargoError(result.stderr) ??
+        `\`cargo ${mode}\` exited with code ${result.code}.`
         : undefined;
     return {
         ok: result.code === 0,

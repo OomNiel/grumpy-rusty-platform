@@ -75,6 +75,11 @@ pub struct StatusBarWidget {
     pub accent_color: Rgb565,
     /// Optional bottom separator line color.
     pub separator_color: Option<Rgb565>,
+    /// Font the bar's own text is drawn in: the time and the icon glyphs.
+    ///
+    /// It used to be the crate's smallest face whatever the design asked for, because the time was measured
+    /// and drawn with a hard-coded four-pixel advance. A design that names a font now gets it here.
+    pub font: crate::font::FontId,
     /// Standard bar height in pixels (typically 18..24).
     pub height: u16,
     /// Visibility toggle.
@@ -97,6 +102,7 @@ impl Default for StatusBarWidget {
             foreground_color: Rgb565::CSS_WHITE,
             accent_color: Rgb565::CSS_CYAN,
             separator_color: Some(Rgb565::new(6, 12, 18)),
+            font: crate::font::FontId::Tiny3x5,
             height: 20,
             is_visible: true,
         }
@@ -161,12 +167,20 @@ impl StatusBarWidget {
 
         // 3. Render Clock Time (Center)
         if self.mode == StatusBarMode::ClockAndIcons || self.mode == StatusBarMode::ClockOnly {
-            let char_width = 4;
-            let text_w = self.time_text.len() as i32 * char_width;
+            // The chosen font's own advance, so the time stays centred in whatever face the design named
+            // instead of being measured with the four-pixel grid the crate's smallest font happens to have.
+            let advance = self.font.advance() as i32;
+            let text_w = self.time_text.len() as i32 * advance;
             let time_x = bounds.x + (bounds.w as i32 - text_w) / 2;
-            let time_y = center_y - 3;
-            ctx.draw_text(time_x, time_y, &self.time_text, self.foreground_color)
-                .map_err(|_| StatusBarError::RenderError)?;
+            let time_y = center_y - (self.font.line_height() as i32 / 2);
+            ctx.draw_text_with_font(
+                time_x,
+                time_y,
+                &self.time_text,
+                self.foreground_color,
+                self.font,
+            )
+            .map_err(|_| StatusBarError::RenderError)?;
         }
 
         // 4. Render Left-Side Icons (Bluetooth & DND)
@@ -180,7 +194,7 @@ impl StatusBarWidget {
                 let by = center_y - 4;
 
                 let _ = ctx.stroke_rect(Rect::new(bx, by, 6, 8), Border::one(bt_color));
-                let _ = ctx.draw_text(bx + 1, by + 1, "B", bt_color);
+                let _ = ctx.draw_text_with_font(bx + 1, by + 1, "B", bt_color, self.font);
                 left_cursor += 10;
             }
 
@@ -231,7 +245,7 @@ impl StatusBarWidget {
 
             // Charging lightning bolt indicator
             if self.battery_state == BatteryState::Charging {
-                ctx.draw_text(batt_x - 8, batt_y + 1, "~", Rgb565::CSS_YELLOW)
+                ctx.draw_text_with_font(batt_x - 8, batt_y + 1, "~", Rgb565::CSS_YELLOW, self.font)
                     .map_err(|_| StatusBarError::RenderError)?;
             }
         }

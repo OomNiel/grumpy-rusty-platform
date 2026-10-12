@@ -12,8 +12,9 @@
  * direction follows `start_angle`/`end_angle`, and each of the six shows a colour that appears nowhere else.
  */
 
+const fs = require('fs');
 const path = require('path');
-const { test, ok, notOk, equal, compiled, repoRoot } = require('../../lib/harness');
+const { test, ok, notOk, equal, contains, compiled, repoRoot } = require('../../lib/harness');
 const dom = require('../../lib/dom');
 
 const { widgetSpec } = compiled('designer/catalog');
@@ -261,10 +262,10 @@ test('the plain colour properties of the six reach the canvas', () => {
 });
 
 // ---------------------------------------------------------------------------
-// The checkbox's size, which is what made the box look tiny
+// The checkbox's box: two sides of its own, and a label that can go anywhere
 // ---------------------------------------------------------------------------
 
-test('a checkbox honours box_size, and the default is still the crate\'s eight pixels', () => {
+test('a checkbox honours its box width and height, and the default is still eight pixels', () => {
     // The box outline's top strip is a one-pixel-tall fill the width of the box; glyph pixels are 1x1, so a
     // width above four can only be the outline.
     const outlineWidths = (overrides) => {
@@ -277,11 +278,56 @@ test('a checkbox honours box_size, and the default is still the crate\'s eight p
     const defaultBox = byDefault.find((row) => row.w === 8);
     ok(defaultBox !== undefined, 'with no size the box is the crate\'s eight pixels wide');
 
-    const named = outlineWidths({ box_size: 20 });
+    const named = outlineWidths({ box_width: 20, box_height: 20 });
     const namedBox = named.find((row) => row.w === 20);
-    ok(namedBox !== undefined, 'box_size=20 draws a twenty-pixel-wide outline');
+    ok(namedBox !== undefined, 'box_width=20 draws a twenty-pixel-wide outline');
     notOk(namedBox.y === defaultBox.y, 'and sits at a different y, centred on the taller box');
     ok(namedBox.y < defaultBox.y, 'higher up, because the bigger box fills more of the row');
+
+    // The two sides are independent: a wide box is wide and short, which is what a square could never be.
+    const wideBox = outlineWidths({ box_width: 30, box_height: 10 });
+    ok(wideBox.some((row) => row.w === 30), 'box_width and box_height are separate numbers');
+
+    // The tick is inset by a quarter of the box's shorter side, so it scales with the box instead of being a
+    // fixed two pixels that a large box swallows and a small one leaves no room in.
+    const tickSizes = (overrides) => {
+        const { calls } = boot(documentWith(widgetOf('checkbox', { checked: true, accent: '#ff00ff', ...overrides })));
+        return fillsWithColour(calls, css565('#ff00ff')).map((call) => call.args[2]);
+    };
+    const smallTick = tickSizes({})[0];
+    const bigTick = tickSizes({ box_width: 32, box_height: 32 })[0];
+    ok(smallTick !== undefined && bigTick !== undefined, 'a ticked box draws its tick');
+    ok(bigTick > smallTick, `the tick grows with the box: ${bigTick} vs ${smallTick}`);
+
+    // And the label can be put on any of the box's four sides, which moves the box rather than the text.
+    const boxOn = (side) => outlineWidths({ box_width: 20, box_height: 20, label_position: side }).find((row) => row.w === 20);
+    const right = boxOn('right');
+    const left = boxOn('left');
+    ok(right !== undefined && left !== undefined, 'the box is drawn whichever side the label is on');
+    ok(left.x > right.x, 'with the label on the left the box moves to the right edge');
+
+    const top = boxOn('top');
+    const bottom = boxOn('bottom');
+    ok(top !== undefined && bottom !== undefined, 'and on a stacked side too');
+    ok(top.y > bottom.y, 'with the label on top the box sits lower');
+});
+
+// The label sits in the middle of whichever side it was given, not against that side's far edge (asked
+// 2026-10-12). That is one decision written twice -- once in the crate, once in the canvas -- and a glyph-pixel
+// canvas cannot be asked where its text landed, so the two sources are what is held against each other.
+test('the checkbox label is centred on its side, on both sides of the boundary', () => {
+    const crate = fs.readFileSync(path.join(repoRoot(), 'crates', 'embedded-gui', 'src', 'widgets', 'mod.rs'), 'utf8');
+    contains(
+        crate,
+        'TextStyle::new(style.text).with_font(style.font).centered()',
+        'the crate centres the label on the side it was given',
+    );
+
+    const preview = fs.readFileSync(path.join(repoRoot(), 'webview', 'designer', 'preview.ts'), 'utf8');
+    const checkbox = preview.slice(preview.indexOf('function previewCheckbox'), preview.indexOf('function previewSlider'));
+    ok(checkbox.length > 0, 'the canvas has a checkbox painter');
+    contains(checkbox, "align: 'center'", 'and centres the label the same way');
+    contains(checkbox, "verticalAlign: 'middle'", 'on both axes, as `centered()` does');
 });
 
 // ---------------------------------------------------------------------------

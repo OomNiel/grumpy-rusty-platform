@@ -11,6 +11,108 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.80] - 2026-10-12
+
+**This entry covers everything since 0.0.76.** The numbers 0.0.77, 0.0.78 and 0.0.79 were used while this work
+was being built and were never released or tagged, so nothing is missing under them — but they are not entries
+you can install, and this is the first release that carries the whole batch.
+
+### Added
+
+- **A Tick Box that can be sized, labelled on any side, and styled.** The old check box was one fixed
+  square with its label where the crate put it. It now takes a **box width and height** (0 keeps the crate's
+  own rule), a **label position** — left, right, top or bottom of the box, with the label *centred* on that
+  side rather than left where it lands — a **font** for the label and a **box colour**. It was asked for as
+  *"identical to the existing one, but the box size must be settable to any width/height the user selects"*,
+  and the old entry is gone from the toolbox rather than sitting beside the new one: there is one Tick Box,
+  and it does everything the old one did.
+  A design written before this still names the single `box_size`, which is why the catalogue keeps it as a
+  **legacy** property: dropping it would have left every such design with a box of a size it never chose. The
+  toolbox hides it (it is superseded), the validator still accepts it, and the codegen reads it as the
+  fallback for both sides — "a design written before the box had two sides names it".
+- **A font selector for every widget that draws text.** The catalogue now says where a font is *real*
+  (`fontSupport`), because the renderer only passes one through in some places: a control whose text call
+  hard-codes the built-in face must not offer a font setting that quietly does nothing. Where the crate
+  needed a way to draw with a chosen face it got one (`draw_text_with_font`, since `RenderCtx::draw_text` is
+  hard-wired to the small built-in font), and the codegen now carries `style` through the builders that
+  would otherwise have thrown the font away — the dropdown, the dialog and the table.
+- **Middle-click a widget in the designer to jump to its handler.** `auxclick` (button 1) on a widget with
+  code behind it opens `src/ui_handlers.rs` at that item. Left-click still selects: a design tool where the
+  primary button moves to another file would be unusable.
+- **`$(diff) Implement Diff` in the status bar while a proposal is open.** The Apply/Discard buttons lived
+  on a notification and a code lens, and a notification can be dismissed — after which there was no way to
+  implement the diff at all. The status bar item is offered whenever a proposal exists, however it was
+  raised, and it is what the proposal's own title bar and footer point at.
+- **A pre-flight check on every ask prompt, before anything is sent.** *"The extension must inspect each ask
+  prompt to verify that it is within the scope of the ai model capabilities. If not, warn the user and
+  abort."* Six checks, worst first: the prompt does not fit the window (`prompt-overflow`), the file the
+  answer must be written into does not fit it (`file-too-big`), one item is past the rewrite limit
+  (`item-too-long`), the sentence asks for a whole file (`whole-file-intent`), it asks for work across files
+  (`beyond-model`), or the answer has been left too little room (`answer-starved`). The four size checks are
+  arithmetic and the message carries the numbers — a 41 KB `main.rs` is ~10,386 tokens against the ~4,032 a
+  default window leaves for a prompt, and no wording of a request can fix that. The two intent checks are
+  heuristics, they say so (*"read as: …"*), and every refusal offers **Send it anyway** beside Cancel,
+  because a check that cannot be overridden would be wrong eventually and infuriating then.
+- **The hand-off: a request the local model cannot take can go to the Poolside agent instead.** The other
+  half of a refusal, and the answer to *"can we hand off the prompt ... to a listening cloud api agent?"* —
+  on a machine with the `pool` CLI, yes. The agent runs in the project (`pool exec -o json -d <project>`),
+  gets a **scripted prompt** carrying the request verbatim, why it came here, the same board/crate/house-rule
+  facts the local prompt would have had, the file in focus when there is one, and an instruction to build and
+  report what it verified. Its work is reported as it happens (one line per tool call) and its closing
+  paragraph comes back into the conversation. `--continue` with the run's own ID means a second hand-off
+  adds to what the first one did instead of starting over. The prompt goes in on **stdin**, never as an
+  argument, so a developer's own code never appears in the process list.
+- **Six settings for it**, under the assistant's settings: `handoff` (on by default), `poolCommand`,
+  `poolAgent`, `poolAutoAllow`, `poolTimeoutSeconds`, `poolResume`. The AI panel's settings form carries the
+  one that matters — and says whether the command was actually found, before a hand-off is ever attempted.
+  Note what is *not* settable: `pool exec` has no model flag (`-m` is obsolete and points at
+  `--agent-name`), so the model is the platform's own choice and this is a setting for an **agent**.
+
+### Fixed
+
+- **The Build, Flash and Monitor controls no longer appear in every window.** They were drawn whenever the
+  status bar existed, which is to say always — in an unrelated folder, in a plain text file, in a workspace
+  that has nothing to do with embedded Rust. They are now gated on a loaded project, the same rule the rest
+  of the extension already used.
+- **A dropped widget's context menu no longer draws some of its rows in black.** `.context-item` had no
+  colour of its own, and a `<button>` does not inherit one — so the rows that were not `.danger` and were not
+  hovered were painted in the platform's default, which on a dark menu is black on black. The rule is now
+  explicit, and it is a rule rather than a colour so it holds in every theme.
+- **"Fix the Build" did nothing on a real project.** Three separate causes, all of them found by running it
+  against a project that would not compile:
+  1. the build ran **without the ESP environment**: an ESP32 project cannot link without the Xtensa linker
+     that `source ~/export-esp.sh` puts on the PATH, and the extension host has never sourced it — so cargo
+     died in `build.rs` with no diagnostics at all and the loop had nothing to fix. Both in-process build
+     paths now read that file and use it (`espEnv()`, the same one the terminal commands use).
+  2. the designer wrote `src/ui.kdl` but **never regenerated `src/ui.rs`**, so a save that removed a widget
+     left the generated module calling a handler for a widget that no longer existed — a build error that no
+     amount of AI could fix. The module is now written on every designer save, with the markup it belongs to.
+  3. every error sat inside an **852-line `main`**, over the 120-line limit a small local model can rewrite,
+     and each one was skipped in silence. The report now says why each error was skipped, which turns
+     "nothing was attempted" from a broken feature into an explanation.
+- **The assistant could replace a whole file it had only half-read.** The prompt asks for the changed item
+  only, the answer is refused if it elides anything (`...`, `// ...`), and a whole-file-shaped answer is
+  confirmed in a modal that names the file before it can be applied. This is the failure that prompted all of
+  it: a request against a 41 KB `main.rs` came back as a whole file with the parts the model could not see
+  left out, and every item it did not reproduce was deleted.
+- **The answer budget is measured, not assumed.** The window is shared with the prompt and the answer gets
+  what is actually left; the default context went from 4096 to 8192, `contextForBudget` — which existed and
+  was never called — is now what decides the window a request starts with, and an answer squeezed into too
+  little room says so, with the numbers, instead of coming back cut short for no visible reason.
+- **A design that raises no event generated a dead-code warning.** With no event arms nothing in the
+  generated file reads the widget handle, so the compiler called it unused — a warning in every generated
+  project whose design has no events yet. The attribute is now emitted only in that case, so a design that
+  *does* raise events still hears about a handle with genuinely nothing reading it.
+
+### Changed
+
+- The vendored crates gained the widget work behind all of the above: the checkbox's size, label side and
+  colour, a way to draw text with a chosen font, and a **`rich-widgets`** feature gating the runtime-widget
+  items a project does not use. A project picks the new crates up with **Update Crates**; nothing needs
+  rewriting.
+- Generated projects now carry the `#[allow(dead_code)]` above only where it is needed, so a fresh project
+  builds with no warnings of the extension's making.
+
 ## [0.0.76] - 2026-10-09
 
 ### Added

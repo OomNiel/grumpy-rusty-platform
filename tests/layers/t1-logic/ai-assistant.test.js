@@ -24,6 +24,7 @@ const {
     estimateTokens,
     answerBudget,
     contextForBudget,
+    squeezedAnswerNotice,
     promptRoom,
     fitPromptParts,
     descriptionAllowance,
@@ -210,10 +211,32 @@ test('answerBudget leaves the prompt its room and floors the answer at 64 tokens
 });
 
 test('contextForBudget honours an explicit size and grows to fit the answer otherwise', () => {
-    equal(contextForBudget(0, 4096), 6144);
+    // The floor is 8192 since 2026-10-12: at 4096 the prompt (a 120-line method plus the header, the crates and
+    // the rules) left the answer a couple of hundred tokens, which is why an "Implement in function" answer
+    // came back cut short. A window that cannot hold both is not a budget, it is a trap.
+    equal(contextForBudget(0, 4096), 8192);
     equal(contextForBudget(8192, 4096), 8192);
-    equal(contextForBudget(undefined, 512), 4096);
+    equal(contextForBudget(undefined, 512), 8192);
     equal(contextForBudget('2048', 4096), 2048);
+    // An explicit size is still honoured, and `0` still grows past it to hold the answer:
+    // `max(8192, 16384 + 2048)` — the window has to hold the prompt *and* the whole answer.
+    equal(contextForBudget(0, 16384), 18432);
+});
+
+test('a squeezed answer is named, with the numbers that fix it', () => {
+    // `reduced` is what the flow asks about; the notice is what turns it into something actionable.
+    // 180 tokens of answer room is the case this exists for: the prompt had eaten the window.
+    const squeezed = squeezedAnswerNotice({ maxTokens: 180, reduced: true, room: 180 }, 4096, 3892);
+    ok(squeezed !== undefined, 'a nearly-full window is worth interrupting for');
+    contains(squeezed, '3892', 'it says how big the prompt was');
+    contains(squeezed, '4096', 'and how big the window is');
+    contains(squeezed, '180', 'and what is left for the answer');
+    contains(squeezed, 'contextSize', 'naming the setting to raise');
+
+    // Room to answer: no interruption.
+    equal(squeezedAnswerNotice({ maxTokens: 4096, reduced: false, room: 5000 }, 8192, 4900), undefined);
+    // Capped, but still enough to rewrite a function: also no interruption.
+    equal(squeezedAnswerNotice({ maxTokens: 1024, reduced: true, room: 1024 }, 8192, 7100), undefined);
 });
 
 test('promptRoom is what the window leaves after the answer and the slack', () => {

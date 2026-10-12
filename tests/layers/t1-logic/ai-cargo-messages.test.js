@@ -18,6 +18,7 @@ const {
     parseCargoOutput,
     isProjectSource,
     resolveInProject,
+    environmentFailure,
     firstCargoError,
 } = compiled('ai/cargoMessages');
 
@@ -186,4 +187,30 @@ test('firstCargoError picks the first error line out of cargo output', () => {
         'error[E0425]: cannot find value `x`',
     );
     equal(firstCargoError('Finished dev profile'), undefined);
+});
+
+// A build that died before the compiler looked at any code is not something a fixer can help with, and cargo's
+// own line for it (`error: failed to run custom build command for …`) blames the project for an environment
+// problem. This is the real stderr from an ESP project built without espup's environment (2026-10-12).
+test('a build that never reached the code says so, and says what to do', () => {
+    const stderr = [
+        '',
+        'Caused by:',
+        '  process didn\'t exit successfully: `.../build-script-build` (exit status: 101)',
+        '  --- stderr',
+        '  thread \'main\' panicked at build.rs:36:9:',
+        '  Xtensa linker `xtensa-esp32-elf-gcc` was not found on PATH.',
+        '',
+        'error: failed to run custom build command for `testv69 v0.1.0`',
+        '',
+    ].join('\n');
+    const why = environmentFailure(stderr);
+    ok(why !== undefined, 'an unbuildable environment is named as one');
+    contains(why, 'Xtensa', 'naming the linker');
+    contains(why, 'not a code error', 'and saying there is nothing in the code to fix');
+    contains(why, 'ESP Toolchain', 'with the action that fixes it');
+
+    // A normal compiler error is not an environment failure, and neither is silence.
+    equal(environmentFailure('error[E0425]: cannot find value `x` in this scope'), undefined);
+    equal(environmentFailure(''), undefined);
 });

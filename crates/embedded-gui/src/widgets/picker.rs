@@ -73,6 +73,11 @@ pub struct TimePickerWidget {
     pub focus_bg_color: Rgb565,
     /// Bump animation vertical offset in pixels for tactile feedback.
     pub bump_offset_y: i8,
+    /// Font the field text is drawn in.
+    ///
+    /// The fields were measured and drawn with a hard-coded four-pixel advance, so a design could not choose
+    /// a face and the text drifted off centre in any other one.
+    pub font: crate::font::FontId,
 }
 
 impl Default for TimePickerWidget {
@@ -88,6 +93,7 @@ impl Default for TimePickerWidget {
             focus_color: Rgb565::CSS_CYAN,
             focus_bg_color: Rgb565::new(0, 30, 45),
             bump_offset_y: 0,
+            font: crate::font::FontId::Tiny3x5,
         }
     }
 }
@@ -285,25 +291,29 @@ impl TimePickerWidget {
             } else {
                 self.text_color
             };
-            let text_x = cell_rect.x + (cell_rect.w as i32 - (val_str.len() as i32 * 4)) / 2;
-            let text_y = cell_rect.y + (cell_rect.h as i32 / 2) - 3;
+            let text_x = cell_rect.x
+                + (cell_rect.w as i32 - (val_str.len() as i32 * self.font.advance() as i32)) / 2;
+            let text_y =
+                cell_rect.y + (cell_rect.h as i32 / 2) - (self.font.line_height() as i32 / 2);
 
-            ctx.draw_text(text_x, text_y, &val_str, text_color)
+            ctx.draw_text_with_font(text_x, text_y, &val_str, text_color, self.font)
                 .map_err(|_| PickerError::RenderError)?;
 
             // Focus carets
             if is_focused {
-                let _ = ctx.draw_text(
+                let _ = ctx.draw_text_with_font(
                     cell_rect.x + (cell_rect.w as i32 / 2) - 2,
                     cell_rect.y - 8,
                     "^",
                     self.focus_color,
+                    self.font,
                 );
-                let _ = ctx.draw_text(
+                let _ = ctx.draw_text_with_font(
                     cell_rect.x + (cell_rect.w as i32 / 2) - 2,
                     cell_rect.bottom() + 2,
                     "v",
                     self.focus_color,
+                    self.font,
                 );
             }
         }
@@ -327,6 +337,8 @@ pub struct NumberPickerWidget {
     pub suffix: String<8>,
     /// Focused highlight toggle.
     pub is_focused: bool,
+    /// Font the value and its unit are drawn in.
+    pub font: crate::font::FontId,
 }
 
 impl NumberPickerWidget {
@@ -342,6 +354,7 @@ impl NumberPickerWidget {
             step: 1,
             suffix: label,
             is_focused: true,
+            font: crate::font::FontId::Tiny3x5,
         }
     }
 
@@ -388,9 +401,10 @@ impl NumberPickerWidget {
         let mut text: String<16> = String::new();
         let _ = core::fmt::write(&mut text, format_args!("{} {}", self.value, self.suffix));
 
-        let tx = bounds.x + (bounds.w as i32 - (text.len() as i32 * 4)) / 2;
-        let ty = bounds.y + (bounds.h as i32 / 2) - 3;
-        ctx.draw_text(tx, ty, &text, Rgb565::CSS_WHITE)
+        let tx =
+            bounds.x + (bounds.w as i32 - (text.len() as i32 * self.font.advance() as i32)) / 2;
+        let ty = bounds.y + (bounds.h as i32 / 2) - (self.font.line_height() as i32 / 2);
+        ctx.draw_text_with_font(tx, ty, &text, Rgb565::CSS_WHITE, self.font)
             .map_err(|_| PickerError::RenderError)?;
 
         Ok(())

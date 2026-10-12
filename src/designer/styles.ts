@@ -322,6 +322,11 @@ textarea.field-input { resize: vertical; }
     width: 100%;
     padding: 4px 8px;
     text-align: left;
+    /* A button element does not inherit color: left unset it is drawn in the browser's default button text,
+       which is black, and disappears on a dark menu. Only the danger row and a hovered row named a colour,
+       which is why Delete and the row under the pointer were the two that looked right. Naming the theme's own
+       menu foreground here is what keeps every row legible in a light window as well as a dark one. */
+    color: var(--vscode-menu-foreground, var(--vscode-foreground));
     background: transparent;
     border: none;
     border-radius: 2px;

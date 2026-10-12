@@ -21,7 +21,7 @@ screen id="SimPanel" width=480 height=320 theme="dark" {
             row "B" "2"
         }
         label id="tinted" text="AB" style="{ let mut style = Style::label(); style.text = Rgb565::new(31, 0, 0); style }" col=15 row=20 col_span=4 row_span=9
-        checkbox id="check" label="Check" checked=true box_size=18 box_color="#ff8000" style="{ let mut style = Style::label(); style.background = Some(Rgb565::new(16, 0, 31)); style.gradient = None; style.border.color = Rgb565::new(31, 63, 0); style.border.width = 2; style.text = Rgb565::new(0, 63, 31); style.accent = Rgb565::new(0, 63, 0); style }" col=0 row=13 col_span=5 row_span=4
+        checkbox id="check" label="Check" checked=true box_width=24 box_height=18 label_position="right" box_color="#ff8000" style="{ let mut style = Style::label(); style.background = Some(Rgb565::new(16, 0, 31)); style.gradient = None; style.border.color = Rgb565::new(31, 63, 0); style.border.width = 2; style.text = Rgb565::new(0, 63, 31); style.accent = Rgb565::new(0, 63, 0); style }" col=0 row=13 col_span=5 row_span=4
         spinbox id="spin" min=0 max=100 value=42 digits=4 decimals=0 accent_color="#ff00ff" chevron_color="#00ff00" style="{ let mut style = Style::panel(); style.background = Some(Rgb565::new(0, 12, 12)); style.gradient = None; style.text = Rgb565::new(31, 63, 0); style }" col=0 row=18 col_span=5 row_span=6
         roller id="roll" selected=1 style="{ let mut style = Style::panel(); style.background = Some(Rgb565::new(0, 17, 0)); style.gradient = None; style.text = Rgb565::new(31, 63, 31); style.accent = Rgb565::new(31, 34, 0); style }" col=0 row=26 col_span=5 row_span=5 {
             option "One"

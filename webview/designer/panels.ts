@@ -351,6 +351,10 @@ function propertyForm(
     // six identical-looking rows, so the numbers read as three points and not as six unrelated values.
     let group: string | undefined;
     for (const property of spec.props) {
+        // A superseded property is read and written but not offered: editing one would be editing the past.
+        if (property.legacy === true) {
+            continue;
+        }
         if (property.group !== undefined && property.group !== group) {
             group = property.group;
             node.append(element('h4', 'field-group', property.group));
@@ -363,15 +367,15 @@ function propertyForm(
             spec.fontSupport,
             property.kind === 'asset'
                 ? () =>
-                      callbacks.onBrowseAsset(assetKindFor(widget.tag), (path) =>
-                          callbacks.onEdit(setProperty(state, widget.id, property.name, path)),
-                      )
+                    callbacks.onBrowseAsset(assetKindFor(widget.tag), (path) =>
+                        callbacks.onEdit(setProperty(state, widget.id, property.name, path)),
+                    )
                 : property.kind === 'font'
-                  ? () =>
+                    ? () =>
                         callbacks.onBrowseAsset('font', (path) =>
                             callbacks.onEdit(declareFontFromPath(state, widget.id, path)),
                         )
-                  : undefined,
+                    : undefined,
         );
         const help = [
             propertyHelp(widget.tag, property.name),

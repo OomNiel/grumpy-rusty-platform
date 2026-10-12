@@ -937,7 +937,7 @@ function drawLineStyled(
     const sy = y0 < y1 ? 1 : -1;
     let err = dx + dy;
 
-    for (;;) {
+    for (; ;) {
         for (let oy = -half; oy <= half; oy += 1) {
             for (let ox = -half; ox <= half; ox += 1) {
                 pixel(context, x + ox, y + oy, colour, opacity);
@@ -1444,36 +1444,86 @@ function previewToggle(context: CanvasRenderingContext2D, widget: DesignerWidget
 }
 
 /**
- * Checkbox (spec 4.5, `widgets/mod.rs:1497-1546`): an outlined box and, when checked, an accent square.
+ * Checkbox: an outlined box and, when checked, an accent square that scales with the box.
  *
- * `box_size` is the height the box wants, still capped by the row so it cannot draw outside its own cell
- * (`widgets/mod.rs:1515-1522`); `0` keeps the crate's own `min(inner.h, 8)`, which is why the default box is
- * small. `box_color` is the outline, defaulting to `style.text`, the colour the label shares.
+ * `box_width`/`box_height` are the size the box wants, each still capped by the cell so it cannot draw outside
+ * its own box, and `0` keeps the crate's own `min(inner.h, 8)`, which is why the default box is small.
+ * `label_position` puts the label on any of the box's four sides -- the crate's own arrangement is to the
+ * right, which is what a design that names nothing gets. `box_color` is the outline, defaulting to
+ * `style.text`, the colour the label shares.
  */
 function previewCheckbox(context: CanvasRenderingContext2D, widget: DesignerWidget, state: VisualState): void {
     const style = resolveVisual(designStyle(widget, styleNew()), state);
     const rect = rectOf(widget);
     drawBlock(context, rect, style);
     const inner = blockInner(rect, style);
-    const requested = Math.max(0, Math.trunc(numberProp(widget.props, 'box_size', 0)));
-    const boxSize = requested === 0 ? Math.min(inner.h, 8) : Math.min(requested, inner.h);
-    const box: Rect = {
-        x: inner.x,
-        y: inner.y + Math.floor(Math.max(0, inner.h - boxSize) / 2),
-        w: boxSize,
-        h: boxSize,
-    };
-    strokeRounded(context, box, 0, { color: colourProp(widget.props, 'box_color') ?? style.text, width: 1 }, 255);
-    if (boolProp(widget.props, 'checked', false) && boxSize > 4) {
-        fillSolid(context, rectInset(box, allEdges(2)), 0, style.accent, 255);
+    // The crate reads the older, single `box_size` only when the width or the height is *absent* -- an explicit
+    // `0` is the sentinel that asks for the crate's own rule, not "use the old size". So this passes `box_size`
+    // as the fallback rather than as a value, which is what keeps an older design WYSIWYG while a widget the
+    // designer drops -- which names both sizes, at zero -- still draws the crate's default box.
+    const legacySize = Math.max(0, Math.trunc(numberProp(widget.props, 'box_size', 0)));
+    const requestedWidth = Math.max(0, Math.trunc(numberProp(widget.props, 'box_width', legacySize)));
+    const requestedHeight = Math.max(0, Math.trunc(numberProp(widget.props, 'box_height', legacySize)));
+    const boxW = requestedWidth === 0 ? Math.min(inner.w, 8) : Math.min(requestedWidth, inner.w);
+    const boxH = requestedHeight === 0 ? Math.min(inner.h, 8) : Math.min(requestedHeight, inner.h);
+    const gap = 3;
+    const textH = Math.max(1, Math.min(lineHeightOf(style), inner.h));
+    const position = stringProp(widget.props, 'label_position', '') || 'right';
+
+    let box: Rect;
+    let label: Rect;
+    if (position === 'left' || position === 'right') {
+        // One row: the box at the edge the label is not on, both vertically centred, and the label gets
+        // whatever is left.
+        const labelW = Math.max(0, inner.w - (boxW + gap));
+        box = {
+            x: position === 'right' ? inner.x : inner.x + labelW + gap,
+            y: inner.y + Math.floor(Math.max(0, inner.h - boxH) / 2),
+            w: boxW,
+            h: boxH,
+        };
+        label = {
+            x: position === 'right' ? inner.x + boxW + gap : inner.x,
+            y: inner.y,
+            w: labelW,
+            h: inner.h,
+        };
+    } else {
+        // Two rows: the label keeps a band a line tall and the box is centred in what is left, so a box
+        // taller than that band is not pushed off the widget.
+        const labelH = textH;
+        const bandH = Math.max(0, inner.h - (labelH + gap));
+        box = {
+            x: inner.x + Math.floor(Math.max(0, inner.w - boxW) / 2),
+            y:
+                position === 'top'
+                    ? inner.y + labelH + gap + Math.floor(Math.max(0, bandH - boxH) / 2)
+                    : inner.y + Math.floor(Math.max(0, bandH - boxH) / 2),
+            w: boxW,
+            h: boxH,
+        };
+        label = {
+            x: inner.x,
+            y: position === 'top' ? inner.y : inner.y + Math.max(0, inner.h - labelH),
+            w: inner.w,
+            h: labelH,
+        };
     }
-    drawTextIn(
-        context,
-        { x: inner.x + boxSize + 3, y: inner.y, w: Math.max(0, inner.w - (boxSize + 3)), h: inner.h },
-        stringProp(widget.props, 'label', 'text'),
-        style.font,
-        style.text,
-    );
+
+    strokeRounded(context, box, 0, { color: colourProp(widget.props, 'box_color') ?? style.text, width: 1 }, 255);
+    // A quarter of the box's shorter side, so the tick scales with the box rather than being a fixed two pixels
+    // that a large box would swallow and a small one would leave no room in.
+    const inset = Math.max(1, Math.floor(Math.min(boxW, boxH) / 4));
+    const tick = rectInset(box, allEdges(inset));
+    if (boolProp(widget.props, 'checked', false) && tick.w > 0 && tick.h > 0) {
+        fillSolid(context, tick, 0, style.accent, 255);
+    }
+    // Centred on the side it was given, both axes, matching the crate's `TextStyle::centered()`: a label
+    // pushed to the far edge of a wide band reads as misplaced rather than as deliberate.
+    drawTextIn(context, label, stringProp(widget.props, 'label', 'text'), style.font, style.text, {
+        align: 'center',
+        verticalAlign: 'middle',
+    });
 }
 
 /**
@@ -2176,14 +2226,14 @@ type PathCommand =
     | { readonly kind: 'line'; readonly x: number; readonly y: number }
     | { readonly kind: 'quad'; readonly cx: number; readonly cy: number; readonly x: number; readonly y: number }
     | {
-          readonly kind: 'cubic';
-          readonly c1x: number;
-          readonly c1y: number;
-          readonly c2x: number;
-          readonly c2y: number;
-          readonly x: number;
-          readonly y: number;
-      }
+        readonly kind: 'cubic';
+        readonly c1x: number;
+        readonly c1y: number;
+        readonly c2x: number;
+        readonly c2y: number;
+        readonly x: number;
+        readonly y: number;
+    }
     | { readonly kind: 'close' };
 
 /** `f32::round` (half away from zero) followed by Rust's saturating `as i32` cast. */
@@ -2385,11 +2435,11 @@ function pathCubic(
         const inv = CURVE_STEPS - step;
         const x = Math.trunc(
             (inv * inv * inv * fromX + 3 * inv * inv * t * firstX + 3 * inv * t * t * secondX + t * t * t * toX) /
-                denominator,
+            denominator,
         );
         const y = Math.trunc(
             (inv * inv * inv * fromY + 3 * inv * inv * t * firstY + 3 * inv * t * t * secondY + t * t * t * toY) /
-                denominator,
+            denominator,
         );
         pathStroke(context, rect, colour, half, previousX, previousY, x, y);
         previousX = x;
