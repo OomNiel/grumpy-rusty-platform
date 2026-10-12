@@ -6142,6 +6142,7 @@ run — there is no "remember my answer" path — and `handoff: "off"` removes t
 Auto-allow defaults to on because a non-interactive run cannot answer an approval prompt, which makes the
 alternative "stops and does nothing".
 
-Suite after all of this (run per layer, not as one suite): **t1 838, t2 74, t3 4, 0 failed**; `npm run compile`
+Suite after all of this: **t1 838, t2 74, t3 4 — 916 checks, 0 skipped, 0 failed** (run per layer while the work
+was in progress, then the whole suite in one go at the end, with the same numbers); `npm run compile`
 and the PROBLEMS pane clean. One verification worth keeping: the panel's script is a line inside a TypeScript
 template literal, so `tsc` cannot see a syntax error in it — it is parsed separately (242 lines) before a release.
