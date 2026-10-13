@@ -964,6 +964,66 @@ impl<'a> WidgetNode<'a> {
         }
     }
 
+    /// The sub-rect of `bounds` a property change actually dirties, when narrower
+    /// than the whole widget. `set_widget_property` records this instead of
+    /// always marking `bounds` dirty, so a gauge needle only triggers a repaint
+    /// of the spoke it sweeps through -- the ticks and labels are left alone.
+    ///
+    /// Every other (widget, property) pair returns `bounds`, which is exactly
+    /// the previous whole-widget repaint, so progress bars, sliders, and friends
+    /// are unaffected.
+    pub fn dirty_region_for_property(
+        &self,
+        key: PropertyKey,
+        new_val: &PropertyValue<'a>,
+        bounds: Rect,
+    ) -> Rect {
+        match (key, &self.kind, new_val) {
+            #[cfg(feature = "rich-widgets")]
+            (
+                PropertyKey::Value,
+                WidgetKind::Scale {
+                    mode,
+                    value,
+                    min,
+                    max,
+                    major_ticks,
+                    minor_ticks,
+                    start_angle,
+                    end_angle,
+                    show_labels,
+                    show_needle,
+                    tick_color,
+                    needle_color,
+                },
+                PropertyValue::Float(new),
+            ) => {
+                let style = self.style.resolve(VisualState::Normal);
+                let scale = ScaleWidget {
+                    mode: *mode,
+                    value: *value,
+                    min: *min,
+                    max: *max,
+                    major_ticks: *major_ticks,
+                    minor_ticks: *minor_ticks,
+                    start_angle: *start_angle,
+                    end_angle: *end_angle,
+                    show_labels: *show_labels,
+                    show_needle: *show_needle,
+                    tick_color: *tick_color,
+                    needle_color: *needle_color,
+                };
+                // The spoke the needle is leaving must be repainted to erase it,
+                // and the spoke it is arriving on must be repainted to draw it:
+                // old + new, unioned into one dirty band.
+                scale
+                    .needle_extent(*value, bounds, style)
+                    .union(scale.needle_extent(*new, bounds, style))
+            }
+            _ => bounds,
+        }
+    }
+
     pub fn render<D, C>(
         &self,
         ctx: &mut RenderCtx<'_, D, C>,

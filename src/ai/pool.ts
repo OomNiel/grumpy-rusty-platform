@@ -34,6 +34,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { isMissingExecutable } from './sys';
+import { normalizeEndpoint } from './assistant';
 import type { Progress } from './localModelCore';
 
 /**
@@ -627,6 +628,13 @@ export interface HandoffConfig {
     /** The agent to ask for (`-a`); empty means pool's default. */
     agent: string;
     /**
+     * Which of the agents found on this machine to hand off to, by id (`ai/agents.ts`).
+     *
+     * Empty means "the best available one", which is what makes the hand-off work out of the box without being
+     * hard-wired to a single agent: the scan decides (asked 2026-10-13).
+     */
+    agentId: string;
+    /**
      * `--unsafe-auto-allow`: the agent uses its tools without asking.
      *
      * On by default and disclosed in the consent dialog, because a non-interactive `pool exec` cannot answer an
@@ -636,16 +644,48 @@ export interface HandoffConfig {
     timeoutSeconds: number;
     /** Continue the last conversation rather than starting a fresh one. */
     resume: boolean;
+    /**
+     * The `jcode` executable — the Agnes Code CLI.
+     *
+     * Its own setting rather than a shared "the CLI agent" one, because the two agents are installed by two
+     * different projects and a developer can easily have one and not the other (asked 2026-10-13).
+     */
+    jcodeCommand: string;
+    /**
+     * `-p` for jcode. Empty passes nothing and lets jcode's own configuration decide.
+     *
+     * Empty rather than a guessed default on purpose: which provider a CLI agent should use is the developer's
+     * choice, and this machine reaches Agnes through `openai-compatible` while another would not. The consent
+     * dialog names whatever is chosen (or says "as jcode is configured"), so the choice is never invisible.
+     */
+    jcodeProvider: string;
+    /** `-m` for jcode. Empty lets jcode's own configuration decide. */
+    jcodeModel: string;
+    /**
+     * A cloud OpenAI-compatible API to offer as a hand-off provider (asked 2026-10-13).
+     *
+     * Empty means there is none. It is offered to the picker *in addition* to whatever is found by scanning the
+     * machine, because a cloud endpoint is not discoverable — nobody can guess another person's provider URL.
+     */
+    cloudEndpoint: string;
+    /** The model id to ask that cloud API for. Empty lets it choose. */
+    cloudModel: string;
 }
 
 /** Raw settings, every field possibly missing or wrong-typed. */
 export interface RawHandoffSettings {
     handoff?: unknown;
+    handoffAgent?: unknown;
+    cloudEndpoint?: unknown;
+    cloudModel?: unknown;
     poolCommand?: unknown;
     poolAgent?: unknown;
     poolAutoAllow?: unknown;
     poolTimeoutSeconds?: unknown;
     poolResume?: unknown;
+    jcodeCommand?: unknown;
+    jcodeProvider?: unknown;
+    jcodeModel?: unknown;
 }
 
 function clampSetting(value: unknown, fallback: number, min: number, max: number): number {
@@ -670,8 +710,66 @@ export function normalizeHandoff(raw: RawHandoffSettings): HandoffConfig {
         target,
         command: typeof raw.poolCommand === 'string' && raw.poolCommand.trim() ? raw.poolCommand.trim() : 'pool',
         agent: typeof raw.poolAgent === 'string' ? raw.poolAgent.trim() : '',
+        agentId: typeof raw.handoffAgent === 'string' ? raw.handoffAgent.trim() : '',
         autoAllow: raw.poolAutoAllow !== false,
         timeoutSeconds: clampSetting(raw.poolTimeoutSeconds, 900, 30, 7200),
-        resume: raw.poolResume !== false
+        resume: raw.poolResume !== false,
+        jcodeCommand:
+            typeof raw.jcodeCommand === 'string' && raw.jcodeCommand.trim() ? raw.jcodeCommand.trim() : 'jcode',
+        jcodeProvider: typeof raw.jcodeProvider === 'string' ? raw.jcodeProvider.trim() : '',
+        jcodeModel: typeof raw.jcodeModel === 'string' ? raw.jcodeModel.trim() : '',
+        // A URL is normalised the same way the `external` backend's is, so `apihub.agnes-ai.com` and
+        // `https://apihub.agnes-ai.com/v1` are the same provider and one key is enough for either spelling.
+        cloudEndpoint: typeof raw.cloudEndpoint === 'string' && raw.cloudEndpoint.trim()
+            ? normalizeEndpoint(raw.cloudEndpoint)
+            : '',
+        cloudModel: typeof raw.cloudModel === 'string' ? raw.cloudModel.trim() : ''
     };
+}
+
+/**
+ * The secret storage key one endpoint's API key lives under.
+ *
+ * Keyed by endpoint so two providers can be configured at once without one overwriting the other, and so a key
+ * is never accidentally sent to the wrong host: the hand-off asks for the key belonging to the endpoint it is
+ * about to call (2026-10-13).
+ */
+export function handoffKeyName(endpoint: string): string {
+    return `rustyPlatform.handoff.key:${normalizeEndpoint(endpoint)}`;
+}
+
+/**
+ * The API key out of an OpenAI-compatible env file, e.g. `OPENAI_COMPAT_API_KEY=sk-…`.
+ *
+ * Pure, and deliberately narrow: it reads a `KEY=VALUE` line, strips quotes, and hands back the value. It is used
+ * to *offer* a key the developer already has on this machine, which is the difference between a setup step that
+ * is three minutes of hunting and one that is a single click. The value is never logged, never shown, and never
+ * included in anything the extension sends except the request that needs it.
+ */
+export function envFileKey(
+    text: string,
+    names: readonly string[] = ['OPENAI_COMPAT_API_KEY', 'OPENAI_API_KEY', 'API_KEY']
+): string | undefined {
+    for (const name of names) {
+        const match = new RegExp(`^\\s*(?:export\\s+)?${name}\\s*=\\s*(.+)$`, 'm').exec(String(text ?? ''));
+        if (!match) continue;
+        const value = (match[1] ?? '').trim().replace(/^(['"])(.*)\1$/, '$2').trim();
+        if (value) return value;
+    }
+    return undefined;
+}
+
+/**
+ * The env files on this machine worth looking in for an OpenAI-compatible key.
+ *
+ * A short, named list rather than a search: a key can be anywhere, but reading a file the developer did not
+ * offer is not something an editor should do quietly — so the paths are few, known, and named in the dialog
+ * that offers to read one.
+ */
+export function importableKeyFiles(home = os.homedir()): string[] {
+    return [
+        path.join(home, '.config', 'jcode', 'openai-compatible.env'),
+        path.join(home, '.config', 'openai', 'openai-compatible.env'),
+        path.join(home, '.openai-compatible.env')
+    ];
 }

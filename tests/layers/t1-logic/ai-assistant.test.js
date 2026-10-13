@@ -565,3 +565,31 @@ test('two blocks in one answer are two offers, and prose alone is none', () => {
     equal(assistant.rustCodeBlocks('').length, 0);
     equal(assistant.rustCodeBlocks('```\n\n```').length, 0, 'an empty block is not code');
 });
+
+test('a hand-off can ask for an uncapped answer, and nothing else can', async () => {
+    // Asked 2026-10-13: *"Maximise the cloud agents must receive the full responses, do not cap it."* A local
+    // answer is bounded by this machine's window, but a cloud agent is handed exactly the jobs the local model
+    // could not finish, and capping it at the local answer budget cuts it off mid-file — the failure the
+    // hand-off exists to avoid. So the field is left out of the request entirely: the endpoint's own maximum is
+    // the only true one, and inventing a number would be a claim the provider can simply refuse.
+    const assistant = compiled('ai/assistant');
+    const bodies = [];
+    const sse = [
+        'data: {"choices":[{"delta":{"content":"Hel"}}]}',
+        'data: {"choices":[{"delta":{"content":"lo"}}]}',
+        'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
+        'data: [DONE]',
+        ''
+    ].join('\n');
+    const fetchImpl = async (_url, init) => {
+        bodies.push(JSON.parse(init.body));
+        return { ok: true, status: 200, body: streamed(sse), text: async () => '', json: async () => ({}) };
+    };
+    const cfg = assistant.normalizeAssistantConfig({ backend: 'bundled', maxTokens: 777 });
+
+    await assistant.chatDetailed(cfg, [{ role: 'user', content: 'x' }], { fetchImpl, omitMaxTokens: true });
+    equal('max_tokens' in bodies[0], false, 'the uncapped request states no answer limit at all');
+
+    await assistant.chatDetailed(cfg, [{ role: 'user', content: 'x' }], { fetchImpl });
+    equal(bodies[1].max_tokens, 777, 'while an ordinary request still states its answer budget');
+});

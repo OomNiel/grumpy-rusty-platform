@@ -38,11 +38,13 @@ import {
     methodTooLong,
     normalizeAssistantConfig,
     probeServer,
+    rustCodeBlocks,
     squeezedAnswerNotice,
     type AssistantConfig,
     type ChatMessage,
     type ChatOutcome,
-    type ChatOptions
+    type ChatOptions,
+    type CodeBlock
 } from './assistant';
 import {
     addItemToFile,
@@ -51,6 +53,7 @@ import {
     buildImplementPrompt,
     changeSummary,
     chatCodeProblem,
+    codeBlockLabel,
     crateList,
     detectEol,
     enclosingFnSpan,
@@ -85,7 +88,8 @@ import { readActiveProject, type ActiveProject } from '../project/activeProject'
 import { espEnv } from '../commands/terminal';
 import { log, logError } from './log';
 import { checkScope, scopeLogLine } from './scope';
-import { handOff, handoffConfig, lastRunId, forgetRunId, type HandoffReport } from './handoff';
+import { handOff, handoffConfig, lastRunId, forgetRunId, agentScan, forgetAgentScan, handoffKey, setHandoffKey, findImportableKey, type HandoffReport } from './handoff';
+import { describeAgent, chooseAgent, handoffButtonLabel, type AgentCandidate } from './agents';
 
 /** The settings section every AI key lives under. */
 export const SETTINGS = 'rustyPlatform.assistant';
@@ -557,11 +561,37 @@ function factsText(facts: OptionalFacts | undefined): string | undefined {
     return parts.length ? parts.join('\n\n') : undefined;
 }
 
+/**
+ * The label of the hand-off action, naming whichever agent this machine would actually use.
+ *
+ * Asked once per offer rather than written down: the scan is cached, `chooseAgent` is the same decision the
+ * hand-off itself makes, and the wording therefore cannot promise one agent and deliver another (reported
+ * 2026-10-13: *"the prompt in the response box reads: Hand to the Pool agent"* — after pool had stopped being the
+ * only answer).
+ */
+async function handoffAction(): Promise<string> {
+    return handoffButtonLabel(chooseAgent(await agentScan(), handoffConfig().agentId));
+}
+
 /** Says what a hand-off did, and offers the only thing worth doing next: check the build. */
 async function showHandoff(report: HandoffReport): Promise<void> {
     for (const step of report.work) log(`handoff:   ${step}`);
     if (report.full) log(`handoff: the agent said: ${report.full.slice(0, 2000)}`);
     if (report.kind === 'declined' || report.kind === 'off') return;
+    if (report.kind === 'answered') {
+        // An endpoint wrote nothing, so the answer is the whole result — and "the answer is in the conversation"
+        // is a dead end on its own: the code would have to be selected, copied and pasted by hand. The blocks it
+        // returned are offered here, through the same path a local answer takes (asked 2026-10-13: *"Can we
+        // equip it with the ability to generate diffs and on permission implement it?"*).
+        const blocks = rustCodeBlocks(report.answer || report.full || '');
+        const pick = await vscode.window.showInformationMessage(
+            `The hand-off answered (${report.agent ?? 'an endpoint'}). Nothing was written yet — the answer is in ` +
+            'the AI Assist conversation, and its code can be reviewed as a diff from here.',
+            ...(blocks.length ? ['Review and implement…'] : [])
+        );
+        if (pick === 'Review and implement…') await implementHandoffCode(blocks);
+        return;
+    }
     if (report.kind === 'done') {
         const closing = report.answer ? ` ${report.answer.replace(/\s+/g, ' ').slice(0, 160)}` : '';
         const pick = await vscode.window.showInformationMessage(
@@ -572,6 +602,35 @@ async function showHandoff(report: HandoffReport): Promise<void> {
         return;
     }
     void vscode.window.showWarningMessage(`The hand-off did not finish: ${report.message}`);
+}
+
+/**
+ * Offers the code an agent returned, as a diff, and writes nothing until that diff is applied.
+ *
+ * The chat's own buttons and this call run the same path (`applyChatCode`), which is the point: one rule for
+ * "implement this code", so the guards cannot apply to a local answer and not to a handed-off one. A hand-off
+ * that wrote nothing should still end in a usable change — otherwise its answer is only readable.
+ */
+async function implementHandoffCode(blocks: readonly CodeBlock[]): Promise<void> {
+    const chosen = blocks.length === 1 ? blocks[0] : await pickCodeBlock(blocks);
+    if (!chosen) return;
+    await applyChatCode(chosen.code, { label: codeBlockLabel(chosen.code) });
+}
+
+/** Which of several blocks to implement, labelled exactly as the chat labels them. */
+async function pickCodeBlock(blocks: readonly CodeBlock[]): Promise<CodeBlock | undefined> {
+    const pick = await vscode.window.showQuickPick(
+        blocks.map((block, index) => ({
+            label: codeBlockLabel(block.code),
+            description: `${index + 1} of ${blocks.length}${block.language ? ` · ${block.language}` : ''}`,
+            block
+        })),
+        {
+            title: 'Which block should be implemented?',
+            placeHolder: 'The diff follows — nothing is written until you apply it'
+        }
+    );
+    return pick?.block;
 }
 
 /** What a scope check needs from the caller, beyond the settings. */
@@ -623,9 +682,9 @@ async function guardScope(input: ScopeGuardInput): Promise<boolean> {
     if (verdict.ok) return true;
 
     const canHandOff = handoffConfig().target !== 'off';
-    const buttons = canHandOff
-        ? ['Hand it to the pool agent', 'Send it anyway', 'Cancel']
-        : ['Send it anyway', 'Cancel'];
+    // Named per offer: the button says which agent it will use, because "pool" stopped being the only answer.
+    const action = await handoffAction();
+    const buttons = canHandOff ? [action, 'Send it anyway', 'Cancel'] : ['Send it anyway', 'Cancel'];
     const pick = await vscode.window.showWarningMessage(
         `This is beyond what the local model can do here. ${verdict.message ?? ''}`,
         {
@@ -641,7 +700,7 @@ async function guardScope(input: ScopeGuardInput): Promise<boolean> {
         log(`assistant: scope override — ${verdict.problem} accepted by the developer`);
         return true;
     }
-    if (pick === 'Hand it to the pool agent') {
+    if (pick === action) {
         await showHandoff(
             await handOff({
                 request: input.request,
@@ -1133,12 +1192,15 @@ export async function repairProjectWithAI(maxPasses = 6): Promise<RepairReport |
         // be asked for: every fix this loop could attempt has been attempted, the build is still broken, and the
         // errors it could not touch are usually exactly the ones that did not fit a small local model — an
         // 852-line `main`, most often (2026-10-12). One question, at the point the extension has genuinely run
-        // out of ideas, rather than one dialog per error in the loop.
+        // out of ideas, rather than one dialog per error in the loop. The button, and the comparison against
+        // what was clicked, are both the agent's own name — asked once, so no string is written twice.
+        const canHandOff = handoffConfig().target !== 'off';
+        const repairAction = await handoffAction();
         const pick = await vscode.window.showWarningMessage(
             `Stopped with ${report.remaining.length} error(s) left (${report.stoppedBecause}). ${rest.join('; ')}${why}`,
-            ...(handoffConfig().target === 'off' ? [] : ['Hand it to the pool agent'])
+            ...(canHandOff ? [repairAction] : [])
         );
-        if (pick === 'Hand it to the pool agent') {
+        if (pick === repairAction) {
             const repairFacts: OptionalFacts = {
                 header: '',
                 crates: crateList(project.cargoToml),
@@ -1415,6 +1477,170 @@ export async function forgetPoolRun(): Promise<void> {
     );
 }
 
+/**
+ * `Rusty AI: Set the Hand-off API Key…` — the bearer token a cloud hand-off provider needs.
+ *
+ * The key never touches a setting, this file, the log, or the transcript: it is asked for with `password: true`
+ * and stored in VS Code's **secret storage**, keyed by the endpoint it belongs to, so the value sent to one
+ * provider cannot be sent to another. A prompt that could only be satisfied by pasting a secret into a chat
+ * window is worse than no feature, so the key is typed here or read from a file the developer already has — and
+ * when it is read from a file the dialog **names the file** first, because reading a credential the user did not
+ * offer would be the wrong kind of helpful.
+ */
+export async function setHandoffApiKey(): Promise<void> {
+    let cfg = handoffConfig();
+    if (!cfg.cloudEndpoint) {
+        // ASK, DO NOT WARN (reported 2026-10-13): *"Nothing happens when I click 'Open the AI settings' after 'Set
+        // API key...'"*. The old version told the developer to go and set a setting first, and the button it
+        // offered revealed a panel whose settings were collapsed — a dead end at the very start of the setup.
+        // The endpoint is the first half of that setup, so it is asked for here, where the developer already is.
+        const endpoint = await vscode.window.showInputBox({
+            title: 'Cloud API for hand-offs',
+            prompt: 'The OpenAI-compatible base URL of the provider. A trailing /v1 is added if you leave it off.',
+            placeHolder: 'https://apihub.agnes-ai.com/v1',
+            ignoreFocusOut: true
+        });
+        if (endpoint === undefined) return;
+        if (!endpoint.trim()) {
+            void vscode.window.showWarningMessage('A cloud API needs a URL, so nothing was saved.');
+            return;
+        }
+        await updateSetting(configView(SETTINGS), 'cloudEndpoint', endpoint.trim());
+        cfg = handoffConfig();
+        log(`handoff: cloud endpoint set to ${cfg.cloudEndpoint || '(none)'}`);
+        // And the model, which the provider chooses for itself if this is left empty.
+        const model = await vscode.window.showInputBox({
+            title: 'Model for the cloud API',
+            prompt: `The model id ${cfg.cloudEndpoint} should answer with. Leave it empty to let the provider choose.`,
+            placeHolder: 'agnes-2.5-flash',
+            ignoreFocusOut: true
+        });
+        if (model?.trim()) {
+            await updateSetting(configView(SETTINGS), 'cloudModel', model.trim());
+            cfg = handoffConfig();
+            log(`handoff: cloud model set to ${cfg.cloudModel}`);
+        }
+        // The scan's cached answer was taken before this provider existed.
+        forgetAgentScan();
+        await refreshPanels();
+    }
+    const existing = await handoffKey(cfg.cloudEndpoint);
+    if (!existing) {
+        const found = await findImportableKey();
+        if (found) {
+            const pick = await vscode.window.showInformationMessage(
+                `A key for an OpenAI-compatible API is in ${found.path}. Use it for ${cfg.cloudEndpoint}?`,
+                {
+                    modal: true,
+                    detail:
+                        'The file is read once, now, and only if you agree. The key is kept in VS Code secret ' +
+                        'storage — not in settings.json — and it is never displayed.'
+                },
+                'Use that key',
+                'Type one instead',
+                'Cancel'
+            );
+            if (pick === 'Cancel' || pick === undefined) return;
+            if (pick === 'Use that key') {
+                const stored = await setHandoffKey(cfg.cloudEndpoint, found.key);
+                log(`handoff: API key imported from an env file — ${stored ? 'stored' : 'NOT stored'}`);
+                if (stored) {
+                    void vscode.window.showInformationMessage(
+                        `Key stored for ${cfg.cloudEndpoint}. Hand-offs will use it.`
+                    );
+                } else {
+                    void vscode.window.showErrorMessage(
+                        "The key could not be stored — VS Code's secret storage did not accept it, so nothing was " +
+                        'saved. A locked keyring is the usual reason; unlock it and try again.'
+                    );
+                }
+                await refreshPanels();
+                return;
+            }
+        }
+    }
+    const typed = await vscode.window.showInputBox({
+        title: `API key for ${cfg.cloudEndpoint}`,
+        prompt: existing
+            ? 'A key is stored already. Type a new one to replace it, or leave the box empty to remove it.'
+            : 'Paste the API key. It goes into VS Code secret storage, never into settings.json.',
+        password: true,
+        ignoreFocusOut: true
+    });
+    if (typed === undefined) return;
+    const value = typed.trim();
+    const stored = await setHandoffKey(cfg.cloudEndpoint, value);
+    if (!stored) {
+        void vscode.window.showErrorMessage(
+            "The key could not be stored — VS Code's secret storage did not accept it, so nothing was saved. A " +
+            'locked keyring is the usual reason; unlock it and try again.'
+        );
+    } else {
+        void vscode.window.showInformationMessage(
+            value ? `Key stored for ${cfg.cloudEndpoint}.` : `The stored key for ${cfg.cloudEndpoint} was removed.`
+        );
+    }
+    await refreshPanels();
+}
+
+/**
+ * `Rusty AI: Choose the Hand-off Agent…` — which of this machine's agents a refusal hands the job to.
+ *
+ * Asked for on 2026-10-13: *"The system must scan the machine to find and list all available API agents to allow
+ * the user to select the one to hand off to."* The list **is** the scan, so it says what each one can actually
+ * do rather than presenting a menu of names: an agent that can work in the project, one that can only answer a
+ * prompt, one that is installed without a verified way to run it, and one that is not there at all are four
+ * different situations and the picker spells each out. Choosing one the extension cannot drive is refused with
+ * the reason instead of being saved and failing later.
+ */
+export async function chooseHandoffAgent(): Promise<void> {
+    const cfg = handoffConfig();
+    const candidates = await agentScan(true);
+    const usable = (agent: AgentCandidate) => agent.available && agent.drivable;
+    type Item = vscode.QuickPickItem & { id: string };
+    const items: Item[] = [
+        {
+            id: '',
+            label: '$(wand) Automatic',
+            description: cfg.agentId ? 'let the extension choose' : 'in use',
+            detail: 'Takes the first agent that can work in your project, and falls back to one that can answer.'
+        },
+        {
+            id: '__rescan',
+            label: '$(refresh) Rescan this machine',
+            description: 'look again for CLI agents and listening servers'
+        },
+        ...candidates.map((agent) => ({
+            id: agent.id,
+            label: usable(agent) ? agent.label : `$(circle-slash) ${agent.label}`,
+            description: agent.id === cfg.agentId ? 'chosen' : undefined,
+            detail: describeAgent(agent)
+        }))
+    ];
+    const runnable = candidates.filter(usable).length;
+    const pick = await vscode.window.showQuickPick(items, {
+        title: 'Which agent should a hand-off use?',
+        placeHolder:
+            runnable > 0
+                ? `${runnable} agent(s) this extension can run`
+                : 'nothing found that the extension can run — the list says why'
+    });
+    if (!pick) return;
+    if (pick.id === '__rescan') return chooseHandoffAgent();
+    const chosen = candidates.find((agent) => agent.id === pick.id);
+    if (chosen && !usable(chosen)) {
+        void vscode.window.showWarningMessage(`That agent cannot be used yet — ${describeAgent(chosen)}`);
+        return;
+    }
+    await updateSetting(configView(SETTINGS), 'handoffAgent', pick.id);
+    forgetAgentScan();
+    log(`assistant: hand-off agent set to ${pick.id || '(automatic)'}`);
+    void vscode.window.showInformationMessage(
+        pick.id ? `Hand-offs will go to ${chosen?.label ?? pick.id}.` : 'Hand-offs will use the best agent available.'
+    );
+    await refreshPanels();
+}
+
 export function registerAssistantEditorCommands(): vscode.Disposable[] {
     return [
         vscode.workspace.registerTextDocumentContentProvider(PROPOSAL_SCHEME, proposalContent),
@@ -1435,6 +1661,8 @@ export function registerAssistantEditorCommands(): vscode.Disposable[] {
         vscode.commands.registerCommand('rustyPlatform.assistant.learnConventions', () => learnConventions()),
         vscode.commands.registerCommand('rustyPlatform.assistant.status', () => showStatus()),
         vscode.commands.registerCommand('rustyPlatform.assistant.forgetPoolRun', () => forgetPoolRun()),
+        vscode.commands.registerCommand('rustyPlatform.assistant.chooseAgent', () => chooseHandoffAgent()),
+        vscode.commands.registerCommand('rustyPlatform.assistant.setHandoffKey', () => setHandoffApiKey()),
         new vscode.Disposable(() => {
             proposalContent.dispose();
             proposalBar?.dispose();

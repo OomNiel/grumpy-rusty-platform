@@ -607,6 +607,26 @@ export interface ChatOptions {
     onReasoning?: (chars: number) => void;
     signal?: AbortSignal;
     fetchImpl?: FetchLike;
+    /**
+     * A bearer token for the request, when the endpoint needs one.
+     *
+     * It lives here rather than on `AssistantConfig` on purpose: a key is a property of *this request to this
+     * endpoint*, not of the assistant's settings, and settings are the one place a secret must never be written
+     * (they are synced, exported and read back by anything with the workspace open). The caller that has a key —
+     * the cloud hand-off, which reads it from VS Code's secret storage — passes it in (2026-10-13).
+     */
+    apiKey?: string;
+    /**
+     * Send no `max_tokens` at all, so the endpoint's own maximum applies.
+     *
+     * For the cloud hand-off, deliberately: a local model is bounded by this machine's window, but a cloud agent is
+     * being handed the jobs the local model could not finish, and capping its answer at the *local* answer budget
+     * is what makes it stop mid-file — the very thing the hand-off exists to avoid (asked 2026-10-13:
+     * *"Maximise the cloud agents must receive the full responses, do not cap it."*). The field is left out rather
+     * than set to a large number: the provider's own limit is the only true one, and a made-up 1M would simply be
+     * rejected.
+     */
+    omitMaxTokens?: boolean;
 }
 
 /** What a request produced — including the evidence needed to explain an empty answer. */
@@ -705,13 +725,19 @@ export async function chatDetailed(
     try {
         const res = await doFetch(`${cfg.endpoint}/chat/completions`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+                'Content-Type': 'application/json',
+                // A cloud API wants a bearer token and answers 401 without one; a local server ignores the
+                // header, so this costs the local paths nothing. The key is never logged and never echoed.
+                ...(opts.apiKey ? { Authorization: `Bearer ${opts.apiKey}` } : {})
+            },
             signal: controller.signal,
             body: JSON.stringify({
                 model: cfg.model || undefined,
                 messages,
                 temperature: cfg.temperature,
-                max_tokens: cfg.maxTokens,
+                // An uncapped request sends no `max_tokens` key at all (`ChatOptions.omitMaxTokens`).
+                ...(opts.omitMaxTokens ? {} : { max_tokens: cfg.maxTokens }),
                 stream: true,
                 // Ask for the token counts in the closing chunk: the reasoning count is what turns "0
                 // characters" into "837 of its 900 tokens went on thinking". A server that does not know

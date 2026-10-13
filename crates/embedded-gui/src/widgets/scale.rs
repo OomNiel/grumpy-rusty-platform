@@ -330,6 +330,75 @@ impl ScaleWidget {
 
         Ok(())
     }
+
+    /// Bounding box, in `rect`'s coordinate space, of the needle (spoke plus pivot
+    /// disc) as it would be drawn for `value`. The dirty-tracking path unions this
+    /// for the value being left and the value being entered, so a repaint erases
+    /// the spoke the needle just vacated and draws the one it just reached --
+    /// repainting the needle, not the whole face.
+    ///
+    /// This mirrors the needle geometry in the `render_*` methods (same center,
+    /// baseline, radius, and `as i32` casts) so the recorded dirty band always
+    /// covers every pixel the renderer touches; the unit tests enforce that by
+    /// checking every needle-colored pixel falls inside this rect.
+    pub fn needle_extent(&self, value: f32, rect: Rect, style: Style) -> Rect {
+        if !self.show_needle {
+            return Rect::empty();
+        }
+        let inner = Block::styled(style).inner(rect);
+        let range = (self.max - self.min).max(f32::EPSILON);
+        let t = ((value - self.min) / range).clamp(0.0, 1.0);
+        // Spoke half-width (1) + round cap (1) + pivot disc, with a touch of
+        // margin for integer rasterization. The spoke's widest point is the pivot
+        // disc: radius 4 for radial, 3 for linear -- 6 covers both and the caps.
+        let pad = 6_i32;
+        match self.mode {
+            ScaleMode::LinearHorizontal => {
+                let baseline_y = inner.y + (inner.h as i32 * 2 / 3);
+                let nx = inner.x + (t * (inner.w as f32)) as i32;
+                // Spoke: vertical line [baseline_y-12, baseline_y+6] at x=nx, width 2;
+                // pivot disc at (nx, baseline_y) radius 3.
+                Rect::new(
+                    nx - pad,
+                    baseline_y - 12 - pad,
+                    (2 * pad) as u32,
+                    (18 + 2 * pad) as u32,
+                )
+            }
+            ScaleMode::LinearVertical => {
+                let baseline_x = inner.x + (inner.w as i32 / 3);
+                let ny = inner.bottom() - (t * (inner.h as f32)) as i32;
+                // Spoke: horizontal line [baseline_x-4, baseline_x+12] at y=ny, width 2;
+                // pivot disc at (baseline_x, ny) radius 3.
+                Rect::new(
+                    baseline_x - 4 - pad,
+                    ny - pad,
+                    (16 + 2 * pad) as u32,
+                    (2 * pad) as u32,
+                )
+            }
+            ScaleMode::Radial => {
+                let cx = inner.x + (inner.w as i32 / 2);
+                let cy = inner.y + (inner.h as i32 / 2);
+                let radius = (inner.w.min(inner.h) / 2).saturating_sub(4);
+                if radius < 8 {
+                    return Rect::empty();
+                }
+                let sweep = (self.end_angle - self.start_angle) as f32;
+                let angle = (self.start_angle as f32 + sweep * t).to_radians();
+                let needle_len = radius.saturating_sub(6) as f32;
+                let nx = cx + (needle_len * angle.cos()) as i32;
+                let ny = cy + (needle_len * angle.sin()) as i32;
+                // From the spoke's center to its tip, plus margin for the width 2
+                // spoke, its round caps, and the radius-4 pivot disc.
+                let min_x = cx.min(nx) - pad;
+                let min_y = cy.min(ny) - pad;
+                let max_x = cx.max(nx) + pad;
+                let max_y = cy.max(ny) + pad;
+                Rect::new(min_x, min_y, (max_x - min_x) as u32, (max_y - min_y) as u32)
+            }
+        }
+    }
 }
 
 impl Widget for ScaleWidget {
@@ -399,31 +468,23 @@ mod tests {
             scale.get_property(PropertyKey::Value),
             Some(PropertyValue::Float(0.0))
         );
-        assert!(
-            scale
-                .set_property(PropertyKey::Value, PropertyValue::Float(150.0))
-                .is_ok()
-        );
+        assert!(scale
+            .set_property(PropertyKey::Value, PropertyValue::Float(150.0))
+            .is_ok());
         assert_eq!(scale.value, 100.0);
-        assert!(
-            scale
-                .set_property(PropertyKey::Min, PropertyValue::Float(-5.0))
-                .is_ok()
-        );
-        assert!(
-            scale
-                .set_property(PropertyKey::Max, PropertyValue::Float(120.0))
-                .is_ok()
-        );
+        assert!(scale
+            .set_property(PropertyKey::Min, PropertyValue::Float(-5.0))
+            .is_ok());
+        assert!(scale
+            .set_property(PropertyKey::Max, PropertyValue::Float(120.0))
+            .is_ok());
         assert_eq!(
             scale.get_property(PropertyKey::Value),
             Some(PropertyValue::Float(100.0))
         );
-        assert!(
-            scale
-                .set_property(PropertyKey::Offset, PropertyValue::Usize(1))
-                .is_err()
-        );
+        assert!(scale
+            .set_property(PropertyKey::Offset, PropertyValue::Usize(1))
+            .is_err());
     }
 
     #[test]
@@ -433,56 +494,108 @@ mod tests {
         let mut ctx = RenderCtx::new(&mut fb, Rect::new(0, 0, 100, 100));
 
         let horizontal = ScaleWidget::linear_horizontal(0.0, 100.0, 50.0);
-        assert!(
-            horizontal
-                .render(
-                    &mut ctx,
-                    Rect::new(0, 0, 100, 60),
-                    style,
-                    VisualState::Normal
-                )
-                .is_ok()
-        );
+        assert!(horizontal
+            .render(
+                &mut ctx,
+                Rect::new(0, 0, 100, 60),
+                style,
+                VisualState::Normal
+            )
+            .is_ok());
 
         let vertical = ScaleWidget::linear_vertical(0.0, 100.0, 50.0)
             .with_labels(false)
             .with_needle(false, Rgb565::CSS_BLUE);
-        assert!(
-            vertical
-                .render(
-                    &mut ctx,
-                    Rect::new(0, 0, 60, 100),
-                    style,
-                    VisualState::Focused
-                )
-                .is_ok()
-        );
+        assert!(vertical
+            .render(
+                &mut ctx,
+                Rect::new(0, 0, 60, 100),
+                style,
+                VisualState::Focused
+            )
+            .is_ok());
 
         let radial = ScaleWidget::new(0.0, 100.0, 75.0)
             .with_labels(false)
             .with_needle(true, Rgb565::CSS_RED);
-        assert!(
-            radial
-                .render(
-                    &mut ctx,
-                    Rect::new(0, 0, 100, 100),
-                    style,
-                    VisualState::Pressed
-                )
-                .is_ok()
-        );
+        assert!(radial
+            .render(
+                &mut ctx,
+                Rect::new(0, 0, 100, 100),
+                style,
+                VisualState::Pressed
+            )
+            .is_ok());
 
         // Radial too small to draw should be a no-op but still succeed.
         let small_radial = ScaleWidget::new(0.0, 100.0, 50.0);
-        assert!(
-            small_radial
-                .render(
-                    &mut ctx,
-                    Rect::new(0, 0, 10, 10),
-                    style,
-                    VisualState::Disabled
-                )
-                .is_ok()
-        );
+        assert!(small_radial
+            .render(
+                &mut ctx,
+                Rect::new(0, 0, 10, 10),
+                style,
+                VisualState::Disabled
+            )
+            .is_ok());
+    }
+
+    #[test]
+    fn scale_needle_extent_covers_only_the_needle() {
+        let rect = Rect::new(0, 0, 100, 100);
+        let style = Style::new();
+        // A visible needle (CSS_RED) against grey ticks: every red pixel the
+        // renderer lays down must fall inside `needle_extent`, and the extent must
+        // be a proper subset of the dial. That is what lets `set_widget_property`
+        // record the needle's sweep as the dirty band instead of the whole face.
+        let cases: [(&str, ScaleWidget); 3] = [
+            (
+                "radial",
+                ScaleWidget::new(0.0, 100.0, 50.0)
+                    .with_angles(180, 0)
+                    .with_labels(false),
+            ),
+            (
+                "linear-horizontal",
+                ScaleWidget::linear_horizontal(0.0, 100.0, 50.0).with_labels(false),
+            ),
+            (
+                "linear-vertical",
+                ScaleWidget::linear_vertical(0.0, 100.0, 50.0).with_labels(false),
+            ),
+        ];
+        for (name, scale) in cases {
+            let extent = scale.needle_extent(scale.value, rect, style);
+            assert!(
+                extent.w < rect.w && extent.h < rect.h,
+                "{name}: needle extent {extent:?} is not strictly inside the widget {rect:?}"
+            );
+            assert!(
+                extent.w * extent.h < rect.w * rect.h / 4,
+                "{name}: needle extent {extent:?} is not a small fraction of the widget"
+            );
+
+            let mut fb = Framebuffer::<10_000>::new(rect.w as u32, rect.h as u32);
+            let mut ctx = RenderCtx::new(&mut fb, rect);
+            assert!(
+                scale
+                    .render(&mut ctx, rect, WidgetStyle::new(style), VisualState::Normal)
+                    .is_ok(),
+                "{name}: render failed"
+            );
+            let width = rect.w as usize;
+            let mut needle_pixels = 0;
+            for y in 0..rect.h as usize {
+                for x in 0..rect.w as usize {
+                    if fb.pixels()[y * width + x] == Rgb565::CSS_RED {
+                        assert!(
+                            extent.contains(x as i32, y as i32),
+                            "{name}: needle pixel ({x},{y}) fell outside the dirty band {extent:?}"
+                        );
+                        needle_pixels += 1;
+                    }
+                }
+            }
+            assert!(needle_pixels > 0, "{name}: expected a visible needle");
+        }
     }
 }

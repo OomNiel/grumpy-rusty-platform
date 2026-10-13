@@ -2068,6 +2068,71 @@ mod fork_tests {
         assert!(!drawn(Rgb565::CSS_GRAY), "not upstream's grey ticks");
     }
 
+    #[test]
+    fn a_scale_value_change_dirties_only_the_needle_sweep() {
+        let mut gui = gui();
+        let widget = Rect::new(0, 0, 100, 100);
+        // `Style::panel()` is opaque, so the dirty repaint of the band erases the
+        // old needle -- the result must be pixel-identical to a full paint at the
+        // new value. That only holds if the band covers the old + new needle.
+        let id = gui
+            .add_scale_styled(
+                widget,
+                ScaleMode::Radial,
+                0.0,
+                100.0,
+                25.0,
+                4,
+                2,
+                180,
+                0,
+                false,
+                true,
+                Rgb565::CSS_ORANGE,
+                Rgb565::CSS_BLUE,
+                Style::panel(),
+            )
+            .unwrap();
+
+        // Baseline: the full dial painted at value 25.
+        let mut base = TestBuffer::new(200, 80);
+        gui.render(&mut base)
+            .expect("baseline paints the whole dial");
+        gui.clear_dirty();
+
+        // Move the needle 25 -> 80. The designer now marks only the needle's sweep
+        // dirty, not the entire dial -- a strict sub-rectangle of the widget.
+        gui.set_widget_property(id, PropertyKey::Value, PropertyValue::Float(80.0))
+            .expect("a gauge's value can be set");
+        let dirty = gui.dirty_regions();
+        assert_eq!(dirty.len(), 1, "a value change should dirty one band");
+        let region = dirty[0];
+        assert!(
+            region.x >= widget.x
+                && region.y >= widget.y
+                && region.right() <= widget.right()
+                && region.bottom() <= widget.bottom(),
+            "needle dirty region {region:?} must stay inside the widget {widget:?}"
+        );
+        assert!(
+            region.w * region.h < widget.w * widget.h / 2,
+            "needle dirty region {region:?} must be a small part of the widget {widget:?}"
+        );
+
+        // The dirty render repaints only that band: because the panel background is
+        // opaque, the old needle is erased and the new one drawn, so the result is
+        // pixel-identical to a full render at the new value.
+        let mut frame = base.clone();
+        gui.render_dirty(&mut frame)
+            .expect("the dirty band repaints");
+        let mut full = TestBuffer::new(200, 80);
+        gui.render(&mut full).expect("full render at the new value");
+        assert_eq!(
+            frame, full,
+            "dirty repaint must reproduce a full paint at the new value"
+        );
+    }
+
     /// Whether any pixel of `rect` is not the buffer's background, i.e. the widget drew in its own cell.
     fn cell_has_ink(buffer: &TestBuffer, rect: Rect) -> bool {
         (rect.y..rect.bottom())

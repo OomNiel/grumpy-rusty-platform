@@ -76,17 +76,29 @@ it on.
   own window before it is sent: a request that does not fit, a file too large to be written into, one function
   longer than the model can rewrite, or a sentence asking for a whole file or the whole project is **refused
   before anything is sent**, with the numbers and the reason — and with *Send it anyway* for when you disagree.
-- **…and it can hand the job to your own agent instead.** With the Poolside CLI installed
-  (`rustyPlatform.assistant.handoff`, `pool` by default), a refusal offers to hand the request to the `pool`
-  agent: a much larger model, working on the project directly, told to build what it changes. It asks first,
-  in a dialog that names exactly what leaves your machine, reports each step as it works, and continues the
-  same conversation on the next hand-off. The local model itself never sends anything anywhere.
+- **…and it can hand the job to an agent of your choosing.** A refusal offers to hand the request over, and the
+  button names the agent it will really use. The extension **scans this machine** — CLI agents on your `PATH`,
+  plus OpenAI-compatible servers on the usual local ports — and *Which agent a hand-off uses* lists what it
+  found with what each one can do; your choice wins, and *Automatic* prefers an agent that can work in the
+  project over one that can only answer. Two of them are driven directly: the **Poolside CLI** (`pool`) and the
+  **Agnes Code CLI** (`jcode`), which reads, writes and runs commands in your project and continues the same
+  conversation on the next hand-off. A **cloud OpenAI-compatible API** can be offered too — it answers rather
+  than acts, so its code comes back for you to review, and its key lives in VS Code's secret storage. Every
+  hand-off asks first, in a dialog that names what leaves your machine and what the agent may do on its own
+  (both CLI agents edit files without asking — that is what makes them useful here, and it is disclosed every
+  time). The local model itself never sends anything anywhere.
+- **What a hand-off returns can be implemented like any other answer.** The steps it took, its closing
+  paragraph and the outcome land in the conversation, and the code in that answer opens the same diff as a
+  local model's answer — button under the answer, or **Review and implement…** on the notification. Nothing is
+  written until you apply it; a whole-file answer is confirmed by name first and an answer that left parts of
+  the file out is refused with the reason.
 - **It is told what your board actually is.** The prompt carries the board profile (the LED hangs off the
   CYW43 on a Pico W; a Sunton board's panel SPI pins; the crate list from `Cargo.toml`), because a small
   local model otherwise invents pin numbers that the compiler cannot catch.
 - **House rules are measured, not guessed.** `Rusty AI: Learn the House Rules from My Code…` counts this
   project's own idioms (indentation, `pub` on helpers, `?` versus `.unwrap()`, `defmt`) and shows the
-  evidence; what you keep goes into every prompt.
+  evidence; what you keep goes into **every** prompt — the local model's and every hand-off's, which is the only
+  way a cloud agent could ever be told how your code is written.
 - The chat and the model settings live in the **AI Assist** view in the sidebar.
 - **The chat can be an editor tab, so it can live on a second monitor.** *Rusty AI: Open the Assistant in an
   Editor Tab* (also a button in the AI Assist view) opens the same conversation beside your code; drag that tab

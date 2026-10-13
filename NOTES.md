@@ -6146,3 +6146,116 @@ Suite after all of this: **t1 838, t2 74, t3 4 — 916 checks, 0 skipped, 0 fail
 was in progress, then the whole suite in one go at the end, with the same numbers); `npm run compile`
 and the PROBLEMS pane clean. One verification worth keeping: the panel's script is a line inside a TypeScript
 template literal, so `tsc` cannot see a syntax error in it — it is parsed separately (242 lines) before a release.
+
+## 126. A switch that read like a list, and the settings that were never written (2026-10-13)
+
+Reported, in two parts that turned out to be one bug and one misunderstanding:
+
+> *"'When a request is beyond the local model' only have the Pool agent in the list. Where is the agnes option.
+> Also the prompt in the response box reads: Hand to the Pool agent."*
+
+The **wording** was a real defect: the control being read as an agent list is the on/off switch, and its option
+text still said "Hand it to the pool agent" from when pool was the only answer. It now reads *Warn me and stop* /
+*Hand it to an agent* (the stored values are unchanged, so a configuration keeps meaning what it meant), and every
+hand-off action — the chat's refusal button, the editor's modal, the repair loop's offer, the report header, the
+progress line — is labelled from `handoffButtonLabel(chooseAgent(...))`, i.e. from the agent that will *really*
+run. The Agnes entry was in the **other** control all along (*Which agent a hand-off uses*), which is why the
+switch misleading the eye mattered.
+
+The **vanishing setting** was the bug underneath: *"This is the endpoint for Agnes … It is not in the hand-off
+agent list."* The endpoint had been typed in and saved, and the field reverted. `save()` listed the keys it would
+write **by hand** — five of them — while the form sent twelve, so `contextSize`, `maxTokens`, the whole hand-off
+group including the cloud endpoint were sent by the webview, compared against what the panel had been told, and
+then dropped. No error: the form refreshed from settings that had never been written.
+`ai/panelSettings.ts` (`planWrites`) now decides against the manifest's own `contributes.configuration.properties`,
+so the manifest is the only list; a key it does not declare, or a value of the wrong type, is refused **and said
+out loud**; and `t1-logic/ai-panel-settings.test.js` reads the real form source and the real manifest and fails on
+drift, with an assertion that the save method contains no `cfg.update('<name>'` chain — the shape that grew the
+list in the first place.
+
+Two smaller lies in the same area went with it. Storing a cloud API key reported success without checking, so a
+key that had not been saved looked exactly like one that had; `setHandoffKey` now reads it back and says so when it
+fails. And "Open the AI settings" revealed the view while leaving the settings `<details>` collapsed, so pressing
+it with the view already on screen did nothing a person could see: it now expands the section and lands the caret
+on the field the key flow needs, with the editor-tab chat as a logged fallback.
+
+## 127. An answer nobody could implement, rules that reached no prompt, and a cap nobody asked for (2026-10-13)
+
+> *"Can we equip it with the ability to generate diffs and on permission implement it?"*
+> *"Maximise the cloud agents must receive the full responses, do not cap it."*
+> *"Also, how to set up the rules for the cloud agents?"*
+
+Three questions, and each one found something that was half-built.
+
+**The diff existed; the answer never reached it.** A hand-off from the chat did store its answer as a turn — but
+the live `post({type:'turn'})` carried no code blocks, while the *restored history* computed them
+(`turnsForView`), so the `Implement …` buttons appeared only after a panel reload, and a hand-off from the repair
+loop never entered the conversation at all. One label rule now serves both (`codeLabels`), the view registers
+`onHandoffReport(addHandoffTurn)`, and `handOff` is a thin wrapper over `performHandOff` that announces its report
+to listeners — so all three hand-off starting points end in one conversation entry, with the code implementable
+through the same diff-then-apply path a local answer uses (`applyChatCode`). The notification for an answered
+hand-off offers **Review and implement…** directly, with a picker labelled the way the chat labels its buttons
+when the answer carries several blocks.
+
+**The cap was the local one.** `max_tokens: cfg.maxTokens` went on every request, cloud included, so a cloud
+agent — handed exactly the jobs the local model could not fit — was cut off at the *local* answer budget.
+`ChatOptions.omitMaxTokens` makes the request leave the field out entirely rather than invent a number, since the
+provider's own maximum is the only true one. Asserted behaviourally in `ai-assistant.test.js` (the injected
+`fetch` captures the body: no `max_tokens` key with the option, the configured number without it).
+
+**The rules were promised in every prompt and delivered to two of them.** The one rules mechanism is
+`rustyPlatform.assistant.conventions`, whose own description says "They are put in every prompt" — true of the
+editor's implement/fix flows and the repair hand-off, false of the chat, which is the prompt *every* hand-off
+carries and the only place a cloud agent could ever be given rules, since it never sees the project. The rules are
+now part of the facts block the chat builds (`houseRules()`), so the local chat and every hand-off get them. How
+to set them: **Rusty AI: Learn the House Rules from My Code…** measures patterns from your own Rust and keeps what
+you accept; the setting is also editable directly, and hand-written rules sit alongside the measured ones.
+Nothing in the extension reads `AGENTS.md` — worth knowing before assuming a rules file is being sent.
+
+## 128. The Agnes Code CLI, driven the way the pool agent is (2026-10-13)
+
+> *"the Agnes model has a dedicated CLI agent called **Agnes Code CLI** … Why don't we implement this agent in a
+> similar fashion than the Pool agent was implemented?"*
+
+Because only pool's invocation had ever been *measured*, and `drivable: true` is a claim about a measured
+contract. So the first thing was not code: it was asking the CLI. `jcode --version` → **v0.75.0**; `run --help`
+showed `run <MESSAGE>` (the message is **argv**, the opposite of pool's `-p -`/stdin), `--ndjson`, `--json`,
+`-C/--cwd`, `--resume [<ID>]`, `-p/-m`, `--tools`/`--tool-profile`; `provider list` showed the
+`openai-compatible` provider this machine reaches Agnes through; and the saved sessions under
+`~/.jcode/sessions/session_<animal>_<ms>_<hex>.json` record `working_dir`, so "this project's last conversation"
+is a precise question rather than a guess at the newest file (which is all pool's trajectory directory allows).
+
+One live probe was approved and spent — a single prompt in a scratch directory, whose output is kept as
+`tests/layers/t2-cli/fixtures/jcode-run.ndjson`. It settled everything the help text could not: the event shapes
+(`start` carries the session id, `done` carries the whole answer and the usage), the fact that **a `tool_input`
+carries no id** and a long argument arrives in several deltas that must be reassembled onto the most recent
+`tool_start`, that **tools run with no approval prompt at all** (a `write` created the file unattended, and there
+is no flag to brake it — so the consent dialog says exactly that instead of promising a switch that does not
+exist), that no daemon is needed, and that exit 0 means finished with no second code to read.
+
+`src/ai/jcode.ts` is the driver, shaped like `pool.ts`: arguments, the NDJSON record, a tool line, the outcome and
+the session naming are pure and asserted; only the spawn and the directory scan touch the world. The spawn is
+`detached` and killed **as a process group** for the same measured reason as pool's (a launcher is not the only
+process holding the pipes). `AgentKind` gained `jcode`, `CLI_PRESETS` lists it as the second drivable CLI, and
+`handoff.ts` dispatches on `agent.kind` instead of assuming "not an endpoint, therefore pool". Its settings are
+`jcodeCommand`, `jcodeProvider`, `jcodeModel` — provider and model default to **empty**, i.e. jcode's own
+configuration, because which provider a CLI agent should use is the developer's choice; the consent dialog names
+whatever will be used so the choice is never invisible.
+
+Tests: `ai-jcode.test.js` in t1 (pure, against the recorded run) and in t2 against `shims/jcode`, a fake that is
+literal about the contract — including `stdin 0 bytes` in its answer, which is how "the message arrives as an
+argument" is proven end to end rather than only in a pure assertion. The shim's modes cover a failed tool, an
+unfinished run, an unknown event shape, a non-zero exit, the timeout and the Cancel button, and a missing command.
+Two things it taught the hard way: a `printf` format string split across several calls consumes its own
+placeholders with **no arguments** (the shim reported empty byte counts, and the test then blamed the driver,
+which was right), and a shim that reads stdin blocks when run by hand in a terminal — the driver passes
+`stdio: ['ignore', …]`, which is why it is instant there.
+
+Suite after all of this: **t1 878, t2 92, t3 4 — 974 checks, 0 skipped, 0 failed** (per layer while working, and
+the whole hermetic suite at the end); `npm run compile` and the PROBLEMS pane clean. The panel's script is parsed
+separately before a release, as always — and this time that check earned its keep by catching a TypeScript type
+annotation written into the webview's plain JavaScript (`function willRun(): string`), which `tsc` cannot see
+because the whole script is one string. Two more wounds of the usual kind are recorded in the repo memory: a
+`pool`-only test that encoded "exactly one preset is drivable" had to be *rewritten* rather than deleted when a
+second one arrived, and the template-literal backtick trap caught a comment for the sixth time.
+

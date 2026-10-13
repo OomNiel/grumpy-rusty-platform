@@ -10,7 +10,7 @@ use crate::{
         EventContext, EventPhase, EventPolicy, FocusGroupId, PropertyKey, PropertyValue,
         WidgetFlags, WidgetId,
     },
-    widgets::{KeyboardLayout, SurfaceState, TEXTAREA_CAPACITY, WidgetKind, WidgetNode},
+    widgets::{KeyboardLayout, SurfaceState, WidgetKind, WidgetNode, TEXTAREA_CAPACITY},
 };
 use embedded_graphics_core::pixelcolor::Rgb565;
 
@@ -32,9 +32,15 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
     ) -> Result<(), GuiError> {
         let rect = self.absolute_rect(id).ok_or(GuiError::NotFound)?;
         let node = self.node_mut(id).ok_or(GuiError::NotFound)?;
+        // Let the widget narrow what it actually dirtied: a gauge needle only
+        // dirties the spoke it just swept through (old + new position), so the
+        // dirty render repaints the needle instead of the whole face. Every other
+        // (widget, property) pair falls back to the whole `rect`, preserving the
+        // existing whole-widget repaint for progress bars, sliders, and so on.
+        let dirty = node.dirty_region_for_property(key, &val, rect);
         node.set_property(key, val)
             .map_err(|_| GuiError::NotFound)?;
-        self.dirty.add(rect)?;
+        self.dirty.add(dirty)?;
         Ok(())
     }
 

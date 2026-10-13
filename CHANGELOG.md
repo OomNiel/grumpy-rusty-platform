@@ -11,6 +11,98 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.88] - 2026-10-13
+
+**This entry covers everything since 0.0.80.** The numbers 0.0.81 to 0.0.87 were used while this work was being
+built and were never released or tagged, so nothing is missing under them — but they are not entries you can
+install, and this is the first release that carries the whole batch.
+
+### Added
+
+- **The hand-off can use any agent on your machine, and says which one it will use.** The setting was
+  hard-wired to the Poolside CLI; the extension now scans the machine — CLI agents on the `PATH`, plus
+  OpenAI-compatible servers answering on the usual local ports — and offers what it finds in *Which agent a
+  hand-off uses*. An agent that is installed without a verified way to run it is listed too, marked unusable
+  **with the reason**, because "the extension can see your agent and cannot drive it yet" is a different
+  message from silence. Your own choice wins; *Automatic* takes the best available one, preferring an agent
+  that can work in the project over one that can only answer. Every hand-off action — the chat's refusal
+  button, the editor's dialog, the repair loop's last offer, the report header, the progress line — names the
+  agent it will really use, so none of them keeps saying "pool" after pool stopped being the only answer.
+- **The Agnes Code CLI (`jcode`) is a second agent the extension can drive**, implemented the way the
+  Poolside CLI is — because it can do the same job: inspect the project, edit files, run commands, and keep a
+  conversation. Unlike a cloud *endpoint*, which can only answer, this one works in your project, so a
+  hand-off to it is a real hand-off: consent, a progress line, a report of every tool call it made, a
+  conversation turn whose code can be reviewed as a diff, and `--resume` so the next hand-off continues the
+  same session instead of starting over. Its invocation is **measured**, not guessed (jcode v0.75.0): the
+  message is its one positional argument, `--ndjson` on stdout gives one JSON event per line, the session id
+  comes back in the run's own output, and a tool call's arguments arrive in pieces that have to be put back
+  together in order. Two settings, `jcodeProvider` and `jcodeModel`, choose what it talks to (empty lets
+  jcode's own configuration decide, and the consent dialog names whatever is chosen); the command itself is
+  `jcodeCommand`, and its own line in the panel says whether it was found.
+- **A cloud OpenAI-compatible API as a hand-off provider** — for a model that is not installed here at all.
+  The endpoint and model are settings, the API key is stored in **VS Code's secret storage** (never in
+  `settings.json`, never logged, never echoed), and it is written *and read back* before the extension says
+  "stored", because a key that was not saved is a hand-off that fails later with no explanation. The key can
+  also be imported from an existing env file. A cloud provider cannot be discovered by scanning — nobody can
+  guess another person's provider URL — so it is named in the panel and then appears in the agent list with
+  everything else.
+- **An answer that came back from a hand-off can be implemented like any other answer.** A hand-off from the
+  chat stored its answer as a conversation turn but posted it without its code blocks, so the `Implement …`
+  buttons only appeared after the panel was reloaded; a hand-off from the repair loop never entered the
+  conversation at all. Both now land in the conversation as normal turns, and the code in them opens the
+  usual diff (`Apply` / `Discard`), with a whole-file answer confirmed by name and an answer that dropped
+  parts of the file refused with the reason. The notification for an answered hand-off offers
+  **Review and implement…** where the user is already looking, with a picker when the answer carries several
+  blocks.
+- **House rules now reach every prompt.** `rustyPlatform.assistant.conventions` promised "put in every
+  prompt" and was true of the editor flows and the repair hand-off, and false of the chat — which is the
+  prompt every hand-off carries, and so the only place a cloud agent could ever be given rules, since it
+  never sees your project. The rules are part of the facts block now, so the local chat and every hand-off
+  get them.
+- **The model's window and answer budget are on the panel** (`contextSize`, `maxTokens`), editable there
+  because a refused request is usually refused because of one of them.
+
+### Changed
+
+- **A cloud hand-off's answer is no longer capped at the local answer budget.** The request now sends **no
+  `max_tokens` at all**, so the provider's own maximum applies: a cloud agent is handed exactly the jobs the
+  local model could not finish, and cutting it off at the local budget is the failure the hand-off exists to
+  avoid. A local answer is still bounded by this machine's window.
+- **Every agent's own settings are shown only when that agent will run.** With a cloud API chosen, a box
+  asking which `pool` executable to run is a question with no referent — and the same is true of the Agnes
+  Code CLI's provider and model when pool is the one that will run. The switch above them also stopped
+  reading like a list of agents: it offers *Warn me and stop* or *Hand it to an agent*, which is what it
+  actually decides.
+- **"Open the AI settings" opens the AI settings.** It revealed the view and left the settings section
+  collapsed, so pressing it while the view was already visible did nothing anyone could see. It now reveals
+  the view, expands the section, and falls back to the editor-tab chat (with a logged reason) if the sidebar
+  cannot be focused.
+- The panel's Save no longer keeps its own list of keys. The manifest is the list, a key it does not declare
+  is refused **and said out loud**, and adding a field to the form is enough to make it saveable.
+
+### Fixed
+
+- **The panel's Save silently dropped every setting added after it was written** — five of the twelve fields
+  on the form were written, so `contextSize`, `maxTokens`, the cloud endpoint and the whole hand-off group
+  were sent, compared, and then thrown away: the field reverted and the feature never saw the value. A
+  developer's reasonable reading of that is "the extension did not save my setting", which is what was
+  reported. A drift test now reads the real form source and the real manifest and fails if they part ways.
+- **Storing an API key could lie.** It reported success without checking, so a key that was not saved looked
+  exactly like one that was; it is now verified by reading it back, and a failure says so instead of
+  claiming the opposite.
+- **The gauge repainted the whole widget when the needle moved.** Changing the value dirtied the entire
+  control — face, ticks, label and needle — on every step of a sweep. Only the needle's own region is
+  dirtied now, so a moving needle redraws what moved and nothing else. This is the fix as it was worked out
+  in the user's own test app, ported here unchanged. It lives in the **vendored crates**, so an existing
+  project picks it up with **Update Crates** (or **Update now** where the designer offers it) — a new
+  extension version on its own does not change the code already vendored into a project.
+
+### Notes on upgrading
+
+- Everything except the gauge fix is in the extension itself: install the new `.vsix` and reload.
+- The gauge fix is in the crates a project vendors, so an existing project needs **Update Crates** before the
+  needle stops repainting the whole control.
+
 ## [0.0.80] - 2026-10-12
 
 **This entry covers everything since 0.0.76.** The numbers 0.0.77, 0.0.78 and 0.0.79 were used while this work
