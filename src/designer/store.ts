@@ -20,6 +20,7 @@ import {
     DESIGNER_FILE_VERSION,
     type DesignerFont,
     cardSourcePath,
+    dropUnknownProps,
     validateDocument,
 } from './model';
 import { emitKdl } from './kdl';
@@ -28,6 +29,12 @@ export interface LoadResult {
     document?: DesignerDocument;
     /** Why the file could not be used, in a sentence the panel can show instead of a blank canvas. */
     error?: string;
+    /**
+     * What the load had to change to make an older document current, in sentences the panel can show.
+     *
+     * Absent when nothing had to change, which is the common case.
+     */
+    notes?: string[];
 }
 
 /**
@@ -64,29 +71,28 @@ export function loadDocument(json: string): LoadResult {
  * Version 1 had no `fonts`, so it migrates by gaining an empty list -- refusing it would throw away work over
  * a field that did not exist yet. Anything else is refused with both versions named, because a document from a
  * newer extension may carry fields this one would silently drop on the next save.
+ *
+ * A property the catalogue has no place for is dropped here rather than left for the validator to refuse on
+ * every save: see `dropUnknownProps` for why an unrefused one is not a nuisance but a deadlock.
  */
 function migrateDocument(candidate: Partial<DesignerDocument>): LoadResult {
     const version = candidate.version;
-    if (version === 1) {
-        return {
-            document: { ...(candidate as DesignerDocument), version: DESIGNER_FILE_VERSION, fonts: [] },
-        };
-    }
-    if (version !== DESIGNER_FILE_VERSION) {
+    if (version !== 1 && version !== DESIGNER_FILE_VERSION) {
         return {
             error:
                 `the design file says it is version ${String(version)}, and this extension reads version ` +
                 `${DESIGNER_FILE_VERSION}`,
         };
     }
-    return {
-        document: {
-            ...(candidate as DesignerDocument),
-            // A document written by hand, or by a version that predates the field, still loads: an absent list
-            // is an empty one, not a broken file.
-            fonts: Array.isArray(candidate.fonts) ? (candidate.fonts as DesignerFont[]) : [],
-        },
+    const migrated: DesignerDocument = {
+        ...(candidate as DesignerDocument),
+        version: DESIGNER_FILE_VERSION,
+        // A document written by hand, or by a version that predates the field, still loads: an absent list
+        // is an empty one, not a broken file.
+        fonts: Array.isArray(candidate.fonts) ? (candidate.fonts as DesignerFont[]) : [],
     };
+    const { document, dropped } = dropUnknownProps(migrated);
+    return dropped.length === 0 ? { document } : { document, notes: dropped };
 }
 
 export interface RenderedDesign {

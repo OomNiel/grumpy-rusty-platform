@@ -3,7 +3,7 @@
     "displayName": "Grumpy's Rusty Platform for VS Code",
     "description": "PlatformIO-style embedded Rust development for RP2040/RP2350 (Raspberry Pi Pico) and ESP32/ESP32-S3 boards, using Embassy, esp-hal, probe-rs and espflash.",
     "icon": "resources/grumpy.png",
-    "version": "0.0.88",
+    "version": "0.0.94",
     "publisher": "grumpy",
     "license": "MIT OR Apache-2.0",
     "repository": {
@@ -257,21 +257,6 @@
             {
                 "command": "rustyPlatform.assistant.status",
                 "title": "Status and Hardware Check",
-                "category": "Rusty AI"
-            },
-            {
-                "command": "rustyPlatform.assistant.forgetPoolRun",
-                "title": "Forget the Handed-off Conversation",
-                "category": "Rusty AI"
-            },
-            {
-                "command": "rustyPlatform.assistant.chooseAgent",
-                "title": "Choose the Hand-off Agent...",
-                "category": "Rusty AI"
-            },
-            {
-                "command": "rustyPlatform.assistant.setHandoffKey",
-                "title": "Set the Hand-off API Key...",
                 "category": "Rusty AI"
             },
             {
@@ -716,72 +701,6 @@
                     "type": "boolean",
                     "default": false,
                     "markdownDescription": "Run the local AI assist even when this machine looks too small for it. Set by the *Use it anyway* button in the hardware warning."
-                },
-                "rustyPlatform.assistant.handoff": {
-                    "type": "string",
-                    "enum": [
-                        "off",
-                        "pool"
-                    ],
-                    "default": "pool",
-                    "markdownDescription": "Whether a request the local model cannot take may be handed to another agent at all. `off` warns and stops instead. **Which** agent is decided by `handoffAgent` and by what is actually on this machine \u2014 the extension scans for CLI agents and listening OpenAI-compatible servers and offers the ones it can really run."
-                },
-                "rustyPlatform.assistant.handoffAgent": {
-                    "type": "string",
-                    "default": "",
-                    "markdownDescription": "Which of the agents found on this machine a hand-off goes to, by id (e.g. `cli:pool`, `openai:1234`). Empty means the best one available: first an agent that can work in your project, then one that can only answer. Run **Rusty AI: Choose the Hand-off Agent\u2026** to pick from a freshly scanned list."
-                },
-                "rustyPlatform.assistant.cloudEndpoint": {
-                    "type": "string",
-                    "default": "",
-                    "markdownDescription": "A **cloud** OpenAI-compatible API to offer as a hand-off provider \u2014 for example `https://apihub.agnes-ai.com/v1`. It cannot be discovered by scanning the machine, so it is named here; a trailing `/v1` is added for you. The key is **not** set here: run **Rusty AI: Set the Hand-off API Key\u2026**, which stores it in VS Code secret storage instead of in `settings.json`."
-                },
-                "rustyPlatform.assistant.cloudModel": {
-                    "type": "string",
-                    "default": "",
-                    "markdownDescription": "The model id to ask the cloud API for, e.g. `agnes-2.5-flash`. Empty lets the provider choose."
-                },
-                "rustyPlatform.assistant.poolCommand": {
-                    "type": "string",
-                    "default": "pool",
-                    "markdownDescription": "The `pool` executable to run. An absolute path works too; install it with Poolside's own instructions and `pool login`."
-                },
-                "rustyPlatform.assistant.jcodeCommand": {
-                    "type": "string",
-                    "default": "jcode",
-                    "markdownDescription": "The **Agnes Code CLI** executable (`jcode`) to run. It works in your project: it reads, writes and runs commands. Its tools run without an approval prompt, which the consent dialog states before every hand-off."
-                },
-                "rustyPlatform.assistant.jcodeProvider": {
-                    "type": "string",
-                    "default": "",
-                    "markdownDescription": "Passed to `jcode run` as `-p`. Empty lets jcode's own configuration decide. For the Agnes endpoint that is `openai-compatible`."
-                },
-                "rustyPlatform.assistant.jcodeModel": {
-                    "type": "string",
-                    "default": "",
-                    "markdownDescription": "Passed to `jcode run` as `-m`. Empty lets jcode's own configuration decide, e.g. `agnes-2.5-flash`."
-                },
-                "rustyPlatform.assistant.poolAgent": {
-                    "type": "string",
-                    "default": "",
-                    "markdownDescription": "The Poolside agent to ask for (`-a`). Empty uses pool's own default. Note that a **model** cannot be chosen here: `pool exec` has no model flag \u2014 the platform's agent owns that choice."
-                },
-                "rustyPlatform.assistant.poolAutoAllow": {
-                    "type": "boolean",
-                    "default": true,
-                    "markdownDescription": "Let the handed-off agent **use its tools without asking you first** (`--unsafe-auto-allow`). A non-interactive run cannot answer an approval prompt, so with this off a hand-off that needs to edit a file stops and does nothing. The consent dialog says so in as many words before every run."
-                },
-                "rustyPlatform.assistant.poolTimeoutSeconds": {
-                    "type": "number",
-                    "default": 900,
-                    "minimum": 30,
-                    "maximum": 7200,
-                    "markdownDescription": "How long a handed-off run may take before it is stopped. Its changes up to that moment stay on disk, and continuing the conversation picks up where it left off."
-                },
-                "rustyPlatform.assistant.poolResume": {
-                    "type": "boolean",
-                    "default": true,
-                    "markdownDescription": "Continue the last handed-off conversation instead of starting a fresh one (`pool --continue`, `jcode --resume`), so a second hand-off knows what the first one already did. Each agent's own conversation is remembered separately."
                 }
             }
         }

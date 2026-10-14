@@ -664,6 +664,15 @@ impl WidgetKind<'_> {
                 | Self::FeedTimeline { .. }
                 | Self::Dial { .. }
                 | Self::AutoComplete { .. }
+                // The four controls that could be *seen* but not *touched*: `pointer_hit` only
+                // considers focusable widgets, so a Spinbox, NumberPicker, TimePicker or
+                // Carousel could not be tapped or dragged at all until they were listed here.
+                // They are controls rather than displays (a Gauge, Chart or Plotter stays
+                // unreachable on purpose).
+                | Self::Spinbox { .. }
+                | Self::NumberPicker { .. }
+                | Self::TimePicker { .. }
+                | Self::Carousel { .. }
         ) {
             return true;
         }
@@ -1675,12 +1684,13 @@ where
     let inner = block.inner(rect);
     let fill_w = ((inner.w as f32 * value.clamp(0.0, 1.0)) as u32).min(inner.w);
     if fill_w > 0 {
-        let color = if matches!(state, VisualState::Focused) {
-            style.accent
-        } else {
-            style.foreground
-        };
-        ctx.fill_rect(Rect::new(inner.x, inner.y, fill_w, inner.h), color)?;
+        // Always the foreground: the fill used to switch to the accent while the bar had focus, so the
+        // same value read differently depending on where the focus happened to be. That is the same report
+        // as the focused block colour (2026-10-14).
+        ctx.fill_rect(
+            Rect::new(inner.x, inner.y, fill_w, inner.h),
+            style.foreground,
+        )?;
     }
     Ok(())
 }
@@ -3182,6 +3192,14 @@ where
     Ok(())
 }
 
+/// How many rows a roller draws (previous / current / next).
+///
+/// One definition, because two things depend on it and they must agree: the renderer divides the
+/// inner height by this to place the rows, and the drag step uses the same number so the wheel
+/// moves exactly one item per row the finger crosses (`GuiContext::drag_step_selection`).
+#[cfg(feature = "rich-widgets")]
+pub(crate) const ROLLER_ROWS: u32 = 3;
+
 #[cfg(feature = "rich-widgets")]
 fn render_roller<D, C>(
     ctx: &mut RenderCtx<'_, D, C>,
@@ -3205,7 +3223,7 @@ where
     let prev = items[(selected + items.len() - 1) % items.len()];
     let cur = items[selected];
     let next = items[(selected + 1) % items.len()];
-    let row_h = (inner.h / 3).max(1);
+    let row_h = (inner.h / ROLLER_ROWS).max(1);
     let rows = [prev, cur, next];
     for (idx, text) in rows.iter().enumerate() {
         let row = Rect::new(

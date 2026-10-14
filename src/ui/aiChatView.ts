@@ -34,10 +34,7 @@ import { log, logError } from '../ai/log';
 import { readActiveProject } from '../project/activeProject';
 import { panelState } from '../ai/panel';
 import { applyChatCode, assistantConfig, chatWithRescue } from '../ai/editor';
-import { checkScope, looksLikeChangeRequest, namedRustFile, scopeLogLine } from '../ai/scope';
-import { handOff, handoffConfig, poolStatus, jcodeStatus, forgetPoolStatus, forgetJcodeStatus, reportText, agentScan, forgetAgentScan, onHandoffReport, type HandoffReport } from '../ai/handoff';
 import { describeWrites, planWrites, type SettingSpec } from '../ai/panelSettings';
-import { describeAgent, chooseAgent, handoffButtonLabel, agentShortName } from '../ai/agents';
 import { findRunningLlamaServer } from '../ai/llamaServer';
 import { endpointMismatchHint } from '../ai/localModels';
 
@@ -148,9 +145,9 @@ function turnsForView(turns: readonly { role: string; text: string }[]): { role:
 /**
  * The code blocks to offer under a turn, or `undefined` when there is nothing to implement.
  *
- * One function, because a live turn and the restored history have to agree: a hand-off answer that grew its
- * "Implement" buttons only after the panel was reloaded was this rule written twice, once live and once for the
- * history, and the two disagreed (2026-10-13).
+ * One function, because a live turn and the restored history have to agree: an answer that grew its "Implement"
+ * buttons only after the panel was reloaded was this rule written twice, once live and once for the history,
+ * and the two disagreed (2026-10-13).
  */
 function codeLabels(role: string, text: string): string[] | undefined {
     const blocks = role === 'assistant' ? rustCodeBlocks(text) : [];
@@ -183,14 +180,11 @@ function post(message: unknown): void {
 }
 
 /**
- * The project facts both the local prompt and a hand-off carry: the board, the crates, and the house rules.
+ * The project facts every prompt carries: the board, the crates, and the house rules.
  *
- * WHY THE RULES ARE PART OF THIS BLOCK (asked 2026-10-13: *"how to set up the rules for the cloud agents?"*). The
- * house rules are the only standing instructions a developer can give, and this is the one block that every prompt
- * is built from — the local chat, and every hand-off. For a cloud agent it is also the *only* place they can be
- * said: it never sees the project, so it cannot read a file of rules even if one existed. They were missing from
- * here, which made the setting's own description ("They are put in every prompt") true of the editor flows and
- * the repair hand-off and false of the chat's.
+ * WHY THE RULES ARE PART OF THIS BLOCK. The house rules are the only standing instructions a developer can
+ * give, and this is the one block the chat's prompts are built from — the setting promises "They are put in
+ * every prompt", and this is what makes that true of the chat as well as of the editor's own flows.
  */
 async function projectFacts(): Promise<string> {
     const project = await readActiveProject();
@@ -218,109 +212,6 @@ function fileBlock(): string {
 /** The project context a question is answered against: the board, the crates, and the active file. */
 async function contextBlock(): Promise<string> {
     return [await projectFacts(), fileBlock()].filter(Boolean).join('\n\n');
-}
-
-/**
- * The file a size check — or a hand-off — should measure, when there is one worth measuring.
- *
- * Three cases, and the reason they are separated is that measuring the wrong thing is worse than measuring
- * nothing:
- *   - a **selection** is the request's own scope: the prompt carries the selection, so a 41 KB file around it is
- *     irrelevant and nothing is refused;
- *   - a file **named in the sentence** is measured from disk, whether or not it is open — that is the arithmetic
- *     behind "rewrite src/main.rs" being a refusal rather than an instruction to guess;
- *   - a **change request with no selection** is measured against the file in front of the developer, because the
- *     answer has to be written *into* that file. A question is not measured at all: a clipped view is enough to
- *     explain something, and refusing explanations would be the wrong kind of strict (2026-10-12).
- */
-async function askTarget(text: string): Promise<{ path: string; text: string } | undefined> {
-    const editor = vscode.window.activeTextEditor;
-    const openRust = editor && editor.document.languageId === 'rust';
-    if (openRust && !editor.selection.isEmpty) return undefined;
-
-    const named = namedRustFile(text);
-    if (named) {
-        const found = await vscode.workspace.findFiles(
-            `**/${named}`,
-            '**/{target,.git,.dsh-worktrees,node_modules}/**',
-            1
-        );
-        const uri = found[0];
-        if (!uri) return undefined;
-        try {
-            const bytes = await vscode.workspace.fs.readFile(uri);
-            return { path: named, text: Buffer.from(bytes).toString('utf8') };
-        } catch {
-            return undefined;
-        }
-    }
-
-    if (openRust && looksLikeChangeRequest(text)) {
-        return {
-            path: vscode.workspace.asRelativePath(editor.document.uri),
-            text: editor.document.getText()
-        };
-    }
-    return undefined;
-}
-
-/**
- * The refusal the view's hand-off button refers to.
- *
- * Held here rather than sent to the webview and back, so what leaves the machine is what the extension decided
- * to refuse — not a round trip through HTML that a stale page could get wrong.
- */
-let pendingHandoff: { request: string; refused: string; target?: { path: string; text: string } } | undefined;
-
-/**
- * Puts what a hand-off returned into the conversation.
- *
- * WHY IT EXISTS (asked 2026-10-13: *"Can we equip it with the ability to generate diffs and on permission
- * implement it?"*). The buttons under an answer are built from the turn the extension **stores**, so an answer
- * that never becomes a turn can only be copied out by hand. Both ways of handing off — the chat's refusal button
- * and the repair loop's last offer — therefore arrive here, and get exactly what a local answer gets: the code
- * blocks travel with the turn, "Implement …" opens a diff against the file, and nothing is written until that
- * diff is applied (`applyChatCode`). The diff is also where a whole-file answer is refused or confirmed by name.
- *
- * A declined, switched-off or unstartable hand-off is not a turn: nothing was sent, so there is nothing to
- * implement, and the conversation should not fill with "nothing was sent".
- */
-function addHandoffTurn(report: HandoffReport): void {
-    if (report.kind !== 'answered' && report.kind !== 'done') return;
-    const text = reportText(report);
-    if (!text.trim()) return;
-    const chat = ensureActive();
-    chat.turns.push({ role: 'assistant', text });
-    remember();
-    postChats();
-    post({ type: 'turn', role: 'assistant', text, final: true, index: chat.turns.length - 1, code: codeLabels('assistant', text) });
-}
-
-/** Runs the hand-off the developer asked for from a refusal. The turn it produces comes from `addHandoffTurn`. */
-async function runHandoff(): Promise<void> {
-    if (!pendingHandoff) {
-        post({ type: 'error', message: 'That offer is no longer current — ask again and it will be back.' });
-        return;
-    }
-    const pending = pendingHandoff;
-    pendingHandoff = undefined;
-    post({ type: 'busy', busy: true, message: `handing this to ${agentShortName(chooseAgent(await agentScan(), handoffConfig().agentId))}…` });
-    try {
-        // The report is announced by `handOff` itself, and the listener above turns it into a normal assistant
-        // turn — so this flow no longer writes the turn, and a second caller gets the same entry for free.
-        await handOff({
-            request: pending.request,
-            refused: pending.refused,
-            facts: await projectFacts(),
-            target: pending.target,
-            directory: (await readActiveProject())?.folder.fsPath ?? vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd()
-        });
-    } catch (error) {
-        logError(error);
-        post({ type: 'error', message: `The hand-off failed: ${error instanceof Error ? error.message : String(error)}` });
-    } finally {
-        post({ type: 'busy', busy: false });
-    }
 }
 
 /** The system message for a free-form question. */
@@ -373,45 +264,6 @@ async function ask(text: string): Promise<void> {
             chatSystem(context),
             ...chat.turns.map((t) => ({ role: t.role, content: t.text }))
         ];
-
-        // THE GATE (asked 2026-10-12): *"the extension must inspect each ask prompt to verify that it is within
-        // the scope of the ai model capabilities. If not, warn the user and abort."* It runs before anything is
-        // sent and before the "thinking…" line appears, because a request that is going nowhere should not
-        // first look like it is going somewhere. The refusal is drawn as its own block with a hand-off button;
-        // `pendingHandoff` holds what the button will send.
-        const target = await askTarget(text);
-        const verdict = checkScope({
-            messages,
-            contextSize: cfg.contextSize,
-            maxTokens: cfg.maxTokens,
-            request: text,
-            target
-        });
-        log(`assistant: chat ${scopeLogLine(verdict)}`);
-        if (!verdict.ok) {
-            pendingHandoff = { request: text, refused: verdict.message ?? '', target };
-            // The refusal is stored too, not only posted: a transcript with a question and no answer looks like a
-            // lost reply when the panel is reopened, and it is also useful context for the next question.
-            chat.turns.push({
-                role: 'assistant',
-                text: `⛔ ${verdict.message ?? ''}${verdict.advice ? `\n\n${verdict.advice}` : ''}`
-            });
-            remember();
-            postChats();
-            // The action names the agent this machine would really use, rather than saying "pool" whatever the
-            // settings say (reported 2026-10-13).
-            const handoff = handoffConfig();
-            post({
-                type: 'scope',
-                problem: verdict.problem,
-                message: verdict.message,
-                advice: verdict.advice,
-                handoff: handoff.target !== 'off',
-                action: handoffButtonLabel(chooseAgent(await agentScan(), handoff.agentId))
-            });
-            return;
-        }
-        pendingHandoff = undefined;
         post({ type: 'busy', busy: true, message: 'thinking…' });
 
         const controller = new AbortController();
@@ -467,14 +319,6 @@ async function pushState(fresh = false): Promise<void> {
     try {
         const state = await panelState(fresh);
         const cfg = assistantConfig();
-        const handoff = handoffConfig();
-        // The probe is cached per command (see `handoff.poolStatus`), so this is one spawn per session rather
-        // than one per refresh — and the answer is what lets the form say "not installed" before a hand-off is
-        // ever attempted.
-        const poolVersionText = handoff.target === 'off' ? '' : ((await poolStatus(handoff.command)) ?? '');
-        // The same probe for the other CLI agent, on the same terms: asked once, cached, and only when a hand-off
-        // is actually possible.
-        const jcodeVersionText = handoff.target === 'off' ? '' : ((await jcodeStatus(handoff.jcodeCommand)) ?? '');
         post({
             type: 'state',
             state: {
@@ -486,17 +330,6 @@ async function pushState(fresh = false): Promise<void> {
                 stopAtStartup: cfg.stopServersAtStartup,
                 contextSize: cfg.contextSize,
                 maxTokens: cfg.maxTokens,
-                handoff: handoff.target,
-                handoffAgent: handoff.agentId,
-                cloudEndpoint: handoff.cloudEndpoint,
-                cloudModel: handoff.cloudModel,
-                poolCommand: handoff.command,
-                poolAutoAllow: handoff.autoAllow,
-                poolVersion: poolVersionText,
-                jcodeCommand: handoff.jcodeCommand,
-                jcodeProvider: handoff.jcodeProvider,
-                jcodeModel: handoff.jcodeModel,
-                jcodeVersion: jcodeVersionText,
                 hint: state.hint,
                 pinned: state.pinned,
                 enabled: state.enabled,
@@ -504,23 +337,6 @@ async function pushState(fresh = false): Promise<void> {
                 hostWarning: state.host.warning ?? (state.host.reasons[0] ?? '')
             } satisfies SettingsSnapshot
         });
-        // The agent list arrives separately, because finding it means knocking on four ports and running
-        // `--version`, and the panel must not wait for that to draw. The select is filled when it lands.
-        void agentScan().then((list) =>
-            post({
-                type: 'agents',
-                chosen: handoff.agentId,
-                // Which agent the extension would really use. Decided here rather than in the view, so the
-                // panel never grows a second copy of the choice — and so each agent's own settings can be shown
-                // exactly when that agent is the one that will run (asked 2026-10-13).
-                effective: chooseAgent(list, handoff.agentId)?.id ?? '',
-                agents: list.map((agent) => ({
-                    id: agent.id,
-                    text: describeAgent(agent),
-                    usable: agent.available && agent.drivable
-                }))
-            })
-        );
     } catch (error) {
         logError(error);
         post({ type: 'error', message: `Could not read the model state: ${error instanceof Error ? error.message : String(error)}` });
@@ -537,29 +353,12 @@ interface SettingsSnapshot {
     model: string;
     showDiff: boolean;
     /**
-     * The model's own two numbers (asked 2026-10-13). They are editable in the form because they are not
-     * trivia: the scope gate measures every prompt against `contextSize` and every answer against `maxTokens`,
-     * so between them they decide what can be asked for at once.
+     * The model's own two numbers (asked 2026-10-13). Editable in the form because they are not trivia: the
+     * prompt is measured against `contextSize` and the answer against `maxTokens`, so between them they decide
+     * how much can be asked for at once.
      */
     contextSize: number;
     maxTokens: number;
-    /** Where a request the local model cannot take is handed off to, and how (`2026-10-12`). */
-    handoff: string;
-    /** Which agent was chosen (`2026-10-13`); empty means the best one available. */
-    handoffAgent: string;
-    /** A cloud OpenAI-compatible API offered as a hand-off provider (`2026-10-13`). The key is NOT here. */
-    cloudEndpoint: string;
-    cloudModel: string;
-    poolCommand: string;
-    poolAutoAllow: boolean;
-    /** The version `pool --version` reported, or `''` when the command is not there. */
-    poolVersion: string;
-    /** The Agnes Code CLI's own three (`2026-10-13`): the executable, and what `-p` / `-m` should say. */
-    jcodeCommand: string;
-    jcodeProvider: string;
-    jcodeModel: string;
-    /** The version `jcode --version` reported, or `''` when the command is not there. */
-    jcodeVersion: string;
     hint: string;
     pinned: string;
     enabled: boolean;
@@ -698,13 +497,6 @@ function html(webview: vscode.Webview): string {
     .turn pre { background: var(--vscode-textCodeBlock-background); padding: 6px; border-radius: 4px; overflow-x: auto; }
     .busy { opacity: .8; font-style: italic; }
     .error { color: var(--vscode-errorForeground); white-space: pre-wrap; }
-    /* A request the local model cannot take (2026-10-12). It is drawn as a block rather than as prose so it
-       reads as the answer to the question, and the conversation does not look like it simply stopped. */
-    .scope { border: 1px solid var(--vscode-inputValidation-warningBorder, var(--vscode-panel-border));
-        border-left: 3px solid var(--vscode-editorWarning-foreground, #d7a12c); border-radius: 4px; padding: 8px; }
-    .scope .advice { opacity: .9; margin-top: 6px; font-size: .95em; }
-    .scope button { margin-top: 8px; }
-    .scope button[disabled] { opacity: .6; cursor: default; }
     textarea, input, select { width: 100%; box-sizing: border-box; background: var(--vscode-input-background);
         color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border, transparent); border-radius: 3px; padding: 4px; }
     textarea { resize: vertical; min-height: 64px; }
@@ -758,44 +550,10 @@ function html(webview: vscode.Webview): string {
         <input id="model" type="text" placeholder="qwen2.5-coder-7b-instruct">
         <label><input id="showDiff" type="checkbox" style="width:auto"> Show a diff before applying</label>
         <label title="A window that opens with the assistant off unloads the models and stops the llama-server"><input id="stopAtStartup" type="checkbox" style="width:auto"> Stop the local servers when a window starts with the assist off</label>
-        <label title="The context window the bundled runtime is started with, in tokens. 0 lets the extension size it to hold the answer budget plus 2048. Every prompt is measured against this before it is sent, so it is also what decides whether a request is refused as too big for this model.">Context window (tokens)</label>
+        <label title="The context window the bundled runtime is started with, in tokens. 0 lets the extension size it to hold the answer budget plus 2048.">Context window (tokens)</label>
         <input id="contextSize" type="number" min="0" max="262144" step="512" title="The window, in tokens. 0 = size it to fit the answer budget.">
         <label title="The longest answer the model may write. Raising it for a thinking model leaves less room for the prompt inside the same window, so the two numbers belong together.">Longest answer (tokens)</label>
         <input id="maxTokens" type="number" min="64" max="8192" step="64" title="The answer budget, in tokens.">
-        <label>When a request is beyond the local model</label>
-        <select id="handoff" title="The switch, not the agent: whether a request the local model cannot take may be handed to another agent at all. Which agent is the next control.">
-            <option value="off">Warn me and stop</option>
-            <option value="pool">Hand it to an agent</option>
-        </select>
-        <label title="What the agent list below is: this machine's own agents, with what each one can actually do. Scanned from the PATH and from the usual local ports, so an agent that edits your project can be told apart from a server that only answers.">Which agent a hand-off uses</label>
-        <select id="handoffAgent" title="The list is this machine's own agents, with what each one can actually do.">
-            <option value="">Automatic — the best available</option>
-        </select>
-        <div class="row">
-            <button id="chooseAgent" class="secondary" title="Scan this machine again and pick from the full list, with reasons for anything that cannot be used">Rescan and choose…</button>
-        </div>
-        <label title="A cloud OpenAI-compatible API offered as a hand-off provider, e.g. https://apihub.agnes-ai.com/v1. A trailing /v1 is added for you. It cannot be discovered by scanning, so it is named here — and it then appears in the agent list above. Its key is stored in VS Code secret storage, never in settings.json.">Cloud API (hand-off provider)</label>
-        <input id="cloudEndpoint" placeholder="https://…/v1">
-        <label title="The model id the cloud API should answer with, e.g. agnes-2.5-flash. Empty lets the provider choose.">Cloud model</label>
-        <input id="cloudModel" placeholder="e.g. agnes-2.5-flash">
-        <div class="row">
-            <button id="setKey" class="secondary" title="Store the API key for the endpoint above in VS Code secret storage (it is never shown or logged). Until it is stored, the cloud agent appears in the list marked as unusable.">Set the cloud API key…</button>
-        </div>
-        <div id="poolSettings" hidden>
-            <label title="Only used when the Poolside CLI is the chosen agent, which is why it is shown only then.">The pool command</label>
-            <input id="poolCommand" placeholder="pool" title="The Poolside CLI executable. Its own model is the platform's choice, not a setting here.">
-            <div id="poolStatus" class="busy" hidden></div>
-            <label title="A non-interactive run cannot answer an approval prompt, so with this off a hand-off that needs to edit a file stops and does nothing"><input id="poolAutoAllow" type="checkbox" style="width:auto"> Let the handed-off agent use its tools without asking</label>
-        </div>
-        <div id="jcodeSettings" hidden>
-            <label title="Only used when the Agnes Code CLI is the chosen agent, which is why it is shown only then.">The Agnes Code CLI command</label>
-            <input id="jcodeCommand" placeholder="jcode" title="The jcode executable. It works in this project — reading, writing and running commands — and its tools run without asking you first.">
-            <div id="jcodeStatus" class="busy" hidden></div>
-            <label title="Passed as jcode's -p. Empty lets jcode's own configuration decide; the Agnes endpoint is reached through its openai-compatible provider.">Provider (-p)</label>
-            <input id="jcodeProvider" placeholder="openai-compatible">
-            <label title="Passed as jcode's -m. Empty lets jcode's own configuration decide.">Model (-m)</label>
-            <input id="jcodeModel" placeholder="agnes-2.5-flash">
-        </div>
         <div class="row" style="margin-top:8px">
             <button id="save">Save</button>
             <button id="choose" class="secondary">Choose a local model…</button>
@@ -868,36 +626,6 @@ function html(webview: vscode.Webview): string {
         addTurn(role, text, false, turn);
     }
 
-    // The refusal block: what the model could not do, what to do instead, and the hand-off button when there is
-    // somewhere to hand the job to. Clearing the current turn matters — without it the next streamed answer
-    // would be appended into this block instead of replacing it.
-    function showScope(msg) {
-        const div = document.createElement('div');
-        div.className = 'turn assistant scope';
-        const head = document.createElement('div');
-        head.textContent = '⛔ ' + (msg.message || 'That request is beyond what the local model can do.');
-        div.appendChild(head);
-        if (msg.advice) {
-            const advice = document.createElement('div');
-            advice.className = 'advice';
-            advice.textContent = msg.advice;
-            div.appendChild(advice);
-        }
-        if (msg.handoff) {
-            const button = document.createElement('button');
-            button.textContent = msg.action || 'Hand it to an agent…';
-            button.addEventListener('click', () => {
-                // One press is one hand-off: the server holds what to send, and asks for consent before it goes.
-                button.disabled = true;
-                vscode.postMessage({ type: 'handoff' });
-            });
-            div.appendChild(button);
-        }
-        log.appendChild(div);
-        current = null;
-        log.scrollTop = log.scrollHeight;
-    }
-
     function setBusy(busy, message) {
         if (busy) {
             progress.hidden = false;
@@ -920,7 +648,7 @@ function html(webview: vscode.Webview): string {
     // is what stops a form that has not caught up from writing a stale address over a fresh pin: on
     // 2026-10-04 the view still held LM Studio's 1234 after "use the llama-server on 8080", the user pressed
     // Save, and every prompt after that failed with "No server answered" (see refreshAssistantView).
-    let applied = { backend: '', endpoint: '', model: '', showDiff: false, contextSize: '', maxTokens: '', handoff: '', handoffAgent: '', cloudEndpoint: '', cloudModel: '', poolCommand: '', poolAutoAllow: false, jcodeCommand: '', jcodeProvider: '', jcodeModel: '' };
+    let applied = { backend: '', endpoint: '', model: '', showDiff: false, contextSize: '', maxTokens: '' };
 
     window.addEventListener('message', (event) => {
         const msg = event.data;
@@ -938,39 +666,6 @@ function html(webview: vscode.Webview): string {
             // usually refused because of one of them.
             setting('contextSize', s.contextSize);
             setting('maxTokens', s.maxTokens);
-            // The hand-off fields, and the one piece of news about them: whether the command is actually there.
-            setting('handoff', s.handoff);
-            setting('poolCommand', s.poolCommand);
-            setting('cloudEndpoint', s.cloudEndpoint);
-            setting('cloudModel', s.cloudModel);
-            setting('jcodeCommand', s.jcodeCommand);
-            setting('jcodeProvider', s.jcodeProvider);
-            setting('jcodeModel', s.jcodeModel);
-            // The switch and the agent list decide whose own settings are worth showing at all.
-            refreshAgentSettings();
-            setting('poolAutoAllow', s.poolAutoAllow);
-            const poolStatusEl = document.getElementById('poolStatus');
-            if (poolStatusEl) {
-                const show = s.handoff === 'pool';
-                poolStatusEl.hidden = !show;
-                poolStatusEl.textContent = !show
-                    ? ''
-                    : s.poolVersion
-                        ? 'pool ' + s.poolVersion + ' found — a hand-off will run it in this project'
-                        : 'Not found: install the Poolside CLI, or set the command above to its full path';
-            }
-            const jcodeStatusEl = document.getElementById('jcodeStatus');
-            if (jcodeStatusEl) {
-                // Same news as the pool line, in this agent's terms — and this one names the thing a user of it
-                // most needs to know before agreeing: it works in the project.
-                const show = s.handoff !== 'off';
-                jcodeStatusEl.hidden = !show;
-                jcodeStatusEl.textContent = !show
-                    ? ''
-                    : s.jcodeVersion
-                        ? 'jcode ' + s.jcodeVersion + ' found — a hand-off will let it work in this project'
-                        : 'Not found: install the Agnes Code CLI, or set the command above to its full path';
-            }
             const switchLabel = document.getElementById('assistOnLabel');
             if (switchLabel) {
                 switchLabel.textContent = s.assistantOn
@@ -983,16 +678,7 @@ function html(webview: vscode.Webview): string {
                 model: s.model === undefined || s.model === null ? '' : String(s.model),
                 showDiff: !!s.showDiff,
                 contextSize: s.contextSize === undefined || s.contextSize === null ? '' : String(s.contextSize),
-                maxTokens: s.maxTokens === undefined || s.maxTokens === null ? '' : String(s.maxTokens),
-                handoff: s.handoff === undefined || s.handoff === null ? '' : String(s.handoff),
-                handoffAgent: s.handoffAgent === undefined || s.handoffAgent === null ? '' : String(s.handoffAgent),
-                cloudEndpoint: s.cloudEndpoint === undefined || s.cloudEndpoint === null ? '' : String(s.cloudEndpoint),
-                cloudModel: s.cloudModel === undefined || s.cloudModel === null ? '' : String(s.cloudModel),
-                poolCommand: s.poolCommand === undefined || s.poolCommand === null ? '' : String(s.poolCommand),
-                poolAutoAllow: !!s.poolAutoAllow,
-                jcodeCommand: s.jcodeCommand === undefined || s.jcodeCommand === null ? '' : String(s.jcodeCommand),
-                jcodeProvider: s.jcodeProvider === undefined || s.jcodeProvider === null ? '' : String(s.jcodeProvider),
-                jcodeModel: s.jcodeModel === undefined || s.jcodeModel === null ? '' : String(s.jcodeModel)
+                maxTokens: s.maxTokens === undefined || s.maxTokens === null ? '' : String(s.maxTokens)
             };
         } else if (msg.type === 'status') {
             document.getElementById('status').textContent = msg.text || '';
@@ -1003,8 +689,6 @@ function html(webview: vscode.Webview): string {
             for (const turn of msg.turns || []) addTurn(turn.role, turn.text, false, turn);
         } else if (msg.type === 'chats') {
             setChats(msg.chats, msg.activeId);
-        } else if (msg.type === 'agents') {
-            setAgents(msg.agents, msg.chosen, msg.effective);
         } else if (msg.type === 'openSettings') {
             openSettingsBlock();
         } else if (msg.type === 'turn') {
@@ -1014,8 +698,6 @@ function html(webview: vscode.Webview): string {
             addTurn('assistant', msg.text, true);
         } else if (msg.type === 'busy') {
             setBusy(msg.busy, msg.message);
-        } else if (msg.type === 'scope') {
-            showScope(msg);
         } else if (msg.type === 'error') {
             addTurn('assistant', '⚠ ' + msg.message, false);
             const div = log.lastElementChild;
@@ -1041,54 +723,9 @@ function html(webview: vscode.Webview): string {
             block.open = true;
             if (block.scrollIntoView) block.scrollIntoView({ block: 'start' });
         }
-        // The cloud endpoint is what the key flow needs first, so it is the field worth landing on; the same
-        // function is harmless for the general "open the settings" case.
-        const field = document.getElementById('cloudEndpoint') || document.getElementById('backend');
+        // The backend is the first field of the settings, so it is the one worth landing on.
+        const field = document.getElementById('backend');
         if (field && field.focus) field.focus();
-    }
-
-    // THE CHOSEN AGENT'S OWN SETTINGS, shown only for the agent that will run (asked 2026-10-13: *"the 'The pool
-    // command' entry box must not be visible when 'Hand it to the pool agent' is not selected"*, and the same
-    // question applies the moment there are two CLI agents). With a cloud API chosen, a box asking which "pool"
-    // executable to run is a question with no referent; with jcode chosen, pool's is. "effective" is the server's
-    // answer to "which agent would really be used", so this view decides nothing about the choice itself.
-    let effectiveAgent = '';
-    /** The agent a hand-off would really use: an explicit pick, otherwise what the scan decided. */
-    function willRun() {
-        const select = document.getElementById('handoffAgent');
-        return (select ? select.value : '') || effectiveAgent;
-    }
-    function refreshAgentSettings() {
-        const who = document.getElementById('handoff').value === 'off' ? '' : willRun();
-        const pool = document.getElementById('poolSettings');
-        if (pool) pool.hidden = who !== 'cli:pool';
-        const jcode = document.getElementById('jcodeSettings');
-        if (jcode) jcode.hidden = who !== 'cli:jcode';
-    }
-
-    function setAgents(list, chosen, effective) {
-        effectiveAgent = effective || '';
-        const select = document.getElementById('handoffAgent');
-        if (!select) return;
-        select.innerHTML = '';
-        const auto = document.createElement('option');
-        auto.value = '';
-        auto.textContent = 'Automatic — the best available';
-        select.appendChild(auto);
-        for (const agent of list || []) {
-            const option = document.createElement('option');
-            option.value = agent.id;
-            option.textContent = agent.text;
-            // Shown, but not selectable: an agent that is installed without a verified way to run it is worth
-            // seeing — that is the difference between "the extension cannot see my agent" and "it can see it
-            // and cannot drive it yet".
-            option.disabled = !agent.usable;
-            select.appendChild(option);
-        }
-        select.value = chosen || '';
-        // The select is filled from the scan, so it is also what the Save diff compares against.
-        applied.handoffAgent = String(chosen || '');
-        refreshAgentSettings();
     }
 
     function setChats(list, activeId) {
@@ -1111,12 +748,6 @@ function html(webview: vscode.Webview): string {
     document.getElementById('repair').addEventListener('click', () => vscode.postMessage({ type: 'command', command: 'rustyPlatform.assistant.repair' }));
     document.getElementById('statusBtn').addEventListener('click', () => vscode.postMessage({ type: 'command', command: 'rustyPlatform.assistant.status' }));
     document.getElementById('choose').addEventListener('click', () => vscode.postMessage({ type: 'command', command: 'rustyPlatform.assistant.setupModel' }));
-    document.getElementById('chooseAgent').addEventListener('click', () => vscode.postMessage({ type: 'command', command: 'rustyPlatform.assistant.chooseAgent' }));
-    // Picking another agent hides the pool fields before the settings are even saved, so the form cannot show a
-    // control that has stopped being relevant.
-    document.getElementById('handoffAgent').addEventListener('change', () => refreshAgentSettings());
-    document.getElementById('handoff').addEventListener('change', () => refreshAgentSettings());
-    document.getElementById('setKey').addEventListener('click', () => vscode.postMessage({ type: 'command', command: 'rustyPlatform.assistant.setHandoffKey' }));
     document.getElementById('unload').addEventListener('click', () => vscode.postMessage({ type: 'command', command: 'rustyPlatform.assistant.unloadModel' }));
     // The switch. The checkbox is not the state — the host's snapshot is — so a failed turn-on snaps it back
     // when the panel is refreshed rather than leaving a checkbox that claims something untrue.
@@ -1141,16 +772,7 @@ function html(webview: vscode.Webview): string {
             model: document.getElementById('model').value,
             showDiff: document.getElementById('showDiff').checked,
             contextSize: numberBox('contextSize', applied.contextSize),
-            maxTokens: numberBox('maxTokens', applied.maxTokens),
-            handoff: document.getElementById('handoff').value,
-            handoffAgent: document.getElementById('handoffAgent').value,
-            cloudEndpoint: document.getElementById('cloudEndpoint').value,
-            cloudModel: document.getElementById('cloudModel').value,
-            poolCommand: document.getElementById('poolCommand').value,
-            poolAutoAllow: document.getElementById('poolAutoAllow').checked,
-            jcodeCommand: document.getElementById('jcodeCommand').value,
-            jcodeProvider: document.getElementById('jcodeProvider').value,
-            jcodeModel: document.getElementById('jcodeModel').value
+            maxTokens: numberBox('maxTokens', applied.maxTokens)
         };
         // Only the fields the user actually changed. Sending all of them would make a form that is showing
         // yesterday's endpoint overwrite the one a load just pinned.
@@ -1198,9 +820,6 @@ export class AiChatViewProvider implements vscode.WebviewViewProvider {
             }
             case 'ask':
                 if (message.text) await ask(message.text);
-                return;
-            case 'handoff':
-                await runHandoff();
                 return;
             case 'newChat': {
                 active = freshChat();
@@ -1260,12 +879,12 @@ export class AiChatViewProvider implements vscode.WebviewViewProvider {
     /**
      * Writes the panel's settings, whatever the form sent.
      *
-     * THE BUG THIS REPLACES (reported 2026-10-13, *"It is not in the hand-off agent list"*). This method listed
-     * the keys it would write **by hand** — five of them — so `contextSize`, `maxTokens`, and the whole hand-off
-     * group including the cloud endpoint were sent by the form, compared by `applied`, and then **dropped here**.
-     * The panel refreshed from settings that had never been written, the field reverted, and the feature that
-     * field configures never saw the value. A developer's reasonable reading of that is "the extension did not
-     * save my setting", which is exactly what they reported.
+     * THE BUG THIS REPLACES (reported 2026-10-13, *"it is not in the list"*). This method listed the keys it
+     * would write **by hand** — five of them — so `contextSize`, `maxTokens` and every field added afterwards
+     * were sent by the form, compared by `applied`, and then **dropped here**. The panel refreshed from
+     * settings that had never been written, the field reverted, and the feature that field configures never saw
+     * the value. A developer's reasonable reading of that is "the extension did not save my setting", which is
+     * exactly what they reported.
      *
      * The list is gone: the manifest already says which settings exist and what type each is, so the payload is
      * checked against it (`planWrites`) and a key it does not declare is refused *out loud* rather than silently
@@ -1295,13 +914,6 @@ export class AiChatViewProvider implements vscode.WebviewViewProvider {
         try {
             for (const [key, value] of Object.entries(plan.write)) await cfg.update(key, value);
             log(`assistant: panel settings saved — ${describeWrites(plan)}`);
-            // A settings change can add or remove an agent (a cloud endpoint, or an endpoint the local scan
-            // finds), and the scan's cached answer was taken before it.
-            forgetAgentScan();
-            // The same for the two CLI version probes: their answers are cached per command, so a corrected path
-            // would otherwise keep being reported as "not found" until the window was reloaded.
-            forgetPoolStatus();
-            forgetJcodeStatus();
             if (plan.unknown.length || plan.wrongType.length) {
                 post({ type: 'error', message: `Some settings were not saved — ${describeWrites(plan)}` });
                 return;
@@ -1387,10 +999,6 @@ export function registerAiChatView(context: vscode.ExtensionContext): vscode.Dis
     // Read once, here, where the context is: the panel's Save needs to know what the manifest declares.
     settingSpecs = readSettingSpecs(context);
     loadChats(context);
-    // Every hand-off — the chat's refusal button, the repair loop's last offer, a command — is announced here,
-    // so the answer reaches the conversation and its code can be reviewed as a diff and implemented (see
-    // `addHandoffTurn`).
-    onHandoffReport(addHandoffTurn);
     const provider = new AiChatViewProvider();
     return [
         vscode.window.registerWebviewViewProvider('rustyPlatform.assistant', provider, {

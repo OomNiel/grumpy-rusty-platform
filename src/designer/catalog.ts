@@ -572,7 +572,10 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
             TEXT_COLOUR_PROPERTY,
         ],
         fontSupport: 'style',
-        events: ['valueChanged', 'scroll'],
+        // `valueChanged` only: a `scroll` entry here was dead code — only a ScrollView ancestor raises
+        // `UiEvent::Scroll`, and it carries the *view's* id, so a generated arm for a roller could
+        // never fire. The drag added in 0.0.90 raises the same `valueChanged` the arrow keys do.
+        events: ['valueChanged'],
     },
     {
         tag: 'plotter',
@@ -882,7 +885,9 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         // The table's emitter arm used to hard-code `Style::panel()` and drop any `style` the markup carried,
         // which is why this catalogue had no font field for it. The style is carried through now.
         fontSupport: 'style',
-        events: ['scroll'],
+        // No events at all: a table is not focusable and cannot be touched, so a `scroll` entry (which
+        // only a ScrollView ancestor can raise) was an offer nothing could keep.
+        events: [],
     },
     {
         tag: 'carousel',
@@ -906,7 +911,9 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
             TEXT_COLOUR_PROPERTY,
         ],
         fontSupport: 'both',
-        events: ['valueChanged', 'scroll'],
+        // `valueChanged` only, and that one is real: the carousel gained the drag (and the arrow-key arm
+        // that goes with it) in 0.0.90, while its `scroll` entry was the same dead offer the roller had.
+        events: ['valueChanged'],
     },
     {
         tag: 'image',

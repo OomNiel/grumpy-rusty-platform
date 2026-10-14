@@ -332,6 +332,22 @@ impl Style {
         self
     }
 
+    /// The same style with its outline colour brightened, and nothing else changed.
+    ///
+    /// This is the whole of what "focused" and "pressed" mean for a widget built from a plain `Style`
+    /// (reported 2026-10-14: *"when I touch a widget that can get focus its colour changes and that makes
+    /// its contents difficult to see"*). The pointer used to take `Style::selected(true)` for both states,
+    /// which swaps the block's **background** for the accent -- so a checkbox's block went accent under its
+    /// own glyph, and a roller's selected row (which is drawn in the accent) vanished into the block.
+    ///
+    /// The border's **width** is deliberately left alone: `Block::inner` subtracts it, so a wider outline on
+    /// focus would shift every widget's contents by a pixel and could even re-wrap its text. A style with no
+    /// border at all therefore shows no hint rather than a jumping one.
+    pub const fn with_highlighted_outline(mut self, color: Rgb565) -> Self {
+        self.border.color = color;
+        self
+    }
+
     pub const fn with_background(mut self, background: Option<Rgb565>) -> Self {
         self.background = background;
         self
@@ -442,8 +458,12 @@ impl WidgetStyle {
     pub const fn new(normal: Style) -> Self {
         Self {
             normal,
-            focused: normal.selected(true),
-            pressed: normal.selected(true),
+            // `focused` and `pressed` brighten the outline only (see
+            // `Style::with_highlighted_outline`): they used to be `normal.selected(true)`, which replaced the
+            // block's background with the accent and hid whatever the widget was showing -- a checkbox's
+            // check, a roller's selected row -- for as long as the widget had focus.
+            focused: normal.with_highlighted_outline(Rgb565::WHITE),
+            pressed: normal.with_highlighted_outline(Rgb565::WHITE),
             disabled: Style {
                 background: normal.background,
                 gradient: normal.gradient,
@@ -1563,9 +1583,57 @@ mod tests {
 
         assert_eq!(widget_style.resolve(VisualState::Normal), base_style);
         assert_eq!(widget_style.resolve(VisualState::Focused), focused_style);
+        // The *default* pressed state is the base style with a brightened outline, not `selected(true)`:
+        // see `focus_and_press_brighten_the_outline_and_nothing_else` for why (reported 2026-10-14).
         assert_eq!(
             widget_style.resolve(VisualState::Pressed),
-            base_style.selected(true)
+            base_style.with_highlighted_outline(Rgb565::WHITE)
+        );
+    }
+
+    #[test]
+    fn focus_and_press_brighten_the_outline_and_nothing_else() {
+        // Reported 2026-10-14: *"when I touch a widget that can get focus its colour changes and that makes
+        // its contents difficult to see. e.g. a checkbox checkstate cant be seen. Also the Roller selection
+        // is not visible."* The default focused/pressed style was `Style::selected(true)`, which replaces the
+        // block's **background** with the accent -- so a widget's own content was painted over the very
+        // colour that content is drawn in, and a roller's selected row (accent on accent) disappeared.
+        let bordered = Style::panel();
+        let widget_style = WidgetStyle::new(bordered);
+        for state in [VisualState::Focused, VisualState::Pressed] {
+            let resolved = widget_style.resolve(state);
+            assert_eq!(
+                resolved.background, bordered.background,
+                "the block keeps its background"
+            );
+            assert_eq!(resolved.text, bordered.text, "and its text colour");
+            assert_eq!(
+                resolved.foreground, bordered.foreground,
+                "and its foreground"
+            );
+            assert_eq!(
+                resolved.accent, bordered.accent,
+                "including the accent a roller selects with"
+            );
+            assert_eq!(
+                resolved.border.width, bordered.border.width,
+                "the outline keeps its width, so no contents can shift"
+            );
+            assert_eq!(
+                resolved.border.color,
+                Rgb565::WHITE,
+                "only its colour changes"
+            );
+        }
+        // A style with no border has nothing to brighten, so focus paints exactly as normal does. The
+        // alternative -- giving it a border on focus -- would move the contents by a pixel (`Block::inner`
+        // subtracts the border), which is the jitter this rule exists to avoid.
+        let plain = Style::new();
+        let widget_style = WidgetStyle::new(plain);
+        assert_eq!(widget_style.resolve(VisualState::Focused).border.width, 0);
+        assert_eq!(
+            widget_style.resolve(VisualState::Focused).padding,
+            plain.padding
         );
     }
 

@@ -26,6 +26,23 @@ export interface DesignerInit {
     touchEnabled: boolean;
     /** The document as it was read, when it could not be parsed -- shown instead of a blank canvas. */
     loadError?: string;
+    /**
+     * What the load had to change to make an older design current -- a property this version has no place for,
+     * dropped by `dropUnknownProps`.
+     *
+     * Shown where the file paths are shown, because the load that had to tidy something up is also the load
+     * that may have unblocked the markup: until then the board was compiling an older design than the canvas.
+     */
+    loadNotes?: string[];
+    /**
+     * Everything wrong with the design as it was opened.
+     *
+     * Sent at once rather than left for the first edit to reveal: a design that does not validate is a design
+     * whose markup is *not* written, so the board is compiling an older design than the one on screen, and the
+     * user has no reason to touch the canvas to find that out. Absent, like `loadError`, when there is nothing
+     * to say.
+     */
+    loadProblems?: string[];
 }
 
 /** The panel's answer to every edit: it sends the whole document back rather than a diff. */

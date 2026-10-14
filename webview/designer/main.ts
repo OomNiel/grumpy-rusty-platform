@@ -170,7 +170,17 @@ window.addEventListener('message', (event: MessageEvent<DesignerInit | DesignerR
         renderToolbox(toolbox, (tag) => drop(tag));
         refreshProperties();
         refreshToolbar();
-        status(message.loadError === undefined ? `${message.paths.document} -> ${message.paths.kdl}` : message.loadError, message.loadError !== undefined);
+        const problems = message.loadProblems ?? [];
+        if (message.loadError === undefined) {
+            // What the load tidied up, then the verdict. The notes are drawn once, here: a later save must not
+            // clear them, because "this file was cleaned up when you opened it" is not news a save can replace.
+            setList('load-notes', message.loadNotes ?? []);
+            showVerdict(problems, `${message.paths.document} -> ${message.paths.kdl}`);
+        } else {
+            // The file could not be read at all, so there is no design to have a verdict on: the error is the
+            // whole story and the paths would be beside the point.
+            status(message.loadError, true);
+        }
         return;
     }
     if (message.type === 'report') {
@@ -392,28 +402,54 @@ function applyPickedAsset(message: DesignerAssetPicked): void {
     apply(message.path);
 }
 
-/** Shows the extension's verdict: the problems, or a note that the markup was written. */
-function report(message: DesignerReport): void {
-    const problems = message.problems;
+/**
+ * Rebuilds one of the lists under the properties, removing it when there is nothing to hold.
+ */
+function setList(className: string, items: string[]): void {
+    const existing = properties.querySelector(`.${className}`);
+    if (existing !== null) {
+        properties.removeChild(existing);
+    }
+    if (items.length === 0) {
+        return;
+    }
+    const list = document.createElement('ul');
+    list.className = className;
+    for (const item of items) {
+        const entry = document.createElement('li');
+        entry.textContent = item;
+        list.append(entry);
+    }
+    properties.append(list);
+}
+
+/**
+ * Shows a verdict: the problems in the footer and the whole list of them under the properties.
+ *
+ * The list is rebuilt rather than appended to, because a verdict is shown on every save as well as on the
+ * load: a list that only ever grew would leave a problem on screen that the design no longer has.
+ *
+ * What a load had to tidy up is a separate list, drawn by `setList('load-notes', ...)` when the panel opens,
+ * and deliberately not a note appended to the footer: that is one clipped line (`overflow: hidden`, an
+ * ellipsis), so anything appended to it can vanish -- and the load that dropped a property is exactly the one
+ * whose board was out of step.
+ */
+function showVerdict(problems: string[], clean: string): void {
+    setList('problem-list', problems);
     if (problems.length === 0) {
-        status(
-            message.note ??
-            (message.kdl === undefined ? 'Saved.' : `Saved. Markup is ${message.kdl.split('\n').length} lines.`),
-            false,
-        );
+        status(clean, false);
         return;
     }
     status(`${problems.length} problem${problems.length === 1 ? '' : 's'}: ${problems[0]}`, true);
-    if (properties.querySelector('.problem-list') === null) {
-        const list = document.createElement('ul');
-        list.className = 'problem-list';
-        for (const problem of problems) {
-            const item = document.createElement('li');
-            item.textContent = problem;
-            list.append(item);
-        }
-        properties.append(list);
-    }
+}
+
+/** Shows the extension's verdict on an edit: the problems, or a note that the markup was written. */
+function report(message: DesignerReport): void {
+    showVerdict(
+        message.problems,
+        message.note ??
+        (message.kdl === undefined ? 'Saved.' : `Saved. Markup is ${message.kdl.split('\n').length} lines.`),
+    );
 }
 
 function status(text: string, isProblem: boolean): void {

@@ -40,8 +40,23 @@ those two controls, so the runtime is patched instead — additively, and in the
 ## What differs from upstream
 
 Everything is additive: no existing function changes signature, no existing field changes meaning, and the
-`0`/`None` cases reproduce upstream's behaviour exactly, so a project that patches to this fork but writes plain
-upstream markup renders identically. The changed files are listed in `NOTES.md` §109.
+`0`/`None` cases reproduce upstream's behaviour exactly. The changed files are listed in `NOTES.md` §109.
+
+Four things are deliberately *not* upstream's behaviour, because the alternative was a control the designer
+could not show honestly:
+
+| What | Upstream | Here |
+| --- | --- | --- |
+| a focused or pressed widget | `Style::selected(true)`: the block's background becomes the accent and its border white, painted over whatever the widget draws for itself | the outline **colour** brightens (`Style::with_highlighted_outline`); the width is never touched, because `Block::inner` subtracts it and every widget's contents would move a pixel |
+| a `ProgressBar` with focus | the fill switches from `foreground` to `accent` | the fill is `foreground`, focused or not |
+| an activation that changed the widget | the widget keeps the focus | the focus is released (Checkbox, Toggle, Dropdown, Keyboard); a tap that changed nothing keeps it, which is what a Roller and a caret in a TextArea need |
+| dragging on a selector | nothing | `drag_step_selection` turns the focused selector, one item per drawn row of travel, capped per sample (`NOTES.md` §130) |
+
+The first of those is why a design could be unreadable on glass while looking right on the canvas: a checkbox's
+tick is drawn in the accent colour, so an accent-filled block hid it, and a roller's selected row *is* the
+accent, so that row vanished into the panel behind it.
+
+The files this fork changes, all inside the two modules above:
 
 * `context/builders.rs` — `add_checkbox_sized`, `add_toggle_colored`, `add_spinbox_styled`,
   `add_scale_styled`, alongside the upstream builders (which now fill in the old constants).

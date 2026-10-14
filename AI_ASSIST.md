@@ -136,88 +136,10 @@ Alternatively, put the caret on a squiggle and pick **Fix with the AI assist** f
 Run **Rusty AI: Learn the House Rules from My Code…**. The extension counts this project's own idioms
 (indentation, `pub` on helpers, `?` versus `.unwrap()`, `defmt` logging, doc comments, constant and type
 naming, `#[cfg(test)]` modules), shows the evidence next to each one (*"41 of 41 functions"*), and keeps the
-ones you tick. Accepted rules go into **every** prompt afterwards — the local model's and every hand-off's,
-which matters most for a hand-off to a cloud agent: it never sees your project, so the rules in the prompt are
-the only ones it can be given. They live in `rustyPlatform.assistant.conventions`, and you can add rules by hand
-in the same setting (or in the panel's own rules editor) alongside the measured ones. Nothing reads `AGENTS.md`:
-if you want a rule followed, it has to be in this setting.
-
-## 7. When the local model cannot do what you asked
-
-**Every request is checked before it is sent.** A small local model has a window, and a prompt that does not
-fit in it is not a hard question — it is an impossible one: what the model cannot read it invents, and an
-answer produced that way looks exactly like a good one. So the six things below are checked *first*, and when
-one of them fires **nothing is sent** and the view says why, with the numbers.
-
-| Check | What it means |
-|---|---|
-| **The prompt does not fit** | The request is bigger than the space the window leaves for a prompt (the answer gets its share first). Ask for less at once, raise `contextSize`, or lower `maxTokens`. |
-| **The file is too big** | The answer would have to be written into a file that does not fit either. A 41 KB `main.rs` is ~10,386 tokens against ~4,032 of prompt room — no wording of the request changes that. |
-| **The item is too long** | One function is past the ~120 lines a model this size can rewrite reliably. Ask for a smaller helper beside it. |
-| **A whole file was asked for** | "rewrite the whole file", "give me the entire file". An answer of that shape loses every item the model did not reproduce. |
-| **The work spans files** | "refactor the whole project", "add a crate", "write me a complete app". |
-| **The answer has no room** | The prompt took nearly the whole window, so what is left cannot hold a function. |
-
-The four size checks are arithmetic, so the numbers in the message are the evidence. The two sentence checks
-are **heuristics** — they quote what they read (*"read as: refactor the whole project"*) and they can be wrong
-in both directions, which is why every refusal offers **Send it anyway** as well as Cancel. In the chat the
-refusal appears as its own block in the conversation, so a request that was not sent does not look like a
-reply that never came; in the editor's own flows it is a dialog.
-
-### Handing the job to another agent instead
-
-When a request is beyond the local model, the refusal offers a hand-off, and **the button names the agent it
-will really use** — nothing here is hard-wired to one of them. The extension scans this machine — CLI agents on
-your `PATH`, plus OpenAI-compatible servers answering on the usual local ports — and *Which agent a hand-off
-uses* lists what it found, each entry saying what that agent can do. Your own choice wins; *Automatic* takes the
-best available, preferring an agent that can work in the project over one that can only answer.
-
-| The agent the extension can drive | What it does |
-|---|---|
-| **Poolside CLI agent** (`pool`) | Works in your project with Poolside's own model. Needs `pool` on your `PATH`, logged in (`pool login`). |
-| **Agnes Code CLI** (`jcode`) | Works in your project the same way — it reads, writes and runs commands. Which provider and model it talks to is jcode's own business; `jcodeProvider` and `jcodeModel` pass its `-p` and `-m` when you want to be explicit. |
-| **A cloud OpenAI-compatible API** | *Answers* rather than acts: it has no files, so its result comes back to you as code to review and apply. Set `cloudEndpoint` and `cloudModel`; the API key is stored in **VS Code's secret storage**, never in `settings.json`. |
-
-Anything else the scan finds is listed too, marked as unusable **with the reason** — an agent that is installed
-without a verified way to run it unattended says exactly that, rather than being hidden.
-
-What happens when you press the hand-off button:
-
-1. **A consent dialog**, every time, naming the agent and what will be sent: your request as you wrote it, the
-   file in focus in full, the facts about the board and the crates, your measured house rules, and the rough
-   token count. It also says what the agent will be allowed to do. For the two CLI agents that is *"it will read,
-   write and run commands without asking you first"* — true of both, and for the Agnes Code CLI there is no
-   auto-allow setting to turn off, so the dialog says so instead of promising a brake that does not exist. For a
-   cloud API it says the opposite: *"nothing in your project is touched by the hand-off itself"*.
-2. **The agent works in your project** with a scripted prompt that carries the request, why it came to the agent
-   instead of the local model, your house rules, and an instruction to *build it and fix what the compiler
-   reports* rather than assert success. Every tool call is reported on the progress line as it happens, and
-   Cancel stops the run (the whole process group, so nothing is left running behind it).
-3. **What it did comes back into the conversation**: the steps it took, its closing paragraph, and the outcome —
-   *done*, *it reported it could not finish*, *it failed*, *it timed out*, or *you stopped it*. **The code in
-   that answer can be implemented** exactly like a local model's: the button under the answer (or **Review and
-   implement…** on the notification, which appears where you are already looking) opens a diff against the file,
-   and nothing is written until you apply it. A whole-file answer is confirmed by name first, and an answer that
-   left parts of the file out is refused with the reason.
-
-A second hand-off **continues the same conversation** (`poolResume`, on by default), per agent: pool's run ID and
-jcode's session ID are remembered separately for this workspace, so switching agents does not continue the wrong
-one. jcode's session is matched to *this project* by the directory it recorded, so a conversation about another
-folder is never picked up. **Rusty AI: Forget the Handed-off Conversation** starts a fresh one.
-
-Two differences between the agents are worth knowing:
-
-- **The prompt is delivered differently.** `pool` reads it on **stdin** (never as an argument, so your code never
-  appears in the process list); `jcode` takes it as its one positional argument, which is its own measured
-  contract.
-- **`pool exec` has no model flag** (its `-m` is obsolete and points at `--agent-name`), so pool's settings name
-  an **agent**, not a model. jcode's `-m` is real, and `jcodeProvider`/`jcodeModel` are passed through.
-
-A cloud hand-off's answer is **not** capped at the local answer budget: no `max_tokens` is sent, so the
-provider's own maximum applies. Capping the agent that was handed the job the local model could not fit is the
-last thing anyone wants.
-
----
+ones you tick. Accepted rules go into **every** prompt afterwards — the chat's and the editor's own flows alike.
+They live in `rustyPlatform.assistant.conventions`, and you can add rules by hand in the same setting (or in the
+panel's own rules editor) alongside the measured ones. Nothing reads `AGENTS.md`: if you want a rule followed,
+it has to be in this setting.
 
 ## Commands
 
@@ -235,9 +157,6 @@ The two that matter outside this document: **Rusty AI: Open the Assistant in an 
 | **Choose a Local Model…** | Pick and set up a model (downloads if needed) |
 | **Unload the Loaded Model** | Free the model's memory |
 | **Status and Hardware Check** | What is configured, and what this machine can run |
-| **Forget the Handed-off Conversation** | The next hand-off starts a fresh conversation instead of continuing the last one |
-| **Choose the Hand-off Agent…** | Scan this machine again and pick from the full list, with the reason next to anything that cannot be used |
-| **Set the Hand-off API Key…** | Store the cloud API key (asks for the endpoint and model, then stores the key in secret storage and reads it back to be sure) |
 
 Two commands have no palette entry because they are offered where you need them — **Send the Prompt in the
 ✎ AI Block** (`Ctrl+Alt+Enter`) and **Discard the ✎ AI Block** (`Ctrl+Alt+Escape`), plus **Apply/Discard the
@@ -258,39 +177,23 @@ by default, a child process elsewhere), plus `gpuVramGb` for a card the extensio
 | `model` | *(empty)* | Model id to ask for; empty lets the server pick |
 | `showDiff` | `true` | Review the proposal before it is written |
 | `verifyAfterApply` | `true` | Offer a `cargo check` after a proposal is applied |
-| `maxTokens` | `4096` | The longest answer, for the **local** model. A hand-off is not capped by it: a cloud agent is sent no `max_tokens` at all, so its own maximum applies |
+| `maxTokens` | `4096` | The longest answer the local model may write |
 | `temperature` | `0.2` | Sampling temperature — low is right for code |
 | `timeoutSeconds` | `60` | How long the model may go **without producing anything** before the request is treated as dead |
 | `conventions` | `[]` | The house rules you accepted |
 | `ignoreHostCheck` | `false` | Run local inference even when the hardware check says this machine is too small |
-| `handoff` | `pool` | Whether a request the local model cannot take may be handed off at all: `off` warns and stops. The stored value is `pool` for "hand it to an agent" — the *agent* is chosen by `handoffAgent`, not here |
-| `handoffAgent` | *(empty)* | Which agent a hand-off uses, by id (`cli:pool`, `cli:jcode`, `openai:1234`, …). Empty means the best available one, preferring an agent that can work in the project |
-| `poolCommand` | `pool` | The Poolside CLI executable — a name on the PATH or a full path |
-| `poolAgent` | *(empty)* | Which Poolside agent to ask for (`-a`); empty uses pool's own default |
-| `poolAutoAllow` | `true` | Let the Poolside agent use its tools **without asking you first**. A non-interactive run cannot answer an approval prompt, so with this off a hand-off that needs to edit a file stops and does nothing |
-| `poolTimeoutSeconds` | `900` | How long a handed-off run may take. Whatever it changed up to then stays on disk, and continuing picks up from there |
-| `poolResume` | `true` | Continue the last handed-off conversation (`pool --continue`, `jcode --resume`) instead of starting a fresh one. Each agent's own conversation is remembered separately |
-| `jcodeCommand` | `jcode` | The Agnes Code CLI executable |
-| `jcodeProvider` | *(empty)* | Passed to `jcode run` as `-p`; empty lets jcode's own configuration decide (`openai-compatible` is how the Agnes endpoint is reached) |
-| `jcodeModel` | *(empty)* | Passed to `jcode run` as `-m`; empty lets jcode's own configuration decide (e.g. `agnes-2.5-flash`) |
-| `cloudEndpoint`, `cloudModel` | *(empty)* | An OpenAI-compatible cloud API offered as a hand-off provider, and the model to ask it for. Its key is **not** here — it lives in VS Code's secret storage |
 | `modelPath`, `threads`, `contextSize`, `gpuLayers`, `bundledBackend` | | The bundled runtime's model and how it is started |
 
 ## What leaves your machine
 
-Worth being plain about, because "a local model" is a promise and a hand-off is not:
+Nothing. The assistant is a **local** one, and that is the whole of its contract:
 
-- **The local model never sends anything anywhere.** The bundled runtime runs on this machine, and a server you
-  point `endpoint` at is one you chose.
-- **A hand-off does send your code away.** For the Poolside CLI that is Poolside's service (the API in *your*
-  `pool` configuration — `inference.poolside.ai` by default). For the Agnes Code CLI it is whatever provider and
-  model that CLI is configured for — run `jcode provider current` to see which, because it is jcode's
-  configuration that decides, not this extension. For a cloud API it is the endpoint you typed in. In every
-  case it happens only when you press the hand-off button and confirm the dialog that names what is being sent,
-  and there is no setting that makes it happen silently. If you would rather it never be offered, set `handoff`
-  to `off`: the scope checks still run and still warn, and the warning is then the end of it.
-- **The two CLI agents change files in your project, and they do not ask first.** That is what makes them
-  useful here — they can build what they change — and it is disclosed on every single hand-off.
+- **The bundled runtime runs on this machine**, and a server you point `endpoint` at is one you chose
+  (LM Studio, Ollama, or your own `llama-server`).
+- **No code, prompt or answer is sent anywhere else.** There is no cloud provider to configure, no API key to
+  store, and no agent to hand a job to.
+- **Nothing is started until you turn the switch on**, and switching it off unloads the models and stops the
+  `llama-server`.
 
 ## Two things the assistant will not do
 

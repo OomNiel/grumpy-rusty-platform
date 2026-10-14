@@ -6259,3 +6259,262 @@ because the whole script is one string. Two more wounds of the usual kind are re
 `pool`-only test that encoded "exactly one preset is drivable" had to be *rewritten* rather than deleted when a
 second one arrived, and the template-literal backtick trap caught a comment for the sixth time.
 
+---
+
+## 129. The hand-off comes out — the assistant is local-only (2026-10-14)
+
+**Asked for, verbatim:** *"Please strip all Ai Assist hand-off functionality from the extension. Only the
+locally run ai model(s) features must remain. The chat panel in the Ai Assist section of the extension's side
+bar must remain, but must be limited for use by local ai functionality and must not be able to edit code in the
+code editor panels. The 'Implement in function' feature can only be used for local ai code generation."*
+
+Three of the four questions asked back changed the shape of the job, so they are worth recording:
+
+- **The chat's "Implement `fn …` in the project…" buttons stay** (answered: *"No — keep them (they already use
+  the local model); only the hand-off goes"*). They write through `applyChatCode`, i.e. a diff the user applies
+  — the same review step as the editor's `✎ AI` flows — so "must not be able to edit code" is read as being
+  about the **hand-off agents** (which edit files on disk without a review) and not about a reviewed local diff.
+- **The whole scope-check system goes** (*"Remove the whole scope-check system"*), not just its hand-off offer.
+  `ai/scope.ts`, its four arithmetic plus two heuristic checks, `guardScope` in `editor.ts` and the refusal block
+  in the chat are all gone. The "you asked for a whole file" heuristics had already been duplicated as hard
+  guards where they matter (`chatCodeProblem`, `looksLikeWholeFile`, `methodTooLong`), which is why the
+  remainder was removable without losing the protection it was there for.
+- **Dead code that only the hand-off used goes with it.** `ChatOptions.apiKey` (bearer token) and
+  `ChatOptions.omitMaxTokens` (the uncapped cloud answer) had no other caller, so both were dropped from
+  `assistant.ts` along with their test; the request now always states `max_tokens: cfg.maxTokens`.
+
+**What was deleted:** `src/ai/pool.ts`, `jcode.ts`, `handoff.ts`, `agents.ts`, `scope.ts`; the three commands
+(`assistant.forgetPoolRun`, `assistant.chooseAgent`, `assistant.setHandoffKey`) and their `package.json`
+entries; the twelve settings (`handoff`, `handoffAgent`, `cloudEndpoint`, `cloudModel`, `poolCommand`,
+`poolAgent`, `poolAutoAllow`, `poolTimeoutSeconds`, `poolResume`, `jcodeCommand`, `jcodeProvider`,
+`jcodeModel`); the chat panel's agent/cloud/pool/jcode markup + script (`setAgents`, `refreshAgentSettings`,
+`showScope`, the `agents`/`scope`/`handoff` messages); `showHandoff`, `implementHandoffCode`, `handoffAction`,
+`factsText`, `handOffForRepair` and the repair loop's last-offer block in `editor.ts`; and the tests
+`ai-agents`, `ai-scope`, `ai-cloud`, `ai-handoff-chat`, `ai-jcode` (t1), `ai-agents-scan`, `ai-jcode` and
+`ai-pool` (t2) with `shims/pool`, `shims/jcode` and `fixtures/jcode-run.ndjson`.
+
+**Two traps, both already in the repo memory and both hit again anyway:**
+
+1. **`tsc` does not clean `out/`.** After deleting five sources the matching `out/ai/*.js` and `*.js.map` were
+   still there and would have shipped in the VSIX (`vsce` packages what is on disk, not what `tsc` last
+   touched). They were removed by hand — worth doing as a step of its own whenever a `src/` module is deleted.
+2. **A deletion done as a *replacement* can leave a fragment.** The `omitMaxTokens` test was removed and
+   re-titled in one edit, which left the new `test('…', async () => {` line with no body and — worse — an
+   apostrophe inside a single-quoted string. The suite would have failed to parse; it was caught by reading the
+   region back (the rule is already in the memory: re-read around any multi-line replacement).
+
+**Kept, deliberately:** the switch (`assistantSwitch*`), the bundled sidecar runtime, the external
+OpenAI-compatible server, the whole `llama-server` flow, Hugging Face model add/remove, the model pickers, the
+host check, unload/status, the house rules, the `✎ AI` block with its diff review, "Fix the Build" and cargo
+check, the chat panel (side-bar view **and** editor tab) with its "Implement …" buttons, and
+`panelSettings.ts`'s manifest-driven save — which now simply has fewer fields to know about.
+
+**Docs updated in the same pass** (the user asked for that explicitly, unlike the standing "leave the docs
+alone" rule): `AI_ASSIST.md` §7 and the hand-off rows in its Commands/Settings tables are gone and "What leaves
+your machine" is now one sentence — nothing does; `README.md`'s AI section lost its three hand-off bullets;
+`CHANGELOG.md` records the removal under `[Unreleased]` (no version bump was asked for).
+
+**Verified:** `npx tsc -p ./` clean; `node tests/runner.js --file ai-` green while working; the whole hermetic
+suite at the end, once and with the user's permission: **t1 + t2 + t3, 889 checks, 0 skipped, 0 failed**
+(780 ms). The count is lower than §128's 974 because eight hand-off test files and their shims/fixture went with
+the feature; nothing was skipped or disabled.
+
+## 130. The Roller turns under a finger (2026-10-14)
+
+**Asked for, verbatim:** *"I want the Roller widgit to rotate the roller when dragging on it using the touch
+panel."* Up to this point the only widget a drag could move was the one that scrolls: `handle_pointer_moved`
+knew about ScrollView and nothing else.
+
+**What a drag now is.** `GuiContext::drag_step_selection(&mut self, pressed: &mut PressTracker, dy: i32)` turns
+the widget the *press* focused, so the gesture is the same one the finger already makes: press on the roller,
+slide up or down, watch the selection follow. One item per drawn row of travel — the step is
+`max(rect.h / drag_rows(kind), MIN_DRAG_STEP_PX = 12)` — accumulated in the new `PressTracker::drag_accum_y`,
+with `MAX_DRAG_STEPS_PER_SAMPLE = 8` items per pointer sample so a fast flick cannot run the list away. Index
+selectors (Menu, RichMenu, Dropdown, Roller, Carousel, Keyboard, List, CircularList, FeedTimeline) go through
+`adjust_focused_selection`; the value selectors get `drag_value_step` — Spinbox by its own `step`, NumberPicker
+by ±1, TimePicker by the hour, with `step_time_of_day` doing the 12-hour AM/PM roll from a 24-hour value.
+`handle_pointer_moved` sets `scroll_target = None` when the drag was consumed, so a selector inside a ScrollView
+does not also scroll the view. `ROLLER_ROWS = 3` in `widgets/mod.rs` is now the single source for the roller's
+row count, shared by `render_roller` and `drag_rows` so the two cannot drift.
+
+**Two widgets stay out of the drag set, deliberately.** ScrollView scrolls rather than selects. AutoComplete is
+not there because a press *confirms and collapses* it and never focuses it, so a drag can never reach it. A
+Dropdown is in the set, but its press toggles it closed (`select_opens_dropdown`), so a drag only reaches an open
+one — which is what the widget's own contract says, not something the drag gets to overrule.
+
+**Three traps, all of which cost a run:**
+
+1. **`bump_index_with_wrap` reads only the *sign* of its delta.** My first version passed the accumulated number
+   of items in one call and watched the roller move exactly one item. Selectors now step one item at a time, in
+   a loop.
+2. **The test context ran out of events.** `EventsFull` came back from a press plus a drag because the test's
+   `GuiContext<'static, 32, 64, 16>` has sixteen event slots; a press, a move and the events they raise do not
+   fit in it. The test context is sized for the gesture, not for a tap.
+3. **Two of my own expectations were wrong**, and the tests said so before the board did: an hour back from
+   11 PM is 10 PM (not 11 PM, which is what I had written), and a wrap-disabled selector stops at the first item
+   rather than wrapping to the last.
+
+`focusable()` also gained Spinbox, NumberPicker, TimePicker and Carousel: `pointer_hit` only considers focusable
+widgets, so before this a finger could not land on them at all — not even for a tap. The catalogue lost the dead
+`scroll` event from roller, carousel and table (a roller raises `valueChanged`), and the carousel gained it.
+
+**Suite:** 256 crate tests, `node tests/tools/designer-sim.js` PASS, 202 designer tests.
+
+## 131. The design gets a way to be driven from the app's own code (2026-10-14)
+
+**The report that started it:** *"compile error in my test app 'testV69'."* `E0599: no method named
+`set_scale_value`` — and the method was not missing, it had been **erased**: a previous session had hand-added it
+to the app's generated `src/ui.rs`, and the next Designer save regenerated that file from the design. The backup
+folder beside the app (`testV69_2026-10-14_13:13:05/`) still had it, which is what proved where it went.
+
+**The fix is in the generator, not in the app.** The generated `Designer` had no way to reach its own widgets —
+`gui` was private and only `pointer`, `pump`, `is_dirty`, `repaint` and `render` were public — so a screen could
+be touched and painted but never *told* anything, which is exactly what an app animating a needle needs. It now
+exposes `gui()` and `gui_mut()`, both `#[allow(dead_code)]` for the same reason the `widgets` field carries it:
+whether an app drives a widget itself is the app's business, and the warning would otherwise appear in every
+project that does not.
+
+**The route to a value**, which is worth writing down because it is not obvious:
+`let id = screen.widgets.my_scale; screen.gui_mut().set_widget_property(id, PropertyKey::Value,
+PropertyValue::Float(v))`. `PropertyKey` and `PropertyValue` are exported at the crate root but are **not in the
+prelude**, so app code has to name them. `Scale` is the one value widget with no named setter (Gauge, Dial,
+Meter, Slider and ValueLabel all have one), which is why the generic path matters; it dirties only the needle's
+spoke rather than the whole widget.
+
+**Template caution (the same trap as §108):** the Rust this generator emits lives inside a JavaScript template
+literal, and a backtick in a doc comment ends the literal. The first attempt at the accessors' documentation did
+exactly that and `tsc` reported an error nowhere near the edit.
+
+**Verified:** the app's `cargo check` finished with 0 warnings and 0 errors, the sim regenerated and passed, and
+`npx tsc -p ./` was clean.
+
+## 132. A widget no longer recolours itself when it is touched (2026-10-14)
+
+**Asked for, verbatim:** *"There is an issue with all widgits: When i touch a widget that can get focus its
+colour changes and that makes its contents difficult to see. e.g. a checkbox checksate cant be seen. Also the
+Roller selection is not vissible. The widgits colours should not change when it has focus. When the widits
+action was performed (e.g. a checkbox sate was toggled), that widgit should automatically lose focus."*
+
+**One line caused all of it.** `WidgetStyle::new` built its focused and pressed states out of
+`normal.selected(true)`, and `Style::selected(true)` means `background = accent; border = white`. So touching
+*any* widget filled its block with the accent colour, painted **over** whatever the widget draws for itself: a
+checkbox's tick is drawn in the accent, so it became an accent square on an accent block, and a roller's selected
+row *is* the accent, so that row disappeared into the panel behind it. The designer's own canvas never showed
+this — it paints the normal style — which is why it was only ever visible on the glass.
+
+**What replaced it.** `Style::with_highlighted_outline(color)` brightens the border **colour** and changes
+nothing else, and that is now what focused and pressed are. The outline's *width* is deliberately never touched:
+`Block::inner` subtracts it, so a wider border on focus would move every widget's contents by a pixel and could
+re-wrap its text. A style with no border therefore shows no hint at all rather than a jumping one — a deliberate
+choice, not an oversight. The ProgressBar's fill also stopped switching from `foreground` to `accent` on focus.
+
+**Giving the focus back.** `activate_focused` already computed whether the activation *changed* the widget; it
+now returns that, and `dispatch_activation` calls `set_focus(None)` when the activation came from a pointer and
+something changed — a Checkbox or Toggle thrown, a Dropdown opened, a Keyboard key typed. A tap that changed
+nothing keeps the focus, which is what a roller needs (and what the drag above reads to know which selector to
+turn), and a TextArea keeps it so its caret stays on screen. The 1px accent carets in `render_spinbox` and
+`render_textarea` were left alone for the same reason.
+
+**One timing detail worth recording**, because it made my first test fail: this engine activates on the
+**press**, so a checkbox is focused and handed back inside a single event. The test now asserts the
+`Focused`/`Defocused` pair on the event stream rather than sampling `focus()` between the press and the release.
+
+**Verified:** `cargo test --lib` 260 passed (five new focus tests), the sim PASS, `tsc` clean, and 0.0.92 built
+and installed.
+
+## 133. An old design that froze the board, and never said so (2026-10-14)
+
+**Asked for, verbatim:** *"Check my test app, testV69. Why is the checkbox widget not rendered as it is defined
+in the Designer?"*
+
+**The chain, once traced.** `designer/panel.ui.json` is the source of truth and `src/ui.kdl` is generated from
+it by `DesignerPanel.save()` — the only writer of an existing project's markup. `renderDesign` always returns
+the document but returns **no markup** when `validateDocument` complains, and `save()` writes the document either
+way. So an invalid design is written, drawn on the canvas, edited freely — and silently stops reaching the
+board, which goes on compiling the last `ui.kdl` that worked.
+
+**The live case.** The checkbox carried a leftover `"style": "panel"` property. No revision of the catalogue has
+ever offered a checkbox a named style (I checked all fourteen commits of `catalog.ts`; only `label`, `button`,
+`panel` and `carousel` declare one), so every save since had reported
+`"gaugeRun": "style" is not a property of a checkbox` and never rewritten the markup. The panel drew the old
+`label="RUN"` checkbox from `ui.kdl` (17:37) while the canvas showed a 50×50 box labelled `Swing it!` (18:09).
+
+**The one command that diagnoses it**, without VS Code:
+
+```
+node -e "console.log(require('./out/designer/store.js').renderDesign(JSON.parse(require('fs').readFileSync('<app>/designer/panel.ui.json','utf8'))))"
+```
+
+**Hand-editing the JSON is not a fix** — and finding that out was the useful part. I removed the key from the
+file; the canvas is sent the whole document and posts the whole document back on every change, so the next
+edit to that widget wrote the key straight back in (18:24, a box-size change). Only the load path can clean it.
+
+**The fix.** `unknownProps(widget)` in `model.ts` is now the single answer the validator *and* the cleanup read,
+so a property cannot be reported by one and tolerated by the other; `dropUnknownProps` runs inside
+`migrateDocument`, so a version 1 document is migrated and pruned in the same pass; `LoadResult.notes` carries
+one sentence per property dropped; and `show()` writes the cleaned document **and** its freshly generated markup
+the moment the project is opened, seeding `lastWritten` so the first edit is a change and not a rewrite. Only
+unknown *keys* are dropped — a value the catalogue disagrees with is a mistake to be shown, not junk to clear
+away — and an unknown *tag* is left alone, because a whole widget is somebody's work and the validator explains
+it instead.
+
+**Verified:** six new tests in `designer-store.test.js` (including "dropping that property is what lets the
+markup be written at all", which asserts the old file emits nothing and the loaded one emits again) plus a
+wiring guard that reads the sources end to end; the live document put through the new load path reports the
+drop, validates, and regenerates; the app's `cargo check` clean with the checkbox landing at exactly the canvas
+rect.
+
+## 134. The verdict arrives when the panel opens (2026-10-14)
+
+**Asked for, verbatim:** *"Do the Still open issue, then update docs and git, lets close out cleanly for
+today."* The still-open issue was the other half of §133: a property the catalogue no longer has is now dropped
+on the way in, but a property whose **value** this version disagrees with (a box wider than its maximum, a
+colour that is not a colour) cannot be dropped — it is the user's mistake to correct. It still made the design
+invalid, so it still stopped the markup being written, and the panel said nothing until the first edit.
+
+**The verdict is now taken at open.** `show()` renders the design once before the panel is created, writes the
+whole verdict to the output channel, and sends it to the panel, which lists it under the properties as it opens:
+what the load had to tidy up, then everything that is wrong with the design. A user who is told nothing has no
+reason to touch the canvas and discover that their board is compiling an older design than their screen.
+
+**The footer is one clipped line**, which is what moved the load notes out of it: `.footer` is
+`white-space: nowrap; overflow: hidden; text-overflow: ellipsis`, so a note appended to it can vanish exactly
+when it matters — and the load that dropped a property is the one whose board was out of step. Those notes now
+have their own list (`.load-notes`) above the problems, drawn once when the panel opens and deliberately *not*
+cleared by the next save, because "this file was cleaned up when you opened it" is not news an edit can replace.
+
+**And a problem that has been fixed no longer stays on screen.** The old `report()` only *added* the list, so the
+first problem of a session stayed there for the rest of it. `showVerdict` rebuilds both lists on every verdict,
+which is possible now that they are drawn in one place.
+
+**Verified:** a new test drives the real bundle with a stub DOM through `init` (a dropped property *and* a
+problem) and then a clean `report`, asserting the footer, both lists, that the problem list goes when the
+problems do, and that the load's note stays. **Suite:** t1-logic 838, t2-cli 54, t3-golden 4 — 896 checks, 0
+failed.
+
+## 135. Closing the day out: what running the other layers would have caught earlier (2026-10-14)
+
+The day's work was five versions (0.0.89 → 0.0.94) and, for most of it, I had been verifying with the layer that
+was nearest to hand: `--layer t1-logic`, `--file designer`, the crate's own tests. Closing out meant running
+t2 and t3 as well, and both had something to say.
+
+**t2-cli caught a regression I had shipped.** 0.0.93's panel read `message.loadNotes.length` directly, and the
+webview tests build their `init` messages by hand — thirty-two of them failed with *"Cannot read properties of
+undefined"*. The installed 0.0.93 was not broken in practice, because the extension always sends the field, but
+the panel is the side that has to survive its absence: the two new fields are extras on top of the document,
+like `loadError`, and are now typed and read as optional.
+
+**t3-golden caught drift from 0.0.91.** The generated `ui.rs` gained `gui()`/`gui_mut()` and the two recorded
+snapshots (`lilygo-tqt`, `sunton-3248s035r`) were never re-recorded, so the golden layer had been failing since
+that change. Regenerated with `UPDATE_SNAPSHOTS=1 node tests/runner.js --layer t3-golden`, which changed exactly
+the two lines of documentation the accessors added.
+
+**The lesson is the cheap one:** a targeted run is the right tool while working, but a close-out has to touch
+every layer, because some layers only ever see the seams (t2 sees the bundle's real behaviour, t3 sees generated
+files) and neither is exercised by a `--file designer` run.
+
+**Released as v0.0.94** — 0.0.89 through 0.0.94 went out together, since 0.0.90, 0.0.91, 0.0.92 and 0.0.93 were
+development numbers that were never published on their own. Packaged with `vsce`, installed, and the four
+shipped build files verified byte-identical to the local build (`cmp`), which is the check that catches a stale
+`out/` — the trap from §129.
+

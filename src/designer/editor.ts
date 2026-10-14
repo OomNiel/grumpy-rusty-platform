@@ -79,8 +79,12 @@ class DesignerPanel {
         document: DesignerDocument,
         private touchEnabled: boolean,
         private readonly loadError: string | undefined,
+        private readonly loadNotes: string[],
+        private readonly loadProblems: string[],
+        written: string,
     ) {
         this.document = document;
+        this.lastWritten = written;
         this.panel.webview.html = this.shell();
         this.panel.webview.onDidReceiveMessage(
             (message: DesignerInbound) => void this.receive(message),
@@ -147,6 +151,34 @@ class DesignerPanel {
                 screenId: screenIdFrom(folderName),
             });
 
+        // The design's own verdict, taken once, before anything is drawn: it decides both what gets written
+        // back and what the panel says about the design it has just been handed.
+        const rendered = renderDesign(document);
+
+        // A design that had to be cleaned up on the way in is written back at once, markup and all. The cleanup
+        // is usually what was *blocking* the markup: one property this version has no place for fails the whole
+        // design, and a design that does not validate never has its markup written -- so the board went on
+        // compiling the last save that worked while the canvas went on accepting edits. Waiting for the user's
+        // first edit would leave that trap armed until they touched the canvas, which is the moment they had
+        // already been tripped by it.
+        if (loaded.notes !== undefined) {
+            await writeProjectFile(project.folder, DESIGNER_DOCUMENT_PATH, rendered.documentJson);
+            if (rendered.kdl !== undefined) {
+                await writeProjectFile(project.folder, DESIGNER_KDL_PATH, rendered.kdl);
+            }
+            output.appendLine(`[designer] ${folderName}: ${loaded.notes.join('; ')}`);
+        }
+
+        // A design that does not validate is said out loud at *open* rather than only after the first edit. The
+        // markup is not written for one, so the board is compiling an older design than the canvas shows -- and
+        // a user who is told nothing has no reason to touch the canvas and find out.
+        if (rendered.problems.length > 0) {
+            output.appendLine(
+                `[designer] ${folderName}: the design does not validate, so its markup was not written: ` +
+                `${rendered.problems.join('; ')}`,
+            );
+        }
+
         const panel = vscode.window.createWebviewPanel(
             'rustyDesigner',
             `Designer: ${document.screenId}`,
@@ -166,6 +198,10 @@ class DesignerPanel {
             document,
             touchEnabled,
             loaded.error,
+            loaded.notes ?? [],
+            rendered.problems,
+            // The cleaned design has just been written, so the first edit is a change rather than a rewrite.
+            loaded.notes === undefined ? '' : rendered.documentJson,
         );
         output.appendLine(
             `[designer] ${folderName}: canvas ${designCanvasSize(document.panelWidth, document.panelHeight, document.rotation).width}x` +
@@ -309,6 +345,8 @@ class DesignerPanel {
             touchBoard: (this.board?.kind === 'esp' && this.board.touch !== undefined) || false,
             touchEnabled: this.touchEnabled,
             loadError: this.loadError,
+            loadNotes: this.loadNotes,
+            loadProblems: this.loadProblems,
         });
     }
 

@@ -5,7 +5,7 @@ use crate::{
     render::RenderQuality,
     style::{Theme, VisualState, WidgetStyle},
     widget::{FocusGroupId, MenuContract, StyleClassId, WidgetId},
-    widgets::{TEXTAREA_CAPACITY, WidgetNode},
+    widgets::{WidgetNode, TEXTAREA_CAPACITY},
 };
 use heapless::Vec;
 
@@ -36,6 +36,12 @@ pub(crate) struct PressTracker {
     pub(crate) gesture_emitted: bool,
     pub(crate) repeat_elapsed_ms: u32,
     pub(crate) scroll_velocity: f32,
+    /// Vertical travel not yet spent on a drag step, in pixels.
+    ///
+    /// A finger is sampled far more often than a selector should move (the ESP touch loop reads
+    /// every ~60 ms), so the movement is accumulated and spent one drawn row at a time — the
+    /// remainder is what makes a slow drag land on the same item a fast one would.
+    pub(crate) drag_accum_y: i32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

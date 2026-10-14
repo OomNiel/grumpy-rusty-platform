@@ -457,6 +457,71 @@ function isRustIdentifier(value: string): boolean {
     return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
 }
 
+/** A tag as a sentence reads it, for a message about a widget. */
+function widgetLabel(tag: string): string {
+    return widgetSpec(tag)?.label.toLowerCase() ?? tag;
+}
+
+/**
+ * The properties a widget carries that its tag has no place for.
+ *
+ * The catalogue is the authority, so this is the list `validateDocument` reads, asked once more rather than
+ * written down twice: the validator refuses a design over one of these keys and the load path drops it, and
+ * those two answers have to be the same answer.
+ *
+ * An unknown *tag* is deliberately not this function's business. A widget the markup no longer offers is
+ * somebody's work, and clearing it away silently would be losing it; the validator reports it instead.
+ */
+export function unknownProps(widget: DesignerWidget): string[] {
+    const spec = widgetSpec(widget.tag);
+    if (spec === undefined) {
+        return [];
+    }
+    return Object.keys(widget.props).filter((key) => !spec.props.some((property) => property.name === key));
+}
+
+export interface CleanedDesign {
+    /** The design, with the properties this version has no place for removed. */
+    document: DesignerDocument;
+    /** One sentence per property that went, for the panel and the output channel. Empty when none did. */
+    dropped: string[];
+}
+
+/**
+ * Drops the properties the catalogue no longer has a place for.
+ *
+ * This runs when a design is *loaded*, and it is the difference between an older document working and an older
+ * document freezing. `validateDocument` refuses a whole design over a single unknown key, and `renderDesign`
+ * only writes the markup for a design that validates -- so one leftover property stops `src/ui.kdl` being
+ * written at all. The canvas goes on accepting edits, the board goes on compiling the markup from the last
+ * save that worked, and nothing connects the two. Seen for real: a checkbox carrying the `style` property
+ * from before the appearance fields existed, which no version of the catalogue has offered since, leaving a
+ * panel drawing `RUN` while the canvas showed a box labelled `Swing it!`.
+ *
+ * Only *keys* are dropped. A property whose value this version disagrees with -- a size past the maximum, a
+ * colour that is not one -- is a mistake to be shown rather than junk to be cleared away, so it stays and the
+ * panel reports it.
+ *
+ * A design with nothing to drop is handed back as it came, and that is what lets the caller tell the two
+ * apart by `dropped.length` and leave the project's files alone.
+ */
+export function dropUnknownProps(document: DesignerDocument): CleanedDesign {
+    const dropped: string[] = [];
+    const widgets = document.widgets.map((widget) => {
+        const unknown = unknownProps(widget);
+        if (unknown.length === 0) {
+            return widget;
+        }
+        const props = { ...widget.props };
+        for (const key of unknown) {
+            delete props[key];
+            dropped.push(`"${widget.id}": "${key}" is not a property of a ${widgetLabel(widget.tag)} any more`);
+        }
+        return { ...widget, props };
+    });
+    return dropped.length === 0 ? { document, dropped } : { document: { ...document, widgets }, dropped };
+}
+
 /**
  * Everything wrong with a document, as sentences the editor can show.
  *
@@ -559,10 +624,8 @@ export function validateDocument(document: DesignerDocument): string[] {
                     problems.push(`${where}: ${property.label} is required and has not been chosen`);
                 }
             }
-            for (const key of Object.keys(widget.props)) {
-                if (!spec.props.some((property) => property.name === key)) {
-                    problems.push(`${where}: "${key}" is not a property of a ${spec.label.toLowerCase()}`);
-                }
+            for (const key of unknownProps(widget)) {
+                problems.push(`${where}: "${key}" is not a property of a ${spec.label.toLowerCase()}`);
             }
             for (const event of widget.events) {
                 if (!widgetRaises(widget.tag, event)) {

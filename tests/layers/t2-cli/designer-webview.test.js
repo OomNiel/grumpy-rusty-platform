@@ -851,3 +851,61 @@ test('a Vector font draws the crate\'s own polylines, not bitmap pixels', () => 
     equal(glyphBox.length, 0, 'and no bitmap pixel of it is filled');
 });
 
+// ---------------------------------------------------------------------------
+// The verdict at load.
+//
+// A design that does not validate has no markup written, so the board goes on compiling an older design than
+// the canvas shows. The user has to be told that as the panel opens, not after their first edit: a value this
+// version disagrees with reaches here -- an unknown *key* is dropped on the way in instead, which is the other
+// half of the same problem.
+// ---------------------------------------------------------------------------
+
+test('a design that does not validate says so as it opens', () => {
+    const env = dom.install();
+    delete require.cache[require.resolve(BUNDLE)];
+    require(BUNDLE);
+
+    env.window.emit('message', {
+        data: {
+            type: 'init',
+            document: starterDocument({
+                boardId: 'sunton-3248s035r',
+                panelWidth: 320,
+                panelHeight: 480,
+                rotation: 3,
+            }),
+            canvas: { width: 480, height: 320 },
+            paths: { document: 'designer/panel.ui.json', kdl: 'src/ui.kdl' },
+            touchBoard: false,
+            touchEnabled: false,
+            loadNotes: ['"gaugeRun": "style" is not a property of a checkbox any more'],
+            loadProblems: ['"probe": Box width is above the maximum of 64'],
+        },
+    });
+
+    const find = (tag) => env.root.descendants().find((element) => element.tagName === tag);
+    const footer = find('FOOTER');
+    contains(footer.textContent, '1 problem', 'the footer says the design is not valid');
+    contains(footer.textContent, 'Box width', 'and names the first problem');
+
+    const listed = (className) =>
+        env.root.descendants().find((element) => element.classList.contains(className));
+    const problems = listed('problem-list');
+    ok(problems !== undefined, 'the whole list is shown under the properties');
+    equal(problems.children.length, 1, 'one item per problem');
+
+    // What the load tidied up has its own list, and it is *not* the footer: that is one clipped line, and the
+    // load that dropped a property is exactly the one whose board was compiling an older design.
+    const notes = listed('load-notes');
+    ok(notes !== undefined, 'and what the load dropped is listed too');
+    contains(notes.children[0].textContent, '"style"', 'naming the property it removed');
+
+    // And the problems go when they are fixed. The list is rebuilt on every verdict, so a problem the design no
+    // longer has cannot stay on screen for the rest of the session. The load's own note is not a verdict on an
+    // edit, so a save must leave it alone.
+    env.window.emit('message', { data: { type: 'report', problems: [], kdl: 'screen id="RustyPanel" {}' } });
+    equal(listed('problem-list'), undefined, 'fixed, so nothing is listed any more');
+    contains(find('FOOTER').textContent, 'Saved', 'and the footer says the markup was written');
+    ok(listed('load-notes') !== undefined, 'while the note about the load stays put');
+});
+

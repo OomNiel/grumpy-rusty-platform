@@ -11,6 +11,143 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.0.94] - 2026-10-14
+
+### Added
+
+- **A design that is not valid says so the moment it opens.** The panel's verdict used to arrive only after the
+  first edit, which is the wrong moment to hear it: an invalid design is one whose markup is *not* written, so
+  the board is compiling an older design than the canvas shows, and a user who is told nothing has no reason to
+  touch the canvas and find out. Everything wrong with the design, and everything the load had to tidy up, is
+  now listed under the properties as the panel opens, and the whole verdict is written to the output channel
+  as well. A *value* the catalogue disagrees with (a box wider than its maximum, a colour that is not a colour)
+  reaches the board this way; an unknown property is dropped on the way in instead, as of 0.0.93.
+
+### Fixed
+
+- **A problem that has been fixed is no longer left on screen.** The list was only ever added to, never
+  rebuilt, so the first problem reported in a session stayed there for the rest of it.
+- What a load dropped moved out of the footer and into that list, because the footer is a single clipped line
+  (`overflow: hidden`, an ellipsis): a note appended to it can vanish exactly when the board is out of step.
+- The panel now tolerates an init message that carries neither of those lists instead of failing to draw at
+  all. They are extras on top of the document, like `loadError`, and the panel is the side that has to survive
+  their absence.
+
+## [0.0.93] - 2026-10-14
+
+### Fixed
+
+- **An older design is cleaned up when it is opened, instead of silently freezing the board at an older
+  design.** A document carrying a property this version of the catalogue has no place for -- the checkbox's
+  one-time `style`, say -- fails validation as a whole, and a design that does not validate never has its
+  markup written. So `src/ui.kdl` kept whatever the last successful save had produced, the canvas went on
+  accepting every edit, and the only sign of it was one line in the panel's problem list: the panel drew a
+  checkbox labelled `RUN` from an old file while the canvas showed a 50x50 box labelled `Swing it!`.
+  Properties the catalogue no longer offers are now dropped as the design loads, reported in the footer (and
+  in full in the output channel), and the cleaned design **and** its markup are written straight away rather
+  than waiting for the next edit -- the cleanup is usually the very thing that was blocking the markup.
+  Hand-editing the JSON does not fix this on its own: the canvas holds the whole document and writes it back
+  on every edit, so a leftover key returns with the next change.
+- The validator and the cleanup ask the catalogue the same question through one function (`unknownProps`), so
+  a property cannot be reported by one and tolerated by the other. Only unknown *keys* are dropped: a value
+  this version disagrees with (a size past the maximum, a colour that is not one) stays, and the panel says
+  so.
+
+## [0.0.92] - 2026-10-14
+
+### Fixed
+
+- **A widget no longer recolours itself when it takes focus or is pressed.** The default focused and pressed
+  styles were `Style::selected(true)`, which replaces the block's **background** with the accent — so a
+  Checkbox's glyph was painted over the colour it is drawn in and could not be read, and a Roller's selected
+  row (which *is* the accent) vanished into the block. Both states now brighten the **outline colour only**
+  and leave the background, text, foreground and accent exactly as they were. The outline's *width* is
+  deliberately untouched: `Block::inner` subtracts it, so a wider border on focus would move every widget's
+  contents by a pixel and could re-wrap its text. A style with no border therefore shows no hint rather than
+  a jumping one.
+- **A widget that acts gives the focus back.** An activation that changed something — a Checkbox or Toggle
+  thrown, a Dropdown opened, a Keyboard key typed — now drops the focus the press took, inside the same
+  event, so nothing stays highlighted once the finger comes up. A tap that changed nothing (a Roller, a List,
+  a TextArea) keeps it: that is what keeps a caret on screen, and what the drag needs to know which selector
+  to turn.
+- The ProgressBar's fill no longer switches from `foreground` to `accent` while the bar has focus, so the
+  same value reads the same way wherever the focus happens to be.
+
+## [0.0.91] - 2026-10-14
+
+### Added
+
+- **A design's own context is reachable from the app's code.** The generated `src/ui.rs` `Designer` now exposes
+  `gui()` and `gui_mut()`, so an app that drives a widget itself can call any of the crate's named `set_*`
+  methods, or the generic one — `gui_mut().set_widget_property(id, PropertyKey::Value, PropertyValue::Float(v))`
+  — addressed by the ids in `widgets`: a sweeping needle becomes
+  `let id = widgets.my_scale; gui_mut().set_widget_property(id, PropertyKey::Value, PropertyValue::Float(v))`.
+  Before this a screen could be touched and painted but never *told* anything: `gui` was private with no way
+  in, which is what a hand-written gauge sweep in a test app ran into (`no method named set_scale_value`).
+  `Scale` is the one value widget with no named setter of its own (Gauge, Dial, Meter, Slider and ValueLabel
+  have one); the generic property path covers it and dirties only what changed.
+- The accessors carry `#[allow(dead_code)]` for the same reason the `widgets` field does: whether an app drives
+  a widget itself is the app's business, and the warning would otherwise appear in every project that does not.
+
+## [0.0.90] - 2026-10-14
+
+### Added
+
+- **A finger drag turns the selectors on the touch panel.** Drag up or down on a **Roller** and it rotates
+  under your finger, one item per drawn row of travel. The same gesture turns a List, a Circular List, a Menu,
+  a Rich Menu, a Keyboard and a Feed Timeline, and steps a **Spinbox** (by its own `step`), a **NumberPicker**
+  (±1) and a **TimePicker** (the hour). It is exactly what the Up/Down keys do — the drag calls the same code
+  — so the wrap setting, the damage and the event are shared: a generated `on_<widget>_value_changed` handler
+  fires once per item the finger crosses.
+- The step comes from the widget's own geometry — a roller's third-of-its-height row, a list's
+  `visible_rows` — with a 12 px floor, because a short roller (the sim's is 18 px tall) would otherwise step
+  on every touch sample, and the panel samples every ~60 ms. Travel is accumulated, so a slow drag lands
+  where a fast one would, and one sample moves at most 8 items however far a stale finger travelled.
+
+### Changed
+
+- **The Spinbox, NumberPicker, TimePicker and Carousel could not be touched at all.** They were not
+  focusable, and `pointer_hit` only considers focusable widgets, so no finger could ever land on them — no
+  tap, no drag. They are controls rather than displays (a Gauge, Chart or Plotter stays unreachable), and
+  they are in the Tab order now.
+- **The widget under the finger wins over a `ScrollView` behind it.** A roller or list inside a scrolling
+  view used to scroll the view when dragged; now the selector turns and the view stays where it is. A drag
+  on the view itself still scrolls it.
+- **The Carousel gained arrow-key stepping**, so the finger and the keys cannot disagree about it.
+- **Two widgets keep the press they already had**, because the drag may not quietly override a contract: a
+  press on a **Dropdown** toggles it (`select_opens_dropdown`), so the press that would start a drag is also
+  the one that dismisses the list — set that contract off and open it yourself if you want to drag it; and a
+  press on an **AutoComplete** confirms the selection and collapses it, so it is not in the drag set at all.
+
+### Fixed
+
+- The designer's catalogue no longer offers an event a widget cannot raise: the **Roller** and **Carousel**
+  advertised `scroll` (only a `ScrollView` ancestor raises `UiEvent::Scroll`, and it carries the *view's*
+  id) and the **Table** advertised `scroll` while not being focusable at all. A generated handler for any of
+  them was dead code.
+
+## [0.0.89] - 2026-10-14
+
+### Removed
+
+- **The AI Assist is local-only.** Everything that could hand a request to another agent is gone: the machine
+  scan and its agent picker, the Poolside CLI (`pool`) driver, the Agnes Code CLI (`jcode`) driver, the cloud
+  OpenAI-compatible provider with its secret-storage API key, the consent/progress/report flow, and the
+  pre-flight "this request is beyond the local model" gate whose escape hatch they were. With them go the twelve
+  settings they used (`handoff`, `handoffAgent`, `cloudEndpoint`, `cloudModel`, `poolCommand`, `poolAgent`,
+  `poolAutoAllow`, `poolTimeoutSeconds`, `poolResume`, `jcodeCommand`, `jcodeProvider`, `jcodeModel`) and the
+  three commands (`Rusty AI: Forget the Handed-off Conversation`, `Rusty AI: Choose the Hand-off Agent…`,
+  `Rusty AI: Set the Hand-off API Key…`). The chat panel, the `✎ AI` block, the diff-and-apply review, the
+  build-driven repair loop, the house rules and every local-model feature are unchanged.
+
+### Changed
+
+- **Nothing the assistant does leaves this machine.** The bundled runtime and the OpenAI-compatible server you
+  point `endpoint` at are both yours, and there is no longer any path that sends code or a prompt anywhere else.
+- **The chat's "Implement `fn …` in the project…" buttons stay**, because they use the local model and the same
+  diff-and-apply review as the editor's own flows — nothing is written until you apply the diff.
+- `rustyPlatform.assistant.maxTokens` again bounds every answer: there is no longer an uncapped request.
+
 ## [0.0.88] - 2026-10-13
 
 **This entry covers everything since 0.0.80.** The numbers 0.0.81 to 0.0.87 were used while this work was being

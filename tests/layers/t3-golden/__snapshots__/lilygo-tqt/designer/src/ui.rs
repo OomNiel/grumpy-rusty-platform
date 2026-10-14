@@ -54,6 +54,28 @@ impl Designer {
         }
     }
 
+    /// The design's own context, for an app that drives a widget itself.
+    ///
+    /// Every named set_* method the crate has is reached through this, and so is the generic
+    /// set_widget_property(id, key, value) -- addressed by the ids in widgets, for example
+    /// gui_mut().set_widget_property(widgets.my_scale, PropertyKey::Value, PropertyValue::Float(8.4)).
+    /// Without it a screen could be touched and painted but never told anything, which is what an app that
+    /// animates a needle or a gauge needs.
+    //
+    // allow(dead_code) for the same reason as the widgets field: whether an app drives a widget itself is
+    // the app's business, and the warning would otherwise appear in every project that does not. (No
+    // backticks in this file's Rust template: they would end the JavaScript string it lives in.)
+    #[allow(dead_code)]
+    pub fn gui(&self) -> &GuiContext<'static, NODES, EVENTS, DIRTY> {
+        &self.gui
+    }
+
+    /// The same, mutably: the setters all take &mut self.
+    #[allow(dead_code)]
+    pub fn gui_mut(&mut self) -> &mut GuiContext<'static, NODES, EVENTS, DIRTY> {
+        &mut self.gui
+    }
+
     /// A touch sample.
     ///
     /// Only the press and the release are sent as such: a widget acts on those, and a stream of presses would

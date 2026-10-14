@@ -38,13 +38,11 @@ import {
     methodTooLong,
     normalizeAssistantConfig,
     probeServer,
-    rustCodeBlocks,
     squeezedAnswerNotice,
     type AssistantConfig,
     type ChatMessage,
     type ChatOutcome,
-    type ChatOptions,
-    type CodeBlock
+    type ChatOptions
 } from './assistant';
 import {
     addItemToFile,
@@ -53,7 +51,6 @@ import {
     buildImplementPrompt,
     changeSummary,
     chatCodeProblem,
-    codeBlockLabel,
     crateList,
     detectEol,
     enclosingFnSpan,
@@ -87,9 +84,6 @@ import { configWithEndpoint } from './runtime';
 import { readActiveProject, type ActiveProject } from '../project/activeProject';
 import { espEnv } from '../commands/terminal';
 import { log, logError } from './log';
-import { checkScope, scopeLogLine } from './scope';
-import { handOff, handoffConfig, lastRunId, forgetRunId, agentScan, forgetAgentScan, handoffKey, setHandoffKey, findImportableKey, type HandoffReport } from './handoff';
-import { describeAgent, chooseAgent, handoffButtonLabel, type AgentCandidate } from './agents';
 
 /** The settings section every AI key lives under. */
 export const SETTINGS = 'rustyPlatform.assistant';
@@ -542,178 +536,6 @@ function unreachable(error: unknown): string {
     return `The model could not be reached: ${error instanceof Error ? error.message : String(error)}`;
 }
 
-/**
- * The optional prompt facts as one block, for a hand-off to carry.
- *
- * The agent gets the same facts the local prompt would have had, in the same words: it can read the project
- * itself, but the conventions measured from the developer's own code and the board's pin facts are expensive to
- * rediscover and cheap to pass on.
- */
-function factsText(facts: OptionalFacts | undefined): string | undefined {
-    if (!facts) return undefined;
-    const parts = [
-        facts.target ? `TARGET\n${facts.target}` : '',
-        facts.crates ? `CRATES IN THIS PROJECT\n${facts.crates}` : '',
-        facts.header ? `THE FILE'S OWN HEADER\n${facts.header}` : '',
-        facts.rules ? `HOUSE RULES MEASURED FROM THIS CODE\n${facts.rules}` : '',
-        facts.facts ? `THE BOARD\n${facts.facts}` : ''
-    ].filter(Boolean);
-    return parts.length ? parts.join('\n\n') : undefined;
-}
-
-/**
- * The label of the hand-off action, naming whichever agent this machine would actually use.
- *
- * Asked once per offer rather than written down: the scan is cached, `chooseAgent` is the same decision the
- * hand-off itself makes, and the wording therefore cannot promise one agent and deliver another (reported
- * 2026-10-13: *"the prompt in the response box reads: Hand to the Pool agent"* — after pool had stopped being the
- * only answer).
- */
-async function handoffAction(): Promise<string> {
-    return handoffButtonLabel(chooseAgent(await agentScan(), handoffConfig().agentId));
-}
-
-/** Says what a hand-off did, and offers the only thing worth doing next: check the build. */
-async function showHandoff(report: HandoffReport): Promise<void> {
-    for (const step of report.work) log(`handoff:   ${step}`);
-    if (report.full) log(`handoff: the agent said: ${report.full.slice(0, 2000)}`);
-    if (report.kind === 'declined' || report.kind === 'off') return;
-    if (report.kind === 'answered') {
-        // An endpoint wrote nothing, so the answer is the whole result — and "the answer is in the conversation"
-        // is a dead end on its own: the code would have to be selected, copied and pasted by hand. The blocks it
-        // returned are offered here, through the same path a local answer takes (asked 2026-10-13: *"Can we
-        // equip it with the ability to generate diffs and on permission implement it?"*).
-        const blocks = rustCodeBlocks(report.answer || report.full || '');
-        const pick = await vscode.window.showInformationMessage(
-            `The hand-off answered (${report.agent ?? 'an endpoint'}). Nothing was written yet — the answer is in ` +
-            'the AI Assist conversation, and its code can be reviewed as a diff from here.',
-            ...(blocks.length ? ['Review and implement…'] : [])
-        );
-        if (pick === 'Review and implement…') await implementHandoffCode(blocks);
-        return;
-    }
-    if (report.kind === 'done') {
-        const closing = report.answer ? ` ${report.answer.replace(/\s+/g, ' ').slice(0, 160)}` : '';
-        const pick = await vscode.window.showInformationMessage(
-            `The pool agent finished in ${report.seconds} s (${report.work.length} step(s)).${closing}`,
-            'Check the build'
-        );
-        if (pick === 'Check the build') await checkProject();
-        return;
-    }
-    void vscode.window.showWarningMessage(`The hand-off did not finish: ${report.message}`);
-}
-
-/**
- * Offers the code an agent returned, as a diff, and writes nothing until that diff is applied.
- *
- * The chat's own buttons and this call run the same path (`applyChatCode`), which is the point: one rule for
- * "implement this code", so the guards cannot apply to a local answer and not to a handed-off one. A hand-off
- * that wrote nothing should still end in a usable change — otherwise its answer is only readable.
- */
-async function implementHandoffCode(blocks: readonly CodeBlock[]): Promise<void> {
-    const chosen = blocks.length === 1 ? blocks[0] : await pickCodeBlock(blocks);
-    if (!chosen) return;
-    await applyChatCode(chosen.code, { label: codeBlockLabel(chosen.code) });
-}
-
-/** Which of several blocks to implement, labelled exactly as the chat labels them. */
-async function pickCodeBlock(blocks: readonly CodeBlock[]): Promise<CodeBlock | undefined> {
-    const pick = await vscode.window.showQuickPick(
-        blocks.map((block, index) => ({
-            label: codeBlockLabel(block.code),
-            description: `${index + 1} of ${blocks.length}${block.language ? ` · ${block.language}` : ''}`,
-            block
-        })),
-        {
-            title: 'Which block should be implemented?',
-            placeHolder: 'The diff follows — nothing is written until you apply it'
-        }
-    );
-    return pick?.block;
-}
-
-/** What a scope check needs from the caller, beyond the settings. */
-interface ScopeGuardInput {
-    cfg: AssistantConfig;
-    /** The messages that would be sent — measured, not estimated from the sentence. */
-    messages: ChatMessage[];
-    /** The developer's own words: what the request is, and the only thing intent can be read from. */
-    request: string;
-    /** The facts the prompt carries, passed on to a hand-off. */
-    facts?: OptionalFacts;
-    /** The item the answer must reproduce, when the request is scoped to one. */
-    item?: { name: string; text: string };
-    /** The file the answer would have to be written into, when it is a whole file. */
-    target?: { path: string; text: string };
-    /** The project a hand-off would work in. */
-    directory?: string;
-}
-
-/**
- * The pre-flight scope check, as a dialog the developer can answer.
- *
- * *"The extension must inspect each ask prompt to verify that it is within the scope of the ai model
- * capabilities. If not, warn the user and abort."* This is the warning and the abort, with the third answer the
- * user asked for as well: a **hand-off** to the pool agent, which is what makes the refusal useful rather than
- * merely correct.
- *
- * The three buttons mean three different things and are worth keeping distinct:
- *   - *Hand it to the pool agent* — the request and its context go to an agent that can hold them, after a
- *     consent dialog that names what leaves the machine;
- *   - *Send it anyway* — the developer outranks the check, and the reason is logged so a puzzling answer can be
- *     traced to the fact that the model never saw the whole prompt;
- *   - *Cancel* — nothing is sent.
- *
- * A check with nothing to hand off to (the setting is `off`, or `pool` is not installed) still refuses: the
- * point of the gate is that the developer is told *before* an answer arrives that looks authoritative and is
- * not.
- */
-async function guardScope(input: ScopeGuardInput): Promise<boolean> {
-    const verdict = checkScope({
-        messages: input.messages,
-        contextSize: input.cfg.contextSize,
-        maxTokens: input.cfg.maxTokens,
-        request: input.request,
-        item: input.item,
-        target: input.target
-    });
-    log(`assistant: ${scopeLogLine(verdict)}`);
-    if (verdict.ok) return true;
-
-    const canHandOff = handoffConfig().target !== 'off';
-    // Named per offer: the button says which agent it will use, because "pool" stopped being the only answer.
-    const action = await handoffAction();
-    const buttons = canHandOff ? [action, 'Send it anyway', 'Cancel'] : ['Send it anyway', 'Cancel'];
-    const pick = await vscode.window.showWarningMessage(
-        `This is beyond what the local model can do here. ${verdict.message ?? ''}`,
-        {
-            modal: true,
-            detail:
-                `${verdict.advice ?? ''}\n\n` +
-                'Sending it anyway asks the model for an answer about code it cannot see all of, which is how a ' +
-                'file comes back shorter than it went in.'
-        },
-        ...buttons
-    );
-    if (pick === 'Send it anyway') {
-        log(`assistant: scope override — ${verdict.problem} accepted by the developer`);
-        return true;
-    }
-    if (pick === action) {
-        await showHandoff(
-            await handOff({
-                request: input.request,
-                refused: verdict.message,
-                facts: factsText(input.facts),
-                target: input.target,
-                directory: input.directory ?? (await readActiveProject())?.folder.fsPath ?? process.cwd()
-            })
-        );
-    }
-    return false;
-}
-
 // ---------------- the flows ----------------
 
 /**
@@ -778,13 +600,10 @@ export async function runImplement(document: vscode.TextDocument, line0: number,
     let messages: ChatMessage[];
     let dropped: string[];
     let apply: (code: string) => string;
-    /** The item the answer must reproduce, when the request is scoped to one: what the scope check measures. */
-    let item: { name: string; text: string } | undefined;
 
     if (span) {
         const offsets = itemOffsets(text, span);
         const func = text.slice(offsets.start, offsets.end);
-        item = { name: span.name, text: func };
         if (methodTooLong(func)) {
             void vscode.window.showWarningMessage(
                 `That function is ${func.split(/\r?\n/).length} lines — more than the ${MAX_METHOD_LINES} a small local ` +
@@ -822,20 +641,6 @@ export async function runImplement(document: vscode.TextDocument, line0: number,
     }
 
     if (dropped.length) log(`assistant: prompt was over the window — dropped ${dropped.join(', ')}`);
-
-    // The gate (2026-10-12). An item longer than the model can rewrite is already refused above with its own
-    // message; this is the rest of it — a prompt that does not fit the window at all, a sentence asking for a
-    // whole file or the whole project — and it is the one place that can offer the hand-off instead.
-    if (!(await guardScope({
-        cfg,
-        messages,
-        request: description,
-        facts,
-        item,
-        directory: project?.folder.fsPath
-    }))) {
-        return false;
-    }
 
     // The window is shared: the prompt is read first and the answer gets what is left. Worked out here rather
     // than left to the server, because a prompt that fills the window is the ordinary reason an answer stops
@@ -1041,17 +846,6 @@ export async function fixWithAI(uri: vscode.Uri, line: number, message: string):
     const room = Math.max(0, cfg.contextSize - cfg.maxTokens - PROMPT_SLACK);
     const { messages } = fitMessages((f) => buildFixPrompt({ ...f, description: message, func }), facts, room);
 
-    if (!(await guardScope({
-        cfg,
-        messages,
-        request: message,
-        facts,
-        item: { name: span.name, text: func },
-        directory: project?.folder.fsPath
-    }))) {
-        return false;
-    }
-
     let answer: ChatOutcome;
     try {
         answer = await runChat(cfg, messages, `Fixing ${span.name}…`);
@@ -1188,62 +982,11 @@ export async function repairProjectWithAI(maxPasses = 6): Promise<RepairReport |
         const why = report.applied === 0 && report.reverted === 0 && skipped.length > 0
             ? ` Nothing was attempted: ${skipped.slice(0, 3).join('; ')}.`
             : '';
-        // The end of a failed repair run is the one place a hand-off is worth *offering* rather than waiting to
-        // be asked for: every fix this loop could attempt has been attempted, the build is still broken, and the
-        // errors it could not touch are usually exactly the ones that did not fit a small local model — an
-        // 852-line `main`, most often (2026-10-12). One question, at the point the extension has genuinely run
-        // out of ideas, rather than one dialog per error in the loop. The button, and the comparison against
-        // what was clicked, are both the agent's own name — asked once, so no string is written twice.
-        const canHandOff = handoffConfig().target !== 'off';
-        const repairAction = await handoffAction();
-        const pick = await vscode.window.showWarningMessage(
-            `Stopped with ${report.remaining.length} error(s) left (${report.stoppedBecause}). ${rest.join('; ')}${why}`,
-            ...(canHandOff ? [repairAction] : [])
+        void vscode.window.showWarningMessage(
+            `Stopped with ${report.remaining.length} error(s) left (${report.stoppedBecause}). ${rest.join('; ')}${why}`
         );
-        if (pick === repairAction) {
-            const repairFacts: OptionalFacts = {
-                header: '',
-                crates: crateList(project.cargoToml),
-                target: '',
-                sibling: '',
-                rules: conventionsBlock(normaliseConventions(configView(SETTINGS).get('conventions'))),
-                facts: boardFacts(project.board, project.chip)
-            };
-            await showHandoff(
-                await handOff({
-                    request: handOffForRepair(report.remaining),
-                    refused: skipped.length
-                        ? `The local model could not attempt these: ${skipped.slice(0, 5).join('; ')}`
-                        : 'The local model tried and the build is still not clean.',
-                    facts: factsText(repairFacts),
-                    directory: dir
-                })
-            );
-        }
     }
     return report;
-}
-
-/**
- * The scripted request for a build the local model could not fix.
- *
- * Written as a *goal with evidence* rather than as an instruction list: the errors are what the compiler said,
- * and the one constraint that matters — fix the cause, do not silence it — is the thing a rushed agent does
- * wrong (an `#[allow]`, or deleting the code that needs to work).
- */
-function handOffForRepair(remaining: CompilerDiagnostic[]): string {
-    const shown = remaining.slice(0, 10).map((d) => `- ${describeCompilerError(d)}: ${d.message}`);
-    const rest = remaining.length > shown.length ? [`(and ${remaining.length - shown.length} more from the same build)`] : [];
-    return [
-        'Make this project build, without changing what the project is for.',
-        '',
-        '`cargo check` reports:',
-        ...shown,
-        ...rest,
-        '',
-        'Fix the cause of each error rather than silencing it: no `#[allow]` to hide it, and no deleting the code ' +
-        'that needs to work. Keep the project\'s existing conventions.'
-    ].join('\n');
 }
 
 /** One pass of the repair loop: locate the error, ask, write the edit. */
@@ -1457,190 +1200,6 @@ export async function refreshPanels(): Promise<void> {
 }
 
 /** Everything this layer registers with the extension context. */
-/**
- * `Rusty AI: Forget the Handed-off Conversation` — the next hand-off starts a new conversation.
- *
- * A hand-off continues the last one by default (`poolResume`), which is what makes a second request add to what
- * the agent already did. The other half of that promise is being able to stop it: a conversation whose context
- * has gone stale — a different task, or a wrong turn the agent keeps defending — needs a way out that is not
- * "turn off the hand-off". Saying so when there is nothing to forget is worth a sentence: a command that
- * silently does nothing reads as broken.
- */
-export async function forgetPoolRun(): Promise<void> {
-    const had = lastRunId();
-    await forgetRunId();
-    log(`assistant: pool conversation ${had ? `forgotten (${had})` : 'was already empty'}`);
-    void vscode.window.showInformationMessage(
-        had
-            ? 'The next hand-off to the pool agent will start a new conversation.'
-            : 'There was no handed-off conversation to forget.'
-    );
-}
-
-/**
- * `Rusty AI: Set the Hand-off API Key…` — the bearer token a cloud hand-off provider needs.
- *
- * The key never touches a setting, this file, the log, or the transcript: it is asked for with `password: true`
- * and stored in VS Code's **secret storage**, keyed by the endpoint it belongs to, so the value sent to one
- * provider cannot be sent to another. A prompt that could only be satisfied by pasting a secret into a chat
- * window is worse than no feature, so the key is typed here or read from a file the developer already has — and
- * when it is read from a file the dialog **names the file** first, because reading a credential the user did not
- * offer would be the wrong kind of helpful.
- */
-export async function setHandoffApiKey(): Promise<void> {
-    let cfg = handoffConfig();
-    if (!cfg.cloudEndpoint) {
-        // ASK, DO NOT WARN (reported 2026-10-13): *"Nothing happens when I click 'Open the AI settings' after 'Set
-        // API key...'"*. The old version told the developer to go and set a setting first, and the button it
-        // offered revealed a panel whose settings were collapsed — a dead end at the very start of the setup.
-        // The endpoint is the first half of that setup, so it is asked for here, where the developer already is.
-        const endpoint = await vscode.window.showInputBox({
-            title: 'Cloud API for hand-offs',
-            prompt: 'The OpenAI-compatible base URL of the provider. A trailing /v1 is added if you leave it off.',
-            placeHolder: 'https://apihub.agnes-ai.com/v1',
-            ignoreFocusOut: true
-        });
-        if (endpoint === undefined) return;
-        if (!endpoint.trim()) {
-            void vscode.window.showWarningMessage('A cloud API needs a URL, so nothing was saved.');
-            return;
-        }
-        await updateSetting(configView(SETTINGS), 'cloudEndpoint', endpoint.trim());
-        cfg = handoffConfig();
-        log(`handoff: cloud endpoint set to ${cfg.cloudEndpoint || '(none)'}`);
-        // And the model, which the provider chooses for itself if this is left empty.
-        const model = await vscode.window.showInputBox({
-            title: 'Model for the cloud API',
-            prompt: `The model id ${cfg.cloudEndpoint} should answer with. Leave it empty to let the provider choose.`,
-            placeHolder: 'agnes-2.5-flash',
-            ignoreFocusOut: true
-        });
-        if (model?.trim()) {
-            await updateSetting(configView(SETTINGS), 'cloudModel', model.trim());
-            cfg = handoffConfig();
-            log(`handoff: cloud model set to ${cfg.cloudModel}`);
-        }
-        // The scan's cached answer was taken before this provider existed.
-        forgetAgentScan();
-        await refreshPanels();
-    }
-    const existing = await handoffKey(cfg.cloudEndpoint);
-    if (!existing) {
-        const found = await findImportableKey();
-        if (found) {
-            const pick = await vscode.window.showInformationMessage(
-                `A key for an OpenAI-compatible API is in ${found.path}. Use it for ${cfg.cloudEndpoint}?`,
-                {
-                    modal: true,
-                    detail:
-                        'The file is read once, now, and only if you agree. The key is kept in VS Code secret ' +
-                        'storage — not in settings.json — and it is never displayed.'
-                },
-                'Use that key',
-                'Type one instead',
-                'Cancel'
-            );
-            if (pick === 'Cancel' || pick === undefined) return;
-            if (pick === 'Use that key') {
-                const stored = await setHandoffKey(cfg.cloudEndpoint, found.key);
-                log(`handoff: API key imported from an env file — ${stored ? 'stored' : 'NOT stored'}`);
-                if (stored) {
-                    void vscode.window.showInformationMessage(
-                        `Key stored for ${cfg.cloudEndpoint}. Hand-offs will use it.`
-                    );
-                } else {
-                    void vscode.window.showErrorMessage(
-                        "The key could not be stored — VS Code's secret storage did not accept it, so nothing was " +
-                        'saved. A locked keyring is the usual reason; unlock it and try again.'
-                    );
-                }
-                await refreshPanels();
-                return;
-            }
-        }
-    }
-    const typed = await vscode.window.showInputBox({
-        title: `API key for ${cfg.cloudEndpoint}`,
-        prompt: existing
-            ? 'A key is stored already. Type a new one to replace it, or leave the box empty to remove it.'
-            : 'Paste the API key. It goes into VS Code secret storage, never into settings.json.',
-        password: true,
-        ignoreFocusOut: true
-    });
-    if (typed === undefined) return;
-    const value = typed.trim();
-    const stored = await setHandoffKey(cfg.cloudEndpoint, value);
-    if (!stored) {
-        void vscode.window.showErrorMessage(
-            "The key could not be stored — VS Code's secret storage did not accept it, so nothing was saved. A " +
-            'locked keyring is the usual reason; unlock it and try again.'
-        );
-    } else {
-        void vscode.window.showInformationMessage(
-            value ? `Key stored for ${cfg.cloudEndpoint}.` : `The stored key for ${cfg.cloudEndpoint} was removed.`
-        );
-    }
-    await refreshPanels();
-}
-
-/**
- * `Rusty AI: Choose the Hand-off Agent…` — which of this machine's agents a refusal hands the job to.
- *
- * Asked for on 2026-10-13: *"The system must scan the machine to find and list all available API agents to allow
- * the user to select the one to hand off to."* The list **is** the scan, so it says what each one can actually
- * do rather than presenting a menu of names: an agent that can work in the project, one that can only answer a
- * prompt, one that is installed without a verified way to run it, and one that is not there at all are four
- * different situations and the picker spells each out. Choosing one the extension cannot drive is refused with
- * the reason instead of being saved and failing later.
- */
-export async function chooseHandoffAgent(): Promise<void> {
-    const cfg = handoffConfig();
-    const candidates = await agentScan(true);
-    const usable = (agent: AgentCandidate) => agent.available && agent.drivable;
-    type Item = vscode.QuickPickItem & { id: string };
-    const items: Item[] = [
-        {
-            id: '',
-            label: '$(wand) Automatic',
-            description: cfg.agentId ? 'let the extension choose' : 'in use',
-            detail: 'Takes the first agent that can work in your project, and falls back to one that can answer.'
-        },
-        {
-            id: '__rescan',
-            label: '$(refresh) Rescan this machine',
-            description: 'look again for CLI agents and listening servers'
-        },
-        ...candidates.map((agent) => ({
-            id: agent.id,
-            label: usable(agent) ? agent.label : `$(circle-slash) ${agent.label}`,
-            description: agent.id === cfg.agentId ? 'chosen' : undefined,
-            detail: describeAgent(agent)
-        }))
-    ];
-    const runnable = candidates.filter(usable).length;
-    const pick = await vscode.window.showQuickPick(items, {
-        title: 'Which agent should a hand-off use?',
-        placeHolder:
-            runnable > 0
-                ? `${runnable} agent(s) this extension can run`
-                : 'nothing found that the extension can run — the list says why'
-    });
-    if (!pick) return;
-    if (pick.id === '__rescan') return chooseHandoffAgent();
-    const chosen = candidates.find((agent) => agent.id === pick.id);
-    if (chosen && !usable(chosen)) {
-        void vscode.window.showWarningMessage(`That agent cannot be used yet — ${describeAgent(chosen)}`);
-        return;
-    }
-    await updateSetting(configView(SETTINGS), 'handoffAgent', pick.id);
-    forgetAgentScan();
-    log(`assistant: hand-off agent set to ${pick.id || '(automatic)'}`);
-    void vscode.window.showInformationMessage(
-        pick.id ? `Hand-offs will go to ${chosen?.label ?? pick.id}.` : 'Hand-offs will use the best agent available.'
-    );
-    await refreshPanels();
-}
-
 export function registerAssistantEditorCommands(): vscode.Disposable[] {
     return [
         vscode.workspace.registerTextDocumentContentProvider(PROPOSAL_SCHEME, proposalContent),
@@ -1660,9 +1219,6 @@ export function registerAssistantEditorCommands(): vscode.Disposable[] {
         vscode.commands.registerCommand('rustyPlatform.assistant.check', () => checkProject()),
         vscode.commands.registerCommand('rustyPlatform.assistant.learnConventions', () => learnConventions()),
         vscode.commands.registerCommand('rustyPlatform.assistant.status', () => showStatus()),
-        vscode.commands.registerCommand('rustyPlatform.assistant.forgetPoolRun', () => forgetPoolRun()),
-        vscode.commands.registerCommand('rustyPlatform.assistant.chooseAgent', () => chooseHandoffAgent()),
-        vscode.commands.registerCommand('rustyPlatform.assistant.setHandoffKey', () => setHandoffApiKey()),
         new vscode.Disposable(() => {
             proposalContent.dispose();
             proposalBar?.dispose();

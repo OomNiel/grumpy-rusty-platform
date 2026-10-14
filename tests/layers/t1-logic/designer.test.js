@@ -1522,3 +1522,34 @@ test('the markup keeps the card prefix rather than turning it into an asset path
     contains(kdl, 'image id="pic" src="sd:PIC1.BMP" fit="center"', 'the card path travels whole');
     notContains(kdl, 'assets/', 'and is not rewritten as a project asset');
 });
+
+test('a load that had to tidy an older design writes it back, and says what it dropped', () => {
+    // The pruning itself is `designer-store.test.js`; this is the chain that carries it to the board, read from
+    // the sources so the guard is on what a reviewer sees. A tidied design that is *not* written back leaves the
+    // markup stale until the user happens to touch the canvas -- and until then the board is compiling an older
+    // design than the one on screen, which is the failure the pruning exists to end.
+    const read = (file) => fs.readFileSync(path.join(repoRoot(), file), 'utf8');
+    const model = read('src/designer/model.ts');
+    contains(model, 'export function dropUnknownProps', 'the pruner lives with the catalogue, which is the authority');
+    contains(model, 'for (const key of unknownProps(widget))', 'and the validator asks it the same question');
+    contains(model, 'export function unknownProps', 'through the one shared answer');
+
+    const store = read('src/designer/store.ts');
+    contains(store, 'dropUnknownProps(migrated)', 'a load prunes what it reads');
+    contains(store, 'notes: dropped', 'and reports each property it dropped');
+
+    const editor = read('src/designer/editor.ts');
+    contains(editor, 'const rendered = renderDesign(document);', 'the open path takes the design\'s verdict once');
+    contains(editor, 'writeProjectFile(project.folder, DESIGNER_KDL_PATH, rendered.kdl)', 'writes the markup it unblocked straight away');
+    contains(editor, 'rendered.problems.length > 0', 'and reports a design that does not validate at open');
+    contains(editor, 'loaded.notes.join', 'logs what was dropped');
+    contains(editor, "loaded.notes === undefined ? '' : rendered.documentJson", 'and does not rewrite the file again on the first edit');
+
+    const protocol = read('src/designer/protocol.ts');
+    contains(protocol, 'loadNotes?: string[]', 'the init message carries the notes to the panel');
+    contains(protocol, 'loadProblems?: string[]', 'and the problems');
+    const main = read('webview/designer/main.ts');
+    contains(main, "setList('load-notes', message.loadNotes ?? [])", 'which are listed under the properties');
+    contains(main, 'showVerdict(problems,', 'along with the verdict');
+    contains(main, "properties.removeChild(existing)", 'and both lists are rebuilt, not appended to');
+});

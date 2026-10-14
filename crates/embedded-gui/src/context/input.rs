@@ -12,7 +12,7 @@ use crate::{
     state::{FeedTimelineState, ListState, ScrollState, SliderState, TabsState},
     style::{VisualState, WidgetStyle},
     widget::{EventPhase, EventPolicy, WidgetId},
-    widgets::{KeyboardLayout, WidgetKind, WidgetNode, TEXTAREA_CAPACITY},
+    widgets::{KeyboardLayout, WidgetKind, WidgetNode, ROLLER_ROWS, TEXTAREA_CAPACITY},
 };
 
 use super::*;
@@ -1020,6 +1020,20 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
                     changed = bump_index_with_wrap(current, items.len(), delta, wrap_navigation);
                     changed_rect = changed.then_some(node.rect);
                 }
+                // The carousel is the roller's sibling (a wrap-around list of its own) and had no
+                // key path at all until it gained this one. It is stepped here rather than in a
+                // second place so the arrow keys and a finger drag cannot disagree about it.
+                WidgetKind::Carousel {
+                    items,
+                    selected: ref mut current,
+                    ..
+                } => {
+                    if items.is_empty() {
+                        return Ok(true);
+                    }
+                    changed = bump_index_with_wrap(current, items.len(), delta, wrap_navigation);
+                    changed_rect = changed.then_some(node.rect);
+                }
                 WidgetKind::Keyboard {
                     keys,
                     selected: ref mut current,
@@ -1208,12 +1222,17 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
     /// whatever's focused is just the generic click dispatch already done
     /// by the caller.
     #[cfg(not(feature = "rich-widgets"))]
-    pub(crate) fn activate_focused(&mut self, _id: WidgetId) -> Result<(), GuiError> {
-        Ok(())
+    pub(crate) fn activate_focused(&mut self, _id: WidgetId) -> Result<bool, GuiError> {
+        Ok(false)
     }
 
+    /// Runs the focused widget's activation, and says whether it changed anything.
+    ///
+    /// The answer is what `dispatch_activation` uses to let go of the focus a pointer press took: a
+    /// checkbox that has just been toggled, or a keyboard that has just typed a letter, is done with the
+    /// touch and has no business keeping the highlight.
     #[cfg(feature = "rich-widgets")]
-    pub(crate) fn activate_focused(&mut self, id: WidgetId) -> Result<(), GuiError> {
+    pub(crate) fn activate_focused(&mut self, id: WidgetId) -> Result<bool, GuiError> {
         let mut changed_rect = None;
         let mut changed = false;
         let mut dropdown_state_event = None;
@@ -1288,7 +1307,7 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
         if changed {
             self.push_event(UiEvent::ValueChanged(id))?;
         }
-        Ok(())
+        Ok(changed)
     }
 
     pub(crate) fn node_in_active_group(&self, node: &WidgetNode<'_>) -> bool {
@@ -1313,6 +1332,7 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
                 gesture_emitted: false,
                 repeat_elapsed_ms: 0,
                 scroll_velocity: 0.0,
+                drag_accum_y: 0,
             });
             self.inertia_scroll = None;
             #[cfg(feature = "rich-widgets")]
@@ -1379,6 +1399,12 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
         pressed.last_x = x;
         pressed.last_y = y;
 
+        // A finger that landed on a selector turns it (see `drag_step_selection`). The answer is
+        // remembered rather than recomputed below: it is what decides whether an enclosing
+        // ScrollView is allowed to scroll, and the widget under the finger wins.
+        #[cfg(feature = "rich-widgets")]
+        let dragged = self.drag_step_selection(&mut pressed, dy)?;
+
         let moved_from_start =
             (x - pressed.start_x).unsigned_abs() + (y - pressed.start_y).unsigned_abs();
         if !pressed.gesture_emitted && moved_from_start >= 6 {
@@ -1391,7 +1417,14 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
         }
 
         #[cfg(feature = "rich-widgets")]
-        if let Some(scroll_id) = self.scrollable_ancestor(pressed.id) {
+        let scroll_target = if dragged {
+            // The finger was on a selector, so the selector has it.
+            None
+        } else {
+            self.scrollable_ancestor(pressed.id)
+        };
+        #[cfg(feature = "rich-widgets")]
+        if let Some(scroll_id) = scroll_target {
             let current = self.scroll_offset(scroll_id).unwrap_or(0);
             let next = if self.scroll_physics.rubber_band {
                 self.scroll_by_rubber_band(scroll_id, -dy)?
@@ -1420,6 +1453,73 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
         }
         self.pressed = Some(pressed);
         Ok(())
+    }
+
+    /// The finger turns the selector it landed on: one item — or one value step — per drawn row of
+    /// travel, accumulated across samples.
+    ///
+    /// Only the widget the press focused is turned, and a press focuses whatever is focusable under
+    /// it (`dispatch_activation`), so this is "the widget the finger is on" without a second
+    /// hit-test that could disagree with the one that started the press.
+    ///
+    /// Returns `true` when the widget owns the movement, so an enclosing `ScrollView` leaves it
+    /// alone: a finger that landed on a roller must not also scroll the page behind it.
+    #[cfg(feature = "rich-widgets")]
+    pub(crate) fn drag_step_selection(
+        &mut self,
+        pressed: &mut PressTracker,
+        dy: i32,
+    ) -> Result<bool, GuiError> {
+        let id = pressed.id;
+        if self.focus != Some(id) {
+            return Ok(false);
+        }
+        let Some(node) = self.node(id) else {
+            return Ok(false);
+        };
+        let selector = is_drag_selector(&node.kind);
+        let value_selector = matches!(
+            node.kind,
+            WidgetKind::Spinbox { .. }
+                | WidgetKind::NumberPicker { .. }
+                | WidgetKind::TimePicker { .. }
+        );
+        if !selector && !value_selector {
+            return Ok(false);
+        }
+        let step = ((node.rect.h as i32) / drag_rows(&node.kind)).max(MIN_DRAG_STEP_PX);
+        let rect = node.rect;
+
+        pressed.drag_accum_y += dy;
+        let raw = pressed.drag_accum_y / step;
+        if raw == 0 {
+            // Half a row is half a row: nothing moves yet, but the widget still owns the movement,
+            // or a short drag inside it would leak to the view behind it.
+            return Ok(true);
+        }
+        let steps = raw.clamp(-MAX_DRAG_STEPS_PER_SAMPLE, MAX_DRAG_STEPS_PER_SAMPLE) as i8;
+        pressed.drag_accum_y -= i32::from(steps) * step;
+
+        if selector {
+            // One call per item, not one call with a bigger number: `adjust_focused_selection` — like
+            // the arrow keys it serves — steps by a *single* item and only reads the sign of the
+            // delta. Spending the travel one item at a time is also what keeps a rich menu from
+            // skipping over its disabled cells.
+            for _ in 0..steps.unsigned_abs() {
+                self.adjust_focused_selection(steps.signum())?;
+            }
+        } else {
+            // Read before the node is borrowed mutably: the borrowing rule is not a detail worth a
+            // second copy of the setting.
+            let wrap = self.menu_contract.wrap_navigation;
+            if let Some(node) = self.node_mut(id) {
+                if drag_step_value(&mut node.kind, steps, wrap) == Some(true) {
+                    self.dirty.add(rect)?;
+                    self.push_event(UiEvent::ValueChanged(id))?;
+                }
+            }
+        }
+        Ok(true)
     }
 
     pub(crate) fn dispatch_activation(
@@ -1454,7 +1554,15 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
         };
         self.start_state_transition(id, from, VisualState::Pressed);
 
-        self.activate_focused(id)?;
+        // An activation that changed the widget hands the focus back: a toggle that has just been thrown,
+        // or a keyboard key that has just been typed, is done with the finger -- and the widget's own
+        // colours are what should stay on screen, not a highlight (asked 2026-10-14: *"when the widget's
+        // action was performed, that widget should automatically lose focus"*). A tap that changed nothing
+        // -- a roller, a list, a text area -- keeps it, which is what keeps a caret visible.
+        let acted = self.activate_focused(id)?;
+        if is_pointer && acted {
+            self.set_focus(None)?;
+        }
         self.dispatch_widget_event(id, WidgetEventKind::Clicked, &mut events, |_| {
             EventPolicy::Continue
         })?;
@@ -2021,6 +2129,144 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
     }
 }
 
+/// How far a finger must travel to move a selector by one step, at least.
+///
+/// A roller draws its rows across the whole widget, so one row is a third of its height — which is
+/// only a few pixels for a short one (the sim's fixture roller is 18 px tall). The floor is what
+/// keeps a small widget from stepping on every touch sample.
+#[cfg(feature = "rich-widgets")]
+const MIN_DRAG_STEP_PX: i32 = 12;
+
+/// The most items one touch sample may move.
+///
+/// A finger is sampled about sixteen times a second on the ESP touch loop, but a slow frame can
+/// still leave a long gap between two samples; without a ceiling, the catch-up travel would land as
+/// a jump several items long instead of a turn.
+#[cfg(feature = "rich-widgets")]
+const MAX_DRAG_STEPS_PER_SAMPLE: i32 = 8;
+
+/// How many rows a widget draws — the divisor that turns its height into a drag step.
+///
+/// The list-like widgets know their own row count (`visible_rows`); everything else that shows a
+/// single selected line is treated like the roller, and the roller's own number comes from
+/// `ROLLER_ROWS` so the renderer and the drag cannot drift apart.
+#[cfg(feature = "rich-widgets")]
+fn drag_rows(kind: &WidgetKind<'_>) -> i32 {
+    let rows = match kind {
+        WidgetKind::Roller { .. } => ROLLER_ROWS,
+        WidgetKind::List { visible_rows, .. }
+        | WidgetKind::CircularList { visible_rows, .. }
+        | WidgetKind::RichMenu { visible_rows, .. }
+        | WidgetKind::FeedTimeline { visible_rows, .. } => (*visible_rows).max(1) as u32,
+        _ => ROLLER_ROWS,
+    };
+    rows.max(1) as i32
+}
+
+/// True for the kinds a finger drag turns.
+///
+/// This is `adjust_focused_selection`'s set — the widgets the Up/Down keys already step — and the
+/// carousel, which that function steps too (it used to have no key path at all), so one rule covers
+/// the keys and the finger alike. Two of the kinds that function handles are left out on purpose:
+///
+/// * the `ScrollView` scrolls *itself*; that is what the drag defers to when nothing else claims
+///   the movement, and it is not a selection to turn;
+/// * the `AutoComplete` cannot be reached at all. A press on it runs
+///   `autocomplete_confirm_selection` and **returns** (`dispatch_activation`) — which collapses the
+///   list and leaves the focus where it was — so by the time a finger moves, there is nothing
+///   expanded to step and no focused widget to step it.
+#[cfg(feature = "rich-widgets")]
+fn is_drag_selector(kind: &WidgetKind<'_>) -> bool {
+    matches!(
+        kind,
+        WidgetKind::Menu { .. }
+            | WidgetKind::RichMenu { .. }
+            | WidgetKind::Dropdown { .. }
+            | WidgetKind::Roller { .. }
+            | WidgetKind::Carousel { .. }
+            | WidgetKind::Keyboard { .. }
+            | WidgetKind::List { .. }
+            | WidgetKind::CircularList { .. }
+            | WidgetKind::FeedTimeline { .. }
+    )
+}
+
+/// The value selectors: a finger step moves the value by one of the widget's own steps.
+///
+/// `None` means "not a value selector", which is a different answer from `Some(false)` — a value
+/// selector that was already standing at its end and had nowhere to go.
+#[cfg(feature = "rich-widgets")]
+fn drag_step_value(kind: &mut WidgetKind<'_>, direction: i8, wrap: bool) -> Option<bool> {
+    match kind {
+        WidgetKind::Spinbox {
+            value,
+            min,
+            max,
+            step,
+            ..
+        } => {
+            let (lo, hi) = ((*min).min(*max), (*min).max(*max));
+            let next = value
+                .saturating_add(i32::from(direction) * (*step).max(1))
+                .clamp(lo, hi);
+            let changed = next != *value;
+            *value = next;
+            Some(changed)
+        }
+        WidgetKind::NumberPicker {
+            value, min, max, ..
+        } => {
+            let (lo, hi) = ((*min).min(*max), (*min).max(*max));
+            let next = value.saturating_add(i32::from(direction)).clamp(lo, hi);
+            let changed = next != *value;
+            *value = next;
+            Some(changed)
+        }
+        WidgetKind::TimePicker {
+            hour,
+            is_12h,
+            is_pm,
+            ..
+        } => {
+            let (next_hour, next_pm) = step_time_of_day(*hour, *is_pm, *is_12h, direction, wrap);
+            let changed = next_hour != *hour || next_pm != *is_pm;
+            *hour = next_hour;
+            *is_pm = next_pm;
+            Some(changed)
+        }
+        _ => None,
+    }
+}
+
+/// One drag step of a time picker's hour, in the widget's own terms.
+///
+/// `wrap` is the same `menu_contract.wrap_navigation` the list-like selectors obey: off, the hour
+/// stops at the end of its range; on, it rolls over. The 12-hour case is why this is a function of
+/// its own — the arithmetic has to happen on a 24-hour value and be written back to two fields,
+/// because 12 AM + 1 hour is 1 AM while 12 PM + 1 hour is 1 PM, and a bare `hour + 1` would quietly
+/// turn one of those into the other.
+#[cfg(feature = "rich-widgets")]
+fn step_time_of_day(hour: u8, is_pm: bool, is_12h: bool, direction: i8, wrap: bool) -> (u8, bool) {
+    let step = |from: i32, span: i32| {
+        if wrap {
+            (from + i32::from(direction)).rem_euclid(span)
+        } else {
+            (from + i32::from(direction)).clamp(0, span - 1)
+        }
+    };
+    if !is_12h {
+        return (step(i32::from(hour.min(23)), 24) as u8, is_pm);
+    }
+    let hour12 = i32::from(hour.clamp(1, 12));
+    let day_hour = if hour12 == 12 { 0 } else { hour12 } + if is_pm { 12 } else { 0 };
+    let next = step(day_hour, 24);
+    let back = match next % 12 {
+        0 => 12,
+        other => other as u8,
+    };
+    (back, next >= 12)
+}
+
 #[cfg(feature = "rich-widgets")]
 pub(crate) fn bump_index_with_wrap(current: &mut usize, len: usize, delta: i8, wrap: bool) -> bool {
     if len == 0 {
@@ -2254,4 +2500,534 @@ pub(crate) fn textarea_row_end_col(text: &str, target_row: usize, wrap_cols: usi
         }
     }
     col
+}
+
+/// The finger as a way to turn a selector (`GuiContext::drag_step_selection`).
+///
+/// A drag is driven the way the firmware drives it: `Pointer` events with `PointerState::Moved`
+/// between a press and a release — exactly what the generated `ui.rs` `pointer()` sends while a
+/// finger is down on the panel, and what no test had ever sent to a selector before.
+#[cfg(all(test, feature = "rich-widgets"))]
+mod drag_tests {
+    use super::{is_drag_selector, step_time_of_day, MAX_DRAG_STEPS_PER_SAMPLE, MIN_DRAG_STEP_PX};
+    use crate::geometry::Rect;
+    use crate::input::{InputEvent, PointerButton, PointerState, UiEvent};
+    use crate::widget::{MenuContract, WidgetId};
+    use crate::widgets::WidgetKind;
+    use crate::GuiContext;
+    use crate::Style;
+
+    /// The roller the designer drops by default.
+    const SIZE: u32 = 80;
+    /// One drawn row of it: `rect.h / ROLLER_ROWS`, which is one item of drag.
+    const ROW: i32 = SIZE as i32 / 3;
+    const ITEMS: &[&str] = &["one", "two", "three", "four"];
+
+    /// The context under test, with room for the events a press and a drag raise: the default
+    /// `<32, 16, 16>` fills up during one press and the next call answers `EventsFull`.
+    type Ctx = GuiContext<'static, 32, 64, 16>;
+
+    fn roller(size: (u32, u32)) -> (Ctx, WidgetId) {
+        let mut ctx: Ctx = GuiContext::new(Rect::new(0, 0, 320, 240));
+        let id = ctx
+            .add_roller(
+                Rect::new(100, 100, size.0, size.1),
+                ITEMS,
+                0,
+                Style::panel(),
+            )
+            .unwrap();
+        (ctx, id)
+    }
+
+    fn point(ctx: &mut Ctx, x: i32, y: i32, state: PointerState) {
+        ctx.handle_input(InputEvent::Pointer {
+            x,
+            y,
+            state,
+            button: PointerButton::Primary,
+        })
+        .unwrap();
+    }
+
+    /// Press at `at`, then move by each offset in turn.
+    fn drag(ctx: &mut Ctx, at: (i32, i32), moves: &[i32]) {
+        point(ctx, at.0, at.1, PointerState::Pressed);
+        let mut y = at.1;
+        for dy in moves {
+            y += dy;
+            point(ctx, at.0, y, PointerState::Moved);
+        }
+    }
+
+    /// The index any index-keeping widget shows.
+    fn index_of(ctx: &Ctx, id: WidgetId) -> Option<usize> {
+        let node = ctx.widgets().iter().find(|n| n.id == id)?;
+        Some(match node.kind {
+            WidgetKind::Roller { selected, .. }
+            | WidgetKind::Menu { selected, .. }
+            | WidgetKind::RichMenu { selected, .. }
+            | WidgetKind::Dropdown { selected, .. }
+            | WidgetKind::List { selected, .. }
+            | WidgetKind::CircularList { selected, .. }
+            | WidgetKind::Carousel { selected, .. }
+            | WidgetKind::FeedTimeline { selected, .. }
+            | WidgetKind::Keyboard { selected, .. } => selected,
+            _ => return None,
+        })
+    }
+
+    /// The value a numeric control shows.
+    fn value_of(ctx: &Ctx, id: WidgetId) -> Option<i32> {
+        let node = ctx.widgets().iter().find(|n| n.id == id)?;
+        match node.kind {
+            WidgetKind::Spinbox { value, .. } | WidgetKind::NumberPicker { value, .. } => {
+                Some(value)
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether a checkbox is checked.
+    fn checked_of(ctx: &Ctx, id: WidgetId) -> Option<bool> {
+        let node = ctx.widgets().iter().find(|n| n.id == id)?;
+        match node.kind {
+            WidgetKind::Checkbox { checked, .. } => Some(checked),
+            _ => None,
+        }
+    }
+
+    /// A time picker's hour and period.
+    fn time_of(ctx: &Ctx, id: WidgetId) -> Option<(u8, bool)> {
+        let node = ctx.widgets().iter().find(|n| n.id == id)?;
+        match node.kind {
+            WidgetKind::TimePicker { hour, is_pm, .. } => Some((hour, is_pm)),
+            _ => None,
+        }
+    }
+
+    fn is_value_changed(ctx: &Ctx, id: WidgetId) -> bool {
+        ctx.events
+            .iter()
+            .any(|e| matches!(e, UiEvent::ValueChanged(w) if *w == id))
+    }
+
+    #[test]
+    fn a_drag_turns_the_roller_one_item_per_drawn_row() {
+        let (mut ctx, id) = roller((SIZE, SIZE));
+        drag(&mut ctx, (140, 140), &[ROW]);
+        assert_eq!(
+            index_of(&ctx, id),
+            Some(1),
+            "one drawn row of travel is one item"
+        );
+        assert!(
+            is_value_changed(&ctx, id),
+            "and the design is told, like the arrow keys tell it"
+        );
+        drag(&mut ctx, (140, 140), &[ROW, ROW]);
+        assert_eq!(index_of(&ctx, id), Some(3));
+        drag(&mut ctx, (140, 140), &[-ROW]);
+        assert_eq!(index_of(&ctx, id), Some(2), "dragging up steps back");
+    }
+
+    #[test]
+    fn half_a_row_waits_and_the_remainder_is_carried() {
+        let (mut ctx, id) = roller((SIZE, SIZE));
+        drag(&mut ctx, (140, 140), &[ROW / 2]);
+        assert_eq!(
+            index_of(&ctx, id),
+            Some(0),
+            "half a row is not a whole item"
+        );
+        // The other half finishes the row, because the movement is accumulated rather than rounded:
+        // that is the difference between a wheel that follows the finger and one that needs a full
+        // row per touch sample.
+        point(&mut ctx, 140, 140 + ROW, PointerState::Moved);
+        assert_eq!(
+            index_of(&ctx, id),
+            Some(1),
+            "the two halves add up to one item"
+        );
+    }
+
+    #[test]
+    fn a_short_roller_uses_the_floor_rather_than_a_third_of_its_height() {
+        // 18 px tall is the sim fixture's roller; a third of it is 6 px, which would step on every
+        // sample the panel sends.
+        let (mut ctx, id) = roller((150, 18));
+        drag(&mut ctx, (175, 109), &[MIN_DRAG_STEP_PX]);
+        assert_eq!(
+            index_of(&ctx, id),
+            Some(1),
+            "one item costs the floor, not 6 px"
+        );
+        drag(&mut ctx, (175, 109), &[MIN_DRAG_STEP_PX - 1]);
+        assert_eq!(
+            index_of(&ctx, id),
+            Some(1),
+            "and just under it does not step"
+        );
+    }
+
+    #[test]
+    fn a_jump_is_capped_so_a_slow_frame_cannot_skip_the_list() {
+        let (mut ctx, id) = roller((SIZE, SIZE));
+        drag(
+            &mut ctx,
+            (140, 140),
+            &[ROW * (MAX_DRAG_STEPS_PER_SAMPLE + 4)],
+        );
+        assert_eq!(
+            index_of(&ctx, id),
+            Some(MAX_DRAG_STEPS_PER_SAMPLE as usize % ITEMS.len()),
+            "one sample moves at most the cap, however far the finger travelled"
+        );
+    }
+
+    #[test]
+    fn the_drag_obeys_the_wrap_setting_the_arrow_keys_use() {
+        let (mut ctx, id) = roller((SIZE, SIZE));
+        drag(&mut ctx, (140, 140), &[-ROW]);
+        assert_eq!(
+            index_of(&ctx, id),
+            Some(3),
+            "wrapping on: back from the first item is the last"
+        );
+        drag(&mut ctx, (140, 140), &[ROW]);
+        assert_eq!(
+            index_of(&ctx, id),
+            Some(0),
+            "and forward from the last is the first"
+        );
+        ctx.set_menu_contract(MenuContract {
+            wrap_navigation: false,
+            ..Default::default()
+        });
+        drag(&mut ctx, (140, 140), &[-ROW]);
+        assert_eq!(
+            index_of(&ctx, id),
+            Some(0),
+            "wrapping off: it stops at the first item, as the keys do"
+        );
+    }
+
+    #[test]
+    fn a_selector_inside_a_scroll_view_takes_the_drag_and_the_view_stays_put() {
+        let mut ctx: Ctx = GuiContext::new(Rect::new(0, 0, 320, 240));
+        let view = ctx
+            .add_scroll_view(Rect::new(0, 0, 200, 200), 0, 800, Style::panel())
+            .unwrap();
+        let roll = ctx
+            .add_roller(Rect::new(20, 20, SIZE, SIZE), ITEMS, 0, Style::panel())
+            .unwrap();
+        ctx.add_child(view, roll).unwrap();
+
+        drag(&mut ctx, (60, 60), &[ROW]);
+        assert_eq!(
+            index_of(&ctx, roll),
+            Some(1),
+            "the finger was on the roller, so the roller turns"
+        );
+        assert_eq!(
+            ctx.scroll_offset(view),
+            Some(0),
+            "and the view behind it does not also scroll"
+        );
+    }
+
+    #[test]
+    fn a_drag_on_the_view_itself_still_scrolls_it() {
+        let mut ctx: Ctx = GuiContext::new(Rect::new(0, 0, 320, 240));
+        let view = ctx
+            .add_scroll_view(Rect::new(0, 0, 200, 200), 0, 800, Style::panel())
+            .unwrap();
+        drag(&mut ctx, (100, 100), &[-40]);
+        assert!(
+            ctx.scroll_offset(view).unwrap_or(0) > 0,
+            "an empty part of the view is still a scroll gesture"
+        );
+    }
+
+    #[test]
+    fn the_other_index_selectors_turn_with_the_same_finger() {
+        // One rule for keys and finger: these are the kinds `adjust_focused_selection` steps, and
+        // the drag calls it, so each is asserted through the event it raises rather than through a
+        // getter per widget.
+        let mut ctx: Ctx = GuiContext::new(Rect::new(0, 0, 320, 240));
+        let list = ctx
+            .add_list(Rect::new(0, 0, 120, 120), ITEMS, 0, 4, Style::panel())
+            .unwrap();
+        let menu = ctx
+            .add_menu(Rect::new(140, 0, 120, 120), ITEMS, 0, Style::panel())
+            .unwrap();
+        let carousel = ctx
+            .add_carousel(
+                Rect::new(0, 140, 120, 80),
+                ITEMS,
+                0,
+                crate::widgets::CarouselSpec::new(16, 4),
+                Style::panel(),
+            )
+            .unwrap();
+
+        // Each widget costs its own drawn row, so each is dragged by its own step: a list divides its
+        // height by `visible_rows`, and a menu and a carousel by their three rows. The dropdown is
+        // the one that needs a word of its own — see the two tests below.
+        for (id, at, step) in [
+            (list, (60, 60), 120 / 4),
+            (menu, (200, 60), 120 / 3),
+            (carousel, (60, 180), 80 / 3),
+        ] {
+            ctx.events.clear();
+            drag(&mut ctx, at, &[step]);
+            assert_eq!(
+                ctx.focus(),
+                Some(id),
+                "the press lands on and focuses the widget under it"
+            );
+            assert_eq!(
+                index_of(&ctx, id),
+                Some(1),
+                "a drag turns it, like the keys do"
+            );
+            assert!(is_value_changed(&ctx, id), "and raises ValueChanged");
+        }
+    }
+
+    #[test]
+    fn an_open_dropdown_turns_by_drag_when_a_press_does_not_toggle_it() {
+        // The drag reaches a dropdown when the app has taken the toggle contract off and opens it
+        // itself; the next test pins why that is the only way it can work.
+        let mut ctx: Ctx = GuiContext::new(Rect::new(0, 0, 320, 240));
+        ctx.set_menu_contract(MenuContract {
+            select_opens_dropdown: false,
+            ..Default::default()
+        });
+        let drop = ctx
+            .add_dropdown(Rect::new(140, 140, 120, 20), ITEMS, 0, Style::panel())
+            .unwrap();
+        ctx.set_dropdown_open(drop, true).unwrap();
+
+        drag(&mut ctx, (200, 150), &[MIN_DRAG_STEP_PX]);
+        assert_eq!(
+            index_of(&ctx, drop),
+            Some(1),
+            "the open list turns under the finger"
+        );
+        assert!(is_value_changed(&ctx, drop));
+    }
+
+    #[test]
+    fn with_the_default_contract_a_press_closes_a_dropdown_instead_of_stepping_it() {
+        // `select_opens_dropdown` means a press *toggles* the list — so the press that would start a
+        // drag is also the one that dismisses it. That is the contract's own behaviour and not
+        // something the drag may quietly override, so it is pinned here rather than worked around.
+        let mut ctx: Ctx = GuiContext::new(Rect::new(0, 0, 320, 240));
+        let drop = ctx
+            .add_dropdown(Rect::new(140, 140, 120, 20), ITEMS, 0, Style::panel())
+            .unwrap();
+        ctx.set_dropdown_open(drop, true).unwrap();
+
+        drag(&mut ctx, (200, 150), &[MIN_DRAG_STEP_PX]);
+        assert_eq!(
+            index_of(&ctx, drop),
+            Some(0),
+            "the press closed the list instead of stepping it"
+        );
+    }
+
+    #[test]
+    fn a_drag_steps_a_spinbox_number_picker_and_time_picker_by_their_own_step() {
+        let mut ctx: Ctx = GuiContext::new(Rect::new(0, 0, 320, 240));
+        let spin = ctx
+            .add_spinbox(Rect::new(0, 0, 80, 24), 0, 100, 50, Style::panel())
+            .unwrap();
+        let pick = ctx
+            .add_number_picker(Rect::new(0, 40, 80, 24), 0, 10, 5, " kg", Style::panel())
+            .unwrap();
+        let time = ctx
+            .add_time_picker(Rect::new(0, 80, 80, 24), 11, 30, true, true, Style::panel())
+            .unwrap();
+
+        drag(&mut ctx, (40, 12), &[MIN_DRAG_STEP_PX]);
+        drag(&mut ctx, (40, 52), &[-MIN_DRAG_STEP_PX]);
+        drag(&mut ctx, (40, 92), &[-MIN_DRAG_STEP_PX]);
+
+        assert!(
+            value_of(&ctx, spin).unwrap() > 50,
+            "the spinbox moved by its own step"
+        );
+        assert_eq!(
+            value_of(&ctx, pick),
+            Some(4),
+            "the number picker moved by exactly one"
+        );
+        assert_eq!(
+            time_of(&ctx, time),
+            Some((10, true)),
+            "11 PM back an hour is 10 PM: the period follows the hour it was on"
+        );
+    }
+
+    #[test]
+    fn a_value_control_stops_at_its_bounds() {
+        let mut ctx: Ctx = GuiContext::new(Rect::new(0, 0, 320, 240));
+        let pick = ctx
+            .add_number_picker(Rect::new(0, 0, 80, 24), 0, 3, 3, "", Style::panel())
+            .unwrap();
+        drag(&mut ctx, (40, 12), &[MIN_DRAG_STEP_PX, MIN_DRAG_STEP_PX]);
+        assert_eq!(
+            value_of(&ctx, pick),
+            Some(3),
+            "a value selector has no wrapping to obey"
+        );
+    }
+
+    #[test]
+    fn a_twelve_hour_picker_rolls_the_period_with_the_hour() {
+        // 11 PM + 1 is 12 AM, and 11 AM + 1 is 12 PM: a bare `hour + 1` turns one of those into the
+        // other, which is why the pair is computed from a 24-hour value.
+        assert_eq!(step_time_of_day(11, true, true, 1, true), (12, false));
+        assert_eq!(step_time_of_day(11, false, true, 1, true), (12, true));
+        assert_eq!(
+            step_time_of_day(12, false, true, -1, true),
+            (11, true),
+            "12 AM back one hour is 11 PM"
+        );
+        assert_eq!(
+            step_time_of_day(12, true, true, 1, true),
+            (1, true),
+            "12 PM forward is 1 PM"
+        );
+    }
+
+    #[test]
+    fn a_twenty_four_hour_picker_clamps_or_wraps_by_the_same_setting() {
+        assert_eq!(
+            step_time_of_day(23, false, false, 1, false),
+            (23, false),
+            "wrapping off stops at 23:00"
+        );
+        assert_eq!(
+            step_time_of_day(23, false, false, 1, true),
+            (0, false),
+            "wrapping on rolls into 00:00"
+        );
+        assert_eq!(step_time_of_day(0, false, false, -1, false), (0, false));
+        assert_eq!(step_time_of_day(0, false, false, -1, true), (23, false));
+    }
+
+    #[test]
+    fn an_action_that_changed_the_widget_gives_the_focus_back() {
+        // Asked 2026-10-14: *"When the widgits action was performed (e.g. a checkbox sate was toggled), that
+        // widgit should automatically lose focus."*
+        let mut ctx: Ctx = GuiContext::new(Rect::new(0, 0, 320, 240));
+        let check = ctx
+            .add_checkbox(Rect::new(0, 0, 120, 24), "Enable", false, Style::panel())
+            .unwrap();
+
+        point(&mut ctx, 60, 12, PointerState::Pressed);
+        // This engine activates on the *press*, so the focus is taken and handed straight back inside that
+        // one event: the widget never stays highlighted, which is the whole point of the report.
+        assert_eq!(
+            ctx.focus(),
+            None,
+            "the widget acted, so it did not keep the focus"
+        );
+        assert!(
+            ctx.events
+                .iter()
+                .any(|e| matches!(e, UiEvent::Focused(id) if *id == check)),
+            "it did take the focus on the way in"
+        );
+        assert!(
+            ctx.events
+                .iter()
+                .any(|e| matches!(e, UiEvent::Defocused(id) if *id == check)),
+            "and gave it back again"
+        );
+        point(&mut ctx, 60, 12, PointerState::Released);
+
+        assert_eq!(checked_of(&ctx, check), Some(true), "the tap toggled it");
+        assert_eq!(ctx.focus(), None, "and nothing is left focused afterwards");
+    }
+
+    #[test]
+    fn a_tap_that_changed_nothing_keeps_the_focus() {
+        // The roller is the other half of the same report: a tap selects nothing (a drag does), so it keeps
+        // the focus -- which no longer recolours anything, so nothing is hidden by it either.
+        let (mut ctx, id) = roller((SIZE, SIZE));
+        point(&mut ctx, 140, 140, PointerState::Pressed);
+        point(&mut ctx, 140, 140, PointerState::Released);
+        assert_eq!(
+            ctx.focus(),
+            Some(id),
+            "nothing changed, so nothing is given up"
+        );
+    }
+
+    #[test]
+    fn a_drag_that_turns_a_selector_keeps_the_focus_it_needs() {
+        // The drag needs the widget focused to know which one to turn (see `drag_step_selection`), so the
+        // auto-defocus must not fire on a movement that changed the selection -- only on an activation.
+        let (mut ctx, id) = roller((SIZE, SIZE));
+        drag(&mut ctx, (140, 140), &[ROW]);
+        assert_eq!(index_of(&ctx, id), Some(1));
+        assert_eq!(ctx.focus(), Some(id), "a turned roller still has the focus");
+    }
+
+    #[test]
+    fn the_drag_set_is_the_key_step_set_and_never_the_view() {
+        assert!(is_drag_selector(&WidgetKind::Roller {
+            items: ITEMS,
+            selected: 0
+        }));
+        assert!(is_drag_selector(&WidgetKind::List {
+            items: ITEMS,
+            selected: 0,
+            offset: 0,
+            visible_rows: 4
+        }));
+        assert!(
+            !is_drag_selector(&WidgetKind::ScrollView {
+                offset_y: 0,
+                content_h: 400
+            }),
+            "the view scrolls itself; that is what the drag defers to"
+        );
+        // A press on an autocomplete confirms the selection and collapses the list — and does not
+        // focus the widget — so a finger can never find it expanded and focused. Its own test above
+        // pins the dropdown's version of the same contract problem.
+        let mut ctx: Ctx = GuiContext::new(Rect::new(0, 0, 320, 240));
+        let auto = ctx
+            .add_autocomplete_widget(Rect::new(0, 0, 160, 60), ITEMS, Style::panel())
+            .unwrap();
+        let kind = ctx
+            .widgets()
+            .iter()
+            .find(|n| n.id == auto)
+            .map(|n| n.kind)
+            .unwrap();
+        assert!(
+            !is_drag_selector(&kind),
+            "an autocomplete cannot be reached by a finger"
+        );
+        // A value control is stepped as a value, not as an index. Built through the builder so the
+        // test does not have to restate the widget's own defaults to name the kind.
+        let mut ctx: Ctx = GuiContext::new(Rect::new(0, 0, 320, 240));
+        let spin = ctx
+            .add_spinbox(Rect::new(0, 0, 80, 24), 0, 9, 0, Style::panel())
+            .unwrap();
+        let kind = ctx
+            .widgets()
+            .iter()
+            .find(|n| n.id == spin)
+            .map(|n| n.kind)
+            .unwrap();
+        assert!(
+            !is_drag_selector(&kind),
+            "a value control is stepped as a value, not as an index"
+        );
+    }
 }

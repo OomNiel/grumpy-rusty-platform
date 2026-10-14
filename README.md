@@ -38,7 +38,8 @@ Espressif boards, `espflash`.
 
 Rusty Platform can carry its own coding assistant, so a generated project can be written with help even
 with no Copilot and no cloud key. It is **off by default**: nothing is downloaded or started until you turn
-it on.
+it on, and everything it does stays on this machine — the model runs here, and no code or prompt is ever sent
+anywhere.
 
 - **The switch** is at the top of the AI Assist panel (and in the palette as `Rusty AI: Toggle On/Off`,
   so it can be bound to a key). Turning it **on** starts what the settings say to start — a server already
@@ -72,33 +73,12 @@ it on.
 - **The compiler is the oracle.** `Rusty AI: Fix the Build…` runs `cargo check`, takes the first error,
   rewrites the function it points at, rebuilds, keeps what helped — reverts what did not, skips what nothing
   can fix, and lists the rest. *Fix with the AI assist* also appears as a Quick Fix on compiler diagnostics.
-- **It says when a request is beyond it, instead of guessing.** Every prompt is measured against the model's
-  own window before it is sent: a request that does not fit, a file too large to be written into, one function
-  longer than the model can rewrite, or a sentence asking for a whole file or the whole project is **refused
-  before anything is sent**, with the numbers and the reason — and with *Send it anyway* for when you disagree.
-- **…and it can hand the job to an agent of your choosing.** A refusal offers to hand the request over, and the
-  button names the agent it will really use. The extension **scans this machine** — CLI agents on your `PATH`,
-  plus OpenAI-compatible servers on the usual local ports — and *Which agent a hand-off uses* lists what it
-  found with what each one can do; your choice wins, and *Automatic* prefers an agent that can work in the
-  project over one that can only answer. Two of them are driven directly: the **Poolside CLI** (`pool`) and the
-  **Agnes Code CLI** (`jcode`), which reads, writes and runs commands in your project and continues the same
-  conversation on the next hand-off. A **cloud OpenAI-compatible API** can be offered too — it answers rather
-  than acts, so its code comes back for you to review, and its key lives in VS Code's secret storage. Every
-  hand-off asks first, in a dialog that names what leaves your machine and what the agent may do on its own
-  (both CLI agents edit files without asking — that is what makes them useful here, and it is disclosed every
-  time). The local model itself never sends anything anywhere.
-- **What a hand-off returns can be implemented like any other answer.** The steps it took, its closing
-  paragraph and the outcome land in the conversation, and the code in that answer opens the same diff as a
-  local model's answer — button under the answer, or **Review and implement…** on the notification. Nothing is
-  written until you apply it; a whole-file answer is confirmed by name first and an answer that left parts of
-  the file out is refused with the reason.
 - **It is told what your board actually is.** The prompt carries the board profile (the LED hangs off the
   CYW43 on a Pico W; a Sunton board's panel SPI pins; the crate list from `Cargo.toml`), because a small
   local model otherwise invents pin numbers that the compiler cannot catch.
 - **House rules are measured, not guessed.** `Rusty AI: Learn the House Rules from My Code…` counts this
   project's own idioms (indentation, `pub` on helpers, `?` versus `.unwrap()`, `defmt`) and shows the
-  evidence; what you keep goes into **every** prompt — the local model's and every hand-off's, which is the only
-  way a cloud agent could ever be told how your code is written.
+  evidence; what you keep goes into **every** prompt the assistant builds.
 - The chat and the model settings live in the **AI Assist** view in the sidebar.
 - **The chat can be an editor tab, so it can live on a second monitor.** *Rusty AI: Open the Assistant in an
   Editor Tab* (also a button in the AI Assist view) opens the same conversation beside your code; drag that tab
@@ -277,6 +257,13 @@ reported as problems rather than left to fail at the next compile.
 pointer plumbing and the `match` that turns an event into a call — and *appends* to a third, `src/ui_handlers.rs`,
 where the code behind your events lives. Nothing that exists in that file is ever rewritten, and `src/main.rs`
 is untouched after the wizard writes it.
+
+The design is checked as it **opens**, not only when it saves, and an older file is brought up to date on the
+way in: a property this version of the catalogue has no place for is dropped, and the panel says what it
+dropped. That matters because a design that does not validate has no markup written at all — so the board
+would go on compiling the previous design while the canvas showed the new one, which is the one failure a
+WYSIWYG designer cannot afford. Anything else that is wrong is listed as the panel opens, in the panel and in
+the output channel, and the problems go as soon as they are fixed.
 
 A generated Designer project compiles for both panel boards, and the toolkit costs about **105 KB of flash**
 and no measurable extra static RAM against the same board's touch template.

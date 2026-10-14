@@ -339,6 +339,15 @@ textarea.field-input { resize: vertical; }
 
 .context-item.danger { color: var(--vscode-errorForeground, #f48771); }
 
+/* What a load changed, and what stopped the markup being written -- both under the properties. */
+
+.load-notes {
+    margin: 4px 0 0;
+    padding-left: 18px;
+    font-size: 0.9em;
+    line-height: 1.4;
+}
+
 .problem-list {
     margin: 4px 0 0;
     padding-left: 18px;
