@@ -6489,8 +6489,8 @@ which is possible now that they are drawn in one place.
 
 **Verified:** a new test drives the real bundle with a stub DOM through `init` (a dropped property *and* a
 problem) and then a clean `report`, asserting the footer, both lists, that the problem list goes when the
-problems do, and that the load's note stays. **Suite:** t1-logic 838, t2-cli 54, t3-golden 4 — 896 checks, 0
-failed.
+problems do, and that the load's note stays. **Suite:** t1-logic 838, t2-cli 55, t3-golden 4 — **897 checks, 0
+failed**, all three layers run again over the final tree.
 
 ## 135. Closing the day out: what running the other layers would have caught earlier (2026-10-14)
 
