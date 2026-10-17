@@ -9,6 +9,7 @@
  * where a test can see them.
  */
 
+import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import { quotePath } from './probeFlash';
@@ -56,14 +57,26 @@ export function espMonitorCommand(espflash: string, chip: string, port?: string)
     return `${espflash} ${espMonitorArgs(chip, port).join(' ')}`;
 }
 
-/** Both, in one terminal, so the log starts only after a successful write. */
+/**
+ * Both, in one terminal, so the log starts only after a successful write.
+ *
+ * The chaining operator is shell-specific and cannot be shared: `&&` is POSIX-only, and Windows
+ * PowerShell 5.1 -- still what a `terminal.integrated.defaultProfile.windows` of "PowerShell"
+ * gives you -- rejects it as a syntax error rather than treating it as a separator. There the
+ * second command runs only when the first one reported success, which is the same intent.
+ */
 export function espFlashAndMonitorCommand(
     espflash: string,
     chip: string,
     elfPath: string,
     port?: string,
+    platform: NodeJS.Platform = process.platform,
 ): string {
-    return `${espFlashCommand(espflash, chip, elfPath, port)} && ${espMonitorCommand(espflash, chip, port)}`;
+    const flash = espFlashCommand(espflash, chip, elfPath, port);
+    const monitor = espMonitorCommand(espflash, chip, port);
+    return platform === 'win32'
+        ? `${flash}; if ($LASTEXITCODE -eq 0) { ${monitor} }`
+        : `${flash} && ${monitor}`;
 }
 
 /**
@@ -135,4 +148,110 @@ export function pickSerialPort(candidates: string[], configured?: string): strin
         return chosen;
     }
     return candidates.length === 1 ? candidates[0] : undefined;
+}
+
+// --------------------------------------------------------------------- Windows
+//
+// Windows has no `/dev/serial/by-id`, so the port has to be enumerated through the device manager.
+// Two things are worth keeping when it is: which port, and *whose* port -- the vendor id is what
+// stops this extension writing to a Raspberry Pi Pico by mistake, and `/dev/serial/by-id` names on
+// Linux carry it in the file name. Here it comes from the PNP device id instead, and both are
+// folded into `name` so `isEspProgrammerName` keeps working without a second rule book.
+
+/**
+ * The PowerShell query that lists every COM port with the device behind it.
+ *
+ * `Win32_PnPEntity` rather than `Win32_SerialPort`: the latter lists only ports whose serial
+ * driver is loaded and registered, so a board whose driver is still starting -- exactly the moment
+ * a user presses Flash -- is missing from it. `Win32_PnPEntity` has the port as soon as it exists.
+ */
+export const WINDOWS_SERIAL_PORT_SCRIPT =
+    "Get-CimInstance Win32_PnPEntity | Where-Object { $_.Name -match '\\(COM\\d+\\)' } | " +
+    'Select-Object Name, PNPDeviceID | ConvertTo-Json -Compress';
+
+/** How to run that query: a command and its arguments, so a test can inspect both. */
+export function windowsSerialPortsQuery(): { file: string; args: string[] } {
+    return {
+        file: 'powershell',
+        args: ['-NoProfile', '-NonInteractive', '-Command', WINDOWS_SERIAL_PORT_SCRIPT],
+    };
+}
+
+/**
+ * Parse the query's JSON into entries.
+ *
+ * `ConvertTo-Json` emits a bare object for one match and an array for several, so both shapes are
+ * read. A port whose name has no `(COM<n>)` is dropped; the port is upper-cased because `COM3` and
+ * `com3` are the same device to espflash and different strings to a Set.
+ */
+export function parseWindowsSerialPorts(json: string): SerialPortEntry[] {
+    let parsed: unknown;
+    try {
+        parsed = JSON.parse(json);
+    } catch {
+        return [];
+    }
+    if (parsed === null || typeof parsed !== 'object') {
+        return [];
+    }
+    const records: unknown[] = Array.isArray(parsed) ? parsed : [parsed];
+
+    const entries: SerialPortEntry[] = [];
+    const seen = new Set<string>();
+    for (const record of records) {
+        const record$ = record as { Name?: unknown; PNPDeviceID?: unknown } | undefined;
+        const name = typeof record$?.Name === 'string' ? record$.Name : '';
+        const pnp = typeof record$?.PNPDeviceID === 'string' ? record$.PNPDeviceID : '';
+        const match = /\((COM\d+)\)/i.exec(name);
+        if (match === null) {
+            continue;
+        }
+        const port = (match[1] ?? '').toUpperCase();
+        if (port === '' || seen.has(port)) {
+            continue;
+        }
+        seen.add(port);
+        // The friendly name reads well in a log; the PNP id is the half that carries the vendor.
+        entries.push({ name: `${name} ${pnp}`.trim(), target: port });
+    }
+    return entries;
+}
+
+/** Runs a command and returns its stdout, or `undefined` when it could not be run at all. */
+export type CommandRunner = (file: string, args: string[]) => string | undefined;
+
+const runCommand: CommandRunner = (file, args) => {
+    try {
+        return execFileSync(file, args, {
+            encoding: 'utf8',
+            timeout: 15_000,
+            windowsHide: true,
+            stdio: ['ignore', 'pipe', 'ignore'],
+        });
+    } catch {
+        // No PowerShell, an execution policy that forbids it, a machine with no COM ports: all of
+        // them mean "no candidates", and espflash is then left to ask its own question.
+        return undefined;
+    }
+};
+
+/** The COM ports on this machine, in the shape `serialPortCandidates` takes. */
+export function windowsSerialPortEntries(run: CommandRunner = runCommand): SerialPortEntry[] {
+    const query = windowsSerialPortsQuery();
+    const output = run(query.file, query.args);
+    return output === undefined ? [] : parseWindowsSerialPorts(output);
+}
+
+/**
+ * Serial-port entries for the platform the extension is running on.
+ *
+ * macOS is deliberately left alone: it publishes `/dev/cu.*` without a stable descriptive name, so
+ * there is nothing to filter a vendor out of, and espflash's own picker is the better answer there
+ * than a guess.
+ */
+export function serialPortEntriesForPlatform(
+    platform: NodeJS.Platform = process.platform,
+    run: CommandRunner = runCommand,
+): SerialPortEntry[] {
+    return platform === 'win32' ? windowsSerialPortEntries(run) : readSerialPortEntries();
 }

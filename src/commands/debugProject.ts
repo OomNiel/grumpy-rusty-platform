@@ -9,10 +9,16 @@ import {
     DebugChoice,
     LAST_FLASHED_KEY,
     PROBE_RS_DEBUGGER_EXTENSION,
+    configurationNames,
     debugConfigurationChoices,
     debugPickerItems,
+    debuggerSchemaOf,
+    launchConfigProblems,
+    onlyGeneratedConfigurations,
+    probeRsConfigurationCount,
     profileMismatch,
 } from '../project/launchConfig';
+import { launchJson } from '../generate/files';
 import {
     ChipCheckResult,
     DEBUG_ANYWAY,
@@ -222,6 +228,140 @@ async function checkChipHoldsBuild(
     return verdict;
 }
 
+/**
+ * What the launch-configuration check found.
+ *
+ * `replacement` is set only when rewriting the file would lose nothing -- see
+ * `onlyGeneratedConfigurations`. Its presence is what turns "this is wrong" into "here is the fix".
+ */
+interface LaunchConfigReport {
+    problems: string[];
+    /** Why nothing could be checked, when nothing was. */
+    unchecked?: string;
+    /** A freshly generated file, when the existing one holds only our own configurations. */
+    replacement?: string;
+    /** The relative path the old file is kept at, when there is a replacement to write. */
+    backupPath: string;
+}
+
+/** The crate name a generated project's `Cargo.toml` carries, for the binary path in launch.json. */
+function crateNameOf(cargoToml: string): string | undefined {
+    // `[package] name = "..."` comes first in a generated file; `[[bin]]`/`[lib]` sections, if a
+    // user adds them, come after it.
+    const match = /^\s*name\s*=\s*"([^"]+)"/m.exec(cargoToml);
+    return match?.[1];
+}
+
+/**
+ * Does this project's `.vscode/launch.json` still match the debugger that is installed?
+ *
+ * The configurations are generated, so the interesting failure is not "the user typed something
+ * wrong" but "the debugger's schema moved and the file did not". Checked against the installed
+ * extension's own `package.json`, so there is no version table here to go stale.
+ */
+async function inspectLaunchConfigurations(project: ActiveProject): Promise<LaunchConfigReport> {
+    const backupPath = '.vscode/launch.json.old';
+    const text = await readLaunchJson(project);
+    if (text === undefined) {
+        return { problems: [], unchecked: 'this project has no .vscode/launch.json', backupPath };
+    }
+
+    const extension = vscode.extensions.getExtension(PROBE_RS_DEBUGGER_EXTENSION);
+    if (extension === undefined) {
+        return {
+            problems: [],
+            unchecked: `the probe-rs debugger (${PROBE_RS_DEBUGGER_EXTENSION}) is not installed, so there is no schema to check against`,
+            backupPath,
+        };
+    }
+    const schema = debuggerSchemaOf(extension.packageJSON);
+    if (schema === undefined) {
+        return {
+            problems: [],
+            unchecked: 'the installed probe-rs debugger publishes no configuration schema',
+            backupPath,
+        };
+    }
+    if (probeRsConfigurationCount(text) === 0) {
+        return { problems: [], unchecked: 'launch.json holds no probe-rs configuration', backupPath };
+    }
+
+    const problems = launchConfigProblems(text, schema);
+    if (problems.length === 0) {
+        return { problems, backupPath };
+    }
+
+    const board = project.board;
+    const crateName = crateNameOf(project.cargoToml);
+    if (board === undefined || !('probeChip' in board) || crateName === undefined) {
+        // Not a generated RP project, so there is no template to restore from.
+        return { problems, backupPath };
+    }
+    const fresh = launchJson(board, crateName);
+    return {
+        problems,
+        backupPath,
+        replacement: onlyGeneratedConfigurations(text, configurationNames(fresh)) ? fresh : undefined,
+    };
+}
+
+/**
+ * Reports a failed check, and repairs it when repairing is safe.
+ *
+ * Returns whether the file was rewritten. A file holding anything the user wrote is reported and
+ * left alone: overwriting that is data loss, not a fix.
+ */
+async function reportLaunchConfigProblems(
+    project: ActiveProject,
+    report: LaunchConfigReport,
+    output: vscode.OutputChannel,
+): Promise<boolean> {
+    for (const problem of report.problems) {
+        output.appendLine(`launch.json: ${problem}`);
+    }
+
+    const body = report.problems.join('\n');
+    if (report.replacement === undefined) {
+        void vscode.window.showWarningMessage(
+            `The debug configurations do not match the installed probe-rs debugger:\n\n${body}\n\n` +
+                'They were left untouched because they may be yours. Compare them with a freshly ' +
+                'generated project, or delete them and let the wizard write new ones.',
+            { modal: true },
+            'OK',
+        );
+        return false;
+    }
+
+    const choice = await vscode.window.showWarningMessage(
+        `The debug configurations do not match the installed probe-rs debugger:\n\n${body}\n\n` +
+            `Regenerating rewrites .vscode/launch.json from the wizard template and keeps the old ` +
+            `file as ${report.backupPath}.`,
+        { modal: true },
+        'Regenerate',
+    );
+    if (choice !== 'Regenerate') {
+        return false;
+    }
+
+    const folder = project.folder;
+    const target = vscode.Uri.joinPath(folder, '.vscode', 'launch.json');
+    const backup = vscode.Uri.joinPath(folder, '.vscode', 'launch.json.old');
+    try {
+        const existing = await vscode.workspace.fs.readFile(target);
+        await vscode.workspace.fs.writeFile(backup, existing);
+        await vscode.workspace.fs.writeFile(target, Buffer.from(report.replacement, 'utf8'));
+    } catch (error) {
+        output.appendLine(`launch.json: could not rewrite the file - ${String(error)}`);
+        void vscode.window.showErrorMessage(`Could not rewrite .vscode/launch.json: ${String(error)}`);
+        return false;
+    }
+    output.appendLine(`launch.json: regenerated (the old file is ${report.backupPath})`);
+    void vscode.window.showInformationMessage(
+        'Debug configurations regenerated. Press Debug again.',
+    );
+    return true;
+}
+
 export function registerDebugCommand(
     state: RustyState,
     output: vscode.OutputChannel,
@@ -260,6 +400,17 @@ export function registerDebugCommand(
                         'This project has no .vscode/launch.json, so there is nothing to debug. ' +
                         'Generate a project with the wizard to get one.',
                     );
+                    return;
+                }
+
+                // The file is generated against a schema the debugger is free to change, and an
+                // unknown key is not an error to VS Code: the session would start and quietly do
+                // something other than what the file says. So check, and repair when that is safe,
+                // before starting a session that would mislead.
+                const launchReport = await inspectLaunchConfigurations(project);
+                if (launchReport.problems.length > 0) {
+                    output.appendLine('debug: the launch configuration does not match the installed debugger');
+                    await reportLaunchConfigProblems(project, launchReport, output);
                     return;
                 }
 
@@ -350,5 +501,30 @@ export function registerDebugCommand(
             output.appendLine(`debug: stopping "${session.name}" (${session.type})`);
             await vscode.debug.stopDebugging(session);
         }),
+
+        // The same guard rail, on demand. It lives here rather than only inside Debug because the
+        // useful moment is often *after* a debugger update and *before* the next session, and
+        // because a project that cannot be debugged at all still needs the diagnosis.
+        vscode.commands.registerCommand('rustyPlatform.checkLaunchConfig', () =>
+            withProject(async (project) => {
+                const report = await inspectLaunchConfigurations(project);
+                if (report.unchecked !== undefined) {
+                    output.appendLine(`launch.json: nothing to check - ${report.unchecked}`);
+                    void vscode.window.showInformationMessage(`Nothing to check: ${report.unchecked}.`);
+                    return;
+                }
+                if (report.problems.length === 0) {
+                    output.appendLine(
+                        'launch.json: every probe-rs configuration matches the installed debugger',
+                    );
+                    void vscode.window.showInformationMessage(
+                        'The debug configurations match the installed probe-rs debugger.',
+                    );
+                    return;
+                }
+                output.appendLine('launch.json: the file does not match the installed debugger');
+                void reportLaunchConfigProblems(project, report, output);
+            }),
+        ),
     ];
 }

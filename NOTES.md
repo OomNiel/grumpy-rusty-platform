@@ -7186,3 +7186,97 @@ in the order they are worth anything:
 **The first slice to prove it, if it is ever picked up:** `platformio.ini` → board and panel detection → one label and
 one button emitted as **LVGL v9** C → `pio run` on the CYD. That validates the emitter, the version pin and the panel
 knowledge before a single canvas gesture is written. Nothing in this repository depends on it.
+
+## §146 — Phase 4 guard rails, and Windows (0.3.0, 2026-10-17)
+
+Asked for as *"Do the launch-config guard rails and the Windows thing next."* These were the last two
+`⬜` rows in the README.
+
+### The guard rail, and why it reads the *installed* extension
+
+The four configurations in `.vscode/launch.json` are generated against probe-rs-debugger's schema as
+it was on the day they were written. Nothing warns when that schema moves: VS Code accepts an unknown
+key, the debugger ignores it, and the session then does something other than what the file plainly
+says. (`flashingConfig.flashingEnabled` defaulting to false is the canonical example — it is the
+reason the template sets it explicitly rather than relying on the default.)
+
+**The check therefore reads `contributes.debuggers[].configurationAttributes` out of the installed
+extension's own `package.json`** — `debuggerSchemaOf()` in `src/project/launchConfig.ts`. There is no
+version table in this repository to rot, and updating the debugger cannot make the check stale. If
+the extension is absent, or publishes no schema, the answer is "nothing could be checked", never
+"fine".
+
+Ground truth on this bench, `probe-rs.probe-rs-debugger-0.32.0`:
+
+| request | required | has `flashingConfig`? |
+| --- | --- | --- |
+| `launch` | `chip`, `coreConfigs` | yes |
+| `attach` | `chip`, `coreConfigs` | **no** |
+
+and `coreConfigs.items` requires `programBinary`, with `coreIndex`, `svdFile`, `rttEnabled`,
+`rttChannelFormats`, `catchReset`, `catchHardfault` known. That is exactly why the attach entry in the
+template carries no `flashingConfig` — probe-rs rejects it for `attach` — and the validator can now
+say so instead of leaving it to a runtime error.
+
+**Validation recurses** (max 3 levels) into properties that declare `properties` or `items`: a rename
+inside `coreConfigs` changes what a session does just as much as a top-level one, and the "did you
+mean" for `rttEnabledx` → `rttEnabled` is exactly the diagnosis a user needs. Suggestions come from
+a tiny Levenshtein (`limit = max(2, len/3)`) or a shared prefix of 4.
+
+**Repairing is separate from reporting.** `onlyGeneratedConfigurations()` is true only when every
+entry is `probe-rs-debug` *and* named like one of ours; then the file is replaced from the same
+`launchJson()` the wizard uses (now `export`ed — one definition, no drift) with the old file kept as
+`.vscode/launch.json.old`. One hand-written configuration, or one of another debugger type, and the
+command reports and leaves the file alone: overwriting a file the user edited is data loss, not a
+fix. `Debug` runs the same check first and returns with the offer instead of starting a session that
+would quietly do the wrong thing.
+
+Command: **Rusty Platform: Check Debug Configuration** (`rustyPlatform.checkLaunchConfig`).
+
+### Windows
+
+Already platform-aware before this: installer URLs and `rustup-init.exe`, `chmod` skipping, zip
+extraction through `Expand-Archive`, udev gated to Linux, UF2 drive letters `D:`–`Z:`, `PATHEXT` in
+`exec.ts`, `$env:DEFMT_LOG` in the terminal prefix, `.deb` packaging refused off Linux. Three real
+gaps were closed:
+
+1. **Serial ports.** `/dev/serial/by-id` does not exist on Windows. `serialPortEntriesForPlatform()`
+   now asks PowerShell (`Get-CimInstance Win32_PnPEntity` filtered to `(COM<n>)`, `ConvertTo-Json
+   -Compress`) — `Win32_PnPEntity` rather than `Win32_SerialPort` because the latter misses a port
+   whose driver is still loading, which is exactly the moment someone presses Flash.
+   `parseWindowsSerialPorts()` folds the friendly name **and the PNP device id** into the entry's
+   `name`, so the existing `isEspProgrammerName()` filter keeps working unchanged. That matters:
+   a test now asserts a `VID_2E8A` port is **not** a candidate, so the bench rule survives the port
+   to Windows. A query that cannot run (no PowerShell, restricted execution policy) is "no
+   candidates" and espflash asks its own question.
+2. **Shell chaining.** `espFlashAndMonitorCommand()` took `A && B`; PowerShell 5.1 rejects `&&`
+   outright. On `win32` it now emits `A; if ($LASTEXITCODE -eq 0) { B }`.
+3. **`export-esp.ps1`.** `espEnv()` only read `export-esp.sh`, so an ESP project on Windows would
+   build without the Xtensa linker on PATH. `parseExportEspPowerShell()` reads `$env:NAME = "…"` and
+   the `"dir;dir;" + $env:PATH` prepend idiom, and `parseExportEspFile()` picks the parser from the
+   file name, so no caller branches on the platform. `espDetect` and the terminal's identity key
+   accept either name.
+
+macOS is deliberately left to `espflash`'s own picker: `/dev/cu.*` has no stable descriptive name, so
+there is nothing to filter a vendor out of.
+
+### Still unverified, on purpose
+
+- **No Windows machine on this bench.** Everything above is unit-tested *for* `win32` (the pure
+  functions take the platform as an argument) but has not been run on Windows. README says so with
+  🟡 rather than ✅.
+- **`export-esp.ps1`'s exact shape** comes from espup's documented output, not from a real Windows
+  install. The parser is tolerant — an unrecognised line costs one variable, never the file — and
+  the sample is pinned in `esp-toolchain.test.js` so a change in expectation is a visible diff.
+
+### Tests
+
+23 new hermetic checks, all in t1: 13 for the launch schema (extraction, the four generated
+configurations validating clean against a fixture copied from 0.32.0, an unknown key with its
+suggestion, a renamed nested key, a missing `required`, `flashingConfig` on `attach`, an unknown
+request, jsonc tolerance, the regeneration guard, `closestSchemaKey`, and that the command is declared
+*and* called from Debug), 6 for the Windows port/chain, 4 for the PowerShell export file
+(two of them reusing the existing POSIX cases' expectations for parity).
+
+**931 hermetic green** (t1 872 · t2 55 · t3 4) and **943 with `--e2e`** (6 real `cargo build`s plus
+the designer simulator, 100 s).

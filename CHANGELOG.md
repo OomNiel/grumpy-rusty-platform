@@ -11,6 +11,39 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.3.0] - 2026-10-17
+
+Asked for as *"Do the launch-config guard rails and the Windows thing next."*
+
+### Added
+- **Check Debug Configuration** (`rustyPlatform.checkLaunchConfig`) — validates every `probe-rs`
+  configuration in `.vscode/launch.json` against the schema the **installed** `probe-rs-debugger`
+  publishes in its own `package.json`: unknown keys (with a "did you mean" for the likely rename,
+  nested `coreConfigs` items included), missing `required` keys, and a `request` the debugger does
+  not have. Nothing is checked against a version table here, so updating the debugger cannot make
+  the check stale.
+- **Regenerate** — when the file holds nothing but the four configurations this generator writes,
+  the check offers to rewrite it from the template, keeping the old file as
+  `.vscode/launch.json.old`. A file holding anything hand-written is reported and left alone.
+- **Debug** runs the same check before starting a session, because VS Code accepts an unknown key
+  silently and the session would then do something other than what the file says.
+- Windows: COM-port enumeration (`Win32_PnPEntity`, so a port whose driver is still loading is
+  still found), with the **vendor id kept** in the entry name so the Raspberry Pi Pico exclusion
+  applies on Windows too.
+- Windows: `export-esp.ps1` is read as well as `export-esp.sh`, so an ESP project built on Windows
+  gets the Xtensa linker on PATH.
+
+### Changed
+- The flash-then-monitor command chain is platform-aware: `&&` on POSIX shells, and
+  `; if ($LASTEXITCODE -eq 0) { … }` on Windows, where PowerShell 5.1 rejects `&&` outright.
+- `espup`'s export file is looked for under both names, so the toolchain check is not confused by
+  the Windows spelling.
+
+### Notes
+- Windows support is implemented and unit-tested for `win32`, but has **not been run on a Windows
+  machine** — there is none on this bench. The macOS serial-port path is deliberately left to
+  `espflash`'s own picker.
+
 ## [0.2.0] - 2026-10-17
 
 Asked for as *"I feel we are trying to re-invent the wheel. PlatformIO already has all the functionality for c++

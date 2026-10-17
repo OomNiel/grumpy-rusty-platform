@@ -14,8 +14,8 @@ import {
     espFlashCommand,
     espMonitorCommand,
     pickSerialPort,
-    readSerialPortEntries,
     serialPortCandidates,
+    serialPortEntriesForPlatform,
 } from '../flash/espFlash';
 import {
     FlashProfileChoice,
@@ -155,7 +155,9 @@ export function registerProjectCommands(
      */
     function espPort(): string | undefined {
         const configured = vscode.workspace.getConfiguration('rustyPlatform').get<string>('serialPort');
-        return pickSerialPort(serialPortCandidates(readSerialPortEntries()), configured);
+        // Linux reads `/dev/serial/by-id`, Windows asks PowerShell for the COM ports; both come
+        // back with the vendor inside the entry's name, so the Pico exclusion applies either way.
+        return pickSerialPort(serialPortCandidates(serialPortEntriesForPlatform()), configured);
     }
 
     /** What a build has to see beyond the plain environment: credentials, and an optional log level. */

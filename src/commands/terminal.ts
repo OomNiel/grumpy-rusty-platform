@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { EXPORT_ESP_FILE, parseExportEsp } from '../toolchain/espToolchain';
+import { EXPORT_ESP_FILES, parseExportEspFile } from '../toolchain/espToolchain';
 import { augmentedEnv } from '../util/exec';
 import { activeWifiEnv, wifiEnvVersion } from '../wifi/credentials';
 
@@ -57,22 +57,30 @@ export function runInTerminal(name: string, command: string, cwd?: vscode.Uri): 
 /**
  * espup's environment, for the commands we start ourselves.
  *
- * `espup install` writes `~/export-esp.sh`, and the Xtensa linker only exists on PATH after it
- * has been sourced. Sourcing it from here is not an option (it would have to happen in the
- * process we spawn, and a terminal's `source` cannot reach the extension host), so the file is
- * read and its variables are merged into the environment instead. Empty when espup was never
- * installed, which is also the normal case for an RP project.
+ * `espup install` writes `~/export-esp.sh` (`~/export-esp.ps1` on Windows), and the Xtensa linker
+ * only exists on PATH after it has been sourced. Sourcing it from here is not an option (it would
+ * have to happen in the process we spawn, and a terminal's `source` cannot reach the extension
+ * host), so the file is read and its variables are merged into the environment instead. Empty when
+ * espup was never installed, which is also the normal case for an RP project.
  */
 export function espEnv(): Record<string, string> {
     const home = os.homedir();
-    let content: string;
-    try {
-        content = fs.readFileSync(path.join(home, EXPORT_ESP_FILE), 'utf8');
-    } catch {
+    let fileName: string | undefined;
+    let content: string | undefined;
+    for (const candidate of EXPORT_ESP_FILES) {
+        try {
+            content = fs.readFileSync(path.join(home, candidate), 'utf8');
+            fileName = candidate;
+            break;
+        } catch {
+            // espup writes exactly one of them, depending on the platform.
+        }
+    }
+    if (content === undefined || fileName === undefined) {
         return {};
     }
 
-    const exported = parseExportEsp(content, home);
+    const exported = parseExportEspFile(fileName, content, home);
     const patch: Record<string, string> = { ...exported.vars };
     if (exported.pathPrepend.length > 0) {
         const existing = augmentedEnv().PATH ?? '';
@@ -83,7 +91,9 @@ export function espEnv(): Record<string, string> {
 
 /** Part of a terminal's identity: a shell started before the install has the wrong PATH. */
 function espEnvVersion(): string {
-    return fs.existsSync(path.join(os.homedir(), EXPORT_ESP_FILE)) ? 'esp' : 'no-esp';
+    return EXPORT_ESP_FILES.some((file) => fs.existsSync(path.join(os.homedir(), file)))
+        ? 'esp'
+        : 'no-esp';
 }
 
 /** Called from `deactivate` so we don't keep dead terminals around on reload. */

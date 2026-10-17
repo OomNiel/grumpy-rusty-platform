@@ -9,7 +9,7 @@
  * plugged in.
  */
 
-const { test, ok, equal, notOk, contains } = require('../../lib/harness');
+const { test, ok, equal, notOk, contains, notContains } = require('../../lib/harness');
 const { compiled } = require('../../lib/harness');
 const {
     espFlashArgs,
@@ -20,6 +20,10 @@ const {
     isEspProgrammerName,
     serialPortCandidates,
     pickSerialPort,
+    parseWindowsSerialPorts,
+    windowsSerialPortsQuery,
+    serialPortEntriesForPlatform,
+    WINDOWS_SERIAL_PORT_SCRIPT,
 } = compiled('flash/espFlash');
 const { flashRouteForProject, usesSerialFlash } = compiled('flash/route');
 const { boardById } = compiled('boards/catalog');
@@ -107,4 +111,87 @@ test('the board decides the route before any probe is considered', () => {
     equal(flashRouteForProject(rp, 'ok'), 'probe');
     equal(flashRouteForProject(rp, 'none-connected'), 'usb');
     equal(flashRouteForProject(undefined, 'ok'), 'probe', 'an unknown project keeps the old behaviour');
+});
+
+// ------------------------------------------------------------------------- Windows
+//
+// Windows has no `/dev/serial/by-id`, so the port comes from the device manager instead. What must
+// survive that rewrite is the *identity* of the port: the vendor id is what keeps this extension
+// off a Raspberry Pi Pico, and on Windows it lives in the PNP device id rather than in a file name.
+
+/** `Get-CimInstance Win32_PnPEntity | Select Name, PNPDeviceID | ConvertTo-Json -Compress`, one match. */
+const ONE_CH340 = JSON.stringify({
+    Name: 'USB-SERIAL CH340 (COM5)',
+    PNPDeviceID: 'USB\\VID_1A86&PID_7523\\5&2B5D2B&0&1',
+});
+
+/** Several matches: `ConvertTo-Json` emits an array once there is more than one. */
+const SEVERAL_PORTS = JSON.stringify([
+    { Name: 'USB Serial Device (COM7)', PNPDeviceID: 'USB\\VID_2E8A&PID_000A\\E663589863663823' },
+    { Name: 'USB-SERIAL CH340 (COM5)', PNPDeviceID: 'USB\\VID_1A86&PID_7523\\5&2B5D2B&0&1' },
+    { Name: 'Silicon Labs CP210x USB to UART Bridge (COM9)', PNPDeviceID: 'USB\\VID_10C4&PID_EA60\\0001' },
+    { Name: 'USB Serial Device (com11)', PNPDeviceID: 'USB\\VID_303A&PID_1001\\30:30:F9:00:00:01' },
+]);
+
+test('a Windows COM port is read from the device manager JSON', () => {
+    const entries = parseWindowsSerialPorts(ONE_CH340);
+    equal(entries.length, 1);
+    equal(entries[0].target, 'COM5', 'the port is what espflash takes');
+    contains(entries[0].name, 'CH340', 'the friendly name is kept for the log');
+    contains(entries[0].name, '1A86', 'the vendor id is what identifies the device');
+});
+
+test('a Raspberry Pi Pico is not a candidate on Windows either', () => {
+    // The bench rule, carried across: 2e8a is the Pico family, so its COM port is never offered.
+    const entries = parseWindowsSerialPorts(SEVERAL_PORTS);
+    equal(entries.length, 4, 'every COM port is read');
+    const candidates = serialPortCandidates(entries);
+    notOk(candidates.includes('COM7'), 'the Pico (VID_2E8A) must not be a candidate');
+    equal(candidates.join(','), 'COM11,COM5,COM9', 'the ESP programmers are, sorted, upper-cased');
+});
+
+test('the query asks for every COM port, not just the serial-driver ones', () => {
+    const query = windowsSerialPortsQuery();
+    equal(query.file, 'powershell');
+    ok(query.args.includes('-NoProfile'), 'a user profile must not be able to change the answer');
+    ok(query.args.includes('-Command'));
+    contains(WINDOWS_SERIAL_PORT_SCRIPT, 'Win32_PnPEntity', 'Win32_SerialPort misses a loading driver');
+    contains(WINDOWS_SERIAL_PORT_SCRIPT, 'ConvertTo-Json');
+    contains(WINDOWS_SERIAL_PORT_SCRIPT, 'PNPDeviceID', 'the vendor id has to come back');
+});
+
+test('malformed device-manager output is "no ports", never a crash', () => {
+    equal(parseWindowsSerialPorts('').length, 0, 'an empty result');
+    equal(parseWindowsSerialPorts('not json').length, 0, 'a PowerShell error message');
+    equal(parseWindowsSerialPorts('null').length, 0);
+    equal(parseWindowsSerialPorts(JSON.stringify({ Name: 'No port here' })).length, 0, 'no (COMx)');
+});
+
+test('the platform decides where ports are enumerated', () => {
+    const asked = [];
+    const runner = (file, args) => {
+        asked.push(file);
+        return ONE_CH340;
+    };
+    const windows = serialPortEntriesForPlatform('win32', runner);
+    equal(asked.length, 1, 'Windows must run the PowerShell query');
+    equal(windows[0].target, 'COM5');
+
+    asked.length = 0;
+    const linux = serialPortEntriesForPlatform('linux', runner);
+    equal(asked.length, 0, 'Linux must read /dev/serial/by-id, not spawn PowerShell');
+    ok(Array.isArray(linux), 'Linux still returns a list (empty here, no such directory)');
+
+    equal(serialPortEntriesForPlatform('win32', () => undefined).length, 0, 'a query that cannot run');
+});
+
+test('flashing and monitoring chain in a way the shell accepts', () => {
+    const posix = espFlashAndMonitorCommand('espflash', 'esp32', 'app', 'COM5', 'linux');
+    contains(posix, ' && ', 'POSIX shells take &&');
+    contains(posix, 'monitor --chip esp32 --port COM5');
+
+    const windows = espFlashAndMonitorCommand('espflash', 'esp32', 'app', 'COM5', 'win32');
+    notContains(windows, '&&', 'Windows PowerShell 5.1 rejects && outright');
+    contains(windows, '; if ($LASTEXITCODE -eq 0) { espflash monitor', 'the monitor runs only after a good flash');
+    contains(windows, '}', 'and the block is closed');
 });

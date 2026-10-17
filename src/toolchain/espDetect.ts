@@ -12,7 +12,7 @@ import * as path from 'path';
 import type { ExecFn } from '../util/exec';
 import { augmentedEnv, cargoBinDir, execFileFn } from '../util/exec';
 import {
-    EXPORT_ESP_FILE,
+    EXPORT_ESP_FILES,
     EspTool,
     EspToolchainStatus,
     espToolchainReady,
@@ -74,13 +74,17 @@ export async function detectEspToolchain(
         exec(options.rustupPath ?? 'rustup', ['toolchain', 'list'], { env, timeoutMs: 20_000 }),
     ]);
 
-    const exportPath = path.join(home, EXPORT_ESP_FILE);
+    // espup writes `export-esp.sh` on Unix and `export-esp.ps1` on Windows; whichever exists is
+    // the evidence that it has run.
+    const exportPath = EXPORT_ESP_FILES.map((file) => path.join(home, file)).find((candidate) =>
+        fs.existsSync(candidate),
+    );
     const partial = {
         espup,
         espflash,
         // `rustup toolchain list` only shows the espup toolchain after `espup install` has run.
         toolchainInstalled: !toolchains.notFound && parseToolchainList(toolchains.stdout),
-        exportFile: fs.existsSync(exportPath) ? exportPath : undefined,
+        exportFile: exportPath,
         chips: options.chips,
     };
     return { ...partial, ready: espToolchainReady(partial) };

@@ -140,12 +140,97 @@ export function parseToolchainList(stdout: string, name: string = ESP_TOOLCHAIN_
         .some((line) => line === name || line.startsWith(`${name}-`) || line.startsWith(`${name} `));
 }
 
+/** The file `espup install` writes on Windows; same content, PowerShell syntax. */
+export const EXPORT_ESP_PS1 = 'export-esp.ps1';
+
+/**
+ * Both names espup is known to write, in the order they are worth reading. Whichever exists is used;
+ * a machine can only have the one its platform asks for.
+ */
+export const EXPORT_ESP_FILES = [EXPORT_ESP_FILE, EXPORT_ESP_PS1] as const;
+
 export interface ExportEspEnv {
     /** Non-PATH variables, expanded and verbatim (`LIBCLANG_PATH`, ...). */
     vars: Record<string, string>;
     /** Directories to put in front of PATH, in file order. */
     pathPrepend: string[];
 }
+
+/**
+ * Read `export-esp.ps1`, the Windows half of the same idea.
+ *
+ * The lines assign through PowerShell's environment provider instead of `export`:
+ *
+ *     $env:LIBCLANG_PATH = "C:\Users\me\AppData\Local\esp\esp-rs\llvm\...\lib"
+ *     $env:PATH = "C:\...\riscv32-esp-elf\bin;C:\...\xtensa-esp32-elf\bin;" + $env:PATH
+ *
+ * so the value is the first quoted string on the line, and a PATH assignment's own segments are
+ * the ones being *prepended* -- the `+ $env:PATH` tail is the machine's existing PATH and is left
+ * for `withExportEspEnv` to keep. Separators are `;` on Windows. Tolerant on purpose: an unknown
+ * line is skipped rather than making the rest of the file unreadable.
+ */
+export function parseExportEspPowerShell(content: string, home?: string): ExportEspEnv {
+    const vars: Record<string, string> = {};
+    const pathPrepend: string[] = [];
+
+    const expand = (value: string): string => {
+        if (home === undefined) {
+            return value;
+        }
+        return value
+            .replace(/\$env:USERPROFILE/gi, home)
+            .replace(/\$env:HOME/gi, home)
+            .replace(/\$HOME/gi, home);
+    };
+
+    for (const rawLine of content.split('\n')) {
+        const line = rawLine.trim();
+        if (line === '' || line.startsWith('#')) {
+            continue;
+        }
+        const match = /^\$env:([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$/i.exec(line);
+        if (match === null) {
+            continue;
+        }
+        const name = match[1] ?? '';
+        const value = expand(match[2] ?? '');
+        if (name === '') {
+            continue;
+        }
+
+        if (name.toUpperCase() === 'PATH') {
+            // Only the literals before the existing-PATH reference are ours to prepend.
+            for (const quoted of value.match(/("[^"]*"|'[^']*')/g) ?? []) {
+                const literal = quoted.slice(1, -1);
+                for (const segment of literal.split(';')) {
+                    const trimmed = segment.trim();
+                    if (trimmed !== '' && !/\$env:PATH/i.test(trimmed)) {
+                        pathPrepend.push(trimmed);
+                    }
+                }
+            }
+            continue;
+        }
+
+        const literal = /^("[^"]*"|'[^']*')/.exec(value.trim());
+        vars[name] = literal === null ? value.trim() : literal[0].slice(1, -1);
+    }
+
+    return { vars, pathPrepend };
+}
+
+/**
+ * Read whichever export file this machine has.
+ *
+ * Called with the file's *name*, so the caller does not have to branch on the platform: the parser
+ * follows the syntax, and only one of the two files is ever written on a machine.
+ */
+export function parseExportEspFile(fileName: string, content: string, home?: string): ExportEspEnv {
+    return fileName.toLowerCase().endsWith('.ps1')
+        ? parseExportEspPowerShell(content, home)
+        : parseExportEsp(content, home);
+}
+
 
 /**
  * Read `export-esp.sh`.

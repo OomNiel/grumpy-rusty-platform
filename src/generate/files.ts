@@ -885,7 +885,11 @@ function vscodeSettings(board: RpBoardProfile): string {
     )}\n`;
 }
 
-function launchJson(board: RpBoardProfile, binaryName: string): string {
+/**
+ * The file a project is born with, and the one the launch-configuration check offers to restore.
+ * Exported so that "what a fresh project gets" has exactly one definition.
+ */
+export function launchJson(board: RpBoardProfile, binaryName: string): string {
     // Schema verified against probe-rs/vscode package.json:
     // `probe-rs-debug` requires `chip` and `coreConfigs`, and `coreConfigs.items` requires
     // `programBinary`.

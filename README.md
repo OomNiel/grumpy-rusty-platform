@@ -38,9 +38,9 @@ and, for the Espressif boards, `espflash`.
 | Chip check before a no-flash session (`probe-rs verify`) | ✅ RP only |
 | Flash / monitor over USB serial (`espflash`) | ✅ ESP — one-shot write, and a monitor that holds the port on purpose |
 | crates.io Library Manager | ✅ curated catalog + live sparse index |
-| Layered test suite | ✅ 908 hermetic (t1 849 · t2 55 · t3 4 — byte-for-byte snapshots of every board × template) + opt-in e2e (the Rust project builds, and the designer's canvas-to-glass simulator) + 1 hardware HIL |
-| Phase 4 guard rails: validate a launch config against the installed debugger | ⬜ |
-| Windows support | ⬜ later (installer URLs are already platform-aware) |
+| Layered test suite | ✅ 931 hermetic (t1 872 · t2 55 · t3 4 — byte-for-byte snapshots of every board × template) + opt-in e2e (the Rust project builds, and the designer's canvas-to-glass simulator) + 1 hardware HIL |
+| Debug-config guard rails — **Check Debug Configuration** validates `.vscode/launch.json` against the schema the *installed* `probe-rs-debugger` publishes, and offers to regenerate when the file holds nothing but our own four configurations. **Debug** runs the same check first | ✅ RP (checked against `probe-rs-debugger` 0.32.0) |
+| Windows support — installer URLs, `rustup-init.exe`, zip extraction, UF2 drive letters, `PATHEXT`, `$env:DEFMT_LOG`, COM-port enumeration via `Win32_PnPEntity` (vendor id kept, so a Pico is still refused), PowerShell-safe flash+monitor chaining, and `export-esp.ps1` | 🟡 implemented and unit-tested for `win32`, but **not yet run on a Windows machine** |
 
 ## AI coding assist (optional)
 
