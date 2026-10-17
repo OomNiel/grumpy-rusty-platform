@@ -5,20 +5,29 @@
 #![no_std]
 #![no_main]
 
-use embassy_executor::Spawner;
-use embassy_time::{Duration, Timer};
-use esp_hal::clock::CpuClock;
-use esp_hal::timer::timg::TimerGroup;
-use esp_println as _;
-use esp_hal::gpio::{Level, Output, OutputConfig};
-use esp_backtrace as _;
-
 // The ESP-IDF bootloader expects an application descriptor in the image. Without it the
 // bootloader refuses to start the image, so this line is not decoration.
 esp_bootloader_esp_idf::esp_app_desc!();
 
-#[esp_rtos::main]
-async fn main(_spawner: Spawner) -> ! {
+// The sketch's header: every import, the type aliases, the constants and the helpers.
+// The path is spelled out because the file is named the way the sketch reads it, not the way Rust
+// spells a module name.
+#[path = "MainHeader.rs"]
+mod main_header;
+use main_header::*;
+
+/// Every value this sketch keeps: the on-board LED, created once by setup() and used by
+/// the loop in main().
+pub struct State {
+    /// The LED on GPIO4.
+    led: Output<'static>,
+}
+
+/// One-time initialisation -- the Arduino setup().
+///
+/// Brings up the on-board LED and hands it back as a State for main() to run. Everything that
+/// must happen once, and only once, belongs here.
+pub async fn setup() -> State {
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
 
@@ -36,19 +45,54 @@ async fn main(_spawner: Spawner) -> ! {
     // with a line that can only come from this run.
     log::info!("=== {} {} starting ===", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
     log::info!("board: Espressif ESP32-DevKitC V4 (ESP32), 4 MB flash");
-
-
     // This board has no user LED (Espressif's own user guide lists a 5 V power LED and
     // nothing else), so GPIO4 is a suggestion rather than a fact: wire an LED and a
     // series resistor between GPIO4 and GND. Until you do, the board stays dark and
     // the only sign of life is the log.
 
-    let mut led = Output::new(peripherals.GPIO4, Level::Low, OutputConfig::default());
+    let led = Output::new(peripherals.GPIO4, Level::Low, OutputConfig::default());
+    State {
+        led,
+    }
+}
+
+/// The sketch's entry point -- the Arduino main() around setup() and the loop.
+///
+/// setup() runs once, then the implementation below repeats for as long as the board is powered. This is the
+/// function to edit: everything it needs from setup() is in state.
+#[esp_rtos::main]
+async fn main(_spawner: Spawner) -> ! {
+    let mut state = setup().await;
 
     loop {
-        led.set_high();
+        state.led.set_high();
         Timer::after_millis(500).await;
-        led.set_low();
+        state.led.set_low();
         Timer::after_millis(500).await;
     }
 }
+// --- Your own code goes below this line ---------------------------------------------------------
+//
+// The sketch is this file plus MainHeader.rs. Everything above is the shape of it: State is what setup()
+// created, and main() is the loop you edit. Rust does not mind about the order of items, so adding your
+// functions below main() leaves the top of the file as the shape of the sketch.
+//
+// A function that needs the hardware takes state, or one of its fields:
+//
+//     /// Three quick blinks, using the output setup() brought up.
+//     async fn blink_three(state: &mut State) {
+//         for _ in 0..3 {
+//             state.led.set_high();
+//             Timer::after_millis(120).await;
+//             state.led.set_low();
+//             Timer::after_millis(120).await;
+//         }
+//     }
+//
+// ...and is called from the loop with blink_three(&mut state).await;, or once from the end of setup()
+// if it should only run at start-up.
+//
+// Anything that does not touch the hardware -- a conversion, a formula, a lookup table -- reads better in
+// MainHeader.rs beside the other helpers, where it is reachable from here and from setup(). And a driver
+// of your own that outgrows a couple of functions deserves its own file: put it in src/my_driver.rs and
+// add mod my_driver; up with mod main_header;.

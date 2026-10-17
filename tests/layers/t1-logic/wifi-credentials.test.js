@@ -22,11 +22,14 @@ const {
 } = compiled('wifi/credentials');
 
 function mainFor(boardId, template) {
-    const file = generateProjectFiles({ board: boardById(boardId), projectName: 'Test Wifi', template }).find(
-        (candidate) => candidate.path === 'src/main.rs',
-    );
-    ok(file, `${boardId}/${template}: no src/main.rs`);
-    return file.content;
+    // The sketch is two files (see src/generate/sketch.ts): `main.rs` holds setup() and the loop, and
+    // `MainHeader.rs` the imports, the constants and the helpers -- including the Wi-Fi credentials.
+    const files = generateProjectFiles({ board: boardById(boardId), projectName: 'Test Wifi', template });
+    const at = (candidate) => files.find((file) => file.path === candidate);
+    const main = at('src/main.rs');
+    ok(main, `${boardId}/${template}: no src/main.rs`);
+    const header = at('src/MainHeader.rs');
+    return `${main.content}\n${header === undefined ? '' : header.content}`;
 }
 
 test('only the wireless templates are asked for credentials', () => {

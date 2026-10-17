@@ -5,26 +5,36 @@
 #![no_std]
 #![no_main]
 
-use core::net::Ipv4Addr;
-use core::str::FromStr;
-use embassy_executor::Spawner;
-use embassy_net::{Config as NetConfig, Ipv4Cidr, Runner, StackResources, StaticConfigV4};
-use embassy_time::{Duration, Timer};
-use esp_hal::clock::CpuClock;
-use esp_hal::ram;
-use esp_hal::rng::Rng;
-use esp_hal::timer::timg::TimerGroup;
-use esp_println as _;
-use esp_radio::wifi::sta::StationConfig;
-use esp_radio::wifi::{AuthenticationMethodConfig, Config as WifiConfig, ControllerConfig, Interface, WifiController};
-use esp_backtrace as _;
-
 // The ESP-IDF bootloader expects an application descriptor in the image. Without it the
 // bootloader refuses to start the image, so this line is not decoration.
 esp_bootloader_esp_idf::esp_app_desc!();
 
-#[esp_rtos::main]
-async fn main(spawner: Spawner) -> ! {
+// The sketch's header: every import, the type aliases, the constants and the helpers.
+// The path is spelled out because the file is named the way the sketch reads it, not the way Rust
+// spells a module name.
+#[path = "MainHeader.rs"]
+mod main_header;
+use main_header::*;
+
+/// Every value this sketch keeps: the Wi-Fi station and the network stack, created once by setup() and used by
+/// the loop in main().
+pub struct State {
+    /// The radio’s controller. Nothing reads it after setup: dropping it deinitialises Wi-Fi and takes the interface down with it, which looks exactly like a dead network.
+    #[allow(dead_code)]
+    controller: WifiController<'static>,
+
+    /// The network stack, once the association and the address are settled.
+    stack: embassy_net::Stack<'static>,
+
+    /// Heartbeat counter, so the log says the stack is still up.
+    heartbeat: u32,
+}
+
+/// One-time initialisation -- the Arduino setup().
+///
+/// Brings up the Wi-Fi station and the network stack and hands it back as a State for main() to run. Everything that
+/// must happen once, and only once, belongs here.
+pub async fn setup(spawner: Spawner) -> State {
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
 
@@ -47,32 +57,6 @@ async fn main(spawner: Spawner) -> ! {
     // with a line that can only come from this run.
     log::info!("=== {} {} starting ===", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
     log::info!("board: LilyGo T-QT (ESP32-S3) (ESP32S3), 4 MB flash");
-
-
-
-    // Credentials are read at *compile* time, so they never end up in your source tree.
-    //
-    // In VS Code, press Flash or Debug: the extension asks for the network name and password the first
-    // time and remembers them. Building from a terminal instead, pass them on the command line:
-    //
-    //   WIFI_SSID="my-ssid" WIFI_PASSWORD="secret" cargo run --release
-    //
-    // A fixed address is the escape hatch for a network whose DHCP server never answers:
-    //
-    //   WIFI_STATIC_IP="192.168.1.50/24" WIFI_GATEWAY="192.168.1.1" cargo run --release
-    //
-    // Leave those two unset to use DHCP, which is the default. An empty password joins an open network.
-    const WIFI_SSID: &str = match option_env!("WIFI_SSID") {
-        Some(value) => value,
-        None => "YOUR_WIFI_SSID",
-    };
-    const WIFI_PASSWORD: &str = match option_env!("WIFI_PASSWORD") {
-        Some(value) => value,
-        None => "YOUR_WIFI_PASSWORD",
-    };
-    const WIFI_STATIC_IP: Option<&str> = option_env!("WIFI_STATIC_IP");
-    const WIFI_GATEWAY: Option<&str> = option_env!("WIFI_GATEWAY");
-
     // Open and protected networks are configured differently, and the difference is not cosmetic: WPA2
     // with an empty key never associates, and an open network rejects a key that was supplied.
     let authentication = if WIFI_PASSWORD.is_empty() {
@@ -162,43 +146,49 @@ async fn main(spawner: Spawner) -> ! {
     }
 
     // Then keep reporting, so a lease that is lost later is visible instead of the log simply stopping.
-    let mut heartbeat: u32 = 0;
+    let heartbeat: u32 = 0;
+    State {
+        controller,
+        stack,
+        heartbeat,
+    }
+}
+
+/// The sketch's entry point -- the Arduino main() around setup() and the loop.
+///
+/// setup() runs once, then the implementation below repeats for as long as the board is powered. This is the
+/// function to edit: everything it needs from setup() is in state.
+#[esp_rtos::main]
+async fn main(spawner: Spawner) -> ! {
+    let mut state = setup(spawner).await;
+
     loop {
         Timer::after(Duration::from_secs(10)).await;
-        heartbeat = heartbeat.wrapping_add(1);
-        match stack.config_v4() {
-            Some(config) => log::info!("heartbeat {} at {}", heartbeat, config.address),
-            None => log::warn!("heartbeat {} with no address", heartbeat),
+        state.heartbeat = state.heartbeat.wrapping_add(1);
+        match state.stack.config_v4() {
+            Some(config) => log::info!("heartbeat {} at {}", state.heartbeat, config.address),
+            None => log::warn!("heartbeat {} with no address", state.heartbeat),
         }
     }
 }
-
-
-/// Parses WIFI_STATIC_IP ("a.b.c.d/prefix") with an optional WIFI_GATEWAY ("a.b.c.d").
-///
-/// Returns None when the address is absent or malformed, which is what puts the stack back on DHCP. A
-/// prefix longer than 32 is treated as a mistake rather than silently narrowed: it cannot mean anything.
-fn static_ipv4_config(ip: &str, gateway: Option<&str>) -> Option<NetConfig> {
-    let (address, prefix) = ip.split_once('/')?;
-    let address = Ipv4Addr::from_str(address.trim()).ok()?;
-    let prefix: u8 = prefix.trim().parse().ok()?;
-    if prefix > 32 {
-        return None;
-    }
-    let gateway = match gateway {
-        Some(value) if !value.trim().is_empty() => Some(Ipv4Addr::from_str(value.trim()).ok()?),
-        _ => None,
-    };
-    Some(NetConfig::ipv4_static(StaticConfigV4 {
-        address: Ipv4Cidr::new(address, prefix),
-        gateway,
-        dns_servers: Default::default(),
-    }))
-}
-
-/// Drives the network stack. It runs for the life of the program: no packet moves while it is not being
-/// polled, and the wait in main would simply wait forever.
-#[embassy_executor::task]
-async fn net_task(mut runner: Runner<'static, Interface>) {
-    runner.run().await;
-}
+// --- Your own code goes below this line ---------------------------------------------------------
+//
+// The sketch is this file plus MainHeader.rs. Everything above is the shape of it: State is what setup()
+// created, and main() is the loop you edit. Rust does not mind about the order of items, so adding your
+// functions below main() leaves the top of the file as the shape of the sketch.
+//
+// A function that needs the hardware takes state, or one of its fields:
+//
+//     /// A step of your own: whatever setup() brought up is in state.
+//     async fn step(state: &mut State) {
+//         // Drive something in state here -- a display, a sensor, the radio.
+//         Timer::after_millis(120).await;
+//     }
+//
+// ...and is called from the loop with step(&mut state).await;, or once from the end of setup()
+// if it should only run at start-up.
+//
+// Anything that does not touch the hardware -- a conversion, a formula, a lookup table -- reads better in
+// MainHeader.rs beside the other helpers, where it is reachable from here and from setup(). And a driver
+// of your own that outgrows a couple of functions deserves its own file: put it in src/my_driver.rs and
+// add mod my_driver; up with mod main_header;.

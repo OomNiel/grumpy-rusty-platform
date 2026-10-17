@@ -551,10 +551,19 @@ pub fn parse_widget(node: &KdlNode) -> Result<(GridPlacementDef, WidgetDef), Cod
                 }
             }
             let selected = get_i64_prop(node, "selected").unwrap_or(0).max(0) as usize;
+            // Normalised here rather than at the emitter, so a hand-edited design serialises back to the two
+            // names the crate knows instead of keeping a typo forever -- and so a design that says nothing
+            // gets `flick`, which is the gesture the roller had before the choice existed.
+            let selection = match get_string_prop(node, "selection") {
+                Some("touch") => "touch",
+                _ => "flick",
+            }
+            .to_string();
             WidgetDef::Roller {
                 id,
                 options,
                 selected,
+                selection,
                 style,
             }
         }

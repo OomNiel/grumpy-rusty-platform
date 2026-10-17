@@ -315,8 +315,8 @@ export function registerProjectCommands(
         await ensureWifiEnv(context, project.folder, output);
         output.appendLine(
             `flash: profile ${profile}` +
-                `${options.choice === 'auto' ? ' (auto, from the board)' : ' (chosen)'}` +
-                `${project.board === undefined ? '' : ` for ${project.board.id}`}`,
+            `${options.choice === 'auto' ? ' (auto, from the board)' : ' (chosen)'}` +
+            `${project.board === undefined ? '' : ` for ${project.board.id}`}`,
         );
         for (const warning of profileWarnings(project.board, profile, options.choice)) {
             output.appendLine(`flash: ${warning}`);
@@ -363,41 +363,47 @@ export function registerProjectCommands(
         // The two build controls. `rustyPlatform.build` stays registered for the palette and for anyone
         // with it in a keybinding; the controls run these two.
         vscode.commands.registerCommand('rustyPlatform.build', () =>
-            withProject(({ folder }) => {
-                runInTerminal('Rusty: build', `${defmtPrefix()}cargo build`, folder);
+            withProject(async (project) => {
+                runInTerminal('Rusty: build', `${defmtPrefix()}cargo build`, project.folder);
             }),
         ),
         vscode.commands.registerCommand('rustyPlatform.buildDebug', () =>
-            withProject(({ folder }) => {
-                runInTerminal('Rusty: build', `${defmtPrefix()}cargo build`, folder);
+            withProject(async (project) => {
+                runInTerminal('Rusty: build', `${defmtPrefix()}cargo build`, project.folder);
             }),
         ),
         vscode.commands.registerCommand('rustyPlatform.buildRelease', () =>
-            withProject(({ folder }) => {
-                runInTerminal('Rusty: build', `${defmtPrefix()}cargo build --release`, folder);
+            withProject(async (project) => {
+                runInTerminal('Rusty: build', `${defmtPrefix()}cargo build --release`, project.folder);
             }),
         ),
 
         vscode.commands.registerCommand('rustyPlatform.flash', (options?: { monitor?: boolean }) =>
-            withProject((project) =>
-                flashProject(project, { choice: configuredProfileChoice(), monitor: options?.monitor === true }),
-            ),
+            withProject(async (project) => {
+                await flashProject(project, { choice: configuredProfileChoice(), monitor: options?.monitor === true });
+            }),
         ),
 
         // The two explicit build choices, from the Controls section (2026-10-05). They override the
         // setting for this flash only, and do not change it: a control that quietly rewrites a setting
         // is a worse control than one that does exactly what it says.
         vscode.commands.registerCommand('rustyPlatform.flashDebug', () =>
-            withProject((project) => flashProject(project, { choice: 'debug' })),
+            withProject(async (project) => {
+                await flashProject(project, { choice: 'debug' });
+            }),
         ),
         vscode.commands.registerCommand('rustyPlatform.flashRelease', () =>
-            withProject((project) => flashProject(project, { choice: 'release' })),
+            withProject(async (project) => {
+                await flashProject(project, { choice: 'release' });
+            }),
         ),
 
         // Available even when a probe is attached: the USB route is also the recovery path
         // for a probe that is present but unusable.
         vscode.commands.registerCommand('rustyPlatform.flashUsb', () =>
             withProject(async (project) => {
+                // On this route "USB" is not a choice to make on an ESP32: its upload *is* USB serial, and
+                // the board profile says which route this board takes, so Upload is the answer either way.
                 await ensureWifiEnv(context, project.folder, output);
                 const profile = flashProfileFor(project.board, configuredProfileChoice());
                 if (usesSerialFlash(project.board)) {
@@ -410,7 +416,7 @@ export function registerProjectCommands(
         ),
 
         vscode.commands.registerCommand('rustyPlatform.monitor', () =>
-            withProject((project) => {
+            withProject(async (project) => {
                 const board = project.board;
                 if (board?.kind === 'esp') {
                     // `espflash monitor` holds the serial port until this terminal is closed, which is
@@ -437,8 +443,8 @@ export function registerProjectCommands(
         ),
 
         vscode.commands.registerCommand('rustyPlatform.clean', () =>
-            withProject(({ folder }) => {
-                runInTerminal('Rusty: build', 'cargo clean', folder);
+            withProject(async (project) => {
+                runInTerminal('Rusty: build', 'cargo clean', project.folder);
             }),
         ),
     ];

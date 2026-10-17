@@ -288,6 +288,21 @@
             }
         },
         {
+            "_comment": "The same wheel picked by a touch on a bar instead of a flick. It is here so the generated call the designer writes for that choice -- add_roller_with_selection, which no design used before 2026-10-15 -- is compiled against the runtime by the simulator, not only asserted as text.",
+            "id": "rollTouch",
+            "tag": "roller",
+            "x": 100,
+            "y": 95,
+            "width": 60,
+            "height": 20,
+            "props": {
+                "selected": 0,
+                "selection": "touch",
+                "accent": "#00ff00",
+                "bg": "#002200"
+            }
+        },
+        {
             "_comment": "A gauge. Upstream's add_scale hard-coded grey ticks, a red needle and a 135..45 sweep, so nothing about it could be designed; every one of those is a field here.",
             "id": "gauge",
             "tag": "scale",

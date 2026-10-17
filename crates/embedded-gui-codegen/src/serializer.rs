@@ -334,6 +334,7 @@ pub fn serialize_kdl_screen(screen: &ScreenDef) -> String {
                 id,
                 options,
                 selected,
+                selection,
                 style,
             } => {
                 let id_attr = id
@@ -346,8 +347,8 @@ pub fn serialize_kdl_screen(screen: &ScreenDef) -> String {
                     .unwrap_or_default();
                 let _ = writeln!(
                     &mut out,
-                    "        roller{} selected={}{}{} col={} row={} {{",
-                    id_attr, selected, style_attr, span_attrs, p.col, p.row
+                    "        roller{} selected={} selection=\"{}\"{}{} col={} row={} {{",
+                    id_attr, selected, selection, style_attr, span_attrs, p.col, p.row
                 );
                 for opt in options {
                     let _ = writeln!(&mut out, "            option \"{}\"", opt);

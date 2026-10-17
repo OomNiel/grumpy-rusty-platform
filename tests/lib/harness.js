@@ -50,6 +50,24 @@ function repoRoot() {
     return path.join(__dirname, '..', '..');
 }
 
+/**
+ * The generated source of a sketch, as one string: `src/main.rs` and its `MainHeader.rs`.
+ *
+ * A generated project is two source files since 2026-10-16 (see `src/generate/sketch.ts`): `main.rs` holds
+ * `setup()` and the loop, and the header holds every `use`, the type aliases, the constants and the helper
+ * functions. Which half a particular fact lands in is the generator's business, not the test's, so tests that
+ * are about *what the firmware does* ask for the sketch rather than for a file.
+ *
+ * Takes either a `Map` of path to content or the generator's `GeneratedFile[]`.
+ */
+function sketchSource(source) {
+    const read = (path) =>
+        source instanceof Map
+            ? source.get(path) ?? ''
+            : (source.find((file) => file.path === path)?.content ?? '');
+    return `${read('src/main.rs')}\n${read('src/MainHeader.rs')}`;
+}
+
 // ---------------------------------------------------------------- assertions
 
 class AssertionError extends Error { }
@@ -170,6 +188,7 @@ module.exports = {
     repoRoot,
     runtimeSkip,
     skip,
+    sketchSource,
     test,
     throws,
 };

@@ -1,6 +1,6 @@
 'use strict';
 
-const { test, ok, equal, contains, notContains, matches, fail } = require('../../lib/harness');
+const { test, ok, equal, contains, notContains, matches, fail, sketchSource } = require('../../lib/harness');
 const { compiled } = require('../../lib/harness');
 const { BOARDS, boardById } = compiled('boards/catalog');
 const { rpBoards } = require('../../lib/boards');
@@ -13,6 +13,7 @@ const RP_EXPECTED_PATHS = [
     'memory.x',
     'build.rs',
     'src/main.rs',
+    'src/MainHeader.rs',
     '.vscode/settings.json',
     '.vscode/launch.json',
     '.gitignore',
@@ -31,6 +32,7 @@ const ESP_EXPECTED_PATHS = [
     'rust-toolchain.toml',
     'build.rs',
     'src/main.rs',
+    'src/MainHeader.rs',
     '.vscode/settings.json',
     '.gitignore',
     'README.md',
@@ -39,6 +41,9 @@ const ESP_EXPECTED_PATHS = [
 function filesFor(boardId, projectName = 'Test Project') {
     const files = generateProjectFiles({ board: boardById(boardId), projectName });
     const map = new Map(files.map((f) => [f.path, f.content]));
+    // The whole sketch under `src/main.rs`: which of the two files a fact lands in is the generator's
+    // business, and these tests are about what a generated project contains (see `sketchSource`).
+    map.set('src/main.rs', sketchSource(map));
     return {
         files,
         map,
@@ -333,6 +338,37 @@ test('the generated README names the board and target', () => {
     contains(readme, 'Raspberry Pi Pico 2');
     contains(readme, 'thumbv8m.main-none-eabihf');
     contains(readme, 'RP235x');
+});
+
+// Asked on 2026-10-16, the moment the two-file shape landed: "where do I add my own functions?" Both files
+// answer it, and the example names a peripheral *this* board actually has -- an example that says `state.led`
+// on a board whose LED is `led_red`, or that offers the display's backlight pin, is worse than none.
+test('a generated sketch says where the user\'s own code goes', () => {
+    const { templatesFor } = compiled('generate/files');
+    for (const board of BOARDS) {
+        for (const info of templatesFor(board)) {
+            const where = `${board.id}/${info.id}`;
+            const sketch = sketchSource(
+                generateProjectFiles({ board, projectName: 'Guided', template: info.id }),
+            );
+            contains(sketch, 'Your own code goes below this line', `${where}: main.rs says where it goes`);
+            contains(sketch, 'is called from the loop with', `${where}: and how it is called`);
+            contains(sketch, 'mod my_driver;', `${where}: and where a driver of your own belongs`);
+            // The header's half of the answer: the example is `pub`, which is what makes it reachable from
+            // main.rs at all, and the note says so.
+            contains(sketch, 'pub fn millivolts', `${where}: the header shows a helper of your own`);
+            contains(sketch, 'has to be pub', `${where}: and explains the visibility that makes it work`);
+            ok(
+                /\/\/     async fn \w+\(state: &mut State\)/.test(sketch),
+                `${where}: the example is a commented-out function taking state`,
+            );
+            notContains(
+                sketch,
+                'state.backlight',
+                `${where}: the example never offers a keep-alive pin as the thing to blink`,
+            );
+        }
+    }
 });
 
 /** Reads the leading `NNNK` of a linker length such as `1536K - 0x100`. */

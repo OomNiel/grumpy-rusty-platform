@@ -926,6 +926,7 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
             WidgetKind::Roller {
                 items,
                 selected: ref mut current,
+                ..
             } => {
                 *current = selected.min(items.len().saturating_sub(1));
                 self.dirty.add(rect)?;

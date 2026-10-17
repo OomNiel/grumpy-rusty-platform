@@ -12,7 +12,11 @@ use crate::{
     state::{FeedTimelineState, ListState, ScrollState, SliderState, TabsState},
     style::{VisualState, WidgetStyle},
     widget::{EventPhase, EventPolicy, WidgetId},
-    widgets::{KeyboardLayout, WidgetKind, WidgetNode, ROLLER_ROWS, TEXTAREA_CAPACITY},
+    widgets::{
+        roller_row, KeyboardLayout, RollerSelection, WidgetKind, WidgetNode, ROLLER_ROWS,
+        TEXTAREA_CAPACITY,
+    },
+    Block,
 };
 
 use super::*;
@@ -1013,6 +1017,7 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
                 WidgetKind::Roller {
                     items,
                     selected: ref mut current,
+                    ..
                 } => {
                     if items.is_empty() {
                         return Ok(true);
@@ -1333,6 +1338,7 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
                 repeat_elapsed_ms: 0,
                 scroll_velocity: 0.0,
                 drag_accum_y: 0,
+                flick_fired: false,
             });
             self.inertia_scroll = None;
             #[cfg(feature = "rich-widgets")]
@@ -1357,6 +1363,11 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
                     });
                 }
             }
+            // A touch that ended where it began, on a roller's bar, selects that bar (see
+            // `select_touched_roller_bar`). No other widget is picked by a touch alone, so this asks once and
+            // moves on.
+            #[cfg(feature = "rich-widgets")]
+            self.select_touched_roller_bar(&pressed)?;
             released_id = Some(pressed.id);
         }
         self.pressed = None;
@@ -1455,8 +1466,68 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
         Ok(())
     }
 
-    /// The finger turns the selector it landed on: one item — or one value step — per drawn row of
-    /// travel, accumulated across samples.
+    /// A touch on one of a roller's bars selects the item drawn on it — `RollerSelection::Touch`.
+    ///
+    /// Only a *touch* counts: the finger has to end where it began, which the engine already measures as the
+    /// same six pixels that make a movement a gesture (`gesture_emitted`). A slide that began on a bar is left
+    /// to the view behind it, and to the flick on a roller that was not asked to be picked by touch.
+    ///
+    /// The bar is the one under the *press*, since the finger stayed within those six pixels, and it is read
+    /// through `widgets::roller_row` — the same rect the renderer drew it in, so the bar the finger selects is
+    /// the bar it saw. The top bar takes the item above, the bottom bar the item below, and the middle bar
+    /// changes nothing because it is the selected item already. `adjust_focused_selection` raises
+    /// `ValueChanged` and honours the wrap setting, exactly as the arrow keys and the flick do.
+    ///
+    /// Returns `true` when the touch moved the selection.
+    #[cfg(feature = "rich-widgets")]
+    pub(crate) fn select_touched_roller_bar(
+        &mut self,
+        pressed: &PressTracker,
+    ) -> Result<bool, GuiError> {
+        if pressed.gesture_emitted {
+            return Ok(false);
+        }
+        let id = pressed.id;
+        if self.focus != Some(id) {
+            return Ok(false);
+        }
+        let Some(node) = self.node(id) else {
+            return Ok(false);
+        };
+        if !is_touch_roller(&node.kind) {
+            return Ok(false);
+        }
+        // Resolved at `Normal` on purpose: 0.0.92's focused and pressed looks brighten the outline's colour and
+        // never its width, so the inner rect -- the one the bars are drawn in -- does not depend on the state the
+        // widget happens to be in when the finger leaves.
+        let inner = Block::styled(node.style.resolve(VisualState::Normal)).inner(node.rect);
+        let Some(index) = (0..ROLLER_ROWS)
+            .find(|index| roller_row(inner, *index).contains(pressed.start_x, pressed.start_y))
+        else {
+            return Ok(false);
+        };
+        let delta = match index {
+            // Touch the bar above the selected one, get the item above it; the bar below, the item below.
+            0 => -1,
+            2 => 1,
+            // The middle bar *is* the selected item, so touching it changes nothing.
+            _ => return Ok(false),
+        };
+        self.adjust_focused_selection(delta)?;
+        Ok(true)
+    }
+
+    /// The finger turns the selector it landed on — a flick for the roller, a drag for everything else.
+    ///
+    /// **A flick** is one item per *gesture*: the first drawn row of travel turns the roller, and the rest of
+    /// the gesture is spent, so the wheel lands on an item instead of running past it (asked 2026-10-15:
+    /// *"Change the drag behaviour to a 'top-down' flick and a bottom-up flick. The top-down flick must roll
+    /// the roller 1 step down. The bottom-up flick must roll the roller 1 step up."*). The travel is still
+    /// accumulated across samples, so two half-rows in one gesture are one flick — the panel samples the
+    /// finger far more often than a flick takes.
+    ///
+    /// **A drag** is one item — or one value step — per drawn row of travel, accumulated across samples, which
+    /// is what a list of fifty items needs. Every selector but the roller keeps that rule.
     ///
     /// Only the widget the press focused is turned, and a press focuses whatever is focusable under
     /// it (`dispatch_activation`), so this is "the widget the finger is on" without a second
@@ -1478,19 +1549,41 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
             return Ok(false);
         };
         let selector = is_drag_selector(&node.kind);
+        let flick = is_flick_selector(&node.kind);
         let value_selector = matches!(
             node.kind,
             WidgetKind::Spinbox { .. }
                 | WidgetKind::NumberPicker { .. }
                 | WidgetKind::TimePicker { .. }
         );
-        if !selector && !value_selector {
+        if is_touch_roller(&node.kind) {
+            // A roller picked by touch wants none of this: the tap on release selects the bar, and a slide
+            // across it belongs to the view behind it, which is what "let the enclosing view have it" means
+            // for a control that has no drag of its own (asked 2026-10-15).
+            return Ok(false);
+        }
+        if !selector && !value_selector && !flick {
             return Ok(false);
         }
         let step = ((node.rect.h as i32) / drag_rows(&node.kind)).max(MIN_DRAG_STEP_PX);
         let rect = node.rect;
 
         pressed.drag_accum_y += dy;
+
+        if flick {
+            // One turn, and then the gesture is spent: however much further the finger slides, and whichever
+            // way, the wheel stays where it landed. A reversal inside the same gesture therefore does nothing,
+            // which is what "one flick, one step" means from the finger's side — another turn is another flick.
+            if pressed.flick_fired || pressed.drag_accum_y.abs() < step {
+                // Nothing to turn yet, and the widget still owns the movement, or a short flick inside a
+                // selector would leak to the view behind it.
+                return Ok(true);
+            }
+            pressed.flick_fired = true;
+            self.adjust_focused_selection(pressed.drag_accum_y.signum() as i8)?;
+            return Ok(true);
+        }
+
         let raw = pressed.drag_accum_y / step;
         if raw == 0 {
             // Half a row is half a row: nothing moves yet, but the widget still owns the movement,
@@ -2167,8 +2260,11 @@ fn drag_rows(kind: &WidgetKind<'_>) -> i32 {
 ///
 /// This is `adjust_focused_selection`'s set — the widgets the Up/Down keys already step — and the
 /// carousel, which that function steps too (it used to have no key path at all), so one rule covers
-/// the keys and the finger alike. Two of the kinds that function handles are left out on purpose:
+/// the keys and the finger alike. Three of the kinds that function handles are left out on purpose:
 ///
+/// * the `Roller` is not turned by a drag at all. In `RollerSelection::Flick` it is turned by a flick
+///   (see `is_flick_selector`), and in `RollerSelection::Touch` by a touch on one of its bars — never
+///   by how far the finger slid;
 /// * the `ScrollView` scrolls *itself*; that is what the drag defers to when nothing else claims
 ///   the movement, and it is not a selection to turn;
 /// * the `AutoComplete` cannot be reached at all. A press on it runs
@@ -2182,12 +2278,42 @@ fn is_drag_selector(kind: &WidgetKind<'_>) -> bool {
         WidgetKind::Menu { .. }
             | WidgetKind::RichMenu { .. }
             | WidgetKind::Dropdown { .. }
-            | WidgetKind::Roller { .. }
             | WidgetKind::Carousel { .. }
             | WidgetKind::Keyboard { .. }
             | WidgetKind::List { .. }
             | WidgetKind::CircularList { .. }
             | WidgetKind::FeedTimeline { .. }
+    )
+}
+
+/// True for the roller a *flick* turns.
+///
+/// The roller is the one control whose whole job is to land on an item, so its gesture is a flick by default:
+/// the first drawn row of travel turns it one item and the rest of the gesture is spent. A roller whose design
+/// asked for `RollerSelection::Touch` is not in this set — it is picked by touching a bar, and a slide across
+/// it belongs to whatever view is behind it (`select_touched_roller_bar`). Everything else a finger can turn
+/// follows the finger row by row, which is what a list of fifty items needs — one flick per item would be
+/// fifty flicks to reach the end. See `GuiContext::drag_step_selection` for both rules.
+#[cfg(feature = "rich-widgets")]
+fn is_flick_selector(kind: &WidgetKind<'_>) -> bool {
+    matches!(
+        kind,
+        WidgetKind::Roller {
+            selection: RollerSelection::Flick,
+            ..
+        }
+    )
+}
+
+/// True for the roller a *touch* picks: a design that asked for `RollerSelection::Touch`.
+#[cfg(feature = "rich-widgets")]
+fn is_touch_roller(kind: &WidgetKind<'_>) -> bool {
+    matches!(
+        kind,
+        WidgetKind::Roller {
+            selection: RollerSelection::Touch,
+            ..
+        }
     )
 }
 
@@ -2509,11 +2635,14 @@ pub(crate) fn textarea_row_end_col(text: &str, target_row: usize, wrap_cols: usi
 /// finger is down on the panel, and what no test had ever sent to a selector before.
 #[cfg(all(test, feature = "rich-widgets"))]
 mod drag_tests {
-    use super::{is_drag_selector, step_time_of_day, MAX_DRAG_STEPS_PER_SAMPLE, MIN_DRAG_STEP_PX};
+    use super::{
+        is_drag_selector, is_flick_selector, is_touch_roller, step_time_of_day,
+        MAX_DRAG_STEPS_PER_SAMPLE, MIN_DRAG_STEP_PX,
+    };
     use crate::geometry::Rect;
     use crate::input::{InputEvent, PointerButton, PointerState, UiEvent};
     use crate::widget::{MenuContract, WidgetId};
-    use crate::widgets::WidgetKind;
+    use crate::widgets::{RollerSelection, WidgetKind};
     use crate::GuiContext;
     use crate::Style;
 
@@ -2558,6 +2687,27 @@ mod drag_tests {
             y += dy;
             point(ctx, at.0, y, PointerState::Moved);
         }
+    }
+
+    /// A press and a release at the same point, with nothing in between: a touch.
+    fn tap(ctx: &mut Ctx, x: i32, y: i32) {
+        point(ctx, x, y, PointerState::Pressed);
+        point(ctx, x, y, PointerState::Released);
+    }
+
+    /// The same roller, but picked by a touch on one of its bars rather than by a flick.
+    fn touch_roller(size: (u32, u32)) -> (Ctx, WidgetId) {
+        let mut ctx: Ctx = GuiContext::new(Rect::new(0, 0, 320, 240));
+        let id = ctx
+            .add_roller_with_selection(
+                Rect::new(100, 100, size.0, size.1),
+                ITEMS,
+                0,
+                RollerSelection::Touch,
+                Style::panel(),
+            )
+            .unwrap();
+        (ctx, id)
     }
 
     /// The index any index-keeping widget shows.
@@ -2613,22 +2763,50 @@ mod drag_tests {
     }
 
     #[test]
-    fn a_drag_turns_the_roller_one_item_per_drawn_row() {
+    fn a_flick_turns_the_roller_one_item_however_far_the_finger_travels() {
+        // Asked 2026-10-15: *"Change the drag behaviour to a 'top-down' flick and a bottom-up flick. The
+        // top-down flick must roll the roller 1 step down. The bottom-up flick must roll the roller 1 step
+        // up."* So the *gesture* is the unit, not the distance — five rows of slide is still one item, and
+        // another item costs another flick.
         let (mut ctx, id) = roller((SIZE, SIZE));
         drag(&mut ctx, (140, 140), &[ROW]);
         assert_eq!(
             index_of(&ctx, id),
             Some(1),
-            "one drawn row of travel is one item"
+            "one drawn row of travel is one flick, one item down"
         );
         assert!(
             is_value_changed(&ctx, id),
             "and the design is told, like the arrow keys tell it"
         );
-        drag(&mut ctx, (140, 140), &[ROW, ROW]);
-        assert_eq!(index_of(&ctx, id), Some(3));
+        drag(&mut ctx, (140, 140), &[ROW * 5]);
+        assert_eq!(
+            index_of(&ctx, id),
+            Some(2),
+            "a long flick is one item, not five"
+        );
         drag(&mut ctx, (140, 140), &[-ROW]);
-        assert_eq!(index_of(&ctx, id), Some(2), "dragging up steps back");
+        assert_eq!(index_of(&ctx, id), Some(1), "a flick up steps back one");
+    }
+
+    #[test]
+    fn a_spent_flick_does_not_turn_again_when_the_finger_slides_on() {
+        // The rest of the gesture is spent, in both directions: sliding further down does not earn a second
+        // item, and sliding back up does not undo the one it already turned. A second turn is a second flick.
+        let (mut ctx, id) = roller((SIZE, SIZE));
+        drag(&mut ctx, (140, 140), &[ROW, ROW, ROW]);
+        assert_eq!(
+            index_of(&ctx, id),
+            Some(1),
+            "three rows of slide in one gesture is still one turn"
+        );
+        let (mut ctx, id) = roller((SIZE, SIZE));
+        drag(&mut ctx, (140, 140), &[ROW, -ROW * 3]);
+        assert_eq!(
+            index_of(&ctx, id),
+            Some(1),
+            "and sliding back up does not take it away again"
+        );
     }
 
     #[test]
@@ -2638,50 +2816,161 @@ mod drag_tests {
         assert_eq!(
             index_of(&ctx, id),
             Some(0),
-            "half a row is not a whole item"
+            "half a row is not a whole flick"
         );
-        // The other half finishes the row, because the movement is accumulated rather than rounded:
-        // that is the difference between a wheel that follows the finger and one that needs a full
-        // row per touch sample.
+        // The other half finishes the row, because the movement is accumulated rather than rounded: the panel
+        // samples the finger far more often than a flick takes, so a flick arrives as several small moves.
         point(&mut ctx, 140, 140 + ROW, PointerState::Moved);
         assert_eq!(
             index_of(&ctx, id),
             Some(1),
-            "the two halves add up to one item"
+            "the two halves add up to one flick"
         );
     }
 
     #[test]
+    fn a_touch_on_the_top_bar_takes_the_item_above_and_the_bottom_bar_the_one_below() {
+        // Asked 2026-10-15: *"A touch on one of the three visible bars, selects the touched bar."* The bars
+        // are drawn by `widgets::roller_row`, so the offsets below aim at the outer two of them.
+        let (mut ctx, id) = touch_roller((SIZE, SIZE));
+        tap(&mut ctx, 140, 140 + ROW);
+        assert_eq!(
+            index_of(&ctx, id),
+            Some(1),
+            "the bottom bar takes the item below the middle one"
+        );
+        assert!(
+            is_value_changed(&ctx, id),
+            "and the design is told, like the arrow keys tell it"
+        );
+
+        let (mut ctx, id) = touch_roller((SIZE, SIZE));
+        tap(&mut ctx, 140, 140 - ROW);
+        assert_eq!(
+            index_of(&ctx, id),
+            Some(3),
+            "the top bar takes the item above, wrapping round from the first"
+        );
+    }
+
+    #[test]
+    fn a_touch_on_the_middle_bar_changes_nothing() {
+        // It is the selected item already, and the selection the design reports must not churn.
+        let (mut ctx, id) = touch_roller((SIZE, SIZE));
+        tap(&mut ctx, 140, 140);
+        assert_eq!(index_of(&ctx, id), Some(0), "the middle bar is a no-op");
+        assert!(
+            !is_value_changed(&ctx, id),
+            "and nothing is reported as having changed"
+        );
+    }
+
+    #[test]
+    fn a_slide_that_started_on_a_bar_is_not_a_touch() {
+        // A press that ends somewhere else is a drag, not a touch: without that, every scroll gesture across
+        // the roller would also select the bar it started on.
+        let (mut ctx, id) = touch_roller((SIZE, SIZE));
+        point(&mut ctx, 140, 140 + ROW, PointerState::Pressed);
+        point(
+            &mut ctx,
+            140,
+            140 + ROW + MIN_DRAG_STEP_PX,
+            PointerState::Moved,
+        );
+        point(&mut ctx, 140, 140 + ROW, PointerState::Released);
+        assert_eq!(
+            index_of(&ctx, id),
+            Some(0),
+            "the finger moved, so no bar was selected"
+        );
+    }
+
+    #[test]
+    fn a_touch_roller_lets_the_view_behind_it_have_the_slide() {
+        // A touch roller has no gesture of its own, so a drag across it belongs to the page it is on -- the
+        // answer when the choice was made: *"Let the enclosing view have it."*
+        let mut ctx: Ctx = GuiContext::new(Rect::new(0, 0, 320, 240));
+        let view = ctx
+            .add_scroll_view(Rect::new(0, 0, 200, 200), 0, 800, Style::panel())
+            .unwrap();
+        let roll = ctx
+            .add_roller_with_selection(
+                Rect::new(20, 20, SIZE, SIZE),
+                ITEMS,
+                0,
+                RollerSelection::Touch,
+                Style::panel(),
+            )
+            .unwrap();
+        ctx.add_child(view, roll).unwrap();
+
+        drag(&mut ctx, (60, 60), &[-40]);
+        assert!(
+            ctx.scroll_offset(view).unwrap_or(0) > 0,
+            "the view scrolled, where a flick roller would have kept the movement"
+        );
+        assert_eq!(index_of(&ctx, roll), Some(0), "and the roller did not turn");
+    }
+
+    #[test]
     fn a_short_roller_uses_the_floor_rather_than_a_third_of_its_height() {
-        // 18 px tall is the sim fixture's roller; a third of it is 6 px, which would step on every
+        // 18 px tall is the sim fixture's roller; a third of it is 6 px, which would fire on every
         // sample the panel sends.
         let (mut ctx, id) = roller((150, 18));
         drag(&mut ctx, (175, 109), &[MIN_DRAG_STEP_PX]);
         assert_eq!(
             index_of(&ctx, id),
             Some(1),
-            "one item costs the floor, not 6 px"
+            "one flick costs the floor, not 6 px"
         );
         drag(&mut ctx, (175, 109), &[MIN_DRAG_STEP_PX - 1]);
         assert_eq!(
             index_of(&ctx, id),
             Some(1),
-            "and just under it does not step"
+            "and just under it does not turn it"
         );
     }
 
     #[test]
     fn a_jump_is_capped_so_a_slow_frame_cannot_skip_the_list() {
-        let (mut ctx, id) = roller((SIZE, SIZE));
+        // The cap belongs to the selectors that spend the travel row by row. The roller is turned by a flick,
+        // so for it a long gap between two samples is not a jump at all — see the flick tests above.
+        let mut ctx: Ctx = GuiContext::new(Rect::new(0, 0, 320, 240));
+        let menu = ctx
+            .add_menu(Rect::new(0, 0, 120, 120), ITEMS, 0, Style::panel())
+            .unwrap();
+        let step = 120 / 3;
         drag(
             &mut ctx,
-            (140, 140),
-            &[ROW * (MAX_DRAG_STEPS_PER_SAMPLE + 4)],
+            (60, 60),
+            &[step * (MAX_DRAG_STEPS_PER_SAMPLE + 4)],
         );
         assert_eq!(
-            index_of(&ctx, id),
+            index_of(&ctx, menu),
             Some(MAX_DRAG_STEPS_PER_SAMPLE as usize % ITEMS.len()),
             "one sample moves at most the cap, however far the finger travelled"
+        );
+    }
+
+    #[test]
+    fn the_roller_is_the_one_selector_a_flick_turns_rather_than_a_drag() {
+        // The two rules, side by side on the same travel: asked for as "the Roller only", so that a long list
+        // still follows the finger instead of costing a flick per item.
+        let mut ctx: Ctx = GuiContext::new(Rect::new(0, 0, 320, 240));
+        let roll = ctx
+            .add_roller(Rect::new(0, 0, SIZE, SIZE), ITEMS, 0, Style::panel())
+            .unwrap();
+        let menu = ctx
+            .add_menu(Rect::new(140, 0, 120, 120), ITEMS, 0, Style::panel())
+            .unwrap();
+
+        drag(&mut ctx, (40, 40), &[ROW * 2]);
+        drag(&mut ctx, (200, 60), &[(120 / 3) * 2]);
+        assert_eq!(index_of(&ctx, roll), Some(1), "the roller turned once");
+        assert_eq!(
+            index_of(&ctx, menu),
+            Some(2),
+            "and the same travel turned the menu twice"
         );
     }
 
@@ -2733,6 +3022,20 @@ mod drag_tests {
             ctx.scroll_offset(view),
             Some(0),
             "and the view behind it does not also scroll"
+        );
+
+        // A flick that has not covered its row yet still belongs to the roller: without that, the first half
+        // of every flick would scroll the page instead of turning the wheel.
+        drag(&mut ctx, (60, 60), &[ROW / 2]);
+        assert_eq!(
+            index_of(&ctx, roll),
+            Some(1),
+            "half a row is not a flick, so nothing turns"
+        );
+        assert_eq!(
+            ctx.scroll_offset(view),
+            Some(0),
+            "but the roller keeps the movement all the same"
         );
     }
 
@@ -2979,10 +3282,44 @@ mod drag_tests {
 
     #[test]
     fn the_drag_set_is_the_key_step_set_and_never_the_view() {
-        assert!(is_drag_selector(&WidgetKind::Roller {
+        // The roller is deliberately *not* in the drag set any more: it is turned by a flick or by a touch on
+        // one of its bars, never by how far the finger slid (`is_flick_selector`, `is_touch_roller`).
+        for selection in [RollerSelection::Flick, RollerSelection::Touch] {
+            assert!(
+                !is_drag_selector(&WidgetKind::Roller {
+                    items: ITEMS,
+                    selected: 0,
+                    selection
+                }),
+                "a roller is turned by its own gesture, not by a drag"
+            );
+        }
+        assert!(is_flick_selector(&WidgetKind::Roller {
             items: ITEMS,
-            selected: 0
+            selected: 0,
+            selection: RollerSelection::Flick
         }));
+        assert!(
+            !is_flick_selector(&WidgetKind::Roller {
+                items: ITEMS,
+                selected: 0,
+                selection: RollerSelection::Touch
+            }),
+            "a touch roller is not turned by a flick"
+        );
+        assert!(is_touch_roller(&WidgetKind::Roller {
+            items: ITEMS,
+            selected: 0,
+            selection: RollerSelection::Touch
+        }));
+        assert!(
+            !is_touch_roller(&WidgetKind::Roller {
+                items: ITEMS,
+                selected: 0,
+                selection: RollerSelection::Flick
+            }),
+            "and a flick roller is not picked by a touch"
+        );
         assert!(is_drag_selector(&WidgetKind::List {
             items: ITEMS,
             selected: 0,

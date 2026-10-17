@@ -56,6 +56,7 @@ pub fn check(
     one("check", widgets.check, 0, 155, 150, 26);
     one("spin", widgets.spin, 0, 185, 150, 26);
     one("roll", widgets.roll, 0, 215, 150, 18);
+    one("rollTouch", widgets.roll_touch, 100, 95, 60, 20);
     one("gauge", widgets.gauge, 390, 120, 90, 90);
     one("sld", widgets.sld, 150, 120, 50, 18);
     one("arc", widgets.arc, 150, 140, 50, 38);

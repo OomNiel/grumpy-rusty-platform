@@ -5,17 +5,25 @@
 #![no_std]
 #![no_main]
 
-use defmt::info;
-use defmt_rtt as _;
-use embassy_executor::Spawner;
-use embassy_rp::gpio::{Level, Output};
-use embassy_time::Timer;
-use panic_probe as _;
+// The sketch's header: every import, the type aliases, the constants and the helpers.
+// The path is spelled out because the file is named the way the sketch reads it, not the way Rust
+// spells a module name.
+#[path = "MainHeader.rs"]
+mod main_header;
+use main_header::*;
 
-// embassy-rp provides its own multicore-capable executor, so it must be named
-// explicitly here (there is no `platform-cortex-m` feature on embassy-executor).
-#[embassy_executor::main(executor = "embassy_rp::executor::Executor", entry = "cortex_m_rt::entry")]
-async fn main(_spawner: Spawner) {
+/// Every value this sketch keeps: the LED, created once by setup() and used by the
+/// loop in main().
+pub struct State {
+    /// The LED on GPIOPIN_25.
+    led: Output<'static>,
+}
+
+/// One-time initialisation -- the Arduino setup().
+///
+/// Brings up the LED and hands it back as a State for main() to run. Everything that must
+/// happen once, and only once, belongs here.
+pub async fn setup() -> State {
     // RTT keeps the previous image's bytes after a reset, and a stale frame can decode into
     // nonsense (defmt's own strings show up as log values). The current run begins at the last
     // line like this one.
@@ -24,12 +32,49 @@ async fn main(_spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
     info!("Hello from Grumpy's Rusty Platform on RP2040!");
 
-    let mut led = Output::new(p.PIN_25, Level::Low);
+    let led = Output::new(p.PIN_25, Level::Low);
+    State {
+        led,
+    }
+}
+
+/// The sketch’s entry point -- the Arduino main() around setup() and the loop.
+///
+/// setup() runs once, then the implementation below repeats for as long as the board is powered. This is the
+/// function to edit: everything it needs from setup() is in state.
+#[embassy_executor::main(executor = "embassy_rp::executor::Executor", entry = "cortex_m_rt::entry")]
+async fn main(_spawner: Spawner) {
+    let mut state = setup().await;
 
     loop {
-        led.set_high();
+        state.led.set_high();
         Timer::after_millis(500).await;
-        led.set_low();
+        state.led.set_low();
         Timer::after_millis(500).await;
     }
 }
+// --- Your own code goes below this line ---------------------------------------------------------
+//
+// The sketch is this file plus MainHeader.rs. Everything above is the shape of it: State is what setup()
+// created, and main() is the loop you edit. Rust does not mind about the order of items, so adding your
+// functions below main() leaves the top of the file as the shape of the sketch.
+//
+// A function that needs the hardware takes state, or one of its fields:
+//
+//     /// Three quick blinks, using the output setup() brought up.
+//     async fn blink_three(state: &mut State) {
+//         for _ in 0..3 {
+//             state.led.set_high();
+//             Timer::after_millis(120).await;
+//             state.led.set_low();
+//             Timer::after_millis(120).await;
+//         }
+//     }
+//
+// ...and is called from the loop with blink_three(&mut state).await;, or once from the end of setup()
+// if it should only run at start-up.
+//
+// Anything that does not touch the hardware -- a conversion, a formula, a lookup table -- reads better in
+// MainHeader.rs beside the other helpers, where it is reachable from here and from setup(). And a driver
+// of your own that outgrows a couple of functions deserves its own file: put it in src/my_driver.rs and
+// add mod my_driver; up with mod main_header;.

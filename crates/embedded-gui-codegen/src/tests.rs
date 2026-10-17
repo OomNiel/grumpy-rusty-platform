@@ -511,6 +511,82 @@ screen id="Plain" width=320 height=240 {
 }
 
 #[test]
+fn a_roller_asked_for_by_touch_reaches_the_builder_that_takes_a_selection() {
+    // Asked 2026-10-15: *"A touch on one of the three visible bars, selects the touched bar. Put an option
+    // property in the settings bar to select between the older flick selection method or the touch method."*
+    // The attribute is what carries that choice from the design to the board, so it has to reach the one
+    // builder that takes it -- and survive a round trip, or the designer's next save would revert it.
+    let kdl = r#"
+screen id="Touch" width=100 height=100 {
+    grid cols="1fr" rows="1fr" gap=0 padding=0 {
+        roller id="r" selected=1 selection="touch" style="Style::panel()" col=0 row=0 {
+            option "a"
+            option "b"
+        }
+    }
+}
+"#;
+    let generated = compile_kdl_to_rust(kdl).unwrap();
+    assert!(
+        generated.contains(
+            "gui.add_roller_with_selection(cells[0], &[\"a\", \"b\"], 1, RollerSelection::Touch, Style::panel())"
+        ),
+        "the roller's selection must reach the board: {generated}"
+    );
+
+    let screen = parse_kdl_screen(kdl).unwrap();
+    let written = serialize_kdl_screen(&screen);
+    assert!(
+        written.contains("selection=\"touch\""),
+        "and the markup it was written in must survive: {written}"
+    );
+    assert_eq!(
+        parse_kdl_screen(&written).unwrap(),
+        screen,
+        "a roller picked by touch round-trips"
+    );
+}
+
+#[test]
+fn a_roller_that_says_nothing_keeps_the_flick_and_upstreams_builder() {
+    // The default is the point: every design written before the choice existed names no selection, so it has
+    // to keep the gesture it already had -- and the generated call has to stay the one it already had, or
+    // every project's `ui.rs` would be rewritten for nothing.
+    let kdl = r#"
+screen id="Flick" width=100 height=100 {
+    grid cols="1fr" rows="1fr" gap=0 padding=0 {
+        roller id="r" selected=0 style="Style::panel()" col=0 row=0 {
+            option "a"
+            option "b"
+        }
+    }
+}
+"#;
+    let generated = compile_kdl_to_rust(kdl).unwrap();
+    assert!(
+        generated.contains("gui.add_roller(cells[0], &[\"a\", \"b\"], 0, Style::panel())"),
+        "a design that names nothing keeps the flick: {generated}"
+    );
+    assert!(
+        !generated.contains("add_roller_with_selection"),
+        "and not the builder that would say something about it: {generated}"
+    );
+
+    // A name the crate does not know is *normalised* rather than passed through, because a name that reached
+    // the runtime would be Rust: a typo has to mean the default, not a compile error.
+    let typo = kdl.replace("selected=0", "selected=0 selection=\"swipe\"");
+    let generated = compile_kdl_to_rust(&typo).unwrap();
+    assert!(
+        !generated.contains("RollerSelection"),
+        "an unknown selection is the default, not a variant: {generated}"
+    );
+    assert!(
+        serialize_kdl_screen(&parse_kdl_screen(&typo).unwrap()).contains("selection=\"flick\""),
+        "and it is written back as the name the crate knows"
+    );
+}
+
+#[test]
 fn every_refused_tag_now_generates_a_call_that_compiles() {
     // The designer refused these tags because their generated code did not compile: the emitter
     // passed the wrong arguments, the wrong types, or an inlined `VectorPath` built from tuple

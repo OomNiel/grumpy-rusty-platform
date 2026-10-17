@@ -5,33 +5,25 @@
 #![no_std]
 #![no_main]
 
-use cyw43::aligned_bytes;
-use cyw43_pio::{DEFAULT_CLOCK_DIVIDER, PioSpi};
-use defmt::*;
-use defmt_rtt as _;
-use embassy_executor::Spawner;
-use embassy_rp::gpio::{Level, Output};
-use embassy_rp::peripherals::{DMA_CH0, PIO0};
-use embassy_rp::pio::{InterruptHandler, Pio};
-use embassy_rp::{bind_interrupts, dma};
-use embassy_time::{Duration, Timer};
-use panic_probe as _;
-use static_cell::StaticCell;
+// The sketch's header: every import, the type aliases, the constants and the helpers.
+// The path is spelled out because the file is named the way the sketch reads it, not the way Rust
+// spells a module name.
+#[path = "MainHeader.rs"]
+mod main_header;
+use main_header::*;
 
-bind_interrupts!(struct Irqs {
-    PIO0_IRQ_0 => InterruptHandler<PIO0>;
-    DMA_IRQ_0 => dma::InterruptHandler<DMA_CH0>;
-});
-
-#[embassy_executor::task]
-async fn cyw43_task(
-    runner: cyw43::Runner<'static, cyw43::SpiBus<Output<'static>, PioSpi<'static, PIO0, 0>>>,
-) -> ! {
-    runner.run().await
+/// Every value this sketch keeps: the LED, created once by setup() and used by the
+/// loop in main().
+pub struct State {
+    /// The wireless chip, once its firmware is running. The LED on a Pico W is a GPIO on this chip, and the loop drives it through here.
+    control: Cyw43Control,
 }
 
-#[embassy_executor::main(executor = "embassy_rp::executor::Executor", entry = "cortex_m_rt::entry")]
-async fn main(spawner: Spawner) {
+/// One-time initialisation -- the Arduino setup().
+///
+/// Brings up the LED and hands it back as a State for main() to run. Everything that must
+/// happen once, and only once, belongs here.
+pub async fn setup(spawner: Spawner) -> State {
     // See the note in the API template: this marks where the current run starts.
     info!("=== {} {} starting ===", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
 
@@ -68,12 +60,48 @@ async fn main(spawner: Spawner) {
         .await;
 
     info!("CYW43 is up on RP2040");
-
-    let delay = Duration::from_millis(250);
-    loop {
-        control.gpio_set(0, true).await;
-        Timer::after(delay).await;
-        control.gpio_set(0, false).await;
-        Timer::after(delay).await;
+    State {
+        control,
     }
 }
+
+/// The sketch’s entry point -- the Arduino main() around setup() and the loop.
+///
+/// setup() runs once, then the implementation below repeats for as long as the board is powered. This is the
+/// function to edit: everything it needs from setup() is in state.
+#[embassy_executor::main(executor = "embassy_rp::executor::Executor", entry = "cortex_m_rt::entry")]
+async fn main(spawner: Spawner) {
+    let mut state = setup(spawner).await;
+
+    loop {
+        state.control.gpio_set(0, true).await;
+        Timer::after_millis(250).await;
+        state.control.gpio_set(0, false).await;
+        Timer::after_millis(250).await;
+    }
+}
+// --- Your own code goes below this line ---------------------------------------------------------
+//
+// The sketch is this file plus MainHeader.rs. Everything above is the shape of it: State is what setup()
+// created, and main() is the loop you edit. Rust does not mind about the order of items, so adding your
+// functions below main() leaves the top of the file as the shape of the sketch.
+//
+// A function that needs the hardware takes state, or one of its fields:
+//
+//     /// Three quick blinks of the on-board LED, which here is a GPIO on the wireless chip.
+//     async fn blink_three(state: &mut State) {
+//         for _ in 0..3 {
+//             state.control.gpio_set(0, true).await;
+//             Timer::after_millis(120).await;
+//             state.control.gpio_set(0, false).await;
+//             Timer::after_millis(120).await;
+//         }
+//     }
+//
+// ...and is called from the loop with blink_three(&mut state).await;, or once from the end of setup()
+// if it should only run at start-up.
+//
+// Anything that does not touch the hardware -- a conversion, a formula, a lookup table -- reads better in
+// MainHeader.rs beside the other helpers, where it is reachable from here and from setup(). And a driver
+// of your own that outgrows a couple of functions deserves its own file: put it in src/my_driver.rs and
+// add mod my_driver; up with mod main_header;.

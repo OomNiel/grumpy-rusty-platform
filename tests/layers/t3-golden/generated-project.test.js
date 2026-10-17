@@ -26,6 +26,10 @@ function snapshotPathFor(boardId, template, relative) {
     return path.join(SNAPSHOT_DIR, boardId, template, relative);
 }
 
+function arduinoSnapshotPathFor(boardId, template, relative) {
+    return path.join(ARDUINO_DIR, boardId, template, relative);
+}
+
 /** Every (board, template) pair the generator supports. */
 function combinations() {
     const pairs = [];
@@ -108,7 +112,6 @@ test('there are no orphaned snapshot files', () => {
             expected.add(`${board.id}/${template}/${file.path}`);
         }
     }
-
     const orphans = [];
     const walk = (current, prefix) => {
         for (const entry of fs.readdirSync(current, { withFileTypes: true })) {

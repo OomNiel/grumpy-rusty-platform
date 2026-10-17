@@ -13,6 +13,23 @@
 
 import type { AppTemplate, AppTemplateInfo, GeneratedFile } from './files';
 import { crateNameFrom } from './naming';
+import {
+    SKETCH_HEADER_PATH,
+    SketchFiles,
+    StateField,
+    againstState,
+    codeGuidance,
+    exampleFunction,
+    headerGuidance,
+    hoistHeader,
+    immutableLocals,
+    mainFn,
+    publicHeaderItems,
+    setupFn,
+    sketchFiles,
+    splitAtLoop,
+    stateStruct,
+} from './sketch';
 import { DESIGNER_SD_PERIPHERAL, emitSdRs } from './esp-sd';
 import { BoardChoices, displayFor } from '../boards/esp';
 import { EspBoardProfile, EspDisplay, EspTouch } from '../boards/types';
@@ -228,7 +245,7 @@ export function generateEspProjectFiles(options: EspGenerateOptions): GeneratedF
         { path: '.cargo/esp-config.toml', content: espConfigToml(rotation, usesPanel, touchSetting) },
         { path: 'rust-toolchain.toml', content: espRustToolchainToml() },
         { path: 'build.rs', content: espBuildRs() },
-        { path: 'src/main.rs', content: espMainRs(board, template, choices) },
+        ...espMainFiles(board, template, choices),
         { path: '.vscode/settings.json', content: espVscodeSettings(board, rotation, usesPanel) },
         { path: '.gitignore', content: '/target\n/dist\n' },
         { path: 'README.md', content: espReadme(board, crateName, template, choices, rotation) },
@@ -328,6 +345,10 @@ panel-gc9a01 = []
             // crate that joins the two. Without it the generated display project cannot compile at all —
             // `Spi<'_>` does not implement `SpiDevice` (found by building a generated project, 2026-10-05).
             `embedded-hal-bus = "${ESP_CRATE_VERSIONS.embeddedHalBus}"`,
+            // The panel's batching buffer is borrowed by the interface, and the interface is part of the
+            // `State` that `setup()` hands back -- so the buffer has to outlive `setup()` and lives in a
+            // `StaticCell` (2026-10-16, the Arduino-style split: see generate/sketch.ts).
+            `static_cell = "${ESP_CRATE_VERSIONS.staticCell}"`,
         );
     }
     if (template === 'sdcard') {
@@ -636,12 +657,12 @@ function espBootBlock(board: EspBoardProfile, template: AppTemplate): string {
     esp_alloc::heap_allocator!(size: 36 * 1024);
 `
         : template === 'bluetooth'
-        ? `
+            ? `
     // The Bluetooth controller and the host stack both allocate. 72 KiB is what esp-radio's own BLE
     // example asks for; raising it is a tuning decision, and it comes out of the same DRAM as the stack.
     esp_alloc::heap_allocator!(size: 72 * 1024);
 `
-        : '';
+            : '';
     return `    let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
 ${heap}
@@ -706,7 +727,7 @@ function espImports(board: EspBoardProfile, template: AppTemplate): string {
             'use embassy_time::{Duration, Timer};',
             // The analog peripherals live in esp_hal::analog and need the chip's `unstable` feature, which
             // this template asks for in Cargo.toml.
-            'use esp_hal::analog::adc::{Adc, AdcConfig, Attenuation};',
+            'use esp_hal::analog::adc::{Adc, AdcConfig, AdcPin, Attenuation};',
             'use esp_hal::analog::dac::Dac;',
             'use esp_hal::clock::CpuClock;',
             'use esp_hal::timer::timg::TimerGroup;',
@@ -735,7 +756,7 @@ function espImports(board: EspBoardProfile, template: AppTemplate): string {
         const clockImports = template === 'designer' ? ['use embassy_time::Instant;'] : [];
         const hardwareImports = template === 'board'
             ? [
-                'use esp_hal::analog::adc::{Adc, AdcConfig, Attenuation};',
+                'use esp_hal::analog::adc::{Adc, AdcConfig, AdcPin, Attenuation};',
                 'use esp_hal::analog::dac::Dac;',
                 // The board template mounts the card as well, so it needs the crate, the raw API, and the
                 // bus-to-device adapter (its panel uses the RefCell one, not this).
@@ -830,7 +851,11 @@ function espImports(board: EspBoardProfile, template: AppTemplate): string {
     }
     const lines = [
         'use embassy_executor::Spawner;',
-        'use embassy_time::{Duration, Timer};',
+        // `Duration` is only named by the bodies that spell a delay out; a blink that uses `after_millis`
+        // would otherwise carry an unused import into a project the user has just created.
+        board.led.kind === 'rgb'
+            ? 'use embassy_time::{Duration, Timer};'
+            : 'use embassy_time::Timer;',
         'use esp_hal::clock::CpuClock;',
         'use esp_hal::timer::timg::TimerGroup;',
         'use esp_println as _;',
@@ -841,75 +866,495 @@ function espImports(board: EspBoardProfile, template: AppTemplate): string {
     return lines.join('\n');
 }
 
-function espMainRs(board: EspBoardProfile, template: AppTemplate, choices: BoardChoices): string {
-    // Asked rather than re-listed. This was a second copy of the rule, and the designer was added to the
-    // shared helper without reaching here -- which generated a Designer project whose body was the RGB LED
-    // heartbeat. Found by generating one, 2026-10-08.
+/** The two files a template's sketch is written to. */
+function espMainFiles(board: EspBoardProfile, template: AppTemplate, choices: BoardChoices): GeneratedFile[] {
+    const sketch = espSketch(board, template, choices);
+    return [
+        { path: 'src/main.rs', content: sketch.main },
+        { path: SKETCH_HEADER_PATH, content: sketch.header },
+    ];
+}
+
+/**
+ * One template's sketch, as `src/main.rs` and `src/MainHeader.rs`.
+ *
+ * The bodies below are the Rust they always were — the same statements in the same order — split into the three
+ * pieces the sketch layout needs (`see generate/sketch.ts`):
+ *
+ * - the regions a body marked `//@header` are lifted into the header, dedented and made public;
+ * - everything above its `//@loop` marker becomes `setup()`'s body, and the fields it leaves behind are the
+ *   `State` struct `setup()` hands back;
+ * - the loop itself becomes the body of `main()`'s loop, with every mention of one of those fields rewritten to
+ *   `state.<field>`.
+ *
+ * So a template's own function still reads as one piece of Rust while the generator, not a person, does the
+ * mechanical half of turning it into a sketch.
+ */
+function espSketch(board: EspBoardProfile, template: AppTemplate, choices: BoardChoices): SketchFiles {
     const usesPanel = templateUsesPanel(template);
     const display = usesPanel ? displayFor(board, choices) : undefined;
-    // A Designer project drives touch where the board has a controller and is a static screen where it does
-    // not: the T-QT has a panel and no touch controller.
     const touch =
         template === 'touch' || template === 'board' || template === 'designer' ? board.touch : undefined;
     const led = board.led;
+    const withHardware = template === 'board';
 
     const body = template === 'wifi'
         ? espWifiBody()
         : template === 'bluetooth'
-        ? espBluetoothBody()
-        : template === 'sdcard'
-        ? espSdcardBody(board)
-        : template === 'peripherals'
-        ? espPeripheralsBody(board)
-        : template === 'designer' && display !== undefined && touch !== undefined
-        ? espTouchBody(display, board, touch, false, true)
-        : template === 'designer' && display !== undefined
-        ? espDesignerDisplayBody(display)
-        : display !== undefined && touch !== undefined
-        ? espTouchBody(display, board, touch, template === 'board')
-        : display !== undefined
-            ? espDisplayBody(display)
-            : led.kind === 'gpio'
-                ? espLedBody(led.pin, led.external === true)
-                : led.kind === 'rgb'
-                    ? espRgbLedBody(led.red, led.green, led.blue)
-                    : espHeartbeatBody();
+            ? espBluetoothBody()
+            : template === 'sdcard'
+                ? espSdcardBody(board)
+                : template === 'peripherals'
+                    ? espPeripheralsBody(board)
+                    : template === 'designer' && display !== undefined && touch !== undefined
+                        ? espTouchBody(display, board, touch, false, true)
+                        : template === 'designer' && display !== undefined
+                            ? espDesignerDisplayBody(display)
+                            : display !== undefined && touch !== undefined
+                                ? espTouchBody(display, board, touch, withHardware)
+                                : display !== undefined
+                                    ? espDisplayBody(display)
+                                    : led.kind === 'gpio'
+                                        ? espLedBody(led.pin, led.external === true)
+                                        : led.kind === 'rgb'
+                                            ? espRgbLedBody(led.red, led.green, led.blue)
+                                            : espHeartbeatBody();
 
-    // The modules a Designer project is made of, and the constants that describe it. The card is only named
-    // where the catalog says the board has one, so the T-QT's project is byte-for-byte what it was.
-    const designerModules =
-        template !== 'designer'
-            ? ''
-            : "\n\n// The design's own module, and the code-behind it calls.\nmod ui;\nmod ui_handlers;\n" +
-              (board.sd === undefined
-                  ? ''
-                  : "\n// The card a design's `sd:/NAME.BMP` images are read from.\nmod sd;\n") +
-              (board.touch === undefined
-                  ? ''
-                  : "\n/// This project draws the design, so the diagnostic screen the touch template can paint is folded\n/// away at compile time. Kept rather than deleted: it is what to fall back on when a panel comes up wrong.\nconst DESIGNER: bool = true;\n\n/// Whether touch is wanted, read at compile time so the driver, the calibration and the sampling fold\n/// away when it is off: no SPI traffic to a controller nobody asked for. Only \"0\" is off, so a project\n/// generated before the setting existed keeps the touchscreen it had.\nconst TOUCH: bool = match option_env!(\"TOUCH_ENABLED\") {\n    Some(value) => !(value.len() == 1 && value.as_bytes()[0] == b'0'),\n    None => true,\n};\n");
+    const fields = espStateFields(board, template, display, touch);
+    const stretched = stretch(body, fields);
+    const support =
+        template === 'bluetooth'
+            ? publicHeaderItems(espBluetoothSupport()) + `\n\n${ESP_BT_CONTROLLER_ALIAS}`
+            : template === 'wifi'
+                ? publicHeaderItems(espWifiSupport())
+                : template === 'display' && display !== undefined
+                    ? publicHeaderItems(espPanelSupport(display, board))
+                    : '';
+    const material = [
+        display === undefined ? '' : espPanelMaterial(display, touch),
+        support,
+        stretched.material,
+        headerGuidance(),
+    ].filter((text) => text !== '').join('\n\n');
 
-    // The card is mounted once, from main, before the panel and the design come up. `src/main.rs` is written
-    // once at project creation and never regenerated, so this call has to be right the first time.
-    const designerSdInit =
-        template === 'designer' && board.sd !== undefined ? espDesignerSdInit(board) : '';
-
-    return `${espMainHeader(board, template)}
-#![no_std]
+    return sketchFiles({
+        banner: espMainHeader(board, template).trimEnd(),
+        imports: espImportList(board, template),
+        sideEffects: [],
+        modules: espModules(board, template),
+        prologue: `#![no_std]
 #![no_main]
-
-${espImports(board, template)}
-use esp_backtrace as _;${designerModules}
 
 // The ESP-IDF bootloader expects an application descriptor in the image. Without it the
 // bootloader refuses to start the image, so this line is not decoration.
-esp_bootloader_esp_idf::esp_app_desc!();
-
-#[esp_rtos::main]
-async fn main(${template === 'wifi' ? 'spawner' : '_spawner'}: Spawner) -> ! {
-${espBootBlock(board, template)}
-${designerSdInit}${body}
+esp_bootloader_esp_idf::esp_app_desc!();`,
+        statics: [display === undefined ? '' : espPanelStatics(touch !== undefined)].filter((text) => text !== '')
+            .join('\n\n'),
+        state: stateStruct(espStateDoc(template), fields),
+        setup: setupFn({
+            doc: espSetupDoc(template),
+            params: template === 'wifi' ? 'spawner: Spawner' : '',
+            body: `${espBootBlock(board, template)}${espDesignerSdInit(board, template)}${stretched.init}`,
+            fields,
+        }),
+        main: mainFn({
+            doc: espMainDoc(),
+            attribute: '#[esp_rtos::main]',
+            signature: `async fn main(${template === 'wifi' ? 'spawner' : '_spawner'}: Spawner)`,
+            setupCall: template === 'wifi' ? 'setup(spawner).await' : 'setup().await',
+            prelude: template === 'bluetooth' ? espBluetoothHandover() : '',
+            loop: stretched.loop,
+            mutable: !(
+                template === 'sdcard' ||
+                template === 'bluetooth' ||
+                (template === 'designer' && touch === undefined)
+            ),
+            unusedState: template === 'designer' && touch === undefined,
+        }),
+        footer: codeGuidance(
+            exampleFunction(fields, board.led.kind === 'cyw43' ? board.led.index : 0),
+        ),
+        material,
+    });
 }
-${template === 'bluetooth' ? espBluetoothSupport() : template === 'wifi' ? espWifiSupport() : template === 'display' && display !== undefined ? espPanelSupport(display, board) : ''}`;
+
+/** The Bluetooth controller's concrete type, named once so the `State` field can be written down. */
+const ESP_BT_CONTROLLER_ALIAS = `/// The controller as the host stack wants it: esp-radio's connector, wrapped to prove to the stack that
+/// the radio is ours alone.
+pub type BtController = ExternalController<BleConnector<'static>, 1>;`;
+
+/**
+ * The imports the header carries: the template's own list, plus what only `main.rs` may keep.
+ *
+ * A `use … as _;` names nothing — it installs a logger, or a panic handler, or a `write!` implementation —
+ * and that only happens in the file it is compiled in, so the two side-effect imports stay in the crate root
+ * and are not re-exported. Duplicates are dropped: the template lists already carry `esp_println`.
+ */
+function espImportList(board: EspBoardProfile, template: AppTemplate): string[] {
+    const lines = [...espImports(board, template).split('\n'), 'use esp_println as _;', 'use esp_backtrace as _;']
+        .map((line) => line.trim())
+        .filter((line) => line !== '');
+    return [...new Set(lines)];
+}
+
+/** The panel's own types and clock functions, as header material. */
+function espPanelMaterial(display: EspDisplay, touch: EspTouch | undefined): string {
+    const shared = touch !== undefined;
+    const reset = display.rst === undefined ? 'mipidsi::NoResetPin' : "Output<'static>";
+    const device = shared
+        ? "RefCellDevice<'static, HalSpi, Output<'static>, Delay>"
+        : 'ExclusiveDevice<HalSpi, Output<\'static>, Delay>';
+    const references = [
+        `/// The panel's driver type. The buffer it batches pixels in is a static, which is why this is a type
+/// alias worth having: the whole chain is long enough to hide what it is for.
+pub type DisplayDriver = mipidsi::Display<PanelInterface, models::${display.controller}, ${reset}>;`,
+    ];
+    const aliases = [
+        `/// The SPI bus' concrete type: \`Spi<'static, Blocking>\`, from the peripherals \`esp_hal::init\` hands
+/// out as 'static values.
+pub type HalSpi = Spi<'static, esp_hal::Blocking>;`,
+        shared
+            ? `/// The panel and the touch controller share one bus, so the bus lives in a \`RefCell\` and each chip
+/// gets its own device with its own chip select.
+pub type HalBus = RefCell<HalSpi>;
+
+/// One chip's device on that shared bus: the bus, its chip select, and a delay.
+pub type BusDevice = ${device};`
+            : `/// The panel's device: the bus, its chip select and a delay. Nothing else is on this bus, so it can
+/// own the bus outright.
+pub type PanelDevice = ${device};`,
+        `/// The panel's SPI interface: its device, the data/command pin and the batching buffer.
+pub type PanelInterface = SPIInterface<'static, ${shared ? 'BusDevice' : 'PanelDevice'}, Output<'static>>;`,
+    ];
+    const clocks = [
+        `/// The panel's clock. A function rather than a constant because the touch controller on the same bus
+/// needs a slower one, and the bus is re-configured around each of its bursts.
+pub fn panel_clock() -> SpiConfig {
+    SpiConfig::default().with_frequency(Rate::from_khz(${Math.round(display.spiHz / 1000)}))
+}`,
+        shared
+            ? `/// The touch controller's clock: an XPT2046 is a slow part, and its chip select is asserted across
+/// the whole transaction.
+pub fn touch_clock() -> SpiConfig {
+    SpiConfig::default().with_frequency(Rate::from_khz(${Math.round((touch as EspTouch).spiHz / 1000)}))
+}`
+            : '',
+    ].filter((text) => text !== '');
+    return [...aliases, ...references, ...clocks].join('\n\n');
+}
+
+/** The two statics the panel's storage lives in, which is what lets it outlive `setup()`. */
+function espPanelStatics(shared: boolean): string {
+    const bus = shared
+        ? `/// The shared SPI bus. A static rather than a local because the panel's device borrows it and the
+/// panel travels back to main() in the sketch's State.
+static BUS_CELL: static_cell::StaticCell<HalBus> = static_cell::StaticCell::new();`
+        : '';
+    const buffer = `/// The batching buffer mipidsi's interface borrows, for the same reason: the interface is part of the
+/// State, so the buffer has to outlive setup().
+static BUFFER_CELL: static_cell::StaticCell<[u8; 512]> = static_cell::StaticCell::new();`;
+    return [bus, buffer].filter((text) => text !== '').join('\n\n');
+}
+
+/** One phrase per template, used to say what the sketch is for in the generated docs. */
+const ESP_SKETCH_SUBJECT: Record<AppTemplate, string> = {
+    blinky: 'the on-board LED',
+    wifi: 'the Wi-Fi station and the network stack',
+    bluetooth: 'the Bluetooth LE peripheral',
+    'wifi-bluetooth': 'the radio skeleton',
+    display: 'the panel',
+    touch: 'the panel and its touch controller',
+    peripherals: 'the sensors and the speaker',
+    board: 'everything this board carries',
+    designer: 'the design and the panel it is drawn on',
+    sdcard: 'the card in the TF socket',
+};
+
+/** What `State` is, for the struct's own comment. */
+function espStateDoc(template: AppTemplate): string {
+    return `Every value this sketch keeps: ${ESP_SKETCH_SUBJECT[template]}, created once by setup() and used by
+the loop in main().
+`;
+}
+
+/** What `setup()` is for, for its comment. */
+function espSetupDoc(template: AppTemplate): string {
+    return `One-time initialisation -- the Arduino setup().
+
+Brings up ${ESP_SKETCH_SUBJECT[template]} and hands it back as a State for main() to run. Everything that
+must happen once, and only once, belongs here.
+`;
+}
+
+/** What `main()` is for, for its comment. */
+function espMainDoc(): string {
+    return `The sketch's entry point -- the Arduino main() around setup() and the loop.
+
+setup() runs once, then the implementation below repeats for as long as the board is powered. This is the
+function to edit: everything it needs from setup() is in state.
+`;
+}
+
+/** The fields of `State`: one per peripheral, plus the values the loop keeps between frames. */
+function espStateFields(
+    board: EspBoardProfile,
+    template: AppTemplate,
+    display: EspDisplay | undefined,
+    touch: EspTouch | undefined,
+): StateField[] {
+    const fields: StateField[] = [];
+    const led = board.led;
+    const panel = display !== undefined;
+    const drivesTouch =
+        template === 'touch' || template === 'board' || (template === 'designer' && touch !== undefined);
+
+    if (panel) {
+        fields.push({
+            name: 'display',
+            type: 'DisplayDriver',
+            // The display is drawn on in setup() by the diagnostic template, and by a Designer project on a
+            // board with no touch controller -- which paints its one frame there and only logs in the loop.
+            mutableInSetup: template === 'display' || (template === 'designer' && touch === undefined),
+            keepAlive: template === 'designer' && touch === undefined,
+            doc: 'The panel, brought up and ready to draw on.',
+        });
+        fields.push({
+            name: 'backlight',
+            type: "Output<'static>",
+            keepAlive: true,
+            doc: 'The backlight pin, held on. Nothing reads it: it is here so that it is not dropped with the'
+                + ' rest of `setup()`\u2019s locals, which would leave the panel lit but the glass dark.',
+        });
+    }
+    if (drivesTouch && panel) {
+        fields.push(
+            {
+                name: 'touch',
+                type: 'BusDevice',
+                mutableInSetup: true,
+                doc: 'The touch controller, on the panel\u2019s bus with its own chip select.',
+            },
+            {
+                name: 'bus',
+                type: "&'static HalBus",
+                doc: 'The bus itself, shared by the panel and the controller: the clock is switched around each'
+                    + ' touch burst, so the loop needs to reach it.',
+            },
+            {
+                name: 'touch_irq',
+                type: "Input<'static>",
+                doc: 'The controller\u2019s PENIRQ line. Logged rather than trusted: an interrupt that fires by'
+                    + ' itself would otherwise walk the calibration through all four corners.',
+            },
+            {
+                name: 'flash',
+                type: "FlashStorage<'static>",
+                mutableInSetup: true,
+                doc: 'Flash, where a measured calibration is kept across a power cycle.',
+            },
+            {
+                name: 'width_i',
+                type: 'i32',
+                doc: 'The drawing area, in the orientation the panel is currently turned to.',
+            },
+            { name: 'height_i', type: 'i32', doc: 'The drawing area\u2019s height.' },
+            {
+                name: 'box_w',
+                type: 'i32',
+                doc: 'The readout box, solved from the drawing area rather than hard-coded: its width and',
+            },
+            { name: 'box_h', type: 'i32', doc: 'height, so the box fits a 128 px panel as well as a 480 px one,' },
+            { name: 'box_x', type: 'i32', doc: 'and where it starts.' },
+            { name: 'box_y', type: 'i32', doc: 'The readout box\u2019s top-left corner.' },
+            {
+                name: 'rotation_code',
+                type: 'u8',
+                doc: 'The rotation as a number. A calibration is only valid for the orientation it was measured'
+                    + ' in, so the record has to say which that was.',
+            },
+            { name: 'targets', type: '[(i32, i32); 4]', doc: 'The four corner targets, in the order they are asked for.' },
+            { name: 'corners', type: "[&'static str; 4]", doc: 'Their names, in the same order, for the screen and the log.' },
+            {
+                name: 'idle_a',
+                type: 'i32',
+                doc: 'What the two axes read with nothing on the glass. A touch is judged by how far they move'
+                    + ' from this, never by the interrupt line on its own.',
+            },
+            { name: 'idle_b', type: 'i32', doc: 'The second axis at rest.' },
+            { name: 'calibrated', type: 'bool', doc: 'Whether the four corners have been measured yet, by this run or' + ' by a stored record.' },
+            { name: 'corner', type: 'usize', doc: 'Which of the four the screen is asking for.' },
+            { name: 'measured', type: '[[u16; 2]; 4]', doc: 'The raw readings taken at each corner.' },
+            { name: 'raw_x_axis', type: 'usize', doc: 'Which raw axis follows the display\u2019s X, worked out from the' + ' corners rather than assumed from the wiring.' },
+            { name: 'x_from', type: 'i32', doc: 'The raw-to-screen mapping: the two raw readings that map onto' },
+            { name: 'x_to', type: 'i32', doc: 'the edges of the drawing area, per axis.' },
+            { name: 'y_from', type: 'i32', doc: 'The mapping\u2019s two raw readings for the other axis.' },
+            { name: 'y_to', type: 'i32', doc: 'And the far edge of it.' },
+            { name: 'raw_a', type: 'i32', doc: 'The latest reading of each axis, and the readings the readout' },
+            { name: 'raw_b', type: 'i32', doc: 'box was last painted with -- so it is repainted only when the' },
+            { name: 'shown_a', type: 'i32', doc: 'numbers have moved far enough to be worth the pixels.' },
+            { name: 'shown_b', type: 'i32', doc: 'The second axis\u2019 last painted reading.' },
+            { name: 'pressed', type: 'bool', doc: 'Whether a finger is down now, and whether one was down on the' },
+            { name: 'was_touched', type: 'bool', doc: 'previous sample. The edge between the two is what a press is.' },
+            { name: 'redraw_screen', type: 'bool', doc: 'Whether the whole screen needs repainting this frame: a full' + ' clear is slow, so it is done only when something changed.' },
+            { name: 'redraw_box', type: 'bool', doc: 'Whether the readout box does.' },
+            { name: 'ticks', type: 'u32', doc: 'Loop counter. The sampling, the readout and the heartbeat are all' + ' scheduled off it.' },
+            { name: 'point', type: '(i32, i32)', doc: 'The touch position in screen coordinates, after calibration.' },
+        );
+    }
+    if (template === 'designer' && touch !== undefined) {
+        fields.push({
+            name: 'screen',
+            type: 'Option<ui::Designer>',
+            doc: 'The design, built on the first calibrated frame and driven by touch from then on.',
+        });
+    }
+    if (template === 'board' && led.kind === 'rgb') {
+        fields.push(
+            { name: 'led_red', type: "Output<'static>", doc: 'The RGB status LED: red while uncalibrated, green' },
+            { name: 'led_green', type: "Output<'static>", doc: 'while a finger is down, blue when idle and' },
+            { name: 'led_blue', type: "Output<'static>", doc: 'calibrated. Wiring it to the state makes it a' + ' diagnostic rather than decoration.' },
+        );
+    }
+    if (template === 'board' && board.ldr !== undefined) {
+        const ldr = board.ldr;
+        fields.push(
+            {
+                name: 'adc',
+                type: `Adc<'static, esp_hal::peripherals::ADC1<'static>, esp_hal::Blocking>`,
+                doc: 'The ADC the light sensor is read through.',
+            },
+            {
+                name: 'light',
+                type: `AdcPin<esp_hal::peripherals::GPIO${ldr.pin}<'static>, esp_hal::peripherals::ADC1<'static>, ()>`,
+                doc: `The light sensor on GPIO${ldr.pin}: the lower leg of a divider, so a brighter room reads lower.`,
+            },
+        );
+    }
+    if (template === 'board' && board.audio !== undefined) {
+        const audio = board.audio;
+        fields.push({
+            name: 'speaker',
+            type: "Dac<'static, esp_hal::peripherals::DAC2<'static>>",
+            doc: `The speaker on GPIO${audio.pin}, through an ${audio.amplifier}: what is written to the DAC is the`
+                + ' waveform itself.',
+        });
+    }
+    if (template === 'wifi') {
+        fields.push(
+            {
+                name: 'controller',
+                type: "WifiController<'static>",
+                keepAlive: true,
+                mutableInSetup: true,
+                doc: 'The radio\u2019s controller. Nothing reads it after setup: dropping it deinitialises Wi-Fi and'
+                    + ' takes the interface down with it, which looks exactly like a dead network.',
+            },
+            {
+                name: 'stack',
+                type: "embassy_net::Stack<'static>",
+                doc: 'The network stack, once the association and the address are settled.',
+            },
+            { name: 'heartbeat', type: 'u32', doc: 'Heartbeat counter, so the log says the stack is still up.' },
+        );
+    }
+    if (template === 'bluetooth') {
+        fields.push({
+            name: 'controller',
+            type: 'BtController',
+            doc: 'The Bluetooth controller, handed to the host stack by `main()` once. Nothing in the loop reads'
+                + ' it: the stack owns it from that point on.',
+        });
+    }
+    if (template === 'sdcard') {
+        fields.push({
+            name: 'sd_mounted',
+            type: 'bool',
+            doc: 'Whether the card mounted and its root directory listed.',
+        });
+    }
+    if (template === 'peripherals') {
+        if (board.ldr !== undefined) {
+            const ldr = board.ldr;
+            fields.push(
+                {
+                    name: 'adc',
+                    type: `Adc<'static, esp_hal::peripherals::ADC1<'static>, esp_hal::Blocking>`,
+                    doc: 'The ADC the light sensor is read through.',
+                },
+                {
+                    name: 'light',
+                    type: `AdcPin<esp_hal::peripherals::GPIO${ldr.pin}<'static>, esp_hal::peripherals::ADC1<'static>, ()>`,
+                    doc: `The light sensor on GPIO${ldr.pin}.`,
+                },
+            );
+        }
+        if (board.audio !== undefined) {
+            fields.push({
+                name: 'speaker',
+                type: "Dac<'static, esp_hal::peripherals::DAC2<'static>>",
+                doc: 'The speaker, written to as a square wave.',
+            });
+        }
+    }
+    if (template === 'blinky') {
+        if (led.kind === 'rgb') {
+            fields.push(
+                { name: 'red', type: "Output<'static>", doc: 'The RGB LED\u2019s three channels.' },
+                { name: 'green', type: "Output<'static>", doc: 'Driven one at a time, so a swapped channel shows' },
+                { name: 'blue', type: "Output<'static>", doc: 'as the wrong colour rather than as nothing.' },
+            );
+        } else if (led.kind === 'gpio') {
+            fields.push({ name: 'led', type: "Output<'static>", doc: `The LED on GPIO${led.pin}.` });
+        }
+    }
+    if (template === 'blinky' && led.kind === 'none') {
+        fields.push({ name: 'tick', type: 'u32', doc: 'Heartbeat counter: this board has no LED, so the log is' + ' what says the firmware is alive.' });
+    }
+    if (template === 'display') {
+        fields.push(
+            {
+                name: 'layout',
+                type: "&'static DiagnosticLayout",
+                doc: 'The diagnostic screen\u2019s geometry, solved for the orientation the panel is turned to.',
+            },
+            { name: 'tick', type: 'u32', doc: 'Loop counter for the blinking square.' },
+        );
+    }
+    return fields;
+}
+
+/**
+ * A template body's three steps, kept in one place so none of them can be forgotten.
+ *
+ * `fields` is what `setup()` hands back, and therefore also the list of names the loop has to reach through
+ * `state.`.
+ */
+function stretch(body: string, fields: readonly StateField[]): {
+    material: string;
+    init: string;
+    loop: string;
+} {
+    const hoisted = hoistHeader(body);
+    const split = splitAtLoop(hoisted.body);
+    return {
+        material: hoisted.material,
+        init: immutableLocals(split.init, fields),
+        loop: againstState(split.loop, fields.map((field) => field.name)),
+    };
+}
+
+/**
+ * What the loop of a Bluetooth sketch runs after the controller has been handed over.
+ *
+ * The host stack owns the controller for good once it has it, so the hand-over happens once, before the loop,
+ * and the loop below is only reached if the stack ever gives up.
+ */
+function espBluetoothHandover(): string {
+    return `    // The host stack takes the controller for good: advertising, connections and the GATT server run until
+    // it gives up, which is the whole program. A controller can only be given away once, so the hand-over
+    // happens here, before the loop, rather than inside it.
+    let controller = state.controller;
+    ble_peripheral_run(controller).await;`;
 }
 
 /**
@@ -919,9 +1364,33 @@ ${template === 'bluetooth' ? espBluetoothSupport() : template === 'wifi' ? espWi
  * the socket's pins and their labels: a project generated before the card existed can be fixed by hand from
  * what is printed here, and the designer tells its user what to add.
  */
-function espDesignerSdInit(board: EspBoardProfile): string {
+/** The extra modules a Designer project is made of, and the two constants that describe it. */
+function espModules(board: EspBoardProfile, template: AppTemplate): string {
+    if (template !== 'designer') {
+        return '';
+    }
+    return (
+        "// The design's own module, and the code-behind it calls.\nmod ui;\nmod ui_handlers;\n" +
+        (board.sd === undefined
+            ? ''
+            : "\n// The card a design's `sd:/NAME.BMP` images are read from.\nmod sd;\n") +
+        (board.touch === undefined
+            ? ''
+            : "\n/// This project draws the design, so the diagnostic screen the touch template can paint is folded\n/// away at compile time. Kept rather than deleted: it is what to fall back on when a panel comes up wrong.\nconst DESIGNER: bool = true;\n\n/// Whether touch is wanted, read at compile time so the driver, the calibration and the sampling fold\n/// away when it is off: no SPI traffic to a controller nobody asked for. Only \"0\" is off, so a project\n/// generated before the setting existed keeps the touchscreen it had.\nconst TOUCH: bool = match option_env!(\"TOUCH_ENABLED\") {\n    Some(value) => !(value.len() == 1 && value.as_bytes()[0] == b'0'),\n    None => true,\n};\n")
+    );
+}
+
+
+/**
+ * The `sd::init` call a Designer project gets on a board with a card.
+ *
+ * `src/main.rs` is written once at project creation and never regenerated, so the call is spelled out with
+ * the socket's pins and their labels: a project generated before the card existed can be fixed by hand from
+ * what is printed here, and the designer tells its user what to add.
+ */
+function espDesignerSdInit(board: EspBoardProfile, template: AppTemplate): string {
     const sd = board.sd;
-    if (sd === undefined) {
+    if (template !== 'designer' || sd === undefined) {
         return '';
     }
     return `
@@ -973,7 +1442,7 @@ function espRgbLedBody(red: string, green: string, blue: string): string {
 
     log::info!("RGB LED on GPIO${red} (red), GPIO${green} (green), GPIO${blue} (blue)");
 
-    loop {
+    //@loop
         for (name, colour) in [("red", 0usize), ("green", 1), ("blue", 2)] {
             log::info!("led: {}", name);
             red.set_level(Level::from(colour == 0));
@@ -985,7 +1454,7 @@ function espRgbLedBody(red: string, green: string, blue: string): string {
         green.set_low();
         blue.set_low();
         Timer::after(Duration::from_millis(400)).await;
-    }`;
+    //@end`;
 }
 
 /**
@@ -1018,7 +1487,8 @@ function espSdMountCode(board: EspBoardProfile, peripheral = 'SPI2', binding = '
     if (sd === undefined) {
         return '    let sd_mounted = false;';
     }
-    return `    // A fixed timestamp: the filesystem records one when it *writes*, and these templates only read, so a
+    return `    //@header
+    // A fixed timestamp: the filesystem records one when it *writes*, and these templates only read, so a
     // fixed value is honest rather than a pretended clock. It is also what the crate's own example does.
     struct FixedClock;
 
@@ -1035,6 +1505,7 @@ function espSdMountCode(board: EspBoardProfile, peripheral = 'SPI2', binding = '
             }
         }
     }
+    //@header-end
 
     let ${binding} = {
         // The card's own SPI bus. These are the TF socket's pins, not the panel's.
@@ -1114,6 +1585,7 @@ function espSdMountCode(board: EspBoardProfile, peripheral = 'SPI2', binding = '
 function espWifiBody(): string {
     return `
 
+    //@header
     // Credentials are read at *compile* time, so they never end up in your source tree.
     //
     // In VS Code, press Flash or Debug: the extension asks for the network name and password the first
@@ -1136,6 +1608,7 @@ function espWifiBody(): string {
     };
     const WIFI_STATIC_IP: Option<&str> = option_env!("WIFI_STATIC_IP");
     const WIFI_GATEWAY: Option<&str> = option_env!("WIFI_GATEWAY");
+    //@header-end
 
     // Open and protected networks are configured differently, and the difference is not cosmetic: WPA2
     // with an empty key never associates, and an open network rejects a key that was supplied.
@@ -1227,14 +1700,15 @@ function espWifiBody(): string {
 
     // Then keep reporting, so a lease that is lost later is visible instead of the log simply stopping.
     let mut heartbeat: u32 = 0;
-    loop {
+
+    //@loop
         Timer::after(Duration::from_secs(10)).await;
         heartbeat = heartbeat.wrapping_add(1);
         match stack.config_v4() {
             Some(config) => log::info!("heartbeat {} at {}", heartbeat, config.address),
             None => log::warn!("heartbeat {} with no address", heartbeat),
         }
-    }`;
+    //@end`;
 }
 
 /**
@@ -1288,15 +1762,11 @@ function espBluetoothBody(): string {
     return `
     let connector = BleConnector::new(peripherals.BT, Default::default())
         .expect("the Bluetooth controller refuses to start on this board");
-    let controller: ExternalController<_, 1> = ExternalController::new(connector);
+    let controller: BtController = ExternalController::new(connector);
 
-    // This runs the advertising and GATT loops; it only returns if the stack gives up.
-    ble_peripheral_run(controller).await;
-
-    // Belt and braces: main has to diverge, and the stack loop's divergence is not visible from here.
-    loop {
+    //@loop
         Timer::after(Duration::from_secs(3600)).await;
-    }`;
+    //@end`;
 }
 
 /**
@@ -1504,7 +1974,7 @@ function espSdcardBody(board: EspBoardProfile): string {
     return `
 ${espSdMountCode(board)}
 
-    loop {
+    //@loop
         log::info!(
             "sd: {}",
             if sd_mounted {
@@ -1514,7 +1984,7 @@ ${espSdMountCode(board)}
             }
         );
         Timer::after(Duration::from_secs(10)).await;
-    }`;
+    //@end`;
 }
 
 /**
@@ -1596,10 +2066,10 @@ function espPeripheralsBody(board: EspBoardProfile): string {
     return `
     log::info!("peripherals: ${peripherals}");
 ${ldrSetup}${audioSetup}
-    loop {
+    //@loop
 ${ldrLoop}${audioLoop}
         Timer::after(Duration::from_millis(1000)).await;
-    }`;
+    //@end`;
 }
 
 /**
@@ -1710,6 +2180,7 @@ function espTouchBody(
     const beepMacro = audio === undefined
         ? ''
         : `
+    //@header
     // A ~2 kHz square wave for the given number of milliseconds, then back to the middle of the DAC's range
     // so the amplifier is not left against a rail. 250 us per half period is two half periods per
     // millisecond, hence the doubling.
@@ -1724,6 +2195,7 @@ function espTouchBody(
             $speaker.write(128);
         }};
     }
+    //@header-end
 `;
     // The corner confirmation is the longer of the two.
     const beep = audio === undefined ? '' : `
@@ -1737,8 +2209,8 @@ function espTouchBody(
 
 
     return `${sdSetup}${espPanelSetup(display, true)}
-    // The touch controller's own clock: the panel's is restored around every burst.
-    let touch_clock = || SpiConfig::default().with_frequency(Rate::from_khz(${Math.round(touch.spiHz / 1000)}));
+    // The touch controller's own clock is touch_clock() in MainHeader.rs, next to the panel's: the bus is
+    // switched to the slow one around every burst and put back afterwards.
 
     // The same bus, a second chip select. PENIRQ is open drain: low means pressed, and the line is only
     // logged because it is not reliable here -- GPIO34-39 have no internal pull-ups either, so what the
@@ -1747,6 +2219,7 @@ function espTouchBody(
     let mut touch = RefCellDevice::new(&bus, touch_cs, Delay::new()).expect("touch chip select");
     let touch_irq = Input::new(peripherals.GPIO${touch.irq}, InputConfig::default().with_pull(Pull::Up));
 
+    //@header
     // Control bytes from the XPT2046 datasheet: S=1 | channel | 12-bit | single-ended | power-down bits.
     // 0xD1 reads one panel axis, 0x91 the other, and 0xD0 is an axis read with PD=00: powered down
     // between conversions, which is the only setting that re-enables PENIRQ.
@@ -1845,6 +2318,7 @@ function espTouchBody(
     fn touch_idle<D: SpiDevice>(device: &mut D) {
         let _ = touch_frame(device, TOUCH_POWER_DOWN);
     }
+    //@header-end
 
 ${designer ? `    // Only when touch is wanted: naming the controller is part of having asked for it.
     if TOUCH {
@@ -1856,6 +2330,7 @@ ${designer ? `    // Only when touch is wanted: naming the controller is part of
 ${hardwareSetup}${beepMacro}
 ${hardwareLog.length > 0 ? `    log::info!("board hardware: ${hardwareLog.join(', ')}");` : ''}
 
+    //@header
     // The calibration lives in the last 4 KB sector of the application partition. The app image is roughly
     // 120 KB of a 4 MB partition, so that sector is ours -- and it is not the NVS partition the bootloader
     // may read. esp-storage wraps every flash operation in a critical section (its default feature), which
@@ -1915,6 +2390,7 @@ ${hardwareLog.length > 0 ? `    log::info!("board hardware: ${hardwareLog.join('
         };
         Some((bytes[22], usize::from(bytes[4]), word(5), word(9), word(13), word(17)))
     }
+    //@header-end
 
     // esp_storage's Flash is the FLASH peripheral itself, so it is handed over rather than constructed.
     let mut flash = FlashStorage::new(peripherals.FLASH);
@@ -1978,7 +2454,9 @@ ${hardwareLog.length > 0 ? `    log::info!("board hardware: ${hardwareLog.join('
     // round when the rotation is vertical (see the panel setup above). The calibration targets, the
     // raw-to-screen mapping, the readout box and the graphics screen all follow from these two numbers, so
     // changing the rotation moves the whole interface rather than only the image inside it.
+    //@header
     const MARGIN: i32 = 24;
+    //@header-end
     // The area the driver actually draws into: the panel's size the other way round when the rotation is
     // vertical, because that is what mipidsi does to it. Everything below - the calibration targets, the
     // raw-to-screen mapping, the readout box and this template's own graphics screen - is expressed in this
@@ -2021,7 +2499,7 @@ ${hardwareLog.length > 0 ? `    log::info!("board hardware: ${hardwareLog.join('
     // The design, built once on the first calibrated frame and driven by touch from then on.
     let mut screen: Option<ui::Designer> = None;` : ''}
 
-    loop {
+    //@loop
         if redraw_screen {
             display.clear(Rgb565::BLACK).expect("panel write failed");
             let style = MonoTextStyle::new(&FONT_6X10, Rgb565::WHITE);
@@ -2062,7 +2540,7 @@ ${hardwareLog.length > 0 ? `    log::info!("board hardware: ${hardwareLog.join('
 ${designer ? `                // The design, painted instead of the diagnostic screen. DESIGNER is a const, so the
                 // diagnostic branch below it is folded away in a Designer project and compiled out.
                 if DESIGNER {
-                    let screen = screen.get_or_insert_with(|| {
+                    let design = screen.get_or_insert_with(|| {
                         // Built once, on the first calibrated frame, and logged: when this project is flashed
                         // the log is what says whether the design exists at all, since a design that fails to
                         // build panics and a design that draws says nothing on its own.
@@ -2073,7 +2551,7 @@ ${designer ? `                // The design, painted instead of the diagnostic s
                     // judged. This is the *full* paint -- build, clear and every widget -- and it happens
                     // only on a calibration frame; a touch repaints just the damaged rectangles below.
                     let painted_at = Instant::now();
-                    screen.repaint(&mut display).expect("the design did not render");
+                    design.repaint(&mut display).expect("the design did not render");
                     log::info!(
                         "design: painted {}x{} in {} ms (full frame)",
                         width_i,
@@ -2295,11 +2773,11 @@ ${designer ? `                // The design, painted instead of the diagnostic s
                 point = (px, py);${designer ? `
                 // Hand the sample to the design: the press and the release are what a widget acts on, and the
                 // moves are what let a slider follow the finger.
-                if let Some(screen) = screen.as_mut() {
-                    screen.pointer(px, py, pressed);
-                    screen.pump();
-                    if screen.is_dirty() {
-                        screen.render(&mut display).expect("the design did not render");
+                if let Some(design) = screen.as_mut() {
+                    design.pointer(px, py, pressed);
+                    design.pump();
+                    if design.is_dirty() {
+                        design.render(&mut display).expect("the design did not render");
                     }
                 }` : ''}
                 if pressed && !was_touched {
@@ -2325,7 +2803,7 @@ ${designer ? `                // The design, painted instead of the diagnostic s
         }
 ${hardwareLoop}
         Timer::after(Duration::from_millis(20)).await;
-    }`;
+    //@end`;
 }
 
 /**
@@ -2352,33 +2830,35 @@ function espPanelSetup(display: EspDisplay, shared: boolean): string {
     if (shared) {
         return `
     // Backlight first, and note the level: ${display.backlightActiveLow ? 'this board switches the transistor on with a LOW level' : 'this board switches the transistor on with a HIGH level'}.
-    let _backlight = Output::new(
+    let mut backlight = Output::new(
         peripherals.GPIO${display.backlight},
         ${display.backlightActiveLow ? 'Level::Low' : 'Level::High'},
         OutputConfig::default(),
     );
 ${resetSetup}
-    // The panel's clock is kept as a closure because the touch controller on the same bus needs a slower
-    // one: the bus is re-configured around each touch read and put back afterwards.
-    let panel_clock = || SpiConfig::default().with_frequency(Rate::from_khz(${Math.round(display.spiHz / 1000)}));
+    // The panel's clock is the function in MainHeader.rs: the touch controller on the same bus needs a
+    // slower one, and the bus is re-configured around each touch read and put back afterwards.
     let spi = Spi::new(peripherals.SPI2, panel_clock())
     .expect("SPI configuration")
         .with_sck(peripherals.GPIO${display.spi.sclk})
         .with_mosi(peripherals.GPIO${display.spi.mosi})${miso};
 
     // The touch controller shares this bus, so the bus goes into a RefCell and each chip gets its own
-    // device with its own CS pin.
-    let bus = RefCell::new(spi);
+    // device with its own CS pin. It is kept in a StaticCell rather than a local because the panel's
+    // device borrows it and the panel is handed back to main in the sketch's State -- a local would be
+    // dropped the moment setup() returned.
+    let bus: &'static HalBus = BUS_CELL.init(RefCell::new(spi));
     let cs = Output::new(peripherals.GPIO${display.cs}, Level::Low, OutputConfig::default());
     // Shadows the bus with the panel's *device*, exactly as the exclusive branch does, so the rest of
     // the setup -- and mipidsi's interface below -- does not care which of the two it was handed.
     let spi = RefCellDevice::new(&bus, cs, Delay::new()).expect("panel chip select");
 
     // 512 bytes is mipidsi's own example buffer size: enough to batch pixels, small
-    // enough to live on the stack, so this build needs no heap.
-    let mut buffer = [0u8; 512];
+    // enough to live on the stack, so this build needs no heap. It is kept in a StaticCell for the same
+    // reason the bus is: the panel's interface borrows it, and the panel outlives setup().
+    let buffer: &'static mut [u8; 512] = BUFFER_CELL.init([0u8; 512]);
     let dc = Output::new(peripherals.GPIO${display.dc}, Level::Low, OutputConfig::default());
-    let di = SPIInterface::new(spi, dc, &mut buffer);
+    let di = SPIInterface::new(spi, dc, buffer);
 
     // Delay is a unit struct in esp-hal 1.x, not a value: it is built with new().
     let mut delay = Delay::new();
@@ -2427,7 +2907,7 @@ ${resetSetup}
     }
     return `
     // Backlight first, and note the level: ${display.backlightActiveLow ? 'this board switches the transistor on with a LOW level' : 'this board switches the transistor on with a HIGH level'}.
-    let _backlight = Output::new(
+    let mut backlight = Output::new(
         peripherals.GPIO${display.backlight},
         ${display.backlightActiveLow ? 'Level::Low' : 'Level::High'},
         OutputConfig::default(),
@@ -2436,7 +2916,7 @@ ${resetSetup}
     let spi = Spi::new(
         peripherals.SPI2,
         // ${display.label}: ${display.spiHz} Hz. Lower this first if the image is unstable.
-        SpiConfig::default().with_frequency(Rate::from_khz(${Math.round(display.spiHz / 1000)})),
+        panel_clock(),
     )
     .expect("SPI configuration")
         .with_sck(peripherals.GPIO${display.spi.sclk})
@@ -2448,10 +2928,12 @@ ${resetSetup}
     let spi = ExclusiveDevice::new(spi, cs, Delay::new()).expect("SPI device");
 
     // 512 bytes is mipidsi's own example buffer size: enough to batch pixels, small
-    // enough to live on the stack, so this build needs no heap.
-    let mut buffer = [0u8; 512];
+    // enough to live on the stack, so this build needs no heap. It is kept in a StaticCell because the
+    // panel's interface borrows it and the panel outlives setup(), which is where the sketch's state is
+    // built.
+    let buffer: &'static mut [u8; 512] = BUFFER_CELL.init([0u8; 512]);
     let dc = Output::new(peripherals.GPIO${display.dc}, Level::Low, OutputConfig::default());
-    let di = SPIInterface::new(spi, dc, &mut buffer);
+    let di = SPIInterface::new(spi, dc, buffer);
 
     // Delay is a unit struct in esp-hal 1.x, not a value: it is built with new().
     let mut delay = Delay::new();
@@ -2718,10 +3200,10 @@ function espDesignerDisplayBody(display: EspDisplay): string {
         drawn_at.elapsed().as_millis()
     );
 
-    loop {
+    //@loop
         log::info!("design alive");
         Timer::after(Duration::from_secs(10)).await;
-    }`;
+    //@end`;
 }
 
 function espDisplayBody(display: EspDisplay): string {
@@ -2819,7 +3301,8 @@ function espDisplayBody(display: EspDisplay): string {
         drawn_at.elapsed().as_millis()
     );
     let mut tick: u32 = 0;
-    loop {
+
+    //@loop
         // One small square, blinking: proof the loop is alive, placed clear of every diagnostic so it cannot
         // be mistaken for one.
         let colour = if tick % 2 == 0 { Rgb565::WHITE } else { Rgb565::BLACK };
@@ -2832,7 +3315,7 @@ function espDisplayBody(display: EspDisplay): string {
         }
         tick = tick.wrapping_add(1);
         Timer::after(Duration::from_millis(700)).await;
-    }`;
+    //@end`;
 }
 
 function espLedBody(pin: string, external: boolean): string {
@@ -2847,12 +3330,12 @@ function espLedBody(pin: string, external: boolean): string {
     return `${note}
     let mut led = Output::new(peripherals.GPIO${pin}, Level::Low, OutputConfig::default());
 
-    loop {
+    //@loop
         led.set_high();
         Timer::after_millis(500).await;
         led.set_low();
         Timer::after_millis(500).await;
-    }`;
+    //@end`;
 }
 
 function espHeartbeatBody(): string {
@@ -2860,11 +3343,12 @@ function espHeartbeatBody(): string {
     // No LED to blink on this board, so the heartbeat goes to the log instead. The panel
     // template is the interesting one here.
     let mut tick: u32 = 0;
-    loop {
+
+    //@loop
         tick += 1;
         log::info!("alive (tick {})", tick);
         Timer::after(Duration::from_secs(1)).await;
-    }`;
+    //@end`;
 }
 
 // --------------------------------------------------------------- small files

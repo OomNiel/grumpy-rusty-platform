@@ -1,5 +1,22 @@
 import { BoardProfile, RpBoardProfile, isEspBoard } from '../boards/types';
 import { binaryNameFrom, crateNameFrom } from './naming';
+import {
+    SKETCH_HEADER_PATH,
+    SketchFiles,
+    StateField,
+    againstState,
+    codeGuidance,
+    exampleFunction,
+    headerGuidance,
+    hoistHeader,
+    immutableLocals,
+    mainFn,
+    publicHeaderItems,
+    setupFn,
+    sketchFiles,
+    splitAtLoop,
+    stateStruct,
+} from './sketch';
 import { defaultTemplateForEsp, generateEspProjectFiles, templatesForEsp } from './esp';
 
 // Re-exported so every existing caller and test can keep importing these from here.
@@ -202,7 +219,7 @@ export function generateProjectFiles(options: GenerateOptions): GeneratedFile[] 
         { path: 'rust-toolchain.toml', content: rustToolchainToml(board) },
         { path: 'memory.x', content: memoryX(board) },
         { path: 'build.rs', content: buildRs(board) },
-        { path: 'src/main.rs', content: mainRs(board, template) },
+        ...rpMainFiles(board, template),
         { path: '.vscode/settings.json', content: vscodeSettings(board) },
         { path: '.vscode/launch.json', content: launchJson(board, binaryName) },
         { path: '.gitignore', content: gitignore() },
@@ -414,23 +431,179 @@ function mainRs(board: RpBoardProfile, template: AppTemplate): string {
     return mainRsWired(board);
 }
 
+/** The two files a template's sketch is written to: `src/main.rs` and `src/MainHeader.rs`. */
+function rpMainFiles(board: RpBoardProfile, template: AppTemplate): GeneratedFile[] {
+    const sketch = rpSketch(board, template);
+    return [
+        { path: 'src/main.rs', content: sketch.main },
+        { path: SKETCH_HEADER_PATH, content: sketch.header },
+    ];
+}
+
+/**
+ * One RP template's sketch, in the Arduino shape: see `generate/sketch.ts` for what the three pieces are.
+ *
+ * The bodies below are read as one piece of Rust each; the generator splits them at the markers into the
+ * header's material, `setup()`'s body and the loop that goes inside `main()`.
+ */
+function rpSketch(board: RpBoardProfile, template: AppTemplate): SketchFiles {
+    const wireless = board.wireless === 'cyw43';
+    const fields = rpStateFields(board, template);
+    const hoisted = hoistHeader(mainRs(board, template));
+    const split = splitAtLoop(hoisted.body);
+    const support = wireless
+        ? [publicHeaderItems(cyw43Support(board, template)), CYW43_CONTROL_ALIAS].join('\n\n')
+        : '';
+    return sketchFiles({
+        banner: mainHeader(board, template).trimEnd(),
+        imports: rpImports(board, template),
+        sideEffects: [],
+        prologue: '#![no_std]\n#![no_main]',
+        state: stateStruct(rpStateDoc(template), fields),
+        setup: setupFn({
+            doc: rpSetupDoc(template),
+            params: wireless ? 'spawner: Spawner' : '',
+            body: immutableLocals(split.init, fields),
+            fields,
+        }),
+        main: mainFn({
+            doc: rpMainDoc(),
+            attribute:
+                '#[embassy_executor::main(executor = "embassy_rp::executor::Executor", ' +
+                'entry = "cortex_m_rt::entry")]',
+            signature: `async fn main(${wireless ? 'spawner' : '_spawner'}: Spawner)`,
+            setupCall: wireless ? 'setup(spawner).await' : 'setup().await',
+            loop: againstState(split.loop, fields.map((field) => field.name)),
+            diverges: false,
+        }),
+        footer: codeGuidance(
+            exampleFunction(fields, board.led.kind === 'cyw43' ? board.led.index : 0),
+        ),
+        material: [support, hoisted.material, headerGuidance()].filter((text) => text !== '').join('\n\n'),
+    });
+}
+
+/**
+ * The imports an RP header carries.
+ *
+ * embassy-rp provides its own multicore-capable executor, so it has to be named in the entry attribute --
+ * there is no `platform-cortex-m` feature on embassy-executor (see the comment the emitted `main()` keeps).
+ */
+function rpImports(board: RpBoardProfile, template: AppTemplate): string[] {
+    const cyw = board.cyw43;
+    const divider = cyw?.clockDivider ?? 'DEFAULT_CLOCK_DIVIDER';
+    // `use … as _;` two lines down are the side-effect imports; the rest are re-exported by the header.
+    const common = ['use panic_probe as _;', 'use defmt_rtt as _;'];
+    if (board.wireless !== 'cyw43') {
+        return [
+            'use defmt::info;',
+            'use embassy_executor::Spawner;',
+            'use embassy_rp::gpio::{Level, Output};',
+            'use embassy_time::Timer;',
+            ...common,
+        ];
+    }
+    // `static_cell` is a dependency of the wireless projects only: it holds the CYW43 state and the network
+    // stack's resources, so a plain Pico project must not import it -- there is nothing to link against.
+    const wireless = ['use static_cell::StaticCell;', ...common];
+    if (template === 'blinky') {
+        return [
+            'use cyw43::aligned_bytes;',
+            `use cyw43_pio::{${divider}, PioSpi};`,
+            'use defmt::*;',
+            'use embassy_executor::Spawner;',
+            'use embassy_rp::gpio::{Level, Output};',
+            `use embassy_rp::peripherals::{${cyw?.dmaCh0}, ${cyw?.pio}};`,
+            'use embassy_rp::pio::{InterruptHandler, Pio};',
+            'use embassy_rp::{bind_interrupts, dma};',
+            'use embassy_time::Timer;',
+            ...wireless,
+        ];
+    }
+    return [
+        'use cyw43::{aligned_bytes, JoinOptions};',
+        `use cyw43_pio::{${divider}, PioSpi};`,
+        'use defmt::*;',
+        'use embassy_executor::Spawner;',
+        'use embassy_rp::clocks::RoscRng;',
+        'use embassy_rp::gpio::{Level, Output};',
+        `use embassy_rp::peripherals::{${cyw?.dmaCh0}, ${cyw?.pio}};`,
+        'use embassy_rp::pio::{InterruptHandler, Pio};',
+        'use embassy_rp::{bind_interrupts, dma};',
+        'use embassy_time::{Duration, Timer};',
+        ...wireless,
+    ];
+}
+
+/** One phrase per template, for the generated docs. */
+const RP_SKETCH_SUBJECT: Record<AppTemplate, string> = {
+    blinky: 'the LED',
+    wifi: 'the wireless chip, the network stack and the LED',
+    bluetooth: 'the wireless chip',
+    'wifi-bluetooth': 'the wireless chip, the network stack and the LED',
+    display: 'the panel',
+    touch: 'the panel and its touch controller',
+    peripherals: 'the board\u2019s peripherals',
+    board: 'everything this board carries',
+    designer: 'the design and the panel it is drawn on',
+    sdcard: 'the card',
+};
+
+/** What `State` is, for the struct's own comment. */
+function rpStateDoc(template: AppTemplate): string {
+    return `Every value this sketch keeps: ${RP_SKETCH_SUBJECT[template]}, created once by setup() and used by the
+loop in main().\n`;
+}
+
+/** What `setup()` is for, for its comment. */
+function rpSetupDoc(template: AppTemplate): string {
+    return `One-time initialisation -- the Arduino setup().\n\nBrings up ${RP_SKETCH_SUBJECT[template]} and hands it back as a State for main() to run. Everything that must
+happen once, and only once, belongs here.\n`;
+}
+
+/** What `main()` is for, for its comment. */
+function rpMainDoc(): string {
+    return `The sketch\u2019s entry point -- the Arduino main() around setup() and the loop.
+
+setup() runs once, then the implementation below repeats for as long as the board is powered. This is the
+function to edit: everything it needs from setup() is in state.
+`;
+}
+
+/** The fields of `State` for an RP template. */
+function rpStateFields(board: RpBoardProfile, template: AppTemplate): StateField[] {
+    const fields: StateField[] = [];
+    if (board.wireless !== 'cyw43') {
+        return [
+            {
+                name: 'led',
+                type: "Output<'static>",
+                doc: `The LED${board.led.kind === 'gpio' ? ` on GPIO${board.led.pin}` : ' on the board'}.`,
+            },
+        ];
+    }
+    fields.push({
+        name: 'control',
+        type: 'Cyw43Control',
+        mutableInSetup: true,
+        doc: 'The wireless chip, once its firmware is running. The LED on a Pico W is a GPIO on this chip,'
+            + ' and the loop drives it through here.',
+    });
+    if (template === 'wifi' || template === 'wifi-bluetooth') {
+        fields.push({
+            name: 'stack',
+            type: "embassy_net::Stack<'static>",
+            keepAlive: true,
+            doc: 'The network stack, once the association and the lease are settled. Nothing in the loop reads'
+                + ' it: it is kept so that the handle is not dropped while the stack is still running.',
+        });
+    }
+    return fields;
+}
+
 function mainRsWired(board: RpBoardProfile): string {
     const pin = board.led.kind === 'gpio' ? board.led.pin : 'PIN_25';
-    return `${mainHeader(board, 'blinky')}
-#![no_std]
-#![no_main]
-
-use defmt::info;
-use defmt_rtt as _;
-use embassy_executor::Spawner;
-use embassy_rp::gpio::{Level, Output};
-use embassy_time::Timer;
-use panic_probe as _;
-
-// embassy-rp provides its own multicore-capable executor, so it must be named
-// explicitly here (there is no \`platform-cortex-m\` feature on embassy-executor).
-#[embassy_executor::main(executor = "embassy_rp::executor::Executor", entry = "cortex_m_rt::entry")]
-async fn main(_spawner: Spawner) {
+    return `
     // RTT keeps the previous image's bytes after a reset, and a stale frame can decode into
     // nonsense (defmt's own strings show up as log values). The current run begins at the last
     // line like this one.
@@ -439,16 +612,14 @@ async fn main(_spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
     info!("Hello from Grumpy's Rusty Platform on ${board.family}!");
 
-    let mut led = Output::new(p.${pin}, Level::Low);
+    let led = Output::new(p.${pin}, Level::Low);
 
-    loop {
+    //@loop
         led.set_high();
         Timer::after_millis(500).await;
         led.set_low();
         Timer::after_millis(500).await;
-    }
-}
-`;
+    //@end`;
 }
 
 /** Shared CYW43 bring-up block, identical apart from the pin and divider names. */
@@ -487,39 +658,8 @@ function cyw43BringUp(board: RpBoardProfile): string {
 }
 
 function mainRsCyw43Led(board: RpBoardProfile): string {
-    const dividerImport = board.cyw43?.clockDivider ?? 'DEFAULT_CLOCK_DIVIDER';
     const ledIndex = board.led.kind === 'cyw43' ? board.led.index : 0;
-    return `${mainHeader(board, 'blinky')}
-#![no_std]
-#![no_main]
-
-use cyw43::aligned_bytes;
-use cyw43_pio::{${dividerImport}, PioSpi};
-use defmt::*;
-use defmt_rtt as _;
-use embassy_executor::Spawner;
-use embassy_rp::gpio::{Level, Output};
-use embassy_rp::peripherals::{${board.cyw43?.dmaCh0}, ${board.cyw43?.pio}};
-use embassy_rp::pio::{InterruptHandler, Pio};
-use embassy_rp::{bind_interrupts, dma};
-use embassy_time::{Duration, Timer};
-use panic_probe as _;
-use static_cell::StaticCell;
-
-bind_interrupts!(struct Irqs {
-    ${board.cyw43?.pio}_IRQ_0 => InterruptHandler<${board.cyw43?.pio}>;
-    DMA_IRQ_0 => dma::InterruptHandler<${board.cyw43?.dmaCh0}>;
-});
-
-#[embassy_executor::task]
-async fn cyw43_task(
-    runner: cyw43::Runner<'static, cyw43::SpiBus<Output<'static>, PioSpi<'static, ${board.cyw43?.pio}, 0>>>,
-) -> ! {
-    runner.run().await
-}
-
-#[embassy_executor::main(executor = "embassy_rp::executor::Executor", entry = "cortex_m_rt::entry")]
-async fn main(spawner: Spawner) {
+    return `
 ${cyw43BringUp(board)}
     let (_net_device, mut control, runner) = cyw43::new(state, pwr, spi, fw, nvram).await;
     spawner.spawn(unwrap!(cyw43_task(runner)));
@@ -531,20 +671,54 @@ ${cyw43BringUp(board)}
 
     info!("CYW43 is up on ${board.family}");
 
-    let delay = Duration::from_millis(250);
-    loop {
+    //@loop
         control.gpio_set(${ledIndex}, true).await;
-        Timer::after(delay).await;
+        Timer::after_millis(250).await;
         control.gpio_set(${ledIndex}, false).await;
-        Timer::after(delay).await;
-    }
-}
-`;
+        Timer::after_millis(250).await;
+    //@end`;
 }
 
+/**
+ * The interrupt bindings and the CYW43 runner task, as header material.
+ *
+ * Both are items rather than statements — the task macro expands to a struct and a function — and neither
+ * needs anything `setup()` created, so they belong in the header beside the imports. `pub` is written into
+ * the macro invocation by hand: the bindings it declares have to be visible to `main.rs`, and a macro has no
+ * way to be told that from the outside.
+ */
+function cyw43Support(board: RpBoardProfile, template: AppTemplate): string {
+    const cyw = board.cyw43;
+    const netTask =
+        template === 'wifi' || template === 'wifi-bluetooth'
+            ? `
+
+/// Drives the network stack. It runs for the life of the program: no packet moves while it is not being
+/// polled.
+#[embassy_executor::task]
+async fn net_task(mut runner: embassy_net::Runner<'static, cyw43::NetDriver<'static>>) -> ! {
+    runner.run().await
+}`
+            : '';
+    return `bind_interrupts!(pub struct Irqs {
+    ${cyw?.pio}_IRQ_0 => InterruptHandler<${cyw?.pio}>;
+    DMA_IRQ_0 => dma::InterruptHandler<${cyw?.dmaCh0}>;
+});
+
+/// Runs the firmware half of the CYW43 driver. Spawned by setup(), and it owns the runner for good.
+#[embassy_executor::task]
+async fn cyw43_task(
+    runner: cyw43::Runner<'static, cyw43::SpiBus<Output<'static>, PioSpi<'static, ${cyw?.pio}, 0>>>,
+) -> ! {
+    runner.run().await
+}${netTask}`;
+}
+
+/** The CYW43 control handle's type, named once so the `State` field can be written down. */
+const CYW43_CONTROL_ALIAS = `/// The CYW43 control handle: how the sketch drives the radio and the on-board LED.
+pub type Cyw43Control = cyw43::Control<'static>;`;
+
 function mainRsWifi(board: RpBoardProfile, withBluetooth: boolean): string {
-    const template: AppTemplate = withBluetooth ? 'wifi-bluetooth' : 'wifi';
-    const dividerImport = board.cyw43?.clockDivider ?? 'DEFAULT_CLOCK_DIVIDER';
     const ledIndex = board.led.kind === 'cyw43' ? board.led.index : 0;
 
     const bluetoothSection = withBluetooth
@@ -567,25 +741,9 @@ function mainRsWifi(board: RpBoardProfile, withBluetooth: boolean): string {
 `
         : '';
 
-    return `${mainHeader(board, template)}
-#![no_std]
-#![no_main]
-
-use cyw43::{aligned_bytes, JoinOptions};
-use cyw43_pio::{${dividerImport}, PioSpi};
-use defmt::*;
-use defmt_rtt as _;
-use embassy_executor::Spawner;
-use embassy_rp::clocks::RoscRng;
-use embassy_rp::gpio::{Level, Output};
-use embassy_rp::peripherals::{${board.cyw43?.dmaCh0}, ${board.cyw43?.pio}};
-use embassy_rp::pio::{InterruptHandler, Pio};
-use embassy_rp::{bind_interrupts, dma};
-use embassy_time::{Duration, Timer};
-use panic_probe as _;
-use static_cell::StaticCell;
-
-// Credentials are read at *compile* time so they never end up in your source tree.
+    return `
+    //@header
+    // Credentials are read at *compile* time so they never end up in your source tree.
 //
 // In VS Code, press Flash or Debug: the extension asks for the network name and password the
 // first time and remembers them, so nothing has to be typed again. Building from a terminal
@@ -634,26 +792,8 @@ fn static_config() -> Option<embassy_net::StaticConfigV4> {
         dns_servers: Default::default(),
     })
 }
+    //@header-end
 
-bind_interrupts!(struct Irqs {
-    ${board.cyw43?.pio}_IRQ_0 => InterruptHandler<${board.cyw43?.pio}>;
-    DMA_IRQ_0 => dma::InterruptHandler<${board.cyw43?.dmaCh0}>;
-});
-
-#[embassy_executor::task]
-async fn cyw43_task(
-    runner: cyw43::Runner<'static, cyw43::SpiBus<Output<'static>, PioSpi<'static, ${board.cyw43?.pio}, 0>>>,
-) -> ! {
-    runner.run().await
-}
-
-#[embassy_executor::task]
-async fn net_task(mut runner: embassy_net::Runner<'static, cyw43::NetDriver<'static>>) -> ! {
-    runner.run().await
-}
-
-#[embassy_executor::main(executor = "embassy_rp::executor::Executor", entry = "cortex_m_rt::entry")]
-async fn main(spawner: Spawner) {
 ${cyw43BringUp(board)}
     let (net_device, mut control, runner) = cyw43::new(state, pwr, spi, fw, nvram).await;
     spawner.spawn(unwrap!(cyw43_task(runner)));
@@ -722,15 +862,12 @@ ${cyw43BringUp(board)}
         info!("Wi-Fi is up - IP {}.{}.{}.{}", octets[0], octets[1], octets[2], octets[3]);
     }
 ${bluetoothSection}
-    let delay = Duration::from_millis(250);
-    loop {
+    //@loop
         control.gpio_set(${ledIndex}, true).await;
-        Timer::after(delay).await;
+        Timer::after_millis(250).await;
         control.gpio_set(${ledIndex}, false).await;
-        Timer::after(delay).await;
-    }
-}
-`;
+        Timer::after_millis(250).await;
+    //@end`;
 }
 
 // --------------------------------------------------------------- small files

@@ -566,6 +566,15 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         children: 'options',
         props: [
             { name: 'selected', kind: 'int', label: 'Selected index', defaultValue: 0, min: 0 },
+            // Both gestures exist in the crate; which one this roller uses is the design's choice. `flick` is
+            // the default, so a design written before this property existed keeps the behaviour it had.
+            {
+                name: 'selection',
+                kind: 'enum',
+                label: 'Selection',
+                defaultValue: 'flick',
+                options: ['flick', 'touch'],
+            },
             { name: 'font', kind: 'font', label: 'Font', defaultValue: '' },
             APPEARANCE_ACCENT,
             ...APPEARANCE_BLOCK,
@@ -574,7 +583,9 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         fontSupport: 'style',
         // `valueChanged` only: a `scroll` entry here was dead code — only a ScrollView ancestor raises
         // `UiEvent::Scroll`, and it carries the *view's* id, so a generated arm for a roller could
-        // never fire. The drag added in 0.0.90 raises the same `valueChanged` the arrow keys do.
+        // never fire. The finger raises the same `valueChanged` the arrow keys do, whichever gesture the
+        // design picked: a flick turns the roller one item per gesture, and a touch selects the bar it lands
+        // on (`drag_step_selection` and `select_touched_roller_bar` in the crate).
         events: ['valueChanged'],
     },
     {
@@ -1255,6 +1266,8 @@ const PROPERTY_HELP: Record<string, string> = {
     pulse: 'Brightness of the highlight, from 0 to 255',
     roll: 'Rotation about the viewing axis, in degrees',
     selected: 'Index of the chosen item, counting from zero',
+    selection:
+        'How a finger picks an item: a flick turns the wheel one item, or a touch selects the bar it lands on',
     shading: 'How the surfaces are shaded',
     shift: 'Scroll offset, in pixels',
     src: 'File to load, relative to the project root',

@@ -352,6 +352,7 @@ pub fn generate_rust_code(screen: &ScreenDef) -> String {
             WidgetDef::Roller {
                 options,
                 selected,
+                selection,
                 style,
                 ..
             } => {
@@ -361,11 +362,22 @@ pub fn generate_rust_code(screen: &ScreenDef) -> String {
                     .collect::<Vec<_>>()
                     .join(", ");
                 let st = style_expr(style.as_deref(), "Style::panel()");
-                let _ = writeln!(
-                    &mut out,
-                    "        let {} = gui.add_roller(cells[{}], &[{}], {}, {})?;",
-                    var_name, idx, opts_joined, selected, st
-                );
+                // A design that says nothing keeps upstream's builder -- and with it the flick, which is what
+                // every design written before the choice existed expects. Only a design that *asked* for the
+                // touch reaches the builder that takes a selection.
+                if selection == "touch" {
+                    let _ = writeln!(
+                        &mut out,
+                        "        let {} = gui.add_roller_with_selection(cells[{}], &[{}], {}, RollerSelection::Touch, {})?;",
+                        var_name, idx, opts_joined, selected, st
+                    );
+                } else {
+                    let _ = writeln!(
+                        &mut out,
+                        "        let {} = gui.add_roller(cells[{}], &[{}], {}, {})?;",
+                        var_name, idx, opts_joined, selected, st
+                    );
+                }
             }
             WidgetDef::Scale {
                 mode,

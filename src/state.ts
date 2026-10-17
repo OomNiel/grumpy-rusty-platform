@@ -18,6 +18,7 @@ export class RustyState implements vscode.Disposable {
     private currentEsp: EspToolchainStatus | undefined;
     private currentFamily: HealthFamily = 'unknown';
     private projectOpen = false;
+    private designerProject = false;
     private readonly emitter = new vscode.EventEmitter<void>();
     private disposables: vscode.Disposable[] = [];
 
@@ -50,6 +51,18 @@ export class RustyState implements vscode.Disposable {
     }
 
     /**
+     * Whether the open project is a Designer (WYSIWYG) template project -- one with a
+     * `designer/panel.ui.json`.
+     *
+     * The sidebar's Open Designer row is gated on this: a design only exists where the wizard wrote one, so
+     * the row is a door to a canvas this project has, not a button that ends in a warning for every other
+     * template.
+     */
+    get hasDesignerProject(): boolean {
+        return this.designerProject;
+    }
+
+    /**
      * Everything the health row needs, in one object.
      *
      * The ESP toolchain is only detected for an ESP project: it costs three process spawns, and for a
@@ -73,13 +86,24 @@ export class RustyState implements vscode.Disposable {
      * cannot report for one board while the controls flash another. `hasProject` is that same answer
      * reduced to a yes/no, which is what the status bar gates its action controls on.
      */
-    private async detectActiveProject(): Promise<{ family: HealthFamily; hasProject: boolean }> {
+    private async detectActiveProject(): Promise<{
+        family: HealthFamily;
+        hasProject: boolean;
+        designer: boolean;
+    }> {
         try {
             const project = await readActiveProject();
-            return { family: project?.board?.kind ?? 'unknown', hasProject: project !== undefined };
+            if (project === undefined) {
+                return { family: 'unknown', hasProject: false, designer: false };
+            }
+            return {
+                family: project.board?.kind ?? 'unknown',
+                hasProject: true,
+                designer: project.designer === true,
+            };
         } catch (error) {
             this.log(`project detection failed: ${String(error)}`);
-            return { family: 'unknown', hasProject: false };
+            return { family: 'unknown', hasProject: false, designer: false };
         }
     }
 
@@ -95,11 +119,13 @@ export class RustyState implements vscode.Disposable {
             const active = await this.detectActiveProject();
             this.projectOpen = active.hasProject;
             this.currentFamily = active.family;
+            this.designerProject = active.designer;
             this.currentEsp = this.currentFamily === 'esp'
                 ? await detectEspToolchainNow({ chips: chipsForTargets(espTargets()) })
                 : undefined;
             this.log(
-                `toolchain: family=${this.currentFamily} cargo=${this.current.cargo.version ?? 'missing'} ` +
+                `toolchain: family=${this.currentFamily}${this.designerProject ? ' designer' : ''} ` +
+                `cargo=${this.current.cargo.version ?? 'missing'} ` +
                 `probe-rs=${this.current.probeRs.version ?? 'missing'} ` +
                 `missingTargets=[${this.current.missingTargets.join(', ')}] ` +
                 `probe=${this.current.probeDiagnosis.kind}` +

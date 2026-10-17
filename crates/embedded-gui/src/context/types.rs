@@ -42,6 +42,12 @@ pub(crate) struct PressTracker {
     /// every ~60 ms), so the movement is accumulated and spent one drawn row at a time — the
     /// remainder is what makes a slow drag land on the same item a fast one would.
     pub(crate) drag_accum_y: i32,
+    /// Whether this gesture has already spent the one turn a flick is worth.
+    ///
+    /// The roller is turned by a *flick* rather than a drag: the first drawn row of travel turns it one
+    /// item and the rest of the gesture is spent, so a long slide cannot run the wheel past the item the
+    /// finger meant. Every other selector keeps spending `drag_accum_y` row by row.
+    pub(crate) flick_fired: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

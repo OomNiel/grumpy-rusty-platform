@@ -88,6 +88,27 @@ impl<'a> Widget for ToggleWidget<'a> {
     }
 }
 
+/// How a finger picks the item a roller lands on.
+///
+/// The two are alternatives rather than layers. `Flick` is the gesture the roller has always had here: one
+/// drawn row of travel turns it one item, once per gesture. `Touch` selects the item drawn on the bar that
+/// was touched instead, which is the gesture for a roller a thumb can reach without aiming.
+///
+/// `Flick` is the default, so a design that says nothing about it keeps the behaviour it already has.
+///
+/// Added to the fork on 2026-10-15, asked for as: *"A touch on one of the three visible bars, selects the
+/// touched bar. Put an option property in the settings bar to select between the older flick selection method
+/// or the touch method."*
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RollerSelection {
+    /// A flick: one drawn row of travel turns the roller one item.
+    #[default]
+    Flick,
+    /// A touch on a drawn bar selects the item on it: the top bar takes the item above, the bottom bar the
+    /// item below, and the middle bar changes nothing because it is already the selected one.
+    Touch,
+}
+
 /// Where a checkbox's label sits relative to its box.
 ///
 /// The box and the label are two things in one widget, and the arrangement used to be fixed: the label was

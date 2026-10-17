@@ -16,7 +16,9 @@
 import type { ToolchainStatus } from './detect';
 import { EspToolchainStatus, espToolchainSummary } from './espToolchain';
 
-/** Which silicon the workspace's project is for. `unknown` means no recognisable project is open. */
+/**
+ * Which silicon the workspace's project is for. `unknown` means no recognisable project is open.
+ */
 export type HealthFamily = 'rp' | 'esp' | 'unknown';
 
 /** Something the user can press to fix what the report found. */
@@ -125,3 +127,31 @@ export function healthReport(input: HealthInput): HealthReport {
 function dedupe(actions: HealthAction[]): HealthAction[] {
     return actions.filter((action, index) => actions.indexOf(action) === index);
 }
+
+/**
+ * What each fix is called on a button.
+ *
+ * One list, because there are now two doors onto it: the `Check Toolchain` modal and the prompt that appears
+ * when the extension loads with something missing. A second copy of these strings is how the two end up
+ * disagreeing about what a button does.
+ */
+export const HEALTH_ACTION_LABELS: Record<HealthAction, string> = {
+    'install-toolchain': 'Install Missing Pieces',
+    'install-esp-toolchain': 'Install ESP Toolchain…',
+    'add-cargo-path': 'Add Cargo to PATH…',
+    'update-probe-firmware': 'Update Probe Firmware',
+};
+
+/**
+ * The command each fix runs.
+ *
+ * The ids are the registered ones (`commands/toolchainCommands.ts`), kept here as strings so this module stays
+ * free of `vscode` and the t1 layer can hold them against `package.json`'s `contributes.commands` — a fix with
+ * no command behind it is a button that does nothing.
+ */
+export const HEALTH_ACTION_COMMANDS: Record<HealthAction, string> = {
+    'install-toolchain': 'rustyPlatform.installToolchain',
+    'install-esp-toolchain': 'rustyPlatform.installEspToolchain',
+    'add-cargo-path': 'rustyPlatform.fixShellPath',
+    'update-probe-firmware': 'rustyPlatform.updateProbeFirmware',
+};

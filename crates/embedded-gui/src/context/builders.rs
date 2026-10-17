@@ -10,7 +10,7 @@ use crate::{
     widget::{FocusGroupId, StyleClassId, Widget, WidgetId},
     widgets::{
         CarouselSpec, ChartMode, CheckboxLabelPosition, CompositeIconSpec, KeyboardLayout,
-        MenuCell, NotificationLevel, ScaleMode, SurfaceState, WidgetKind,
+        MenuCell, NotificationLevel, RollerSelection, ScaleMode, SurfaceState, WidgetKind,
     },
 };
 use embedded_graphics_core::pixelcolor::{Rgb565, WebColors};
@@ -1084,8 +1084,38 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
     where
         S: Into<WidgetStyle>,
     {
+        self.add_roller_with_selection(rect, items, selected, RollerSelection::default(), style)
+    }
+
+    /// A roller that says how a finger picks an item on it (`RollerSelection`).
+    ///
+    /// `add_roller` is the design that says nothing, and it gets `RollerSelection::Flick` — the gesture the
+    /// roller has had here since 0.0.90, and the behaviour every design already written expects. This is the
+    /// builder the markup uses when a design *does* say: `selection="touch"` on the roller. Upstream's
+    /// `add_roller` keeps its signature, so a project that patches to this fork and writes plain markup still
+    /// builds.
+    #[cfg(feature = "rich-widgets")]
+    pub fn add_roller_with_selection<S>(
+        &mut self,
+        rect: Rect,
+        items: &'a [&'a str],
+        selected: usize,
+        selection: RollerSelection,
+        style: S,
+    ) -> Result<WidgetId, GuiError>
+    where
+        S: Into<WidgetStyle>,
+    {
         let selected = selected.min(items.len().saturating_sub(1));
-        let id = self.add_widget(rect, WidgetKind::Roller { items, selected }, style)?;
+        let id = self.add_widget(
+            rect,
+            WidgetKind::Roller {
+                items,
+                selected,
+                selection,
+            },
+            style,
+        )?;
         self.ensure_focus();
         Ok(id)
     }

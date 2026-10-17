@@ -1,7 +1,5 @@
-import type { ToolchainStatus } from '../toolchain/detect';
-import type { EspToolchainStatus } from '../toolchain/espToolchain';
 import { espToolchainSummary } from '../toolchain/espToolchain';
-import { HealthFamily, healthReport } from '../toolchain/health';
+import { HealthFamily, HealthInput, healthReport } from '../toolchain/health';
 
 /**
  * The one-click controls, defined once and shown twice: in the status bar and in the sidebar's
@@ -56,20 +54,33 @@ export const NEW_PROJECT_CONTROL: ControlDescriptor = {
     command: 'rustyPlatform.newProject',
     icon: 'new-folder',
     label: 'New Project',
-    detail: 'pick a board, then a template',
-    tooltip: 'Asks which of the supported boards this is for (the whole catalog is listed, with your default '
-        + 'board first), then which template, then the project name, and writes the workspace.',
+    detail: 'a board, then a template',
+    tooltip: 'Asks which board (your default board first), then the template, then the project name, and '
+        + 'writes the workspace.',
 };
 
 /**
- * Opening the designer, at the top of the Controls section.
+ * The context key the Project view's title-bar icon is gated on.
+ *
+ * The sidebar row is filtered in code (`visibleControls`), but a `view/title` menu can only read a `when`
+ * clause -- so the same answer is published as a context key, by `extension.ts`, whenever the state changes.
+ * One name, both doors: the icon and the row appear together or not at all.
+ */
+export const DESIGNER_PROJECT_CONTEXT = 'rustyPlatform.designerProject';
+
+/**
+ * Opening the designer, at the top of the Controls section -- but only in a Designer project.
  *
  * The designer is a webview panel with a palette command (`rustyPlatform.openDesigner`) that until now had one
  * button in the interface -- a title-bar icon on the Project view, which is not where anyone looks for a
  * command. The Controls section is where every other action lives, so the command gets a row there too.
  *
- * The row runs that command rather than opening the panel itself: one implementation behind both doors, and the
- * question it asks when no project is open is asked once.
+ * Shown only when the open project is a *Designer* (WYSIWYG) template project, i.e. one carrying a
+ * `designer/panel.ui.json`. Every other template has no design to open, so the row would only ever end in the
+ * "open a Rusty Platform project" / "needs a board with a panel" warnings. The Command Palette entry stays
+ * either way, which is what a user who wants to start designing in a `display` project reaches for.
+ *
+ * The row runs that command rather than opening the panel itself: one implementation behind both doors.
  */
 export const OPEN_DESIGNER_CONTROL: ControlDescriptor = {
     command: 'rustyPlatform.openDesigner',
@@ -250,28 +261,39 @@ function withEspWording(controls: ControlDescriptor[], family: HealthFamily): Co
     });
 }
 
+/** The wording overrides for an ESP project, which is the only family left with any. */
+function withFamilyWording(controls: ControlDescriptor[], family: HealthFamily): ControlDescriptor[] {
+    return withEspWording(controls, family);
+}
+
 /**
  * The controls that apply now, worded for the board in front of the user.
  *
  * The family defaults to `unknown`, which keeps the Raspberry Pi wording: it is the one every line was
  * written for, and a project we cannot identify should not be described as if we had identified it.
+ *
+ * `designerProject` is whether the open project is a Designer (WYSIWYG) template project. It is passed in
+ * rather than read here because the sidebar owns no state: `RustyState.hasDesignerProject` is the one answer,
+ * the same way `statusBarActions` takes `projectOpen`.
  */
 export function visibleControls(
     sessionRunning: boolean,
     family: HealthFamily = 'unknown',
+    designerProject = false,
 ): ControlDescriptor[] {
     // The side panel shows everything the status bar shows, plus the profile overrides and the
     // packaging controls.
     // The two that lead the section are the ones that make the others possible -- the designer draws the
     // project, and New Project makes one -- and neither is in CONTROLS, which is also the status-bar list.
+    // The designer leads only where a design exists; New Project leads every session.
     const controls = [
-        OPEN_DESIGNER_CONTROL,
+        ...(designerProject ? [OPEN_DESIGNER_CONTROL] : []),
         NEW_PROJECT_CONTROL,
         ...CONTROLS,
         ...FLASH_PROFILE_CONTROLS,
         ...PACKAGE_CONTROLS,
     ].filter((control) => control.sessionOnly !== true || sessionRunning);
-    return withEspWording(controls, family);
+    return withFamilyWording(controls, family);
 }
 
 /**
@@ -295,21 +317,16 @@ export function statusBarActions(
         return [];
     }
     const actions = ACTION_CONTROLS.filter((control) => control.sessionOnly !== true || sessionRunning);
-    return withEspWording(actions, family);
+    return withFamilyWording(actions, family);
 }
 
 /**
- * What the health row needs: the two toolchain statuses, plus which silicon the open project is for.
+ * What the health row needs: the two toolchain statuses, plus which family the open project belongs to.
  *
- * The family is part of it because the *verdict* depends on it — "no probe" is a fault on a Pico and a
- * fact of life on an ESP32, and the ESP toolchain is the reverse (see `toolchain/health.ts`).
+ * The family is part of it because the *verdict* depends on it — "no probe" is a fault on a Pico and a fact
+ * of life on an ESP32, and the ESP toolchain is the reverse (see `toolchain/health.ts`).
  */
-export interface HealthSummaryInput {
-    status?: ToolchainStatus;
-    esp?: EspToolchainStatus;
-    family: HealthFamily;
-    cargoOnShellPath: boolean;
-}
+export type HealthSummaryInput = HealthInput;
 
 /** Caption, one-line detail and tooltip of the health control, for a given toolchain status. */
 export function healthSummary(input: HealthSummaryInput): HealthSummary {
@@ -339,15 +356,19 @@ export function healthSummary(input: HealthSummaryInput): HealthSummary {
             label: 'Rusty: ready',
             detail: versions,
             markdown: [
-                `**cargo** ${status.cargo.version ?? '?'}`,
                 ...(input.family === 'esp'
-                    ? [...espLine, `**targets** ${status.installedTargets.filter((t) => t !== 'x86_64-unknown-linux-gnu').join(', ')}`]
-                    : [
-                        `**probe-rs** ${status.probeRs.version ?? '?'}`,
-                        `**targets** ${status.installedTargets.filter((t) => t !== 'x86_64-unknown-linux-gnu').join(', ')}`,
+                    ? [
+                        `**cargo** ${status.cargo.version ?? '?'}`,
                         ...espLine,
-                        `**probe** ${probe} — ${status.probeDiagnosis.message}`,
-                    ]),
+                        `**targets** ${status.installedTargets.filter((t) => t !== 'x86_64-unknown-linux-gnu').join(', ')}`,
+                    ]
+                    : [
+                        `**cargo** ${status.cargo.version ?? '?'}`,
+                            `**probe-rs** ${status.probeRs.version ?? '?'}`,
+                            `**targets** ${status.installedTargets.filter((t) => t !== 'x86_64-unknown-linux-gnu').join(', ')}`,
+                            ...espLine,
+                            `**probe** ${probe} — ${status.probeDiagnosis.message}`,
+                        ]),
             ].join('  \n'),
         };
     }

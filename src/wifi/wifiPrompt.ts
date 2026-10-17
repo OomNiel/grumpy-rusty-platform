@@ -128,8 +128,8 @@ export async function ensureWifiEnv(
     folder: vscode.Uri,
     output: vscode.OutputChannel,
 ): Promise<void> {
-    const mainRs = await readMainRs(folder);
-    if (mainRs === undefined || !isWirelessFirmware(mainRs)) {
+    const firmware = await readFirmwareSource(folder);
+    if (firmware === undefined || !isWirelessFirmware(firmware)) {
         setActiveWifiEnv({});
         return;
     }
@@ -177,12 +177,28 @@ function useCredentials(
     output.appendLine(`wifi: ${verb} ${describeWifiSetup(credentials)}`);
 }
 
-async function readMainRs(folder: vscode.Uri): Promise<string | undefined> {
-    try {
-        const bytes = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(folder, 'src', 'main.rs'));
-        return Buffer.from(bytes).toString('utf8');
-    } catch {
+/**
+ * The project's own source, as one string: `src/main.rs` and the sketch's header.
+ *
+ * Both halves are read because a sketch is two files now (see `generate/sketch.ts`): the loop and
+ * `setup()` are in `main.rs`, and the Wi-Fi credentials -- which is what marks a project as wireless --
+ * are constants in `MainHeader.rs`. Reading only `main.rs` would decide that every wireless project is a
+ * wired one and quietly stop offering the credentials prompt.
+ */
+async function readFirmwareSource(folder: vscode.Uri): Promise<string | undefined> {
+    const read = async (relative: string): Promise<string> => {
+        try {
+            const bytes = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(folder, ...relative.split('/')));
+            return Buffer.from(bytes).toString('utf8');
+        } catch {
+            // No such file: a project generated before the header existed has only main.rs.
+            return '';
+        }
+    };
+    const main = await read('src/main.rs');
+    if (main === '') {
         // No src/main.rs means no firmware to hand a network name to.
         return undefined;
     }
+    return `${main}\n${await read('src/MainHeader.rs')}`;
 }

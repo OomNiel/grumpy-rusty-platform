@@ -5,6 +5,8 @@ import { rpTargets } from '../boards/catalog';
 import { espToolchainSummary } from '../toolchain/espToolchain';
 import {
     cargoVisibleOnShellPath,
+    HEALTH_ACTION_COMMANDS,
+    HEALTH_ACTION_LABELS,
     HealthAction,
     healthReport,
 } from '../toolchain/health';
@@ -77,12 +79,7 @@ function summaryLine(state: RustyState): string {
 }
 
 /** What each fix is called on a button. The wording matches the palette entry, so the two agree. */
-const ACTION_LABELS: Record<HealthAction, string> = {
-    'install-toolchain': 'Install Missing Pieces',
-    'install-esp-toolchain': 'Install ESP Toolchain…',
-    'add-cargo-path': 'Add Cargo to PATH…',
-    'update-probe-firmware': 'Update Probe Firmware',
-};
+const ACTION_LABELS: Record<HealthAction, string> = HEALTH_ACTION_LABELS;
 
 export function registerToolchainCommands(state: RustyState, output: vscode.OutputChannel): vscode.Disposable[] {
     /**
@@ -217,14 +214,10 @@ export function registerToolchainCommands(state: RustyState, output: vscode.Outp
                 ...buttons,
             );
             const chosen = report.actions.find((action) => ACTION_LABELS[action] === choice);
-            if (chosen === 'install-toolchain') {
-                await vscode.commands.executeCommand('rustyPlatform.installToolchain');
-            } else if (chosen === 'install-esp-toolchain') {
-                await vscode.commands.executeCommand('rustyPlatform.installEspToolchain');
-            } else if (chosen === 'add-cargo-path') {
-                await addCargoToPathInteractive();
-            } else if (chosen === 'update-probe-firmware') {
-                await vscode.commands.executeCommand('rustyPlatform.updateProbeFirmware');
+            if (chosen !== undefined) {
+                // One mapping for every door onto a fix: the label list and the command behind each label are
+                // `HEALTH_ACTION_LABELS`/`HEALTH_ACTION_COMMANDS`, shared with the load-time prompt.
+                await vscode.commands.executeCommand(HEALTH_ACTION_COMMANDS[chosen]);
             }
         }),
 

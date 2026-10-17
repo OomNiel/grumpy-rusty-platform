@@ -11,6 +11,380 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.2.0] - 2026-10-17
+
+Asked for as *"I feel we are trying to re-invent the wheel. PlatformIO already has all the functionality for c++
+development for our target boards (except for the designer feature). Please strip all platformio related (c++) features
+from this extension. Keep the Arduino c++ main file structure we implemented for the Rust language."*
+
+### Removed
+
+- **The whole Arduino C++ / PlatformIO family**, added between 0.1.0 and 0.1.5: the `platformio.ini` project generator,
+  the `board_config.h` / `panel.h` / `main.cpp` emitters, PlatformIO detection and the `pio` build · upload · serial
+  monitor · clean commands, the PlatformIO debug hand-off, the Arduino health family and its install prompts, the
+  `Language` question in the wizard, the `pioPath` / `pioMonitorPort` / `pioMonitorSpeed` settings, the six
+  `rustyPlatform.arduino*` / `installPio*` commands, the Arduino LCD-rotation carrier (`-DRUSTY_LCD_ROTATION` in
+  `platformio.ini`), the Arduino half of the WYSIWYG designer (`src/designer/cpp.ts`, the family seam, the C++
+  emitter and the vendored `lib/rusty_gui` widget runtime), and the tests, snapshots and docs that went with them.
+- **Opening a PlatformIO folder is no longer a project of ours.** `readProjectAt` reads a `Cargo.toml` and nothing
+  else, so a `platformio.ini` workspace simply gets no Rusty Platform controls — the PlatformIO IDE extension owns it.
+
+### Kept
+
+- **The Arduino-style sketch shape, for Rust.** Nothing about it changed: `src/main.rs` is still `setup()` plus
+  `main()` (the loop inside `main()`), and `src/MainHeader.rs` still holds every import, type alias, constant and
+  helper. That layout was the useful thing the Arduino family taught, and it stays exactly as it was.
+
+### Notes
+
+- The designer is Rust-only again, with no single-family abstraction left behind: `DesignerPanel` names
+  `src/ui.kdl` / `src/ui.rs` / `src/ui_handlers.rs` directly, as it did before 0.1.5.
+- Suite: **908 hermetic checks** (t1 849 · t2 55 · t3 4) — the 82 checks and 102 snapshots that covered the Arduino
+  family are gone with it, not skipped.
+
+## [0.1.5] - 2026-10-16
+
+Asked for as *"Next please prepare the WYSIWYG template for the Arduino option"* — the designer, on the PlatformIO
+side. The Rust Designer draws a canvas and compiles it into markup; the Arduino family has neither the markup nor
+the runtime, so both had to exist first.
+
+### Added
+
+- **An Arduino `Designer (WYSIWYG)` template**, offered on exactly the boards the everything-test is (a panel **and**
+  a touch controller — the CYD today), because a design is a picture of a screen with a finger on it. The wizard
+  asks the project's name and the rotation as it does for the other templates, writes the project, copies the widget
+  runtime into `lib/`, and offers *Open Designer* instead of *Open Project*.
+- **A C++ emitter for a design** (`src/designer/cpp.ts`). A design becomes three files with two lifetimes:
+  `include/ui.h` and `src/ui.cpp` are generated on every save, and `src/ui_handlers.cpp` is the user's — the designer
+  appends a stub for each event and never rewrites what is written, exactly as it does for Rust. `src/main.cpp`
+  calls `ui::setup(display)` once and `ui::loop(display)` forever.
+- **`lib/rusty_gui`, the widget runtime** — a screen, a label, a button and the touch handling that makes a press
+  and a release a pair, drawn with LovyanGFX at the design's own coordinates. It allocates nothing (the widgets are
+  statics and a handler is a plain function), so a widget library cannot fragment the heap. Vendored into a project
+  like the Rust crates are, with a version marker and an offer to refresh a copy that is not this extension's.
+- **The designer now serves both families.** `src/designer/family.ts` says which files a design becomes and how a
+  handler is found; the editor asks it instead of assuming Rust. The rotation the canvas draws for is read from
+  `.cargo/esp-config.toml` or `platformio.ini` — whichever that project's build reads — and written back there.
+  The sidebar's Designer row is no longer hard-coded off for Arduino projects.
+- **What the runtime cannot draw is reported, not drawn wrongly.** Phase 1 is labels and buttons; a design
+  containing anything else gets a line in the panel's problem list naming the widget and the reason, and the emitter
+  leaves it out rather than emitting something that looks like the wrong control. A declared font, a border width and
+  an event the runtime does not raise are reported the same way.
+- **Tests:** a new t1 file for the C++ emitter and the family seam (identity of the runtime's API, the widget
+  skip-and-report rule, handler append/prune where the user's own handler must survive, appearance resolution from
+  both the `style` route and a button's own attributes, the family/board gates, and the wiring at both ends); eleven
+  new goldens for the designer template; and a **real build of a generated designer project** in the e2e matrix,
+  which is what caught the three bugs below.
+
+### Fixed
+
+- **Three C++ facts the compiler had to teach, all found by building a generated designer project:**
+  - The runtime's `Rect` had default member initialisers and no constructor, which stops it being an aggregate under
+    **C++11** — and the ESP32 core compiles sketches as `gnu++11`, so `Rect{16, 8, 288, 26}` did not compile there
+    while it compiled happily under the RP core's C++17. It has a `constexpr` constructor now, with the reason
+    written beside it.
+  - A chained call is a statement, not an initialiser, so `Label w(id, rect, text).textSize(1);` is not C++: the
+    widgets are declared plain and their looks are applied in `setup()`.
+  - A handler stub is appended to the end of the user's file, so it cannot be inside a namespace that closed above
+    it. The handlers are free functions declared at global scope; declaring them in `namespace ui` linked as
+    `undefined reference to ui::on_go_clicked`.
+
+### Notes
+
+- **A design that drives nothing still compiles**, and so does one with a widget the runtime cannot draw: the screen
+  is brought up with whatever it can show, and the panel says what it could not.
+- The Arduino runtime has three text sizes (LovyanGFX `Font0` at 1..3) where the Rust crate has fonts and a vector
+  face. A built-in font maps onto a size; a *declared* font (a BDF in the project) is reported, because drawing the
+  default in silence would be a promise the glass cannot keep.
+
+## [0.1.4] - 2026-10-16
+
+Asked for as *"add the LCD rotation options, which is now not available in Arduino for the ESP32-025 board"* —
+the rotation the Rust family has had since 0.0.x, brought over to the Arduino C++ projects.
+
+### Added
+
+- **LCD rotation for Arduino projects.** The wizard now asks *how is the panel mounted?* when the chosen template
+  drives a panel (the same four choices, in the same words, as the Rust flow — no rotation, 90°, 180°, 270°
+  clockwise), and the answer travels the same way it does in Rust: **into the build, not into the sketch**. It is
+  written as `-DRUSTY_LCD_ROTATION=<n>` in the project's `platformio.ini`, guarded in `include/board_config.h`
+  (`#ifndef` → `0`, so a project that loses the line still builds) and read by the sketch as
+  `board::LCD_ROTATION`, which is what `display.setRotation()` is called with.
+- **The diagnostic screen is laid out for the turned panel.** A quarter turn swaps the panel's sides — the CYD's
+  glass is 320x480, so a turned project draws into 480x320 — and the layout solver is given the size the project
+  will actually address. The Rust templates were already laid out this way; both families now agree, because it is
+  the same solver. Half a turn changes which way up the picture is but not its shape, so those numbers stay put.
+- **`rustyPlatform.lcdRotation` now reaches Arduino projects too.** Changing the setting rewrites the `platformio.ini`
+  flag of an open Arduino project the same way it rewrites `.cargo/esp-config.toml` of a Rust one, and says
+  *rebuild to apply it*. A project that drives no panel is left alone: the flag's presence is what marks a project
+  as one that draws, which is the same rule the generator uses.
+- **Tests.** Rotation round-trips through the ini (replace, add a `build_flags`, a section with none, a
+  multi-environment file left byte-for-byte alone, idempotent), the three places it appears are asserted together
+  (ini flag, header constant, workspace setting) and asserted *absent* for every board and template that draws
+  nothing, the layout is held against the shared solver, and the wiring at both ends (the wizard's question, the
+  settings listener) is guarded. The e2e matrix gained a **real build of a turned panel** — twelve `pio run`
+  builds now — and asserts with PlatformIO's own `idedata` that the compiler sees `RUSTY_LCD_ROTATION=1`, and
+  that a panel-less project defines no rotation at all: a `build_flags` line PlatformIO does not understand is
+  ignored in silence, which is the one failure a successful build would hide.
+
+### Notes
+
+- The header holds the **fallback**, never the choice. Baking the rotation into `board_config.h` would mean that
+  turning the setting and rebuilding did nothing, with nothing to see but a panel that stayed the wrong way up.
+- A board with a panel carrying a template that does not draw (`blinky`) gets none of the three pieces. The gate is
+  the pair — the board *and* the template — exactly as it is in the Rust generator.
+
+## [0.1.3] - 2026-10-16
+
+Asked for as *"create a template for Arduino and esp32-035 equivalent to the Board Test Everything option for
+Rust"* — the Arduino counterpart of the Rust family's `board` template, and with it the panel support the ESP32
+half had been missing.
+
+### Added
+
+- **Arduino `Board test (everything)`**, offered on any board that has a panel **and** a touch controller (the
+  CYD today) — the same rule the Rust family uses for its template of the same name, so the two agree about what
+  "everything" covers and for which boards. One sketch that brings up the panel, its touch controller, the RGB
+  status LED, the card socket, the light sensor and the speaker, and reports all of them on the glass and on the
+  serial port.
+- **The diagnostic screen**, the same one the Rust template draws and for the same reason: a frame, four
+  coloured corners, five named bars (`red green blue black white`), `Hello Grumpy!`, a line of status text, a
+  blinking square as the heartbeat, and a crosshair under the finger with the raw touch values in the log. Each
+  part answers one question no build can: is the drawing area the whole panel, is the image mirrored, is the
+  colour order right, is a channel dead, does touch map to the glass.
+- **The geometry comes from the same solver the Rust template uses** (`espDiagnosticLayout`), so the screen is
+  laid out for the panel in front of you rather than for a 3.5" CYD — a small panel gets smaller markers and a
+  smaller font rather than the CYD's pixel positions off its edge.
+- **`include/panel.h`** — a generated panel + touch driver, written from the board's own pins: one LovyanGFX
+  device class carrying the SPI bus, the panel, the touch controller and a PWM backlight. `lib_deps` gains
+  `lovyan03/LovyanGFX@^1.2.33` for this template only; `blinky` and `serial-log` still pull in nothing.
+- The generated `README.md` now explains what the screen is testing, as a table of *"on the glass"* → *"what it
+  means if it is wrong"*.
+
+### Notes
+
+- **LovyanGFX, not TFT_eSPI**, which would be the more common pick for a CYD: TFT_eSPI is configured by editing
+  `User_Setup.h` **inside the library**, and library code is not edited here (a PlatformIO upgrade would replace
+  it anyway). LovyanGFX is configured by subclassing a device in the project's own header — and it brings the
+  touch controller with it instead of needing a second library.
+- Verified by a real build: the template is in the opt-in e2e matrix (the eleventh PlatformIO build) and
+  compiles **warning-free**. The two things a build cannot prove are marked as one-line knobs in the generated
+  header, the same two the Rust catalogue carries as `colorOrder` and `mirrorX`: `cfg.rgb_order` and the panel
+  reset.
+
+## [0.1.2] - 2026-10-16
+
+Asked for as *"install everything required. I want to test the full product"* — and installing the pieces the
+generated projects *ask for* turned out to be the best test the family has had. Three real bugs came out of it,
+all of them in code that had been verified only against what this machine already had.
+
+### Fixed
+
+- **The Pico projects asked for the wrong PlatformIO platform.** `platform = raspberrypi@1.20.0` is, in the
+  registry, the **mbed** platform: it has one RP2040 board (`pico`, ArduinoCore-mbed) and no `rpipico2`,
+  `rpipicow` or `rpipico2w`. Reproduced in an empty core directory: a generated project built against it dies
+  with `UnknownBoard: Unknown board ID 'rpipico2w'`. It only ever worked here because this machine already had
+  maxgerhardt's **arduino-pico** platform installed from git under the same name. The generated `platformio.ini`
+  now names that git URL, with the commit the builds were verified against recorded in a comment
+  (`aa70b802…`) and a one-line note on how to pin it. Verified in a clean core: the URL resolves to a platform
+  that ships all four Pico boards.
+- **ESP32 boards could be built for the wrong module.** `esp32-s3-devkitc-1` is an **8 MB** board and LilyGo's
+  T-QT is a 4 MB one, so the inherited partition table was sized for flash that is not there. The ini now states
+  the module's own size (`board_build.flash_size`, from the same board data the Rust generator reads) for every
+  ESP board — and deliberately *not* for the RP boards, whose platform already matches the chips.
+- **Two of our boards are indistinguishable from a `platformio.ini` alone**, because PlatformIO's ids are shared
+  — the CYD and the ESP32-DevKitC are both `esp32dev`. The generator now writes the catalogue board id as
+  `custom_rusty_board = …` (PlatformIO ignores `custom_*` keys) and detection reads it first, falling back to the
+  PlatformIO id for a project somebody else wrote. Without it, opening a CYD Arduino project told the health row
+  it was a DevKitC.
+
+### Verified for the first time
+
+- **The ESP32 half of the Arduino family really builds.** With `espressif32@6.9.0` installed, the opt-in e2e
+  layer now builds **ten** generated projects — four Pico boards (both templates) plus the ESP32-DevKitC, the
+  T-QT and the CYD — in about 30 s once the cores are cached, each one checked for its artefact and for warnings
+  in the generated sources. The ESP boards had never been built before; their board ids, flash size and
+  "no debug route" claim were documentation until now.
+- The artefact check learned a platform fact while doing it: an RP2040 build emits a **UF2** and an ESP32 build
+  emits a **`.bin`** and no UF2 at all, so a single expectation for both was a false failure. Both emit an ELF,
+  which is what a debugger loads.
+
+## [0.1.1] - 2026-10-16
+
+Another step on the Arduino C++ family — the debugging half of what the user asked for (*"I want to use the RP
+Debug Probe for uploading and debugging (OpenOCD) for the pico boards"*), plus the test layers that keep the
+whole route honest.
+
+### Added
+
+- **Debug now starts a real session on an Arduino project** instead of only explaining itself. It hands the job
+  to PlatformIO's own debugger — `platformio-ide.startDebugging`, the command behind the PlatformIO IDE's Debug
+  action — which drives OpenOCD over the probe and GDB over the ELF, using the `debug_tool = cmsis-dap` the
+  generated `platformio.ini` already carries.
+- Two things are said out loud instead of failing somewhere inside a debugger, because both are knowable:
+  **the PlatformIO IDE extension is not installed** (with `pio debug` as the by-hand alternative) and **the
+  project has not been built yet**, so there is no firmware for the debugger to load.
+- `tests/layers/t2-cli/pio-detect.test.js`: PlatformIO detection driven by a fake `pio` in a fake
+  `~/.platformio`, with real child processes. It caught a real bug on its first run — a **stray file** in
+  `platforms/` was counted as an installed platform, so `platforms/README.md` would have claimed a platform that
+  cannot build anything. The directory is now read for directories.
+- `tests/layers/t4-e2e/arduino-build.test.js` (`--e2e`): **real `pio run` builds** of generated projects, six of
+  them (four Pico boards × both templates), each checking that a UF2 came out and that **nothing warned about the
+  generated sources**. A board whose platform is not installed is *skipped with that reason*, never downloaded —
+  an `espressif32` fetch is a few hundred megabytes and a test suite that quietly spends them is one people stop
+  running.
+
+### Notes
+
+- The suite's strongest check of the debug route reads the **installed PlatformIO IDE's own manifest** to confirm
+  the command and debugger type it declares are the ones this code calls — and skips, rather than passing, on a
+  machine without it.
+
+## [0.1.0] - 2026-10-16
+
+**The Arduino C++ family, phase 1.** Asked for and chosen in as many words: a *"third family inside this
+extension"*, phase 1 being *"wizard + build + flash + monitor (PlatformIO core)"*, with *"both board families
+from the start"* and uploads/debug sessions on a Pico going through *"the RP Debug Probe (OpenOCD)"* while the
+ESP32 boards keep USB. This is a **minor** version rather than another `0.0.x`: it is the second language the
+extension can generate, not another template in the first one.
+
+### Added
+
+- **New Project now begins with a language question** — *Rust (Embassy)* or *Arduino C++ (PlatformIO)* — and
+  the same board list, the same boards and the same names follow either answer. A board is a board: what
+  changes is who builds for it.
+- **Arduino C++ projects are generated as PlatformIO projects**: `platformio.ini`, `include/board_config.h`,
+  `src/main.cpp`, `.vscode/settings.json`, `.gitignore` and a `README.md`. `setup()` and `loop()` are the only
+  functions in the sketch, exactly as asked for, and the file ends with the same *"your own code goes below
+  this line"* guidance the Rust sketches end with, with a commented example.
+- **`include/board_config.h` is the `MainHeader.rs` of an Arduino project**: the board's own facts in one place
+  — its name and id, the on-board LED, and the panel, light sensor, speaker and card-reader pins a board
+  carries. It holds the *same* board data the Rust generator uses, imported rather than copied, so a pin number
+  exists once and both toolchains agree by construction.
+- **Uploads and debug sessions on a Pico go through the RP Debug Probe**: `upload_protocol = cmsis-dap` and
+  `debug_tool = cmsis-dap` in the generated ini, so PlatformIO drives its own OpenOCD over the probe. No
+  BOOTSEL dance, no 1200-bps touch, and nothing is written without the probe. The ESP32 boards keep
+  `upload_protocol = esptool` over USB, as they always were.
+- **Build · Upload · Serial Monitor · Clean** in the Controls section and the status bar, worded for this
+  route (`pio run`, `pio run -t upload`, `pio device monitor`, `pio run -t clean`). The rows that are
+  statements about cargo — the two build profiles, the profile-override flashes, the `.deb` packaging pair —
+  are not shown for an Arduino project. The Rust-named commands stay in the palette (and in any keybinding), so
+  reaching for *Flash* with an Arduino project open runs an **upload** rather than a `cargo build` of a project
+  that has no `Cargo.toml` — one delegation, so nothing about PlatformIO leaks into the Rust command bodies.
+- **PlatformIO detection**, with the trap this machine taught: Core is installed by the PlatformIO IDE into
+  `~/.platformio/penv/bin/pio` and is **not** on `PATH`, so that path is looked at first and `PATH` after it.
+  `rustyPlatform.pioPath` overrides it.
+- **`rustyPlatform.pioMonitorPort` and `rustyPlatform.pioMonitorSpeed`** (115200 by default): which serial port
+  the monitor takes. Left empty, PlatformIO picks — and on a bench with two boards attached that is a guess,
+  which is the one thing the extension has been careful never to make.
+- **The load-time requirement prompt covers this family too** (0.0.99's feature, no new mechanism): an Arduino
+  project is told about PlatformIO and the platform it asks for, with *Install PlatformIO…* and *Download
+  Platform…* buttons, and about the debug probe on a board that uploads through it. It is **never** told about
+  cargo, rustup or the ESP toolchain — none of which this route uses.
+
+### Changed
+
+- `HealthFamily` gained `'arduino'`, so the health row, the status-bar tooltip and the prompt all read one
+  verdict per family, as they do for RP and ESP.
+- `ActiveProject` gained a `kind` and an `arduino` facet: a folder with a `platformio.ini` is a project now, and
+  a folder with **both** files stays a Rust project (a `Cargo.toml` is the stronger signal).
+- `rustyPlatform.debug` on an Arduino project says what is true instead of starting a probe-rs session against a
+  project with no Cargo.toml: PlatformIO drives the probe on that route (`pio debug`, or the PlatformIO IDE's
+  Debug button — the ini is already configured for it).
+
+### Notes
+
+- **Verified on real hardware-time builds, not by reading the code**: all four Raspberry Pi boards × both
+  templates build with the real PlatformIO 6.2.0 and the `earlephilhower` Arduino core, **`SUCCESS`, no
+  warnings**, at 2.8–7.5 % flash. Two of those builds failed first and are the reason the header looks the way
+  it does: the core already defines `BOARD_NAME` (redefined-macro warning), and embassy spells a pin `PIN_25`,
+  which is not a C++ constant. The board facts are therefore `constexpr` constants in a `board` namespace;
+  the pins are GPIO numbers, with the Rust spelling kept in a comment.
+- The ESP32 half of this family is generated and its `platformio.ini` is written, but it has **not been built**:
+  the `espressif32` platform is not installed on this machine and pulling it is a few hundred megabytes. The
+  board ids (`esp32dev`, `esp32-s3-devkitc-1`) are the documented ones and are to be confirmed with
+  `pio boards espressif32` on the first run — the RP ids are verified against the installed `raspberrypi`
+  1.20.0 (`rpipico`, `rpipico2`, `rpipicow`, `rpipico2w`).
+- Debugging an Arduino project from inside this extension (a launch configuration over the probe) is **phase
+  1b**, together with the panel drivers for the CYD and the T-QT. `plans/arduino-cpp-family.md` is the plan.
+  *(0.1.1 answered the debugging half: Debug hands the session to PlatformIO's own debugger.)*
+
+## [0.0.99] - 2026-10-16
+
+### Added
+
+- **The extension asks about anything the toolchain is missing when a window loads** (asked for in as many
+  words: *"The extension must prompt for any missing requirements when it loads."*). It used to wait to be
+  asked: a window could open with no cargo, no probe-rs, or an ESP project and no Xtensa toolchain, and the
+  status-bar row just sat there saying nothing. Now a warning names what is missing and offers the fix as a
+  button — the same fixes the *Check Toolchain* modal offers, because both read the one health report.
+- It also re-checks when the open project changes, which is when a *different* set of requirements becomes true
+  (opening a CYD project in a window that had been sitting on a Pico one).
+- **`Don't Show Again`** on the prompt remembers that particular set of requirements, in `globalState`, so it is
+  silenced for good — while a set that later *changes* is still announced.
+- **`rustyPlatform.promptMissingRequirements`** (on by default) switches the prompt off entirely, for anyone who
+  would rather keep the health row as the only place this is said.
+
+### Changed
+
+The button text for each fix, and the command behind it, are now one list in `toolchain/health.ts`
+(`HEALTH_ACTION_LABELS`/`HEALTH_ACTION_COMMANDS`) instead of the mapping being spelled out a second time in the
+`Check Toolchain` command. Two doors onto the same fix, one definition of what each does.
+
+## [0.0.98] - 2026-10-16
+
+### Added
+
+- **Both generated files now say where your own code goes.** `src/main.rs` ends with a block answering the
+  question the two-file layout invites: your functions belong below `main()` (Rust does not mind about the order
+  of items, so the top of the file keeps the shape of the sketch), a function that needs the hardware takes
+  `state` (or one of its fields), anything that does *not* touch the hardware reads better in `MainHeader.rs`,
+  and a driver that outgrows a couple of functions belongs in `src/my_driver.rs` with a `mod` line.
+  `src/MainHeader.rs` ends with the matching note — including the visibility rule that bites first: `main.rs`
+  reaches the header through a glob import, so a helper written there has to be `pub` to be callable at all.
+- Both blocks carry a **commented-out example**, and it names a peripheral the board actually has: the LED
+  channel on a CYD, `state.led` on a Pico, `gpio_set` on a Pico W (whose LED is a GPIO on the wireless chip),
+  and a form naming no peripheral on a board with nothing to blink. A panel's backlight pin is never offered —
+  the first version did, and that is precisely the sort of example that teaches the wrong lesson in the first
+  file someone reads.
+
+## [0.0.97] - 2026-10-16
+
+### Added
+
+- **Every generated project is an Arduino-style sketch now, in two files.** `src/main.rs` is `setup()` and
+  `main()` — and nothing else but what those two need: the crate attributes, the side-effect imports, the
+  statics and the `State` struct. `setup()` initiates every peripheral and instantiates every class once and
+  hands the whole lot back as `State`; `main()` calls it and runs the implementation in a loop of its own, so
+  the code you write lives in one function and reaches the hardware as `state.display`, `state.touch`, … The
+  second file, **`src/MainHeader.rs`**, is the sketch's header: every `use` (re-exported, so the single
+  `use main_header::*;` brings them all into scope), the type aliases for the nested driver types, the
+  constants, and the helper types, functions and macros.
+- **A generated project's Wi-Fi credentials and helper functions are where a sketch keeps them**: the four
+  `WIFI_*` constants and the address parser are in the header beside everything else rather than in the middle
+  of `main()`, and so are the touch helpers, the calibration record helpers and the `beep!` macro.
+
+### Changed
+
+- **The sidebar's Open Designer row appears only in a Designer project** — one with a
+  `designer/panel.ui.json`, which is what the wizard writes for the `designer` template and for nothing else.
+  Every other template has no design for the canvas to open, so the row only ever ended in one of the
+  designer's own warnings. The **Project view's title-bar icon follows the same rule**, through a
+  `rustyPlatform.designerProject` context key. The command itself stays in the Command Palette either way, so a
+  `display` or `touch` project can still start a design.
+- **A panel project's SPI bus and pixel buffer live in `StaticCell`s.** They have to outlive `setup()`, since
+  the panel's driver is part of the `State` it hands back; a panel project therefore also depends on
+  `static_cell`, and `panel_clock()`/`touch_clock()` are header functions rather than closures (a closure's type
+  cannot be written into a struct field).
+- The Wi-Fi credentials prompt recognises a wireless project by reading **both** of the sketch's files, so it
+  still appears for projects generated by this version.
+
+### Verified
+
+- Every ESP template was compiled with the Xtensa toolchain (`cargo check`) on three boards — CYD, T-QT and
+  ESP32-DevKitC, including both `designer` variants — and every Pico template with `cargo build` on
+  thumbv6m/thumbv8m: **no errors and no warnings from the generated code.**
+
 ## [0.0.94] - 2026-10-14
 
 ### Added

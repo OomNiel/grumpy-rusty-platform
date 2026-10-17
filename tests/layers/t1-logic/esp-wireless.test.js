@@ -15,7 +15,7 @@
  *    it stalls at runtime, which is the worst kind of bug to hand to someone.
  */
 
-const { test, ok, equal, notOk } = require('../../lib/harness');
+const { test, ok, equal, notOk, sketchSource } = require('../../lib/harness');
 const { compiled } = require('../../lib/harness');
 const { boardById } = compiled('boards/catalog');
 const { generateProjectFiles } = compiled('generate/files');
@@ -32,9 +32,8 @@ function filesFor(boardId, template) {
     return new Map(files.map((file) => [file.path, file.content]));
 }
 
-/** The generated `src/main.rs`, which is where every runtime fact below lives. */
 function mainRs(boardId, template) {
-    return filesFor(boardId, template).get('src/main.rs');
+    return sketchSource(filesFor(boardId, template));
 }
 
 function cargoToml(boardId, template) {

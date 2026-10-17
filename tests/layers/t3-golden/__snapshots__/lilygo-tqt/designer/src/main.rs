@@ -5,34 +5,42 @@
 #![no_std]
 #![no_main]
 
-use embassy_executor::Spawner;
-use embassy_time::{Duration, Instant, Timer};
-use embedded_graphics::pixelcolor::Rgb565;
-use embedded_graphics::prelude::*;
-use embedded_hal_bus::spi::ExclusiveDevice;
-use esp_hal::clock::CpuClock;
-use esp_hal::delay::Delay;
-use esp_hal::gpio::{Level, Output, OutputConfig};
-use esp_hal::spi::master::{Config as SpiConfig, Spi};
-use esp_hal::time::Rate;
-use esp_hal::timer::timg::TimerGroup;
-use esp_println as _;
-use mipidsi::options::{ColorOrder, Orientation, Rotation};
-use mipidsi::{models, Builder};
-use mipidsi::interface::SpiInterface as SPIInterface;
-use esp_backtrace as _;
+// The ESP-IDF bootloader expects an application descriptor in the image. Without it the
+// bootloader refuses to start the image, so this line is not decoration.
+esp_bootloader_esp_idf::esp_app_desc!();
+
+// The sketch's header: every import, the type aliases, the constants and the helpers.
+// The path is spelled out because the file is named the way the sketch reads it, not the way Rust
+// spells a module name.
+#[path = "MainHeader.rs"]
+mod main_header;
+use main_header::*;
 
 // The design's own module, and the code-behind it calls.
 mod ui;
 mod ui_handlers;
 
+/// The batching buffer mipidsi's interface borrows, for the same reason: the interface is part of the
+/// State, so the buffer has to outlive setup().
+static BUFFER_CELL: static_cell::StaticCell<[u8; 512]> = static_cell::StaticCell::new();
 
-// The ESP-IDF bootloader expects an application descriptor in the image. Without it the
-// bootloader refuses to start the image, so this line is not decoration.
-esp_bootloader_esp_idf::esp_app_desc!();
+/// Every value this sketch keeps: the design and the panel it is drawn on, created once by setup() and used by
+/// the loop in main().
+pub struct State {
+    /// The panel, brought up and ready to draw on.
+    #[allow(dead_code)]
+    display: DisplayDriver,
 
-#[esp_rtos::main]
-async fn main(_spawner: Spawner) -> ! {
+    /// The backlight pin, held on. Nothing reads it: it is here so that it is not dropped with the rest of `setup()`’s locals, which would leave the panel lit but the glass dark.
+    #[allow(dead_code)]
+    backlight: Output<'static>,
+}
+
+/// One-time initialisation -- the Arduino setup().
+///
+/// Brings up the design and the panel it is drawn on and hands it back as a State for main() to run. Everything that
+/// must happen once, and only once, belongs here.
+pub async fn setup() -> State {
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
 
@@ -50,10 +58,8 @@ async fn main(_spawner: Spawner) -> ! {
     // with a line that can only come from this run.
     log::info!("=== {} {} starting ===", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
     log::info!("board: LilyGo T-QT (ESP32-S3) (ESP32S3), 4 MB flash");
-
-
     // Backlight first, and note the level: this board switches the transistor on with a LOW level.
-    let _backlight = Output::new(
+    let backlight = Output::new(
         peripherals.GPIO10,
         Level::Low,
         OutputConfig::default(),
@@ -64,7 +70,7 @@ async fn main(_spawner: Spawner) -> ! {
     let spi = Spi::new(
         peripherals.SPI2,
         // 0.85" GC9107 128x128: 27000000 Hz. Lower this first if the image is unstable.
-        SpiConfig::default().with_frequency(Rate::from_khz(27000)),
+        panel_clock(),
     )
     .expect("SPI configuration")
         .with_sck(peripherals.GPIO3)
@@ -76,10 +82,12 @@ async fn main(_spawner: Spawner) -> ! {
     let spi = ExclusiveDevice::new(spi, cs, Delay::new()).expect("SPI device");
 
     // 512 bytes is mipidsi's own example buffer size: enough to batch pixels, small
-    // enough to live on the stack, so this build needs no heap.
-    let mut buffer = [0u8; 512];
+    // enough to live on the stack, so this build needs no heap. It is kept in a StaticCell because the
+    // panel's interface borrows it and the panel outlives setup(), which is where the sketch's state is
+    // built.
+    let buffer: &'static mut [u8; 512] = BUFFER_CELL.init([0u8; 512]);
     let dc = Output::new(peripherals.GPIO6, Level::Low, OutputConfig::default());
-    let di = SPIInterface::new(spi, dc, &mut buffer);
+    let di = SPIInterface::new(spi, dc, buffer);
 
     // Delay is a unit struct in esp-hal 1.x, not a value: it is built with new().
     let mut delay = Delay::new();
@@ -119,7 +127,6 @@ async fn main(_spawner: Spawner) -> ! {
 
     log::info!("panel ready: 0.85\" GC9107 128x128");
 
-
     let (width_i, height_i) = if rotated {
         (height as u32, width as u32)
     } else {
@@ -138,9 +145,43 @@ async fn main(_spawner: Spawner) -> ! {
         height_i,
         drawn_at.elapsed().as_millis()
     );
+    State {
+        display,
+        backlight,
+    }
+}
+
+/// The sketch's entry point -- the Arduino main() around setup() and the loop.
+///
+/// setup() runs once, then the implementation below repeats for as long as the board is powered. This is the
+/// function to edit: everything it needs from setup() is in state.
+#[esp_rtos::main]
+async fn main(_spawner: Spawner) -> ! {
+    let _state = setup().await;
 
     loop {
         log::info!("design alive");
         Timer::after(Duration::from_secs(10)).await;
     }
 }
+// --- Your own code goes below this line ---------------------------------------------------------
+//
+// The sketch is this file plus MainHeader.rs. Everything above is the shape of it: State is what setup()
+// created, and main() is the loop you edit. Rust does not mind about the order of items, so adding your
+// functions below main() leaves the top of the file as the shape of the sketch.
+//
+// A function that needs the hardware takes state, or one of its fields:
+//
+//     /// A step of your own: whatever setup() brought up is in state.
+//     async fn step(state: &mut State) {
+//         // Drive something in state here -- a display, a sensor, the radio.
+//         Timer::after_millis(120).await;
+//     }
+//
+// ...and is called from the loop with step(&mut state).await;, or once from the end of setup()
+// if it should only run at start-up.
+//
+// Anything that does not touch the hardware -- a conversion, a formula, a lookup table -- reads better in
+// MainHeader.rs beside the other helpers, where it is reachable from here and from setup(). And a driver
+// of your own that outgrows a couple of functions deserves its own file: put it in src/my_driver.rs and
+// add mod my_driver; up with mod main_header;.

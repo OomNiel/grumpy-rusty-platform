@@ -170,6 +170,9 @@ pub enum WidgetDef {
         id: Option<String>,
         options: Vec<String>,
         selected: usize,
+        /// How a finger picks an item on it: `"flick"` (the default, and what a design that says nothing
+        /// gets) or `"touch"` for the bars a touch selects. Normalised by the parser.
+        selection: String,
         style: Option<String>,
     },
     Scale {

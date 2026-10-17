@@ -44,7 +44,11 @@ export class ControlsViewProvider implements vscode.TreeDataProvider<vscode.Tree
         healthItem.command = { command: HEALTH_CONTROL.command, title: health.label };
 
         const items = [healthItem];
-        for (const control of visibleControls(activeProbeRsSession() !== undefined, this.state.family)) {
+        for (const control of visibleControls(
+            activeProbeRsSession() !== undefined,
+            this.state.family,
+            this.state.hasDesignerProject,
+        )) {
             const item = new vscode.TreeItem(control.label, vscode.TreeItemCollapsibleState.None);
             item.iconPath = new vscode.ThemeIcon(control.icon);
             item.description = control.detail;

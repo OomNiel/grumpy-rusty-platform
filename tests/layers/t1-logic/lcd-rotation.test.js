@@ -13,7 +13,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { test, ok, notOk, equal, contains, notContains, compiled } = require('../../lib/harness');
+const { test, ok, notOk, equal, contains, notContains, compiled, sketchSource } = require('../../lib/harness');
 const { repoRoot } = require('../../lib/harness');
 const { boardById } = compiled('boards/catalog');
 const { generateProjectFiles } = compiled('generate/files');

@@ -14,6 +14,7 @@ const { compiled, repoRoot } = require('../../lib/harness');
 const {
     ACTION_CONTROLS,
     CONTROLS,
+    DESIGNER_PROJECT_CONTEXT,
     FLASH_PROFILE_CONTROLS,
     NEW_PROJECT_CONTROL,
     OPEN_DESIGNER_CONTROL,
@@ -83,14 +84,14 @@ test('every control is a declared command with a plain codicon name', () => {
     equal(statusBarText(CONTROLS[1]), '$(tools) Build for Debug', 'the status bar caption comes from the same fields');
 });
 
-test('Stop is the only control that comes and goes', () => {
+test('Stop is the only control that comes and goes with a session', () => {
     const without = visibleControls(false).map((control) => control.command);
     const during = visibleControls(true).map((control) => control.command);
 
     equal(
         CONTROLS.filter((control) => control.sessionOnly === true).map((control) => control.command).join(','),
         'rustyPlatform.debugStop',
-        'nothing else may hide itself',
+        'nothing else may hide itself behind a session',
     );
     ok(!without.includes('rustyPlatform.debugStop'), 'with no session there is nothing to stop');
     equal(during.length, without.length + 1, 'during a session exactly one control appears');
@@ -287,9 +288,10 @@ test('New Project is a control, and it opens the board list the wizard already h
 
     ok(declared.has('rustyPlatform.newProject'), 'the command has to be declared');
     ok(shown.includes('rustyPlatform.newProject'), 'and reachable from the Controls section');
-    equal(shown[1], 'rustyPlatform.newProject', 'near the top: the designer leads, this is the second row');
+    equal(shown[0], 'rustyPlatform.newProject', 'it leads a window with no Designer project open');
     ok(!statusBar.includes('rustyPlatform.newProject'), 'but not in the status bar, which keeps its six');
-    contains(NEW_PROJECT_CONTROL.tooltip, 'boards', 'the tooltip says the dialog offers the boards');
+    contains(NEW_PROJECT_CONTROL.tooltip, 'board', 'the tooltip says the dialog offers the boards');
+    contains(NEW_PROJECT_CONTROL.tooltip, 'template', 'and what it asks after the board');
 
     // And the dialog really does: the command reads the catalog and shows a quick pick, rather than offering a
     // fixed list that could drift from the boards that exist.
@@ -300,18 +302,29 @@ test('New Project is a control, and it opens the board list the wizard already h
 });
 
 // Asked for on 2026-10-09: the designer's command had one button in the interface, a title-bar icon on the
-// Project view, which is not where anyone looks for a command. It is the first row of the Controls section now.
-test('Open Designer is the first control, and it runs the command the palette runs', () => {
+// Project view, which is not where anyone looks for a command. It leads the Controls section in a Designer
+// project. Asked for again on 2026-10-16: only in a Designer (WYSIWYG) project -- every other template has no
+// design for the canvas to open, so the row would only ever end in one of the designer's own warnings.
+test('Open Designer leads the controls, but only in a Designer project', () => {
     const fs = require('fs');
     const path = require('path');
     const manifest = JSON.parse(fs.readFileSync(path.join(repoRoot(), 'package.json'), 'utf8'));
     const declared = new Map(
         manifest.contributes.commands.map((entry) => [entry.command, entry.title]),
     );
-    const shown = visibleControls(false).map((control) => control.command);
+    const designing = visibleControls(false, 'unknown', true).map((control) => control.command);
+    const plain = visibleControls(false).map((control) => control.command);
     const statusBar = CONTROLS.map((control) => control.command);
 
-    equal(shown[0], 'rustyPlatform.openDesigner', 'it leads the Controls section');
+    equal(designing[0], 'rustyPlatform.openDesigner', 'it leads the Controls section of a Designer project');
+    ok(!plain.includes('rustyPlatform.openDesigner'), 'and is absent in every other project');
+    equal(
+        designing.length,
+        plain.length + 1,
+        'the gate adds exactly one row rather than reordering the rest',
+    );
+    equal(designing.slice(1).join(','), plain.join(','), 'and the other rows keep their order');
+
     ok(declared.has('rustyPlatform.openDesigner'), 'the command has to be declared');
     equal(
         declared.get('rustyPlatform.openDesigner'),
@@ -320,6 +333,35 @@ test('Open Designer is the first control, and it runs the command the palette ru
     );
     equal(OPEN_DESIGNER_CONTROL.label, 'Open Designer', 'the label the row shows is the command\'s own name');
     ok(!statusBar.includes('rustyPlatform.openDesigner'), 'sidebar only: the status bar keeps its six rows');
+
+    // Hiding the row must not hide the command: a designer can be started in a project that has no design yet.
+    const palette = (manifest.contributes.menus ?? {}).commandPalette ?? [];
+    equal(
+        palette.filter((entry) => entry.command === 'rustyPlatform.openDesigner').length,
+        0,
+        'the palette must not gain a `when` clause: the palette is where the command still lives',
+    );
+
+    // The Project view's title-bar icon is the same door as the sidebar row, so it is gated on the same answer
+    // -- as a context key, because a `view/title` entry cannot call anything.
+    const titleBar = (manifest.contributes.menus?.['view/title'] ?? []).filter(
+        (entry) => entry.command === 'rustyPlatform.openDesigner',
+    );
+    equal(titleBar.length, 1, 'the icon is contributed once');
+    equal(
+        titleBar[0].when,
+        `view == rustyPlatform.project && ${DESIGNER_PROJECT_CONTEXT}`,
+        'and it is hidden unless the open project is a Designer project',
+    );
+    const extension = fs.readFileSync(path.join(repoRoot(), 'src/extension.ts'), 'utf8');
+    contains(extension, 'DESIGNER_PROJECT_CONTEXT', 'the key the icon reads is the one the extension sets');
+    contains(
+        extension,
+        'state.hasDesignerProject',
+        'and it is set from the same state the sidebar row is filtered with',
+    );
+    contains(extension, "'setContext'", 'published as a context key, which is all a when-clause can see');
+    contains(extension, 'state.onDidChange', 'and republished whenever the state changes, so it tracks the project');
 
     // The row carries what every other control row carries, or it renders differently from its neighbours.
     ok(OPEN_DESIGNER_CONTROL.icon.length > 0, 'an icon');
@@ -331,4 +373,17 @@ test('Open Designer is the first control, and it runs the command the palette ru
     const source = fs.readFileSync(path.join(repoRoot(), 'src/commands/designerCommands.ts'), 'utf8');
     contains(source, "registerCommand('rustyPlatform.openDesigner'", 'the command exists in one place');
     contains(source, 'showDesigner', 'and it is what opens the panel');
+
+    // The whole gate, end to end: the view asks the shared state, the state asks the project reader, and the
+    // project reader looks for the designer's own document. A break anywhere in that chain puts the row back
+    // in every project, which is the thing that was wrong.
+    const view = fs.readFileSync(path.join(repoRoot(), 'src/ui/controlsView.ts'), 'utf8');
+    contains(view, 'this.state.hasDesignerProject', 'the sidebar asks whether this is a Designer project');
+    const state = fs.readFileSync(path.join(repoRoot(), 'src/state.ts'), 'utf8');
+    contains(state, 'get hasDesignerProject()', 'the state exposes that answer');
+    contains(state, 'active.designer', 'and it comes from the project reader');
+    const reader = fs.readFileSync(path.join(repoRoot(), 'src/project/activeProject.ts'), 'utf8');
+    contains(reader, 'DESIGNER_DOCUMENT_PATH', 'which looks for the designer\'s own document');
+    const model = fs.readFileSync(path.join(repoRoot(), 'src/designer/model.ts'), 'utf8');
+    contains(model, "DESIGNER_DOCUMENT_PATH = 'designer/panel.ui.json'", 'the one definition of that path');
 });

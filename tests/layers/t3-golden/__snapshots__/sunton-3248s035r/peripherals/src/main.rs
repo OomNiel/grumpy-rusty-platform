@@ -5,21 +5,35 @@
 #![no_std]
 #![no_main]
 
-use embassy_executor::Spawner;
-use embassy_time::{Duration, Timer};
-use esp_hal::analog::adc::{Adc, AdcConfig, Attenuation};
-use esp_hal::analog::dac::Dac;
-use esp_hal::clock::CpuClock;
-use esp_hal::timer::timg::TimerGroup;
-use esp_println as _;
-use esp_backtrace as _;
-
 // The ESP-IDF bootloader expects an application descriptor in the image. Without it the
 // bootloader refuses to start the image, so this line is not decoration.
 esp_bootloader_esp_idf::esp_app_desc!();
 
-#[esp_rtos::main]
-async fn main(_spawner: Spawner) -> ! {
+// The sketch's header: every import, the type aliases, the constants and the helpers.
+// The path is spelled out because the file is named the way the sketch reads it, not the way Rust
+// spells a module name.
+#[path = "MainHeader.rs"]
+mod main_header;
+use main_header::*;
+
+/// Every value this sketch keeps: the sensors and the speaker, created once by setup() and used by
+/// the loop in main().
+pub struct State {
+    /// The ADC the light sensor is read through.
+    adc: Adc<'static, esp_hal::peripherals::ADC1<'static>, esp_hal::Blocking>,
+
+    /// The light sensor on GPIO34.
+    light: AdcPin<esp_hal::peripherals::GPIO34<'static>, esp_hal::peripherals::ADC1<'static>, ()>,
+
+    /// The speaker, written to as a square wave.
+    speaker: Dac<'static, esp_hal::peripherals::DAC2<'static>>,
+}
+
+/// One-time initialisation -- the Arduino setup().
+///
+/// Brings up the sensors and the speaker and hands it back as a State for main() to run. Everything that
+/// must happen once, and only once, belongs here.
+pub async fn setup() -> State {
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
 
@@ -37,25 +51,36 @@ async fn main(_spawner: Spawner) -> ! {
     // with a line that can only come from this run.
     log::info!("=== {} {} starting ===", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
     log::info!("board: ESP32-035 LCD Panel (ESP32), 4 MB flash");
-
-
     log::info!("peripherals: LDR on GPIO34 (ADC1), speaker on GPIO26 (DAC2 into an LTK8002D)");
 
     // The light sensor: 3.3V through a resistor into this pin, with the LDR to ground. 11 dB attenuation so
     // the full swing is readable rather than clipping at the top.
     let mut adc_config = AdcConfig::new();
-    let mut light = adc_config.enable_pin(peripherals.GPIO34, Attenuation::_11dB);
-    let mut adc = Adc::new(peripherals.ADC1, adc_config);
+    let light = adc_config.enable_pin(peripherals.GPIO34, Attenuation::_11dB);
+    let adc = Adc::new(peripherals.ADC1, adc_config);
 
     // The speaker: this pin is DAC channel 2, so what it outputs is the waveform itself.
-    let mut speaker = Dac::new(peripherals.DAC2, peripherals.GPIO26);
+    let speaker = Dac::new(peripherals.DAC2, peripherals.GPIO26);
+    State {
+        adc,
+        light,
+        speaker,
+    }
+}
+
+/// The sketch's entry point -- the Arduino main() around setup() and the loop.
+///
+/// setup() runs once, then the implementation below repeats for as long as the board is powered. This is the
+/// function to edit: everything it needs from setup() is in state.
+#[esp_rtos::main]
+async fn main(_spawner: Spawner) -> ! {
+    let mut state = setup().await;
 
     loop {
-
         // Non-blocking: retry rather than expect, because the first read after boot reports WouldBlock.
         let mut light_raw: Option<u16> = None;
         for _ in 0..50 {
-            if let Ok(value) = adc.read_oneshot(&mut light) {
+            if let Ok(value) = state.adc.read_oneshot(&mut state.light) {
                 light_raw = Some(value);
                 break;
             }
@@ -81,14 +106,35 @@ async fn main(_spawner: Spawner) -> ! {
         // A square wave, which a small speaker reproduces loudest: half a millisecond each way is about a
         // kilohertz. Written straight to the DAC, so the loop *is* the sample clock.
         for _ in 0..200 {
-            speaker.write(200);
+            state.speaker.write(200);
             Timer::after(Duration::from_micros(500)).await;
-            speaker.write(56);
+            state.speaker.write(56);
             Timer::after(Duration::from_micros(500)).await;
         }
         // Back to the middle, so the amplifier is not left against a rail between tones.
-        speaker.write(128);
+        state.speaker.write(128);
 
         Timer::after(Duration::from_millis(1000)).await;
     }
 }
+// --- Your own code goes below this line ---------------------------------------------------------
+//
+// The sketch is this file plus MainHeader.rs. Everything above is the shape of it: State is what setup()
+// created, and main() is the loop you edit. Rust does not mind about the order of items, so adding your
+// functions below main() leaves the top of the file as the shape of the sketch.
+//
+// A function that needs the hardware takes state, or one of its fields:
+//
+//     /// A step of your own: whatever setup() brought up is in state.
+//     async fn step(state: &mut State) {
+//         // Drive something in state here -- a display, a sensor, the radio.
+//         Timer::after_millis(120).await;
+//     }
+//
+// ...and is called from the loop with step(&mut state).await;, or once from the end of setup()
+// if it should only run at start-up.
+//
+// Anything that does not touch the hardware -- a conversion, a formula, a lookup table -- reads better in
+// MainHeader.rs beside the other helpers, where it is reachable from here and from setup(). And a driver
+// of your own that outgrows a couple of functions deserves its own file: put it in src/my_driver.rs and
+// add mod my_driver; up with mod main_header;.

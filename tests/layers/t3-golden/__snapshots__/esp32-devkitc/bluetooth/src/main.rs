@@ -5,23 +5,29 @@
 #![no_std]
 #![no_main]
 
-use embassy_executor::Spawner;
-use embassy_futures::{join::join, select::select};
-use embassy_time::{Duration, Timer};
-use esp_hal::clock::CpuClock;
-use esp_hal::timer::timg::TimerGroup;
-use esp_println as _;
-use esp_radio::ble::controller::BleConnector;
-use log::{info, warn};
-use trouble_host::prelude::*;
-use esp_backtrace as _;
-
 // The ESP-IDF bootloader expects an application descriptor in the image. Without it the
 // bootloader refuses to start the image, so this line is not decoration.
 esp_bootloader_esp_idf::esp_app_desc!();
 
-#[esp_rtos::main]
-async fn main(_spawner: Spawner) -> ! {
+// The sketch's header: every import, the type aliases, the constants and the helpers.
+// The path is spelled out because the file is named the way the sketch reads it, not the way Rust
+// spells a module name.
+#[path = "MainHeader.rs"]
+mod main_header;
+use main_header::*;
+
+/// Every value this sketch keeps: the Bluetooth LE peripheral, created once by setup() and used by
+/// the loop in main().
+pub struct State {
+    /// The Bluetooth controller, handed to the host stack by `main()` once. Nothing in the loop reads it: the stack owns it from that point on.
+    controller: BtController,
+}
+
+/// One-time initialisation -- the Arduino setup().
+///
+/// Brings up the Bluetooth LE peripheral and hands it back as a State for main() to run. Everything that
+/// must happen once, and only once, belongs here.
+pub async fn setup() -> State {
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
 
@@ -43,206 +49,50 @@ async fn main(_spawner: Spawner) -> ! {
     // with a line that can only come from this run.
     log::info!("=== {} {} starting ===", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
     log::info!("board: Espressif ESP32-DevKitC V4 (ESP32), 4 MB flash");
-
-
     let connector = BleConnector::new(peripherals.BT, Default::default())
         .expect("the Bluetooth controller refuses to start on this board");
-    let controller: ExternalController<_, 1> = ExternalController::new(connector);
+    let controller: BtController = ExternalController::new(connector);
+    State {
+        controller,
+    }
+}
 
-    // This runs the advertising and GATT loops; it only returns if the stack gives up.
+/// The sketch's entry point -- the Arduino main() around setup() and the loop.
+///
+/// setup() runs once, then the implementation below repeats for as long as the board is powered. This is the
+/// function to edit: everything it needs from setup() is in state.
+#[esp_rtos::main]
+async fn main(_spawner: Spawner) -> ! {
+    let state = setup().await;
+
+    // The host stack takes the controller for good: advertising, connections and the GATT server run until
+    // it gives up, which is the whole program. A controller can only be given away once, so the hand-over
+    // happens here, before the loop, rather than inside it.
+    let controller = state.controller;
     ble_peripheral_run(controller).await;
 
-    // Belt and braces: main has to diverge, and the stack loop's divergence is not visible from here.
     loop {
         Timer::after(Duration::from_secs(3600)).await;
     }
 }
-
-/// The name a phone's Bluetooth scan will show. Change this to whatever you like, but keep it short:
-/// the advertisement payload is 31 bytes and the name shares it with the flags and the service UUID
-/// below, so a long name makes AdStructure::encode_slice fail at runtime, not at compile time.
-const DEVICE_NAME: &str = "Rusty-Platform";
-
-/// Max number of connections
-const CONNECTIONS_MAX: usize = 1;
-/// Max number of L2CAP channels.
-const L2CAP_CHANNELS_MAX: usize = 2; // Signal + att
-
-// GATT Server definition (bonus: makes the peripheral actually usable, not just visible).
-#[gatt_server]
-struct Server {
-    battery_service: BatteryService,
-}
-
-/// Battery service
-#[gatt_service(uuid = service::BATTERY)]
-struct BatteryService {
-    /// Battery Level
-    #[descriptor(uuid = descriptors::VALID_RANGE, read, value = [0, 100])]
-    #[descriptor(uuid = descriptors::MEASUREMENT_DESCRIPTION, name = "hello", read, value = "Battery Level", type = &'static str)]
-    #[characteristic(uuid = characteristic::BATTERY_LEVEL, read, notify, value = 10)]
-    level: u8,
-    #[characteristic(uuid = "408813df-5dd4-1f87-ec11-cdb001100000", write, read, notify)]
-    status: bool,
-}
-
-/// Run the BLE stack.
-async fn ble_peripheral_run<C>(controller: C)
-where
-    C: Controller,
-{
-    let address: Address = Address::random([0xff, 0x8f, 0x1a, 0x05, 0xe4, 0xff]);
-    info!("Our address = {:?}", address);
-
-    let mut resources: HostResources<_, DefaultPacketPool, CONNECTIONS_MAX, L2CAP_CHANNELS_MAX> =
-        HostResources::new();
-    let stack = trouble_host::new(controller, &mut resources)
-        .set_random_address(address)
-        .build();
-    let runner = stack.runner();
-    let mut peripheral = stack.peripheral();
-
-    info!("Starting advertising and GATT service");
-    let server = Server::new_with_config(GapConfig::Peripheral(PeripheralConfig {
-        name: DEVICE_NAME,
-        appearance: &appearance::power_device::GENERIC_POWER_DEVICE,
-    }))
-    .unwrap();
-
-    let _ = join(ble_task(runner), async {
-        loop {
-            match advertise(DEVICE_NAME, &mut peripheral, &server).await {
-                Ok(conn) => {
-                    // set up tasks when the connection is established to a central, so they don't
-                    // run when no one is connected.
-                    let a = gatt_events_task(&server, &conn);
-                    let b = custom_task(&server, &conn, &stack);
-                    // run until any task ends (usually because the connection has been closed),
-                    // then return to advertising state.
-                    select(a, b).await;
-                }
-                Err(e) => {
-                    panic!("[adv] error: {:?}", e);
-                }
-            }
-        }
-    })
-    .await;
-}
-
-/// This is a background task that is required to run forever alongside any other BLE tasks.
-async fn ble_task<C: Controller, P: PacketPool>(mut runner: Runner<'_, C, P>) {
-    loop {
-        if let Err(e) = runner.run().await {
-            panic!("[ble_task] error: {:?}", e);
-        }
-    }
-}
-
-/// Stream Events until the connection closes.
-///
-/// This function will handle the GATT events and process them.
-async fn gatt_events_task<P: PacketPool>(
-    server: &Server<'_>,
-    conn: &GattConnection<'_, '_, P>,
-) -> Result<(), Error> {
-    let level = server.battery_service.level;
-    let reason = loop {
-        match conn.next().await {
-            GattConnectionEvent::Disconnected { reason } => break reason,
-            GattConnectionEvent::Gatt { event } => {
-                match &event {
-                    GattEvent::Read(event) => {
-                        if event.handle() == level.handle {
-                            let value = server.get(&level);
-                            info!("[gatt] Read Event to Level Characteristic: {:?}", value);
-                        }
-                    }
-                    GattEvent::Write(event) => {
-                        event.with_data(|offset, data| {
-                            info!(
-                                "[gatt] Write Event to Level Characteristic at {}: {:?}",
-                                offset, data
-                            )
-                        });
-                    }
-                    _ => {}
-                };
-                // This step is also performed at drop(), but writing it explicitly is necessary
-                // in order to ensure reply is sent.
-                match event.accept() {
-                    Ok(reply) => reply.send().await,
-                    Err(e) => warn!("[gatt] error sending response: {:?}", e),
-                };
-            }
-            _ => {} // ignore other Gatt Connection Events
-        }
-    };
-    info!("[gatt] disconnected: {:?}", reason);
-    Ok(())
-}
-
-/// Create an advertiser to use to connect to a BLE Central, and wait for it to connect.
-async fn advertise<'values, 'server, C: Controller>(
-    name: &'values str,
-    peripheral: &mut Peripheral<'values, C, DefaultPacketPool>,
-    server: &'server Server<'values>,
-) -> Result<GattConnection<'values, 'server, DefaultPacketPool>, BleHostError<C::Error>> {
-    let mut advertiser_data = [0; 31];
-    let len = AdStructure::encode_slice(
-        &[
-            AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
-            AdStructure::IncompleteServiceUuids16(&[[0x0f, 0x18]]),
-            AdStructure::CompleteLocalName(name.as_bytes()),
-        ],
-        &mut advertiser_data[..],
-    )?;
-    let advertiser = peripheral
-        .advertise(
-            &Default::default(),
-            Advertisement::ConnectableScannableUndirected {
-                adv_data: &advertiser_data[..len],
-                scan_data: &[],
-            },
-        )
-        .await?;
-    info!("[adv] advertising as {}", name);
-    let conn = advertiser.accept().await?.with_attribute_server(server)?;
-    info!("[adv] connection established (central connected)");
-    Ok(conn)
-}
-
-/// Example task to use the BLE notifier interface.
-/// This task will notify the connected central of a counter value every 2 seconds.
-/// and will stop when the connection is closed by the central or an error occurs.
-async fn custom_task<C: Controller, P: PacketPool>(
-    server: &Server<'_>,
-    conn: &GattConnection<'_, '_, P>,
-    stack: &Stack<'_, C, P>,
-) {
-    let mut tick: u8 = 0;
-    let level = server.battery_service.level;
-    loop {
-        tick = tick.wrapping_add(1);
-        // The attribute is stored *before* it is announced. Notifying without storing leaves the
-        // characteristic at its initial value, so a central that reads it gets one answer while the
-        // notifications carry another - and the read looks like a stale value rather than a bug. Found by
-        // reading the characteristic on a real phone instead of only watching the notify stream (NOTES 78).
-        if conn.set(&level, &tick).is_err() {
-            warn!("[custom_task] could not store the level, so a read will not match the notifications");
-        }
-        info!("[custom_task] notifying connection of tick {}", tick);
-        if level.notify(conn, &tick, true).await.is_err() {
-            info!("[custom_task] error notifying connection");
-            break;
-        };
-        // read RSSI (Received Signal Strength Indicator) of the connection.
-        if let Ok(rssi) = conn.raw().rssi(stack).await {
-            info!("[custom_task] RSSI: {:?}", rssi);
-        } else {
-            info!("[custom_task] error getting RSSI");
-            break;
-        };
-        Timer::after(Duration::from_secs(2)).await;
-    }
-}
+// --- Your own code goes below this line ---------------------------------------------------------
+//
+// The sketch is this file plus MainHeader.rs. Everything above is the shape of it: State is what setup()
+// created, and main() is the loop you edit. Rust does not mind about the order of items, so adding your
+// functions below main() leaves the top of the file as the shape of the sketch.
+//
+// A function that needs the hardware takes state, or one of its fields:
+//
+//     /// A step of your own: whatever setup() brought up is in state.
+//     async fn step(state: &mut State) {
+//         // Drive something in state here -- a display, a sensor, the radio.
+//         Timer::after_millis(120).await;
+//     }
+//
+// ...and is called from the loop with step(&mut state).await;, or once from the end of setup()
+// if it should only run at start-up.
+//
+// Anything that does not touch the hardware -- a conversion, a formula, a lookup table -- reads better in
+// MainHeader.rs beside the other helpers, where it is reachable from here and from setup(). And a driver
+// of your own that outgrows a couple of functions deserves its own file: put it in src/my_driver.rs and
+// add mod my_driver; up with mod main_header;.

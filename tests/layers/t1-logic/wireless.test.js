@@ -5,7 +5,7 @@
  * firmware metadata. Everything here is pure — no downloads happen in this layer.
  */
 
-const { test, ok, equal, notOk, contains, notContains, matches, throws } = require('../../lib/harness');
+const { test, ok, equal, notOk, contains, notContains, matches, throws, sketchSource } = require('../../lib/harness');
 const { compiled } = require('../../lib/harness');
 const { BOARDS, boardById } = compiled('boards/catalog');
 const {
@@ -36,7 +36,11 @@ const WIRELESS = ['picow', 'pico2w'];
 
 function filesFor(boardId, template, projectName = 'Wireless Test') {
     const files = generateProjectFiles({ board: boardById(boardId), projectName, template });
-    return new Map(files.map((file) => [file.path, file.content]));
+    const map = new Map(files.map((file) => [file.path, file.content]));
+    // The whole sketch under `src/main.rs`: the generator's split into main.rs plus a header is not what
+    // these tests are about (see `sketchSource` in the harness).
+    map.set('src/main.rs', sketchSource(map));
+    return map;
 }
 
 function templateIds(boardId) {

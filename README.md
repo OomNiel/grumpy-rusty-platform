@@ -1,36 +1,44 @@
 # Grumpy's Rusty Platform for VS Code
 
-Embedded Rust development for **Raspberry Pi Pico** and **ESP32** boards, with a PlatformIO-style
-experience on top of [Embassy](https://embassy.dev), [probe-rs](https://probe.rs) and, for the
-Espressif boards, `espflash`.
+Embedded development for **Raspberry Pi Pico** and **ESP32** boards, in **Rust** — with a
+PlatformIO-style experience on top of [Embassy](https://embassy.dev), [probe-rs](https://probe.rs)
+and, for the Espressif boards, `espflash`.
 
-> Status: **early but usable (v0.0.2)**. Wizard, toolchain installer, Library Manager,
-> Build/Flash/Monitor, a real probe-rs debug session with RTT, and the Wi-Fi template flow all work
-> on the bench for the Raspberry Pi boards. The ESP32 family can be generated, toolchained, flashed
-> and monitored — but it has **no debugging** (no SWD), and its firmware has not been built on
-> hardware yet. Windows is untested.
+> Status: **early but usable (v0.2.0)**. Wizard, toolchain installer, Library Manager,
+> Build/Flash/Monitor, a real probe-rs debug session with RTT, the WYSIWYG designer and the Wi-Fi
+> template flow all work on the bench for the Raspberry Pi boards. The ESP32 family can be generated,
+> toolchained, flashed and monitored — but it has **no debugging** (no SWD), and its firmware has not
+> been built on hardware yet. Windows is untested.
+>
+> **0.2.0 removed the Arduino C++ (PlatformIO) family.** It shipped a complete second toolchain —
+> project generation, `pio` build/upload/monitor, its own panel driver and a C++ designer — and it
+> duplicated what PlatformIO does better. What is kept is the *sketch shape* it inspired: every
+> generated Rust project is still written as `setup()` plus `main()`, with the imports and constants
+> in `src/MainHeader.rs`.
 
 ## What works today
 
 | Area | State |
 |---|---|
-| Project Wizard (board → working workspace) | ✅ 7 boards: Pico · Pico 2 · Pico W · Pico 2 W (RP2040/RP2350) and ESP32-DevKitC V4 · LilyGo T-QT · Sunton ESP32-3248S035R (ESP32/ESP32-S3) |
-| Generated workspace: `Cargo.toml`, `.cargo/config.toml`, `memory.x`, `build.rs`, `rust-toolchain.toml`, `src/main.rs`, `.vscode/{settings,launch}.json` | ✅ RP; ESP gets `esp-config.toml` instead of `memory.x`/`launch.json` |
+| Project Wizard: board, then template | ✅ 7 boards: Pico · Pico 2 · Pico W · Pico 2 W (RP2040/RP2350) and ESP32-DevKitC V4 · LilyGo T-QT · Sunton ESP32-3248S035R (ESP32/ESP32-S3) |
+| Generated workspace: `Cargo.toml`, `.cargo/config.toml`, `memory.x`, `build.rs`, `rust-toolchain.toml`, `src/main.rs`, `src/MainHeader.rs`, `.vscode/{settings,launch}.json` | ✅ RP; ESP gets `esp-config.toml` instead of `memory.x`/`launch.json` |
+| Sketch layout: `src/main.rs` holds `setup()` and `main()` (the loop lives inside it), and every `use`, the type aliases, the constants and the helpers are in `src/MainHeader.rs` | ✅ both families, every template |
 | Templates | ✅ RP: `blinky`, `wifi`, `wifi-bluetooth` (with a credentials prompt) · ESP: periodic task, panel diagnostic screen, panel + touch, TF card, sensors + sound, the everything board test, and `wifi` / `bluetooth` |
 | Toolchain detection (cargo, rustup, targets, probe-rs, probe health) | ✅ plus espup / Xtensa toolchain / espflash for ESP; the health check asks only for what the open board actually uses (no debug probe for an ESP32) |
+| **Prompts about what is missing when a window loads** — and again when opening a project makes a different set of requirements true — with a button that installs each one, and *Don't show again* remembering that particular set | ✅ `rustyPlatform.promptMissingRequirements` (on by default) switches it off |
 | One-click installer (rustup, targets, prebuilt probe-rs with SHA-256 check, udev rules) | ✅ plus espup + espflash, only for the chips in use |
 | `Add Cargo to PATH…` for shells that never received `~/.cargo/bin` | ✅ |
 | Status bar, and the same buttons in the side bar's **Controls** section | ✅ |
 | **Publish .deb** — the firmware plus a `<package>-flash` helper, packed into a `.deb` in the project root | ✅ |
 | **Install .deb** — shows `dpkg-deb --info`, then `sudo dpkg -i` in a terminal | ✅ Linux |
 | **Back Up Project** — a dated copy beside the project (`<folder>-2026-10-05_1804`), minus `target/` | ✅ |
-| **Open Designer** — a Toolbox, a canvas at the board's real size and rotation, a property panel and undo; writes `designer/panel.ui.json` and the `src/ui.kdl` markup `include_gui!` compiles | ✅ canvas, markup and firmware |
+| **Open Designer** — a Toolbox, a canvas at the board's real size and rotation, a property panel and undo; writes `designer/panel.ui.json` and the `src/ui.kdl` markup `include_gui!` compiles. The sidebar row and the Project view's icon appear **while a Designer project is open**; the command itself is always in the palette | ✅ canvas, markup and firmware |
 | Debug session (probe-rs-debug + RTT) | ✅ RP only, verified against `probe-rs.probe-rs-debugger` 0.32.0. An ESP32 has no SWD, so **Debug** flashes and monitors instead |
 | Four debug configurations, all on the **debug** build | ✅ RP: flash & run · flash & halt · restart without flashing · attach |
 | Chip check before a no-flash session (`probe-rs verify`) | ✅ RP only |
 | Flash / monitor over USB serial (`espflash`) | ✅ ESP — one-shot write, and a monitor that holds the port on purpose |
 | crates.io Library Manager | ✅ curated catalog + live sparse index |
-| Layered test suite | ✅ 732 hermetic (t1 707 · t2 21 · t3 4) + opt-in e2e (generated-project builds, and the designer's canvas-to-glass simulator) + 1 hardware HIL |
+| Layered test suite | ✅ 908 hermetic (t1 849 · t2 55 · t3 4 — byte-for-byte snapshots of every board × template) + opt-in e2e (the Rust project builds, and the designer's canvas-to-glass simulator) + 1 hardware HIL |
 | Phase 4 guard rails: validate a launch config against the installed debugger | ⬜ |
 | Windows support | ⬜ later (installer URLs are already platform-aware) |
 
@@ -123,8 +131,8 @@ Building outside the editor still works the documented way:
 WIFI_SSID="my-ssid" WIFI_PASSWORD="secret" cargo run --release
 ```
 
-Wired boards are never asked: the prompt only appears for a project whose `src/main.rs` reads
-`option_env!("WIFI_SSID")`.
+Wired boards are never asked: the prompt only appears for a project whose sketch reads
+`option_env!("WIFI_SSID")` (in `src/MainHeader.rs`, beside the rest of the sketch's constants).
 
 ## Commands
 
@@ -442,6 +450,46 @@ written once by the wizard and never regenerated (the only way to lose it is to 
 the same folder again and confirm the overwrite), so adding your own code to it is the expected
 workflow. The rotation therefore lives in a config file, and the firmware logs the value it was built
 with (`panel rotation setting: 1`) so a build can be checked from the serial log.
+
+## What a generated project looks like
+
+Every project is written as an **Arduino-style sketch**, in two files:
+
+- **`src/main.rs`** is `setup()` and `main()`, and nothing else but what those two need: the crate
+  attributes, the side-effect imports (`use esp_println as _;`), the statics and the `State` struct.
+  `setup()` initiates every peripheral and instantiates every class once, and hands the whole lot back as
+  `State`; `main()` calls it and runs the implementation in a loop of its own — **the loop is inside
+  `main()`**, so the function you edit is the one that repeats. Everything `setup()` created is reachable
+  there as `state.display`, `state.touch`, `state.led`, …
+- **`src/MainHeader.rs`** is the sketch's header: every `use` (re-exported, so one `use main_header::*;`
+  brings them all in), the type aliases for the nested driver types, the constants, and the helper types,
+  functions and macros. It is declared as
+
+  ```rust
+  #[path = "MainHeader.rs"]
+  mod main_header;
+  use main_header::*;
+  ```
+
+  — the `#[path]` is what keeps the capitalised file name without a `non_snake_case` warning.
+
+**Where your code goes.** Your own functions belong in `src/main.rs`, below `main()` — Rust does not mind about
+the order of items, so the top of the file keeps the shape of the sketch. A function that needs the hardware
+takes `state` (or one of its fields); anything that does *not* touch it — a conversion, a formula, a constant
+table — reads better in `src/MainHeader.rs` beside the other helpers, which is also where it has to be `pub` to
+be reachable from `main.rs` at all. A driver that outgrows a couple of functions deserves its own file: put it in
+`src/my_driver.rs` and add `mod my_driver;` up with `mod main_header;`. **Both generated files end with that
+guidance and a commented-out example for the board you made** (the LED channel on a CYD, `state.led` on a Pico,
+`gpio_set` on a Pico W), so the answer is in front of you in the project rather than only here.
+
+The generated code compiles without warnings, which is why the details are the way they are: a field that
+merely has to stay alive (a Wi-Fi controller, the network stack, a backlight) is marked and says so, and a
+local that `setup()` only builds and hands over carries no `mut`. A panel project's SPI bus and pixel
+buffer live in `StaticCell`s for the same reason — they have to outlive `setup()`, because the panel's
+driver is part of the `State` it hands back.
+
+Older projects are unaffected: the extension reads a project's sketch as whatever files it has, so a
+project generated before the header existed keeps working.
 
 The rotation turns the interface **and the drawing area with it**: the generated screens are solved for the
 shape the display driver is actually addressing, so a landscape rotation gives a landscape layout — frame, bars,

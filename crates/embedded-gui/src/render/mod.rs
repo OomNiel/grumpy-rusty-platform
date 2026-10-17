@@ -11,8 +11,8 @@ pub use accelerator::{Hardware2DAccelerator, Software2DAccelerator};
 pub use band::PartialBandBuffer;
 pub(crate) use compositor::apply_blend_mode;
 pub use compositor::{
-    Blend, BlendMode, ColorFormat, Compositor, Dither, LayerState, PixelRead, RenderBackendCaps,
-    WindowedDrawTarget, lerp_rgb565,
+    lerp_rgb565, Blend, BlendMode, ColorFormat, Compositor, Dither, LayerState, PixelRead,
+    RenderBackendCaps, WindowedDrawTarget,
 };
 pub use line_buffer::{LineBufferRenderer, ScanlineTarget};
 pub use span::{FixedSpanRasterizer, ScanlineSpan};
@@ -21,27 +21,27 @@ pub use stroke::{
     Transform2D, VectorPath,
 };
 pub use task::{
-    DrawTask, DrawTaskQueue, DrawUnit, HardwareAcceleratorDrawUnit, SoftwareDrawUnit,
-    dispatch_draw_tasks,
+    dispatch_draw_tasks, DrawTask, DrawTaskQueue, DrawUnit, HardwareAcceleratorDrawUnit,
+    SoftwareDrawUnit,
 };
 pub use text_style::{
-    CHAR_HEIGHT, CHAR_WIDTH, EllipsisMode, TextAlign, TextMetrics, TextOverflow,
-    TextOverflowPolicy, TextStyle, TextWrap, VerticalAlign,
+    EllipsisMode, TextAlign, TextMetrics, TextOverflow, TextOverflowPolicy, TextStyle, TextWrap,
+    VerticalAlign, CHAR_HEIGHT, CHAR_WIDTH,
 };
 
 use core::marker::PhantomData;
 
 use embedded_graphics_core::{
-    Pixel,
     draw_target::DrawTarget,
     geometry::Point,
     pixelcolor::{Rgb565, RgbColor},
+    Pixel,
 };
 
 #[cfg(not(feature = "std"))]
 use crate::math::F32Ext as _;
 use crate::{
-    font::{FontId, glyph_rows},
+    font::{glyph_rows, FontId},
     geometry::Rect,
     image::{ImageFit, ImageRef, TileMode, TileRef},
     palette::{DisplayPalette, InkRole},
@@ -2034,12 +2034,12 @@ where
             }
             #[cfg(feature = "embedded-graphics")]
             FontId::MonoFont(font) => {
-                use embedded_graphics::Drawable;
                 use embedded_graphics::draw_target::DrawTarget;
                 use embedded_graphics::geometry::{OriginDimensions, Point, Size};
                 use embedded_graphics::mono_font::MonoTextStyle;
                 use embedded_graphics::pixelcolor::BinaryColor;
                 use embedded_graphics::text::Text;
+                use embedded_graphics::Drawable;
 
                 struct GlyphPixelCollector<'a, F> {
                     x: i32,
@@ -2911,7 +2911,11 @@ mod tests {
                 "column {x} of the row"
             );
         }
-        assert_eq!(buf.pixel_at(0, 0), Some(Rgb565::BLACK), "the row above is untouched");
+        assert_eq!(
+            buf.pixel_at(0, 0),
+            Some(Rgb565::BLACK),
+            "the row above is untouched"
+        );
         assert_eq!(buf.pixel_at(0, 2), Some(Rgb565::BLACK), "and the row below");
     }
 
@@ -2924,10 +2928,22 @@ mod tests {
         let row = [Rgb565::RED, Rgb565::GREEN, Rgb565::BLUE, Rgb565::WHITE];
         ctx.fill_row(Rect::new(0, 0, 4, 1), &row).unwrap();
 
-        assert_eq!(buf.pixel_at(0, 0), Some(Rgb565::BLACK), "left of the clip is not drawn");
+        assert_eq!(
+            buf.pixel_at(0, 0),
+            Some(Rgb565::BLACK),
+            "left of the clip is not drawn"
+        );
         assert_eq!(buf.pixel_at(1, 0), Some(Rgb565::BLACK), "nor is column one");
-        assert_eq!(buf.pixel_at(2, 0), Some(Rgb565::BLUE), "the clip starts at the slice's third colour");
-        assert_eq!(buf.pixel_at(3, 0), Some(Rgb565::WHITE), "and carries on in order");
+        assert_eq!(
+            buf.pixel_at(2, 0),
+            Some(Rgb565::BLUE),
+            "the clip starts at the slice's third colour"
+        );
+        assert_eq!(
+            buf.pixel_at(3, 0),
+            Some(Rgb565::WHITE),
+            "and carries on in order"
+        );
     }
 
     #[test]
@@ -2938,7 +2954,11 @@ mod tests {
         ctx.fill_row(Rect::new(0, 0, 4, 1), &row).unwrap();
 
         assert_eq!(buf.pixel_at(2, 0), Some(Rgb565::BLUE), "inside the clip");
-        assert_eq!(buf.pixel_at(3, 0), Some(Rgb565::BLACK), "outside it, and not painted");
+        assert_eq!(
+            buf.pixel_at(3, 0),
+            Some(Rgb565::BLACK),
+            "outside it, and not painted"
+        );
     }
 
     #[test]
@@ -2947,8 +2967,13 @@ mod tests {
         // picture's left edge where its middle belongs, so nothing is painted and the draw carries on.
         let mut buf = crate::test_buffer::TestBuffer::new(8, 1);
         let mut ctx = RenderCtx::new(&mut buf, Rect::new(0, 0, 8, 1));
-        ctx.fill_row(Rect::new(0, 0, 8, 1), &[Rgb565::RED, Rgb565::GREEN]).unwrap();
-        assert_eq!(buf.pixel_at(0, 0), Some(Rgb565::BLACK), "the row is left alone");
+        ctx.fill_row(Rect::new(0, 0, 8, 1), &[Rgb565::RED, Rgb565::GREEN])
+            .unwrap();
+        assert_eq!(
+            buf.pixel_at(0, 0),
+            Some(Rgb565::BLACK),
+            "the row is left alone"
+        );
         assert_eq!(buf.pixel_at(7, 0), Some(Rgb565::BLACK), "all of it");
     }
     #[test]
@@ -2956,7 +2981,8 @@ mod tests {
         // What a custom widget asks before doing expensive work. A widget the repaint does not touch has nothing
         // left of it; one the repaint partly covers has exactly the overlap; one inside it has all of itself.
         let mut buf = crate::test_buffer::TestBuffer::new(40, 20);
-        let mut ctx = RenderCtx::with_dirty(&mut buf, Rect::new(0, 0, 40, 20), Rect::new(30, 0, 10, 20));
+        let ctx =
+            RenderCtx::with_dirty(&mut buf, Rect::new(0, 0, 40, 20), Rect::new(30, 0, 10, 20));
 
         assert!(
             ctx.visible_rect(Rect::new(0, 0, 20, 20)).is_empty(),
@@ -3011,14 +3037,24 @@ mod tests {
             calls: Cell::new(0),
             last: Cell::new(Rect::new(0, 0, 0, 0)),
         };
-        let mut ctx: crate::GuiContext<'_, 32, 16, 16> = crate::GuiContext::new(Rect::new(0, 0, 100, 40));
-        ctx.add_custom_widget(Rect::new(0, 0, 20, 40), &recording, crate::style::WidgetStyle::default())
+        let mut ctx: crate::GuiContext<'_, 32, 16, 16> =
+            crate::GuiContext::new(Rect::new(0, 0, 100, 40));
+        ctx.add_custom_widget(
+            Rect::new(0, 0, 20, 40),
+            &recording,
+            crate::style::WidgetStyle::default(),
+        )
+        .unwrap();
+        ctx.add_themed_button(Rect::new(60, 5, 30, 20), "Press")
             .unwrap();
-        ctx.add_themed_button(Rect::new(60, 5, 30, 20), "Press").unwrap();
 
         let mut buf = crate::test_buffer::TestBuffer::new(100, 40);
         ctx.render(&mut buf).unwrap();
-        assert_eq!(recording.calls.get(), 1, "a whole frame draws the widget once");
+        assert_eq!(
+            recording.calls.get(),
+            1,
+            "a whole frame draws the widget once"
+        );
         assert_eq!(
             recording.last.get(),
             Rect::new(0, 0, 20, 40),
@@ -3040,7 +3076,10 @@ mod tests {
 
         recording.calls.set(0);
         ctx.render_dirty(&mut buf).unwrap();
-        assert!(recording.calls.get() > 0, "the widget is still walked, clipped to the damage");
+        assert!(
+            recording.calls.get() > 0,
+            "the widget is still walked, clipped to the damage"
+        );
         assert!(
             recording.last.get().is_empty(),
             "and is told that none of it is visible: {:?}",
@@ -3069,31 +3108,65 @@ mod tests {
 
         let mut thin = crate::test_buffer::TestBuffer::new(40, 40);
         let mut ctx = RenderCtx::new(&mut thin, Rect::new(0, 0, 40, 40));
-        ctx.stroke_rounded_rect(Rect::new(0, 0, 40, 40), 12, Border { color: Rgb565::RED, width: 1 })
-            .unwrap();
+        ctx.stroke_rounded_rect(
+            Rect::new(0, 0, 40, 40),
+            12,
+            Border {
+                color: Rgb565::RED,
+                width: 1,
+            },
+        )
+        .unwrap();
 
         let hairline = corner_count(&thin, 0, 0, 12);
         assert!(
             hairline < 40,
             "a 12-pixel corner holds an arc, not a block: {hairline} pixels painted in the corner box"
         );
-        assert_eq!(thin.pixel_at(6, 6), Some(Rgb565::BLACK), "inside the arc is not border");
-        assert_eq!(thin.pixel_at(3, 3), Some(Rgb565::BLACK), "nor is anything outside it");
-        assert_eq!(thin.pixel_at(20, 0), Some(Rgb565::RED), "the straight edge is still drawn");
+        assert_eq!(
+            thin.pixel_at(6, 6),
+            Some(Rgb565::BLACK),
+            "inside the arc is not border"
+        );
+        assert_eq!(
+            thin.pixel_at(3, 3),
+            Some(Rgb565::BLACK),
+            "nor is anything outside it"
+        );
+        assert_eq!(
+            thin.pixel_at(20, 0),
+            Some(Rgb565::RED),
+            "the straight edge is still drawn"
+        );
         assert_eq!(thin.pixel_at(20, 1), Some(Rgb565::BLACK), "one pixel thick");
 
         let mut thick = crate::test_buffer::TestBuffer::new(40, 40);
         let mut ctx = RenderCtx::new(&mut thick, Rect::new(0, 0, 40, 40));
-        ctx.stroke_rounded_rect(Rect::new(0, 0, 40, 40), 12, Border { color: Rgb565::RED, width: 2 })
-            .unwrap();
+        ctx.stroke_rounded_rect(
+            Rect::new(0, 0, 40, 40),
+            12,
+            Border {
+                color: Rgb565::RED,
+                width: 2,
+            },
+        )
+        .unwrap();
 
         let two_pixel = corner_count(&thick, 0, 0, 12);
         assert!(
             two_pixel > hairline && two_pixel < 80,
             "a two-pixel border is a thicker arc and still not a block: {two_pixel} against {hairline}"
         );
-        assert_eq!(thick.pixel_at(20, 1), Some(Rgb565::RED), "two pixels thick on the straight edge");
+        assert_eq!(
+            thick.pixel_at(20, 1),
+            Some(Rgb565::RED),
+            "two pixels thick on the straight edge"
+        );
         assert_eq!(thick.pixel_at(20, 2), Some(Rgb565::BLACK), "and no more");
-        assert_eq!(thick.pixel_at(7, 7), Some(Rgb565::BLACK), "the inside of the corner is left alone");
+        assert_eq!(
+            thick.pixel_at(7, 7),
+            Some(Rgb565::BLACK),
+            "the inside of the corner is left alone"
+        );
     }
 }

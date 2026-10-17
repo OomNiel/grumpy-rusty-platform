@@ -5,40 +5,158 @@
 #![no_std]
 #![no_main]
 
-use core::cell::RefCell;
-use core::fmt::Write as _;
-use embassy_executor::Spawner;
-use embassy_time::{Duration, Timer};
-use embedded_graphics::mono_font::{ascii::{FONT_6X10, FONT_10X20}, MonoTextStyle};
-use embedded_graphics::pixelcolor::Rgb565;
-use embedded_graphics::prelude::*;
-use embedded_graphics::primitives::{Line, PrimitiveStyle, Rectangle};
-use embedded_graphics::text::Text;
-use embedded_hal::spi::{Operation, SpiDevice};
-use embedded_hal_bus::spi::RefCellDevice;
-use esp_hal::clock::CpuClock;
-use esp_hal::delay::Delay;
-use esp_hal::gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull};
-use esp_storage::FlashStorage;
-use esp_hal::analog::adc::{Adc, AdcConfig, Attenuation};
-use esp_hal::analog::dac::Dac;
-use embedded_hal_bus::spi::ExclusiveDevice;
-use embedded_sdmmc::{SdCard, TimeSource, Timestamp, VolumeIdx, VolumeManager};
-use esp_hal::spi::master::{Config as SpiConfig, Spi};
-use esp_hal::time::Rate;
-use esp_hal::timer::timg::TimerGroup;
-use esp_println as _;
-use mipidsi::options::{ColorOrder, Orientation, Rotation};
-use mipidsi::{models, Builder};
-use mipidsi::interface::SpiInterface as SPIInterface;
-use esp_backtrace as _;
-
 // The ESP-IDF bootloader expects an application descriptor in the image. Without it the
 // bootloader refuses to start the image, so this line is not decoration.
 esp_bootloader_esp_idf::esp_app_desc!();
 
-#[esp_rtos::main]
-async fn main(_spawner: Spawner) -> ! {
+// The sketch's header: every import, the type aliases, the constants and the helpers.
+// The path is spelled out because the file is named the way the sketch reads it, not the way Rust
+// spells a module name.
+#[path = "MainHeader.rs"]
+mod main_header;
+use main_header::*;
+
+/// The shared SPI bus. A static rather than a local because the panel's device borrows it and the
+/// panel travels back to main() in the sketch's State.
+static BUS_CELL: static_cell::StaticCell<HalBus> = static_cell::StaticCell::new();
+
+/// The batching buffer mipidsi's interface borrows, for the same reason: the interface is part of the
+/// State, so the buffer has to outlive setup().
+static BUFFER_CELL: static_cell::StaticCell<[u8; 512]> = static_cell::StaticCell::new();
+
+/// Every value this sketch keeps: everything this board carries, created once by setup() and used by
+/// the loop in main().
+pub struct State {
+    /// The panel, brought up and ready to draw on.
+    display: DisplayDriver,
+
+    /// The backlight pin, held on. Nothing reads it: it is here so that it is not dropped with the rest of `setup()`’s locals, which would leave the panel lit but the glass dark.
+    #[allow(dead_code)]
+    backlight: Output<'static>,
+
+    /// The touch controller, on the panel’s bus with its own chip select.
+    touch: BusDevice,
+
+    /// The bus itself, shared by the panel and the controller: the clock is switched around each touch burst, so the loop needs to reach it.
+    bus: &'static HalBus,
+
+    /// The controller’s PENIRQ line. Logged rather than trusted: an interrupt that fires by itself would otherwise walk the calibration through all four corners.
+    touch_irq: Input<'static>,
+
+    /// Flash, where a measured calibration is kept across a power cycle.
+    flash: FlashStorage<'static>,
+
+    /// The drawing area, in the orientation the panel is currently turned to.
+    width_i: i32,
+
+    /// The drawing area’s height.
+    height_i: i32,
+
+    /// The readout box, solved from the drawing area rather than hard-coded: its width and
+    box_w: i32,
+
+    /// height, so the box fits a 128 px panel as well as a 480 px one,
+    box_h: i32,
+
+    /// and where it starts.
+    box_x: i32,
+
+    /// The readout box’s top-left corner.
+    box_y: i32,
+
+    /// The rotation as a number. A calibration is only valid for the orientation it was measured in, so the record has to say which that was.
+    rotation_code: u8,
+
+    /// The four corner targets, in the order they are asked for.
+    targets: [(i32, i32); 4],
+
+    /// Their names, in the same order, for the screen and the log.
+    corners: [&'static str; 4],
+
+    /// What the two axes read with nothing on the glass. A touch is judged by how far they move from this, never by the interrupt line on its own.
+    idle_a: i32,
+
+    /// The second axis at rest.
+    idle_b: i32,
+
+    /// Whether the four corners have been measured yet, by this run or by a stored record.
+    calibrated: bool,
+
+    /// Which of the four the screen is asking for.
+    corner: usize,
+
+    /// The raw readings taken at each corner.
+    measured: [[u16; 2]; 4],
+
+    /// Which raw axis follows the display’s X, worked out from the corners rather than assumed from the wiring.
+    raw_x_axis: usize,
+
+    /// The raw-to-screen mapping: the two raw readings that map onto
+    x_from: i32,
+
+    /// the edges of the drawing area, per axis.
+    x_to: i32,
+
+    /// The mapping’s two raw readings for the other axis.
+    y_from: i32,
+
+    /// And the far edge of it.
+    y_to: i32,
+
+    /// The latest reading of each axis, and the readings the readout
+    raw_a: i32,
+
+    /// box was last painted with -- so it is repainted only when the
+    raw_b: i32,
+
+    /// numbers have moved far enough to be worth the pixels.
+    shown_a: i32,
+
+    /// The second axis’ last painted reading.
+    shown_b: i32,
+
+    /// Whether a finger is down now, and whether one was down on the
+    pressed: bool,
+
+    /// previous sample. The edge between the two is what a press is.
+    was_touched: bool,
+
+    /// Whether the whole screen needs repainting this frame: a full clear is slow, so it is done only when something changed.
+    redraw_screen: bool,
+
+    /// Whether the readout box does.
+    redraw_box: bool,
+
+    /// Loop counter. The sampling, the readout and the heartbeat are all scheduled off it.
+    ticks: u32,
+
+    /// The touch position in screen coordinates, after calibration.
+    point: (i32, i32),
+
+    /// The RGB status LED: red while uncalibrated, green
+    led_red: Output<'static>,
+
+    /// while a finger is down, blue when idle and
+    led_green: Output<'static>,
+
+    /// calibrated. Wiring it to the state makes it a diagnostic rather than decoration.
+    led_blue: Output<'static>,
+
+    /// The ADC the light sensor is read through.
+    adc: Adc<'static, esp_hal::peripherals::ADC1<'static>, esp_hal::Blocking>,
+
+    /// The light sensor on GPIO34: the lower leg of a divider, so a brighter room reads lower.
+    light: AdcPin<esp_hal::peripherals::GPIO34<'static>, esp_hal::peripherals::ADC1<'static>, ()>,
+
+    /// The speaker on GPIO26, through an LTK8002D: what is written to the DAC is the waveform itself.
+    speaker: Dac<'static, esp_hal::peripherals::DAC2<'static>>,
+}
+
+/// One-time initialisation -- the Arduino setup().
+///
+/// Brings up everything this board carries and hands it back as a State for main() to run. Everything that
+/// must happen once, and only once, belongs here.
+pub async fn setup() -> State {
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
 
@@ -56,25 +174,6 @@ async fn main(_spawner: Spawner) -> ! {
     // with a line that can only come from this run.
     log::info!("=== {} {} starting ===", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
     log::info!("board: ESP32-035 LCD Panel (ESP32), 4 MB flash");
-
-    // A fixed timestamp: the filesystem records one when it *writes*, and these templates only read, so a
-    // fixed value is honest rather than a pretended clock. It is also what the crate's own example does.
-    struct FixedClock;
-
-    impl TimeSource for FixedClock {
-        fn get_timestamp(&self) -> Timestamp {
-            // The crate counts years from 1970 and indexes months and days from zero: 56 is 2026.
-            Timestamp {
-                year_since_1970: 56,
-                zero_indexed_month: 0,
-                zero_indexed_day: 0,
-                hours: 0,
-                minutes: 0,
-                seconds: 0,
-            }
-        }
-    }
-
     let _sd_mounted = {
         // The card's own SPI bus. These are the TF socket's pins, not the panel's.
         let card_spi = Spi::new(
@@ -134,15 +233,14 @@ async fn main(_spawner: Spawner) -> ! {
         mounted
     };
     // Backlight first, and note the level: this board switches the transistor on with a HIGH level.
-    let _backlight = Output::new(
+    let backlight = Output::new(
         peripherals.GPIO27,
         Level::High,
         OutputConfig::default(),
     );
 
-    // The panel's clock is kept as a closure because the touch controller on the same bus needs a slower
-    // one: the bus is re-configured around each touch read and put back afterwards.
-    let panel_clock = || SpiConfig::default().with_frequency(Rate::from_khz(24000));
+    // The panel's clock is the function in MainHeader.rs: the touch controller on the same bus needs a
+    // slower one, and the bus is re-configured around each touch read and put back afterwards.
     let spi = Spi::new(peripherals.SPI2, panel_clock())
     .expect("SPI configuration")
         .with_sck(peripherals.GPIO14)
@@ -150,18 +248,21 @@ async fn main(_spawner: Spawner) -> ! {
         .with_miso(peripherals.GPIO12);
 
     // The touch controller shares this bus, so the bus goes into a RefCell and each chip gets its own
-    // device with its own CS pin.
-    let bus = RefCell::new(spi);
+    // device with its own CS pin. It is kept in a StaticCell rather than a local because the panel's
+    // device borrows it and the panel is handed back to main in the sketch's State -- a local would be
+    // dropped the moment setup() returned.
+    let bus: &'static HalBus = BUS_CELL.init(RefCell::new(spi));
     let cs = Output::new(peripherals.GPIO15, Level::Low, OutputConfig::default());
     // Shadows the bus with the panel's *device*, exactly as the exclusive branch does, so the rest of
     // the setup -- and mipidsi's interface below -- does not care which of the two it was handed.
     let spi = RefCellDevice::new(&bus, cs, Delay::new()).expect("panel chip select");
 
     // 512 bytes is mipidsi's own example buffer size: enough to batch pixels, small
-    // enough to live on the stack, so this build needs no heap.
-    let mut buffer = [0u8; 512];
+    // enough to live on the stack, so this build needs no heap. It is kept in a StaticCell for the same
+    // reason the bus is: the panel's interface borrows it, and the panel outlives setup().
+    let buffer: &'static mut [u8; 512] = BUFFER_CELL.init([0u8; 512]);
     let dc = Output::new(peripherals.GPIO2, Level::Low, OutputConfig::default());
-    let di = SPIInterface::new(spi, dc, &mut buffer);
+    let di = SPIInterface::new(spi, dc, buffer);
 
     // Delay is a unit struct in esp-hal 1.x, not a value: it is built with new().
     let mut delay = Delay::new();
@@ -199,7 +300,7 @@ async fn main(_spawner: Spawner) -> ! {
     // while the clipping offset is computed from the size passed in -- so the native size is both the right
     // thing to pass and what the layouts below have to be solved against when the rotation is vertical.
     let rotated = matches!(rotation, Rotation::Deg90 | Rotation::Deg270);
-    let mut display = Builder::new(models::ST7796, di)
+    let display = Builder::new(models::ST7796, di)
         .display_size(width, height)
         // 3.5" ST7796 320x480: X is mirrored relative to the controller's default.
         .orientation(Orientation::new().flip_horizontal().rotate(rotation))
@@ -209,8 +310,8 @@ async fn main(_spawner: Spawner) -> ! {
 
     log::info!("panel ready: 3.5\" ST7796 320x480");
 
-    // The touch controller's own clock: the panel's is restored around every burst.
-    let touch_clock = || SpiConfig::default().with_frequency(Rate::from_khz(1000));
+    // The touch controller's own clock is touch_clock() in MainHeader.rs, next to the panel's: the bus is
+    // switched to the slow one around every burst and put back afterwards.
 
     // The same bus, a second chip select. PENIRQ is open drain: low means pressed, and the line is only
     // logged because it is not reliable here -- GPIO34-39 have no internal pull-ups either, so what the
@@ -219,105 +320,6 @@ async fn main(_spawner: Spawner) -> ! {
     let mut touch = RefCellDevice::new(&bus, touch_cs, Delay::new()).expect("touch chip select");
     let touch_irq = Input::new(peripherals.GPIO36, InputConfig::default().with_pull(Pull::Up));
 
-    // Control bytes from the XPT2046 datasheet: S=1 | channel | 12-bit | single-ended | power-down bits.
-    // 0xD1 reads one panel axis, 0x91 the other, and 0xD0 is an axis read with PD=00: powered down
-    // between conversions, which is the only setting that re-enables PENIRQ.
-    const TOUCH_AXIS_A: u8 = 0xD1;
-    const TOUCH_AXIS_B: u8 = 0x91;
-    const TOUCH_POWER_DOWN: u8 = 0xD0;
-    // How far an axis has to move from its idle baseline to count as a touch, how many samples a reading
-    // averages, and how far the numbers have to move before the readout is repainted.
-    const TOUCH_MOVE: i32 = 200;
-    const TOUCH_SAMPLES: u32 = 3;
-    // The controller's conversion time, and then some: too short and the first sample after a channel
-    // change comes back as zero, which is what a 2 us delay still did on this board.
-    const TOUCH_SETTLE_NS: u32 = 20_000;
-    const TOUCH_REPAINT: i32 = 4;
-    // A touch this soon after boot means "I want to recalibrate" rather than "use the stored calibration".
-    // The loop below sleeps 20 ms, so 100 ticks is about two seconds. Without this the stored record could
-    // only ever be *replaced* by completing a new calibration, never discarded - so a panel calibrated for
-    // the wrong orientation, or with a mapping that has drifted, had no way back to the corner screen.
-    const RECALIBRATE_TICKS: u32 = 100;
-
-    // Numbers have to become text for the panel, and there is no allocator here: a fixed buffer that
-    // implements core::fmt::Write is the usual no_std answer. It is deliberately not named after the
-    // graphics Line type, which would shadow it -- and the crosshairs are drawn with that.
-    struct Numbers {
-        bytes: [u8; 32],
-        len: usize,
-    }
-
-    impl Numbers {
-        fn new() -> Self {
-            Self { bytes: [0; 32], len: 0 }
-        }
-
-        fn as_str(&self) -> &str {
-            core::str::from_utf8(&self.bytes[..self.len]).unwrap_or("?")
-        }
-    }
-
-    impl core::fmt::Write for Numbers {
-        fn write_str(&mut self, text: &str) -> core::fmt::Result {
-            if text.len() > self.bytes.len() - self.len {
-                return Err(core::fmt::Error);
-            }
-            self.bytes[self.len..self.len + text.len()].copy_from_slice(text.as_bytes());
-            self.len += text.len();
-            Ok(())
-        }
-    }
-
-    // One command, and the two bytes that come back with it.
-    //
-    // The command byte and the data bytes are separated by the controller's conversion time instead of
-    // being clocked back to back. A plain two-byte transfer reads mid-scale and never
-    // moves for a touch on this board; the same pins, read with gaps between the bytes, answer with real
-    // values (0xF87F idle, 0x6031 under a finger). An Operation::DelayNs keeps CS asserted across the
-    // gap, which is what the conversion needs.
-    fn touch_frame<D: SpiDevice>(device: &mut D, command: u8) -> u16 {
-        let mut frame = [0u8; 2];
-        if device
-            .transaction(&mut [
-                Operation::Write(&[command]),
-                Operation::DelayNs(TOUCH_SETTLE_NS),
-                Operation::Read(&mut frame),
-            ])
-            .is_err()
-        {
-            return 0;
-        }
-        ((frame[0] as u16) << 8) | frame[1] as u16
-    }
-
-    // The 12 bits of the *previous* command's conversion: high byte, then the low nibble in the top half
-    // of the second byte.
-    fn touch_value(frame: u16) -> u16 {
-        ((((frame >> 8) & 0x00FF) << 4) | ((frame & 0x00FF) >> 4)) & 0x0FFF
-    }
-
-    // One axis, averaged over a few conversions. The first read is the value that arrived with a command
-    // for the *previous* channel, so it is dropped.
-    fn touch_axis<D: SpiDevice>(device: &mut D, command: u8) -> (u16, [u16; TOUCH_SAMPLES as usize]) {
-        // Two frames are consumed before the samples are taken: the first is whatever the previous
-        // channel left behind, and the second is the same channel's previous conversion. Averaging from
-        // the third on gives settled values -- without this the average is dragged towards zero.
-        let _ = touch_frame(device, command);
-        let _ = touch_frame(device, command);
-        let mut frames = [0u16; TOUCH_SAMPLES as usize];
-        for frame in frames.iter_mut() {
-            *frame = touch_frame(device, command);
-        }
-        let total: u32 = frames.iter().map(|frame| u32::from(touch_value(*frame))).sum();
-        ((total / TOUCH_SAMPLES) as u16, frames)
-    }
-
-    // Leave the controller powered down *with the interrupt enabled*, which is what makes PENIRQ usable
-    // between bursts.
-    fn touch_idle<D: SpiDevice>(device: &mut D) {
-        let _ = touch_frame(device, TOUCH_POWER_DOWN);
-    }
-
     log::info!(
         "touch: XPT2046 on GPIO33 (cs), GPIO36 (irq), pen level now {}",
         touch_irq.is_low()
@@ -325,91 +327,17 @@ async fn main(_spawner: Spawner) -> ! {
 
     // The RGB LED as a status light: red while uncalibrated, green while a finger is down, blue when idle
     // and calibrated. Wiring it to the state makes it a diagnostic rather than decoration.
-    let mut led_red = Output::new(peripherals.GPIO4, Level::Low, OutputConfig::default());
-    let mut led_green = Output::new(peripherals.GPIO17, Level::Low, OutputConfig::default());
-    let mut led_blue = Output::new(peripherals.GPIO16, Level::Low, OutputConfig::default());
+    let led_red = Output::new(peripherals.GPIO4, Level::Low, OutputConfig::default());
+    let led_green = Output::new(peripherals.GPIO17, Level::Low, OutputConfig::default());
+    let led_blue = Output::new(peripherals.GPIO16, Level::Low, OutputConfig::default());
     // The light sensor: the lower leg of a divider, so a brighter room reads lower.
     let mut adc_config = AdcConfig::new();
-    let mut light = adc_config.enable_pin(peripherals.GPIO34, Attenuation::_11dB);
-    let mut adc = Adc::new(peripherals.ADC1, adc_config);
+    let light = adc_config.enable_pin(peripherals.GPIO34, Attenuation::_11dB);
+    let adc = Adc::new(peripherals.ADC1, adc_config);
     // The speaker hangs off a DAC channel: what is written is the waveform.
-    let mut speaker = Dac::new(peripherals.DAC2, peripherals.GPIO26);
-    // A ~2 kHz square wave for the given number of milliseconds, then back to the middle of the DAC's range
-    // so the amplifier is not left against a rail. 250 us per half period is two half periods per
-    // millisecond, hence the doubling.
-    macro_rules! beep {
-        ($speaker:expr, $millis:expr) => {{
-            for _ in 0..($millis * 2) {
-                $speaker.write(215);
-                Timer::after(Duration::from_micros(250)).await;
-                $speaker.write(40);
-                Timer::after(Duration::from_micros(250)).await;
-            }
-            $speaker.write(128);
-        }};
-    }
+    let speaker = Dac::new(peripherals.DAC2, peripherals.GPIO26);
 
     log::info!("board hardware: RGB LED, LDR on GPIO34, speaker on GPIO26");
-
-    // The calibration lives in the last 4 KB sector of the application partition. The app image is roughly
-    // 120 KB of a 4 MB partition, so that sector is ours -- and it is not the NVS partition the bootloader
-    // may read. esp-storage wraps every flash operation in a critical section (its default feature), which
-    // is what makes this safe with interrupts running.
-    const CALIBRATION_OFFSET: u32 = 0x3F_F000;
-    const CALIBRATION_MAGIC: u32 = 0x5443_5831;
-
-    fn calibration_bytes(
-        rotation: u8,
-        axis: usize,
-        x_from: i32,
-        x_to: i32,
-        y_from: i32,
-        y_to: i32,
-    ) -> [u8; 24] {
-        let mut bytes = [0u8; 24];
-        bytes[0..4].copy_from_slice(&CALIBRATION_MAGIC.to_le_bytes());
-        bytes[4] = axis as u8;
-        bytes[5..9].copy_from_slice(&x_from.to_le_bytes());
-        bytes[9..13].copy_from_slice(&x_to.to_le_bytes());
-        bytes[13..17].copy_from_slice(&y_from.to_le_bytes());
-        bytes[17..21].copy_from_slice(&y_to.to_le_bytes());
-        // Which orientation the numbers were measured in: the same corners on a turned panel are a
-        // different mapping, so a record without this cannot be trusted after a rotation change.
-        bytes[22] = rotation;
-        // A plain sum over everything but the checksum byte, so a half-written or erased sector is not
-        // mistaken for a calibration.
-        let mut sum = 0u8;
-        for (index, byte) in bytes.iter().enumerate() {
-            if index != 21 {
-                sum = sum.wrapping_add(*byte);
-            }
-        }
-        bytes[21] = sum;
-        bytes
-    }
-
-    // Returns the stored calibration, or nothing when the sector has never been written (an erased sector
-    // reads as 0xFF, which fails both the magic and the checksum).
-    fn calibration_load(flash: &mut FlashStorage<'_>) -> Option<(u8, usize, i32, i32, i32, i32)> {
-        let mut bytes = [0u8; 24];
-        flash.read(CALIBRATION_OFFSET, &mut bytes).ok()?;
-        if u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) != CALIBRATION_MAGIC {
-            return None;
-        }
-        let mut sum = 0u8;
-        for (index, byte) in bytes.iter().enumerate() {
-            if index != 21 {
-                sum = sum.wrapping_add(*byte);
-            }
-        }
-        if sum != bytes[21] {
-            return None;
-        }
-        let word = |at: usize| -> i32 {
-            i32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
-        };
-        Some((bytes[22], usize::from(bytes[4]), word(5), word(9), word(13), word(17)))
-    }
 
     // esp_storage's Flash is the FLASH peripheral itself, so it is handed over rather than constructed.
     let mut flash = FlashStorage::new(peripherals.FLASH);
@@ -473,7 +401,6 @@ async fn main(_spawner: Spawner) -> ! {
     // round when the rotation is vertical (see the panel setup above). The calibration targets, the
     // raw-to-screen mapping, the readout box and the graphics screen all follow from these two numbers, so
     // changing the rotation moves the whole interface rather than only the image inside it.
-    const MARGIN: i32 = 24;
     // The area the driver actually draws into: the panel's size the other way round when the rotation is
     // vertical, because that is what mipidsi does to it. Everything below - the calibration targets, the
     // raw-to-screen mapping, the readout box and this template's own graphics screen - is expressed in this
@@ -491,46 +418,98 @@ async fn main(_spawner: Spawner) -> ! {
         (MARGIN, height_i - MARGIN),
     ];
     let corners = ["top-left", "top-right", "bottom-right", "bottom-left"];
-    let mut measured = [[0u16; 2]; 4];
-    let mut corner: usize = 0;
+    let measured = [[0u16; 2]; 4];
+    let corner: usize = 0;
     // Initialised from the stored calibration when there is one, so a calibrated panel boots straight into
     // the graphics test screen and never shows the calibration screen again.
-    let mut raw_x_axis: usize = stored.map(|(_, axis, _, _, _, _)| axis).unwrap_or(0);
-    let mut x_from: i32 = stored.map(|(_, _, x_from, _, _, _)| x_from).unwrap_or(0);
-    let mut x_to: i32 = stored.map(|(_, _, _, x_to, _, _)| x_to).unwrap_or(0);
-    let mut y_from: i32 = stored.map(|(_, _, _, _, y_from, _)| y_from).unwrap_or(0);
-    let mut y_to: i32 = stored.map(|(_, _, _, _, _, y_to)| y_to).unwrap_or(0);
-    let mut point = (width_i / 2, height_i / 2);
-    let mut raw_a: i32 = idle_a;
-    let mut raw_b: i32 = idle_b;
-    let mut shown_a: i32 = idle_a - TOUCH_REPAINT - 1;
-    let mut shown_b: i32 = idle_b - TOUCH_REPAINT - 1;
-    let mut pressed = false;
-    let mut was_touched = false;
-    let mut redraw_screen = true;
-    let mut redraw_box = true;
-    let mut ticks: u32 = 0;
+    let raw_x_axis: usize = stored.map(|(_, axis, _, _, _, _)| axis).unwrap_or(0);
+    let x_from: i32 = stored.map(|(_, _, x_from, _, _, _)| x_from).unwrap_or(0);
+    let x_to: i32 = stored.map(|(_, _, _, x_to, _, _)| x_to).unwrap_or(0);
+    let y_from: i32 = stored.map(|(_, _, _, _, y_from, _)| y_from).unwrap_or(0);
+    let y_to: i32 = stored.map(|(_, _, _, _, _, y_to)| y_to).unwrap_or(0);
+    let point = (width_i / 2, height_i / 2);
+    let raw_a: i32 = idle_a;
+    let raw_b: i32 = idle_b;
+    let shown_a: i32 = idle_a - TOUCH_REPAINT - 1;
+    let shown_b: i32 = idle_b - TOUCH_REPAINT - 1;
+    let pressed = false;
+    let was_touched = false;
+    let redraw_screen = true;
+    let redraw_box = true;
+    let ticks: u32 = 0;
     // Whether the four corners have been measured -- by this run or by a previous one, which is what the
     // flash sector is for. Until they have, the panel shows the calibration screen.
-    let mut calibrated = stored.is_some();
+    let calibrated = stored.is_some();
+    State {
+        display,
+        backlight,
+        touch,
+        bus,
+        touch_irq,
+        flash,
+        width_i,
+        height_i,
+        box_w,
+        box_h,
+        box_x,
+        box_y,
+        rotation_code,
+        targets,
+        corners,
+        idle_a,
+        idle_b,
+        calibrated,
+        corner,
+        measured,
+        raw_x_axis,
+        x_from,
+        x_to,
+        y_from,
+        y_to,
+        raw_a,
+        raw_b,
+        shown_a,
+        shown_b,
+        pressed,
+        was_touched,
+        redraw_screen,
+        redraw_box,
+        ticks,
+        point,
+        led_red,
+        led_green,
+        led_blue,
+        adc,
+        light,
+        speaker,
+    }
+}
+
+/// The sketch's entry point -- the Arduino main() around setup() and the loop.
+///
+/// setup() runs once, then the implementation below repeats for as long as the board is powered. This is the
+/// function to edit: everything it needs from setup() is in state.
+#[esp_rtos::main]
+async fn main(_spawner: Spawner) -> ! {
+    let mut state = setup().await;
 
     loop {
-        if redraw_screen {
-            display.clear(Rgb565::BLACK).expect("panel write failed");
+        if state.redraw_screen {
+            state.display.clear(Rgb565::BLACK).expect("panel write failed");
             let style = MonoTextStyle::new(&FONT_6X10, Rgb565::WHITE);
 
-            if !calibrated {
+            if !state.calibrated {
                 // The calibration screen: one red block per corner, each with a crosshair in it, and the one
                 // being asked for lit up. Touching the crosshair records that corner's raw values.
                 Text::new("Touch the crosshair in the bright block", Point::new(8, 10), style)
-                    .draw(&mut display)
+                    .draw(&mut state.display)
                     .expect("panel write failed");
-                Text::new(corners[corner], Point::new(8, 24), style)
-                    .draw(&mut display)
+                Text::new(state.corners[state.corner], Point::new(8, 24), style)
+                    .draw(&mut state.display)
                     .expect("panel write failed");
-                for (index, target) in targets.iter().enumerate() {
+                for (index, target) in state.targets.iter().enumerate() {
                     let (x, y) = *target;
-                    let current = index == corner;
+                    let current = index == state.corner;
                     // 44 px blocks: big enough to aim at with a finger, small enough to leave the middle free.
                     Rectangle::new(Point::new(x - 22, y - 22), Size::new(44, 44))
                         .into_styled(PrimitiveStyle::with_fill(if current {
@@ -538,30 +517,30 @@ async fn main(_spawner: Spawner) -> ! {
                         } else {
                             Rgb565::new(4, 6, 4)
                         }))
-                        .draw(&mut display)
+                        .draw(&mut state.display)
                         .expect("panel write failed");
                     // The crosshair: where the user should aim, and the point the calibration is taken from.
                     let ink = if current { Rgb565::WHITE } else { Rgb565::new(14, 30, 14) };
                     Line::new(Point::new(x - 16, y), Point::new(x + 16, y))
                         .into_styled(PrimitiveStyle::with_stroke(ink, 2))
-                        .draw(&mut display)
+                        .draw(&mut state.display)
                         .expect("panel write failed");
                     Line::new(Point::new(x, y - 16), Point::new(x, y + 16))
                         .into_styled(PrimitiveStyle::with_stroke(ink, 2))
-                        .draw(&mut display)
+                        .draw(&mut state.display)
                         .expect("panel write failed");
                 }
             } else {
                 // The graphics test screen, back again once the calibration is done: a frame around the
                 // whole panel, four coloured corner markers, five bars and a cross through the centre.
                 Text::new("Touch: numbers below, and the log", Point::new(8, 10), style)
-                    .draw(&mut display)
+                    .draw(&mut state.display)
                     .expect("panel write failed");
-                Rectangle::new(Point::new(1, 1), Size::new(width_i as u32 - 2, height_i as u32 - 2))
+                Rectangle::new(Point::new(1, 1), Size::new(state.width_i as u32 - 2, state.height_i as u32 - 2))
                     .into_styled(PrimitiveStyle::with_stroke(Rgb565::WHITE, 2))
-                    .draw(&mut display)
+                    .draw(&mut state.display)
                     .expect("panel write failed");
-                for (index, target) in targets.iter().enumerate() {
+                for (index, target) in state.targets.iter().enumerate() {
                     let (x, y) = *target;
                     let colour = match index {
                         0 => Rgb565::RED,
@@ -571,13 +550,13 @@ async fn main(_spawner: Spawner) -> ! {
                     };
                     Rectangle::new(Point::new(x - 12, y - 12), Size::new(24, 24))
                         .into_styled(PrimitiveStyle::with_fill(colour))
-                        .draw(&mut display)
+                        .draw(&mut state.display)
                         .expect("panel write failed");
                 }
                 // The five bars share the width, so they read the same in portrait and landscape instead of
                 // huddling on the left of a turned panel.
-                let bar_gap: i32 = (width_i / 64).max(2);
-                let bar_width: i32 = ((width_i - 2 * MARGIN - 4 * bar_gap) / 5).max(4);
+                let bar_gap: i32 = (state.width_i / 64).max(2);
+                let bar_width: i32 = ((state.width_i - 2 * MARGIN - 4 * bar_gap) / 5).max(4);
                 for (index, colour) in [Rgb565::RED, Rgb565::GREEN, Rgb565::BLUE, Rgb565::BLACK, Rgb565::WHITE]
                     .iter()
                     .enumerate()
@@ -587,20 +566,20 @@ async fn main(_spawner: Spawner) -> ! {
                         Size::new(bar_width as u32, 40),
                     )
                         .into_styled(PrimitiveStyle::with_fill(*colour))
-                        .draw(&mut display)
+                        .draw(&mut state.display)
                         .expect("panel write failed");
                 }
-                Line::new(Point::new(width_i / 2, 96), Point::new(width_i / 2, height_i - 96))
+                Line::new(Point::new(state.width_i / 2, 96), Point::new(state.width_i / 2, state.height_i - 96))
                     .into_styled(PrimitiveStyle::with_stroke(Rgb565::new(16, 40, 16), 1))
-                    .draw(&mut display)
+                    .draw(&mut state.display)
                     .expect("panel write failed");
-                Line::new(Point::new(8, height_i / 2), Point::new(width_i - 8, height_i / 2))
+                Line::new(Point::new(8, state.height_i / 2), Point::new(state.width_i - 8, state.height_i / 2))
                     .into_styled(PrimitiveStyle::with_stroke(Rgb565::new(16, 40, 16), 1))
-                    .draw(&mut display)
+                    .draw(&mut state.display)
                     .expect("panel write failed");
             }
-            redraw_screen = false;
-            redraw_box = true;
+            state.redraw_screen = false;
+            state.redraw_box = true;
         }
 
         // Only the readout box is repainted while a finger is down: a full clear costs about 200 ms of
@@ -610,86 +589,86 @@ async fn main(_spawner: Spawner) -> ! {
         // the middle of the panel -- and it sits *outside* the branch that chooses between the design and the
         // diagnostic screen, so without this guard a touch anywhere repainted it on top of the design. Reported
         // from the board: "I can touch anywhere on the screen to update the touch readout."
-        if redraw_box {
+        if state.redraw_box {
             // The interior first, then the border on top of its edges. The numbers change length as a finger
             // moves -- "raw a=0 b=0" is shorter than "raw a=1806 b=286" -- so without clearing, each reading
             // is drawn over the tail of the one before it. Filling and then stroking is what keeps the border
             // whole: the other order erases half its width.
-            Rectangle::new(Point::new(box_x, box_y), Size::new(box_w as u32, box_h as u32))
+            Rectangle::new(Point::new(state.box_x, state.box_y), Size::new(state.box_w as u32, state.box_h as u32))
                 .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
-                .draw(&mut display)
+                .draw(&mut state.display)
                 .expect("panel write failed");
-            Rectangle::new(Point::new(box_x, box_y), Size::new(box_w as u32, box_h as u32))
+            Rectangle::new(Point::new(state.box_x, state.box_y), Size::new(state.box_w as u32, state.box_h as u32))
                 .into_styled(PrimitiveStyle::with_stroke(Rgb565::new(8, 24, 8), 2))
-                .draw(&mut display)
+                .draw(&mut state.display)
                 .expect("panel write failed");
             let small = MonoTextStyle::new(&FONT_6X10, Rgb565::WHITE);
             let big = MonoTextStyle::new(&FONT_10X20, Rgb565::YELLOW);
 
             let mut line = Numbers::new();
-            if !calibrated {
-                let _ = write!(&mut line, "corner {} of 4 - {}", corner + 1, corners[corner]);
-            } else if pressed {
+            if !state.calibrated {
+                let _ = write!(&mut line, "corner {} of 4 - {}", state.corner + 1, state.corners[state.corner]);
+            } else if state.pressed {
                 let _ = write!(&mut line, "TOUCH");
             } else {
                 let _ = write!(&mut line, "idle");
             }
-            Text::new(line.as_str(), Point::new(box_x + 8, box_y + 8), small)
-                .draw(&mut display)
+            Text::new(line.as_str(), Point::new(state.box_x + 8, state.box_y + 8), small)
+                .draw(&mut state.display)
                 .expect("panel write failed");
 
             let mut line = Numbers::new();
-            let _ = write!(&mut line, "raw a={} b={}", raw_a, raw_b);
-            Text::new(line.as_str(), Point::new(box_x + 8, box_y + 26), small)
-                .draw(&mut display)
+            let _ = write!(&mut line, "raw a={} b={}", state.raw_a, state.raw_b);
+            Text::new(line.as_str(), Point::new(state.box_x + 8, state.box_y + 26), small)
+                .draw(&mut state.display)
                 .expect("panel write failed");
 
             let mut line = Numbers::new();
-            if calibrated {
-                let _ = write!(&mut line, "x={} y={}", point.0, point.1);
+            if state.calibrated {
+                let _ = write!(&mut line, "x={} y={}", state.point.0, state.point.1);
             } else {
                 let _ = write!(&mut line, "x=? y=?");
             }
-            Text::new(line.as_str(), Point::new(box_x + 8, box_y + 44), big)
-                .draw(&mut display)
+            Text::new(line.as_str(), Point::new(state.box_x + 8, state.box_y + 44), big)
+                .draw(&mut state.display)
                 .expect("panel write failed");
 
             let mut line = Numbers::new();
-            let _ = write!(&mut line, "pen={} idle a={} b={}", touch_irq.is_low(), idle_a, idle_b);
-            Text::new(line.as_str(), Point::new(box_x + 8, box_y + 78), small)
-                .draw(&mut display)
+            let _ = write!(&mut line, "pen={} idle a={} b={}", state.touch_irq.is_low(), state.idle_a, state.idle_b);
+            Text::new(line.as_str(), Point::new(state.box_x + 8, state.box_y + 78), small)
+                .draw(&mut state.display)
                 .expect("panel write failed");
 
-            shown_a = raw_a;
-            shown_b = raw_b;
-            redraw_box = false;
+            state.shown_a = state.raw_a;
+            state.shown_b = state.raw_b;
+            state.redraw_box = false;
         }
 
         // Every third tick is about 60 ms; a burst is a few bytes at 2 MHz, so the panel's clock is only
         // away for microseconds.
-        ticks = ticks.wrapping_add(1);
+        state.ticks = state.ticks.wrapping_add(1);
         // Every third tick, and only when touch is wanted: with the setting off this whole block is folded
         // away, which keeps the controller's chip select and the bus clock untouched as well as unread.
-        if ticks % 3 == 0 {
-            bus.borrow_mut().apply_config(&touch_clock()).expect("touch clock");
-            let (a, frames_a) = touch_axis(&mut touch, TOUCH_AXIS_A);
-            let (b, frames_b) = touch_axis(&mut touch, TOUCH_AXIS_B);
-            touch_idle(&mut touch);
-            bus.borrow_mut().apply_config(&panel_clock()).expect("panel clock");
-            raw_a = i32::from(a);
-            raw_b = i32::from(b);
+        if state.ticks % 3 == 0 {
+            state.bus.borrow_mut().apply_config(&touch_clock()).expect("touch clock");
+            let (a, frames_a) = touch_axis(&mut state.touch, TOUCH_AXIS_A);
+            let (b, frames_b) = touch_axis(&mut state.touch, TOUCH_AXIS_B);
+            touch_idle(&mut state.touch);
+            state.bus.borrow_mut().apply_config(&panel_clock()).expect("panel clock");
+            state.raw_a = i32::from(a);
+            state.raw_b = i32::from(b);
 
             // A touch is the axes *moving*, never the interrupt line on its own: an interrupt that fires
             // by itself walks the calibration through all four corners while nobody touches anything.
-            let irq = touch_irq.is_low();
-            pressed = (raw_a - idle_a).abs() > TOUCH_MOVE || (raw_b - idle_b).abs() > TOUCH_MOVE;
+            let irq = state.touch_irq.is_low();
+            state.pressed = (state.raw_a - state.idle_a).abs() > TOUCH_MOVE || (state.raw_b - state.idle_b).abs() > TOUCH_MOVE;
 
-            if pressed && !was_touched {
-                beep!(speaker, 40);
+            if state.pressed && !state.was_touched {
+                beep!(state.speaker, 40);
                 log::info!(
                     "touch: a={} b={} pen={} frames a=[{:04X} {:04X} {:04X}] b=[{:04X} {:04X} {:04X}]",
-                    raw_a,
-                    raw_b,
+                    state.raw_a,
+                    state.raw_b,
                     irq,
                     frames_a[0],
                     frames_a[1],
@@ -698,105 +677,105 @@ async fn main(_spawner: Spawner) -> ! {
                     frames_b[1],
                     frames_b[2]
                 );
-                if calibrated && ticks < RECALIBRATE_TICKS {
+                if state.calibrated && state.ticks < RECALIBRATE_TICKS {
                     // The touch that triggers the gesture is *consumed* by it, not recorded as a corner: the
                     // finger is wherever the user aimed at the middle of the screen, and calibrating from that
                     // would be worse than not calibrating at all.
-                    calibrated = false;
-                    corner = 0;
-                    redraw_screen = true;
-                    redraw_box = true;
+                    state.calibrated = false;
+                    state.corner = 0;
+                    state.redraw_screen = true;
+                    state.redraw_box = true;
                     log::info!(
                         "calibration: discarded by a touch in the first {} ticks - measure the four corners again",
                         RECALIBRATE_TICKS
                     );
-                        beep!(speaker, 200);
-                } else if !calibrated {
-                    measured[corner] = [a, b];
-                        beep!(speaker, 200);
-                    log::info!("touch: corner {} {} recorded", corner + 1, corners[corner]);
-                    corner += 1;
-                    if corner == 4 {
-                        calibrated = true;
+                        beep!(state.speaker, 200);
+                } else if !state.calibrated {
+                    state.measured[state.corner] = [a, b];
+                        beep!(state.speaker, 200);
+                    log::info!("touch: corner {} {} recorded", state.corner + 1, state.corners[state.corner]);
+                    state.corner += 1;
+                    if state.corner == 4 {
+                        state.calibrated = true;
                         // Which raw axis follows the display's X is a property of how this panel is wired, so
                         // it is worked out from the two corners that differ only along the display's X.
-                        let delta_a = (i32::from(measured[1][0]) - i32::from(measured[0][0])).abs();
-                        let delta_b = (i32::from(measured[1][1]) - i32::from(measured[0][1])).abs();
-                        raw_x_axis = if delta_a >= delta_b { 0 } else { 1 };
-                        let raw_y_axis = 1 - raw_x_axis;
-                        x_from = i32::from(measured[0][raw_x_axis]);
-                        x_to = i32::from(measured[1][raw_x_axis]);
-                        y_from = i32::from(measured[0][raw_y_axis]);
-                        y_to = i32::from(measured[3][raw_y_axis]);
+                        let delta_a = (i32::from(state.measured[1][0]) - i32::from(state.measured[0][0])).abs();
+                        let delta_b = (i32::from(state.measured[1][1]) - i32::from(state.measured[0][1])).abs();
+                        state.raw_x_axis = if delta_a >= delta_b { 0 } else { 1 };
+                        let raw_y_axis = 1 - state.raw_x_axis;
+                        state.x_from = i32::from(state.measured[0][state.raw_x_axis]);
+                        state.x_to = i32::from(state.measured[1][state.raw_x_axis]);
+                        state.y_from = i32::from(state.measured[0][raw_y_axis]);
+                        state.y_to = i32::from(state.measured[3][raw_y_axis]);
                         log::info!(
                             "calibration: raw axis{} {}..{} and axis{} {}..{} over {}x{}",
-                            raw_x_axis, x_from, x_to, raw_y_axis, y_from, y_to, width_i, height_i
+                            state.raw_x_axis, state.x_from, state.x_to, raw_y_axis, state.y_from, state.y_to, state.width_i, state.height_i
                         );
                         // Written once, and only after a whole set of corners: a half-set is not a
                         // calibration, so nothing is stored until the fourth one lands.
-                        let bytes = calibration_bytes(rotation_code, raw_x_axis, x_from, x_to, y_from, y_to);
+                        let bytes = calibration_bytes(state.rotation_code, state.raw_x_axis, state.x_from, state.x_to, state.y_from, state.y_to);
                         log::info!(
                             "calibration: {}",
-                            match flash.write(CALIBRATION_OFFSET, &bytes) {
+                            match state.flash.write(CALIBRATION_OFFSET, &bytes) {
                                 Ok(()) => "stored in flash",
                                 Err(_) => "NOT stored (flash write failed)",
                             }
                         );
                     }
-                    redraw_screen = true;
+                    state.redraw_screen = true;
                 }
             }
 
             // The mapped position follows the finger for as long as it is down, and the readout is
             // repainted when it has moved enough to be worth the pixels.
-            if calibrated && (pressed || was_touched) {
-                let axis_x = if raw_x_axis == 0 { a } else { b };
-                let axis_y = if raw_x_axis == 0 { b } else { a };
-                let px = if x_to == x_from {
-                    width_i / 2
+            if state.calibrated && (state.pressed || state.was_touched) {
+                let axis_x = if state.raw_x_axis == 0 { a } else { b };
+                let axis_y = if state.raw_x_axis == 0 { b } else { a };
+                let px = if state.x_to == state.x_from {
+                    state.width_i / 2
                 } else {
-                    MARGIN + (i32::from(axis_x) - x_from) * (width_i - 2 * MARGIN) / (x_to - x_from)
+                    MARGIN + (i32::from(axis_x) - state.x_from) * (state.width_i - 2 * MARGIN) / (state.x_to - state.x_from)
                 }
-                .clamp(0, width_i - 1);
-                let py = if y_to == y_from {
-                    height_i / 2
+                .clamp(0, state.width_i - 1);
+                let py = if state.y_to == state.y_from {
+                    state.height_i / 2
                 } else {
-                    MARGIN + (i32::from(axis_y) - y_from) * (height_i - 2 * MARGIN) / (y_to - y_from)
+                    MARGIN + (i32::from(axis_y) - state.y_from) * (state.height_i - 2 * MARGIN) / (state.y_to - state.y_from)
                 }
-                .clamp(0, height_i - 1);
-                point = (px, py);
-                if pressed && !was_touched {
-                    log::info!("touch: a={} b={} -> pixel ({}, {})", raw_a, raw_b, px, py);
+                .clamp(0, state.height_i - 1);
+                state.point = (px, py);
+                if state.pressed && !state.was_touched {
+                    log::info!("touch: a={} b={} -> pixel ({}, {})", state.raw_a, state.raw_b, px, py);
                 }
-                if (raw_a - shown_a).abs() > TOUCH_REPAINT || (raw_b - shown_b).abs() > TOUCH_REPAINT {
-                    redraw_box = true;
+                if (state.raw_a - state.shown_a).abs() > TOUCH_REPAINT || (state.raw_b - state.shown_b).abs() > TOUCH_REPAINT {
+                    state.redraw_box = true;
                 }
             }
-            if !pressed && was_touched && calibrated {
+            if !state.pressed && state.was_touched && state.calibrated {
                 log::info!("touch: released");
-                redraw_box = true;
+                state.redraw_box = true;
             }
-            was_touched = pressed;
+            state.was_touched = state.pressed;
         }
 
         // Not in a Designer project: the per-touch lines below and the design's own event logs are the sign of
         // life that matters there, and a line every two seconds that says "touch test" is noise in an app.
-        if ticks % 100 == 0 {
+        if state.ticks % 100 == 0 {
             // A heartbeat with the numbers that matter, so "the log is quiet" cannot be mistaken for
             // "the app is not running".
-            log::info!("touch test alive: a={} b={} idle a={} b={} pen={}", raw_a, raw_b, idle_a, idle_b, touch_irq.is_low());
+            log::info!("touch test alive: a={} b={} idle a={} b={} pen={}", state.raw_a, state.raw_b, state.idle_a, state.idle_b, state.touch_irq.is_low());
         }
 
-        led_red.set_level(Level::from(!calibrated));
-        led_green.set_level(Level::from(calibrated && pressed));
-        led_blue.set_level(Level::from(calibrated && !pressed));
-        if ticks % 50 == 0 {
+        state.led_red.set_level(Level::from(!state.calibrated));
+        state.led_green.set_level(Level::from(state.calibrated && state.pressed));
+        state.led_blue.set_level(Level::from(state.calibrated && !state.pressed));
+        if state.ticks % 50 == 0 {
             // The oneshot read is non-blocking: it reports WouldBlock while a conversion is in flight, and
             // it does so on the first read after boot. Expecting it to be ready panicked the whole firmware
             // the first time this ran (2026-10-06), which looked exactly like dead touch.
             let mut light_raw: Option<u16> = None;
             for _ in 0..50 {
-                if let Ok(value) = adc.read_oneshot(&mut light) {
+                if let Ok(value) = state.adc.read_oneshot(&mut state.light) {
                     light_raw = Some(value);
                     break;
                 }
@@ -813,3 +792,28 @@ async fn main(_spawner: Spawner) -> ! {
         Timer::after(Duration::from_millis(20)).await;
     }
 }
+// --- Your own code goes below this line ---------------------------------------------------------
+//
+// The sketch is this file plus MainHeader.rs. Everything above is the shape of it: State is what setup()
+// created, and main() is the loop you edit. Rust does not mind about the order of items, so adding your
+// functions below main() leaves the top of the file as the shape of the sketch.
+//
+// A function that needs the hardware takes state, or one of its fields:
+//
+//     /// Three quick blinks, using the output setup() brought up.
+//     async fn blink_three(state: &mut State) {
+//         for _ in 0..3 {
+//             state.led_red.set_high();
+//             Timer::after_millis(120).await;
+//             state.led_red.set_low();
+//             Timer::after_millis(120).await;
+//         }
+//     }
+//
+// ...and is called from the loop with blink_three(&mut state).await;, or once from the end of setup()
+// if it should only run at start-up.
+//
+// Anything that does not touch the hardware -- a conversion, a formula, a lookup table -- reads better in
+// MainHeader.rs beside the other helpers, where it is reachable from here and from setup(). And a driver
+// of your own that outgrows a couple of functions deserves its own file: put it in src/my_driver.rs and
+// add mod my_driver; up with mod main_header;.

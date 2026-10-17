@@ -4,6 +4,7 @@ import { BoardsViewProvider } from './ui/boardsView';
 import { ProjectViewProvider } from './ui/projectView';
 import { ControlsViewProvider } from './ui/controlsView';
 import { StatusBarView } from './ui/statusBar';
+import { DESIGNER_PROJECT_CONTEXT } from './ui/controls';
 import { registerNewProjectCommand } from './commands/newProject';
 import { registerDesignerCommands } from './commands/designerCommands';
 import { resumePendingDesigner } from './designer/pendingOpen';
@@ -14,6 +15,7 @@ import { trackDebugSessions } from './project/debugSessions';
 import { registerLibraryCommands } from './commands/libraryCommands';
 import { registerWifiCommands } from './commands/wifiCommands';
 import { registerToolchainCommands } from './commands/toolchainCommands';
+import { registerRequirementsPrompt } from './commands/requirementsPrompt';
 import { disposeTerminals } from './commands/terminal';
 import { initAiLog } from './ai/log';
 import { initPickerFolders } from './ai/pickers';
@@ -63,6 +65,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         trackDebugSessions(),
         ...registerLibraryCommands(state, output),
         ...registerToolchainCommands(state, output),
+        // Missing requirements are announced when the window loads, and again when the open project makes a
+        // different set of them true (an ESP project in a window that had none). `state.refresh()` below is what
+        // feeds it, so this only has to subscribe.
+        registerRequirementsPrompt(context, state, output),
         // The two packaging controls, registered here because the Controls view runs them by id.
         vscode.commands.registerCommand('rustyPlatform.publishDeb', () => publishDeb()),
         vscode.commands.registerCommand('rustyPlatform.installDeb', () => installDeb()),
@@ -74,6 +80,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             statusBar.update();
             projectView.refresh();
             controlsView.refresh();
+            // The Project view's title-bar icon for the designer follows the same answer as the sidebar row,
+            // and a `view/title` entry can only read a context key -- so it is published here, beside the two
+            // views that already refresh from the state.
+            void vscode.commands.executeCommand(
+                'setContext',
+                DESIGNER_PROJECT_CONTEXT,
+                state.hasDesignerProject,
+            );
         }),
         vscode.commands.registerCommand('rustyPlatform.refresh', async () => {
             boardsView.refresh();

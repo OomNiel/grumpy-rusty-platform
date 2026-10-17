@@ -5,25 +5,29 @@
 #![no_std]
 #![no_main]
 
-use embassy_executor::Spawner;
-use embassy_time::{Duration, Timer};
-use embedded_hal_bus::spi::ExclusiveDevice;
-use embedded_sdmmc::{SdCard, TimeSource, Timestamp, VolumeIdx, VolumeManager};
-use esp_hal::clock::CpuClock;
-use esp_hal::delay::Delay;
-use esp_hal::gpio::{Level, Output, OutputConfig};
-use esp_hal::spi::master::{Config as SpiConfig, Spi};
-use esp_hal::time::Rate;
-use esp_hal::timer::timg::TimerGroup;
-use esp_println as _;
-use esp_backtrace as _;
-
 // The ESP-IDF bootloader expects an application descriptor in the image. Without it the
 // bootloader refuses to start the image, so this line is not decoration.
 esp_bootloader_esp_idf::esp_app_desc!();
 
-#[esp_rtos::main]
-async fn main(_spawner: Spawner) -> ! {
+// The sketch's header: every import, the type aliases, the constants and the helpers.
+// The path is spelled out because the file is named the way the sketch reads it, not the way Rust
+// spells a module name.
+#[path = "MainHeader.rs"]
+mod main_header;
+use main_header::*;
+
+/// Every value this sketch keeps: the card in the TF socket, created once by setup() and used by
+/// the loop in main().
+pub struct State {
+    /// Whether the card mounted and its root directory listed.
+    sd_mounted: bool,
+}
+
+/// One-time initialisation -- the Arduino setup().
+///
+/// Brings up the card in the TF socket and hands it back as a State for main() to run. Everything that
+/// must happen once, and only once, belongs here.
+pub async fn setup() -> State {
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
 
@@ -41,26 +45,6 @@ async fn main(_spawner: Spawner) -> ! {
     // with a line that can only come from this run.
     log::info!("=== {} {} starting ===", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
     log::info!("board: ESP32-035 LCD Panel (ESP32), 4 MB flash");
-
-
-    // A fixed timestamp: the filesystem records one when it *writes*, and these templates only read, so a
-    // fixed value is honest rather than a pretended clock. It is also what the crate's own example does.
-    struct FixedClock;
-
-    impl TimeSource for FixedClock {
-        fn get_timestamp(&self) -> Timestamp {
-            // The crate counts years from 1970 and indexes months and days from zero: 56 is 2026.
-            Timestamp {
-                year_since_1970: 56,
-                zero_indexed_month: 0,
-                zero_indexed_day: 0,
-                hours: 0,
-                minutes: 0,
-                seconds: 0,
-            }
-        }
-    }
-
     let sd_mounted = {
         // The card's own SPI bus. These are the TF socket's pins, not the panel's.
         let card_spi = Spi::new(
@@ -119,11 +103,23 @@ async fn main(_spawner: Spawner) -> ! {
 
         mounted
     };
+    State {
+        sd_mounted,
+    }
+}
+
+/// The sketch's entry point -- the Arduino main() around setup() and the loop.
+///
+/// setup() runs once, then the implementation below repeats for as long as the board is powered. This is the
+/// function to edit: everything it needs from setup() is in state.
+#[esp_rtos::main]
+async fn main(_spawner: Spawner) -> ! {
+    let state = setup().await;
 
     loop {
         log::info!(
             "sd: {}",
-            if sd_mounted {
+            if state.sd_mounted {
                 "mounted and readable"
             } else {
                 "not mounted - insert a FAT-formatted card in the TF socket and reset"
@@ -132,3 +128,24 @@ async fn main(_spawner: Spawner) -> ! {
         Timer::after(Duration::from_secs(10)).await;
     }
 }
+// --- Your own code goes below this line ---------------------------------------------------------
+//
+// The sketch is this file plus MainHeader.rs. Everything above is the shape of it: State is what setup()
+// created, and main() is the loop you edit. Rust does not mind about the order of items, so adding your
+// functions below main() leaves the top of the file as the shape of the sketch.
+//
+// A function that needs the hardware takes state, or one of its fields:
+//
+//     /// A step of your own: whatever setup() brought up is in state.
+//     async fn step(state: &mut State) {
+//         // Drive something in state here -- a display, a sensor, the radio.
+//         Timer::after_millis(120).await;
+//     }
+//
+// ...and is called from the loop with step(&mut state).await;, or once from the end of setup()
+// if it should only run at start-up.
+//
+// Anything that does not touch the hardware -- a conversion, a formula, a lookup table -- reads better in
+// MainHeader.rs beside the other helpers, where it is reachable from here and from setup(). And a driver
+// of your own that outgrows a couple of functions deserves its own file: put it in src/my_driver.rs and
+// add mod my_driver; up with mod main_header;.

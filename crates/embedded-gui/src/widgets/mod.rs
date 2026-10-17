@@ -57,7 +57,9 @@ pub use bandmeter::{BandMeterWidget, MeterOrientation};
 pub use basic::{ButtonWidget, LabelWidget, PanelWidget, SpacerWidget};
 pub use cinematic::GlanceTileWidget;
 pub use compass::{CompassMode, CompassWidget};
-pub use controls::{CheckboxLabelPosition, CheckboxWidget, SliderWidget, ToggleWidget};
+pub use controls::{
+    CheckboxLabelPosition, CheckboxWidget, RollerSelection, SliderWidget, ToggleWidget,
+};
 pub use data::ListWidget;
 pub use dialog::{
     ActionableDialogWidget, ConfirmationDialogWidget, DialogAction, DialogError, DialogType,
@@ -456,6 +458,9 @@ pub enum WidgetKind<'a> {
     Roller {
         items: &'a [&'a str],
         selected: usize,
+        /// How a finger picks an item on it: a flick, or a touch on a bar (`RollerSelection`). A design that
+        /// names nothing gets the flick, which is what the roller did before the choice existed.
+        selection: RollerSelection,
     },
     #[cfg(feature = "rich-widgets")]
     Table {
@@ -1324,9 +1329,9 @@ impl<'a> WidgetNode<'a> {
                 open,
             } => render_dropdown(ctx, rect, items, selected, open, self.style, state),
             #[cfg(feature = "rich-widgets")]
-            WidgetKind::Roller { items, selected } => {
-                render_roller(ctx, rect, items, selected, self.style, state)
-            }
+            WidgetKind::Roller {
+                items, selected, ..
+            } => render_roller(ctx, rect, items, selected, self.style, state),
             #[cfg(feature = "rich-widgets")]
             WidgetKind::Table {
                 rows,
@@ -3195,10 +3200,22 @@ where
 /// How many rows a roller draws (previous / current / next).
 ///
 /// One definition, because two things depend on it and they must agree: the renderer divides the
-/// inner height by this to place the rows, and the drag step uses the same number so the wheel
-/// moves exactly one item per row the finger crosses (`GuiContext::drag_step_selection`).
+/// inner height by this to place the rows, and the flick distance is one of those rows — so the
+/// wheel turns once the finger has moved by the height of the row it is looking at
+/// (`GuiContext::drag_step_selection`).
 #[cfg(feature = "rich-widgets")]
 pub(crate) const ROLLER_ROWS: u32 = 3;
+
+/// The rect one of a roller's bars is drawn in, so the drawing and the touch that selects a bar cannot
+/// disagree about which bar the finger landed on.
+///
+/// `RollerSelection::Touch` maps a touch to a bar, and the bar it selects has to be the bar the finger saw —
+/// which is why this is not written out twice (`render_roller` and the touch share it).
+#[cfg(feature = "rich-widgets")]
+pub(crate) fn roller_row(inner: Rect, index: u32) -> Rect {
+    let row_h = (inner.h / ROLLER_ROWS).max(1);
+    Rect::new(inner.x, inner.y + (index * row_h) as i32, inner.w, row_h)
+}
 
 #[cfg(feature = "rich-widgets")]
 fn render_roller<D, C>(
@@ -3223,15 +3240,9 @@ where
     let prev = items[(selected + items.len() - 1) % items.len()];
     let cur = items[selected];
     let next = items[(selected + 1) % items.len()];
-    let row_h = (inner.h / ROLLER_ROWS).max(1);
     let rows = [prev, cur, next];
     for (idx, text) in rows.iter().enumerate() {
-        let row = Rect::new(
-            inner.x,
-            inner.y + (idx as u32 * row_h) as i32,
-            inner.w,
-            row_h,
-        );
+        let row = roller_row(inner, idx as u32);
         if idx == 1 {
             ctx.fill_rect(row, style.accent)?;
         }

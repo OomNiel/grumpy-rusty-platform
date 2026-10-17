@@ -4,7 +4,7 @@
 // repeats DHCP request retries exceeded" (which says nothing) and knowing whether the lease or the
 // association failed, so they are pinned here rather than left to the golden files alone.
 
-const { test, ok, equal, contains, notContains, matches } = require('../../lib/harness');
+const { test, ok, equal, contains, notContains, matches, sketchSource } = require('../../lib/harness');
 const { compiled } = require('../../lib/harness');
 const { boardById } = compiled('boards/catalog');
 const { generateProjectFiles } = compiled('generate/files');
@@ -15,7 +15,7 @@ function mainFor(boardId, template) {
     const files = generateProjectFiles({ board: boardById(boardId), projectName: 'Test Wifi', template });
     const main = files.find((file) => file.path === 'src/main.rs');
     ok(main, `${boardId}/${template}: no src/main.rs`);
-    return main.content;
+    return sketchSource(files);
 }
 
 test('the wifi template logs the association, so a lease failure is not confused with it', () => {

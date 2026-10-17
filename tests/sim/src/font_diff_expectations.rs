@@ -14,7 +14,7 @@ pub const CANVAS_H: u32 = 320;
 /// and a *text colour* on a label takes the same route. A *shape* is the sixth: its own
 /// fill/stroke attributes on a tag the codegen fork renders with `add_custom_widget`. A build is
 /// the only thing that can prove any of them is honoured.
-pub const APPEARANCE_RECTS: [(i32, i32, u32, u32); 27] = [
+pub const APPEARANCE_RECTS: [(i32, i32, u32, u32); 28] = [
     // "fonted" (declared font "test")
     (200, 120, 90, 30),
     // "builtin" (built-in font "Scaled6x10")
@@ -35,6 +35,8 @@ pub const APPEARANCE_RECTS: [(i32, i32, u32, u32); 27] = [
     (0, 185, 150, 26),
     // "roll" (text colour "#ffffff")
     (0, 215, 150, 18),
+    // "rollTouch" (text colour "")
+    (100, 95, 60, 20),
     // "gauge" (text colour "#ffff00")
     (390, 120, 90, 90),
     // "sld" (text colour "#ff00ff")

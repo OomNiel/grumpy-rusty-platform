@@ -5,20 +5,35 @@
 #![no_std]
 #![no_main]
 
-use embassy_executor::Spawner;
-use embassy_time::{Duration, Timer};
-use esp_hal::clock::CpuClock;
-use esp_hal::timer::timg::TimerGroup;
-use esp_println as _;
-use esp_hal::gpio::{Level, Output, OutputConfig};
-use esp_backtrace as _;
-
 // The ESP-IDF bootloader expects an application descriptor in the image. Without it the
 // bootloader refuses to start the image, so this line is not decoration.
 esp_bootloader_esp_idf::esp_app_desc!();
 
-#[esp_rtos::main]
-async fn main(_spawner: Spawner) -> ! {
+// The sketch's header: every import, the type aliases, the constants and the helpers.
+// The path is spelled out because the file is named the way the sketch reads it, not the way Rust
+// spells a module name.
+#[path = "MainHeader.rs"]
+mod main_header;
+use main_header::*;
+
+/// Every value this sketch keeps: the on-board LED, created once by setup() and used by
+/// the loop in main().
+pub struct State {
+    /// The RGB LED’s three channels.
+    red: Output<'static>,
+
+    /// Driven one at a time, so a swapped channel shows
+    green: Output<'static>,
+
+    /// as the wrong colour rather than as nothing.
+    blue: Output<'static>,
+}
+
+/// One-time initialisation -- the Arduino setup().
+///
+/// Brings up the on-board LED and hands it back as a State for main() to run. Everything that
+/// must happen once, and only once, belongs here.
+pub async fn setup() -> State {
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
 
@@ -36,27 +51,64 @@ async fn main(_spawner: Spawner) -> ! {
     // with a line that can only come from this run.
     log::info!("=== {} {} starting ===", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
     log::info!("board: ESP32-035 LCD Panel (ESP32), 4 MB flash");
-
-
     // Blue, red and green, in that order, are what this board's own hardware notes give. The three pins are
     // driven one at a time so a swapped channel is visible as the wrong colour rather than as nothing.
-    let mut red = Output::new(peripherals.GPIO4, Level::Low, OutputConfig::default());
-    let mut green = Output::new(peripherals.GPIO17, Level::Low, OutputConfig::default());
-    let mut blue = Output::new(peripherals.GPIO16, Level::Low, OutputConfig::default());
+    let red = Output::new(peripherals.GPIO4, Level::Low, OutputConfig::default());
+    let green = Output::new(peripherals.GPIO17, Level::Low, OutputConfig::default());
+    let blue = Output::new(peripherals.GPIO16, Level::Low, OutputConfig::default());
 
     log::info!("RGB LED on GPIO4 (red), GPIO17 (green), GPIO16 (blue)");
+    State {
+        red,
+        green,
+        blue,
+    }
+}
+
+/// The sketch's entry point -- the Arduino main() around setup() and the loop.
+///
+/// setup() runs once, then the implementation below repeats for as long as the board is powered. This is the
+/// function to edit: everything it needs from setup() is in state.
+#[esp_rtos::main]
+async fn main(_spawner: Spawner) -> ! {
+    let mut state = setup().await;
 
     loop {
         for (name, colour) in [("red", 0usize), ("green", 1), ("blue", 2)] {
             log::info!("led: {}", name);
-            red.set_level(Level::from(colour == 0));
-            green.set_level(Level::from(colour == 1));
-            blue.set_level(Level::from(colour == 2));
+            state.red.set_level(Level::from(colour == 0));
+            state.green.set_level(Level::from(colour == 1));
+            state.blue.set_level(Level::from(colour == 2));
             Timer::after(Duration::from_millis(400)).await;
         }
-        red.set_low();
-        green.set_low();
-        blue.set_low();
+        state.red.set_low();
+        state.green.set_low();
+        state.blue.set_low();
         Timer::after(Duration::from_millis(400)).await;
     }
 }
+// --- Your own code goes below this line ---------------------------------------------------------
+//
+// The sketch is this file plus MainHeader.rs. Everything above is the shape of it: State is what setup()
+// created, and main() is the loop you edit. Rust does not mind about the order of items, so adding your
+// functions below main() leaves the top of the file as the shape of the sketch.
+//
+// A function that needs the hardware takes state, or one of its fields:
+//
+//     /// Three quick blinks, using the output setup() brought up.
+//     async fn blink_three(state: &mut State) {
+//         for _ in 0..3 {
+//             state.red.set_high();
+//             Timer::after_millis(120).await;
+//             state.red.set_low();
+//             Timer::after_millis(120).await;
+//         }
+//     }
+//
+// ...and is called from the loop with blink_three(&mut state).await;, or once from the end of setup()
+// if it should only run at start-up.
+//
+// Anything that does not touch the hardware -- a conversion, a formula, a lookup table -- reads better in
+// MainHeader.rs beside the other helpers, where it is reachable from here and from setup(). And a driver
+// of your own that outgrows a couple of functions deserves its own file: put it in src/my_driver.rs and
+// add mod my_driver; up with mod main_header;.

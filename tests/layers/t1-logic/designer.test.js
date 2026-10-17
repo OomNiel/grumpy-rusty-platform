@@ -570,6 +570,30 @@ test('a selected index past the end of the option list is reported', () => {
     contains(problems[0], 'past the end', 'the message explains the index');
 });
 
+test('a roller says which gesture picks an item, and a design that says nothing keeps the flick', () => {
+    // Asked 2026-10-15: *"A touch on one of the three visible bars, selects the touched bar. Put an option
+    // property in the settings bar to select between the older flick selection method or the touch method."*
+    // The property travels as markup, so the crate is the only place the behaviour lives -- but a design that
+    // never names it has to keep behaving exactly as it did, which is what the default is for.
+    const roller = widget('wheel', 'roller', { x: 0, y: 0, width: 80, height: 80 });
+    roller.children = { kind: 'options', values: ['one', 'two'] };
+    equal(roller.props.selection, 'flick', 'a dropped roller starts on the flick');
+
+    const kept = emitKdl(document(0, [roller]));
+    contains(kept, 'selection="flick"', 'and says so in the markup, where the designer can be read');
+    equal(validateDocument(document(0, [roller])).length, 0, 'which is a valid design');
+
+    roller.props.selection = 'touch';
+    contains(emitKdl(document(0, [roller])), 'selection="touch"', 'the touch is written the same way');
+
+    // A name the crate does not know is the designer's to catch: the parser would quietly read it as the
+    // flick, and a design that silently means something else is worse than one that is refused.
+    roller.props.selection = 'swipe';
+    const problems = validateDocument(document(0, [roller]));
+    equal(problems.length, 1, JSON.stringify(problems));
+    contains(problems[0], 'swipe', 'the value is named');
+});
+
 test('an unknown property, tag or event is reported rather than silently emitted', () => {
     const doc = document(0, [widget('go', 'button', { x: 0, y: 0, events: ['valueChanged'] })]);
     doc.widgets[0].props = { ...doc.widgets[0].props, nonsense: 1 };

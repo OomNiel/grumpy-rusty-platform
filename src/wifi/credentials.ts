@@ -28,11 +28,15 @@ export interface StaticAddress {
 }
 
 /**
- * Whether a `src/main.rs` belongs to one of the wireless templates. They are the only ones that
+ * Whether the project's source belongs to one of the wireless templates. They are the only ones that
  * read the credentials, and a wired project must never be interrupted by the prompt.
+ *
+ * The argument is the project's *source as a whole* -- `src/main.rs` and its `MainHeader.rs`, joined.
+ * Since the sketch split (2026-10-16, `generate/sketch.ts`) the credentials are constants in the header,
+ * so `wifiPrompt.ts` reads both files and hands them over together.
  */
-export function isWirelessFirmware(mainRs: string): boolean {
-    return mainRs.includes('option_env!("WIFI_SSID")');
+export function isWirelessFirmware(source: string): boolean {
+    return source.includes('option_env!("WIFI_SSID")');
 }
 
 /** True while nothing usable has been entered, so the prompt has something to ask about. */

@@ -10,7 +10,7 @@
  * are what stands between a template edit and firmware that does not compile.
  */
 
-const { test, ok, equal, notOk, contains, notContains, matches } = require('../../lib/harness');
+const { test, ok, equal, notOk, contains, notContains, matches, sketchSource } = require('../../lib/harness');
 const { compiled } = require('../../lib/harness');
 const { BOARDS, boardById, allTargets, rpTargets, espTargets } = compiled('boards/catalog');
 const { isEspBoard } = compiled('boards/types');
@@ -37,7 +37,11 @@ function filesFor(board, template, choices) {
         template: template ?? defaultTemplateFor(board),
         choices,
     });
-    return new Map(files.map((file) => [file.path, file.content]));
+    const map = new Map(files.map((file) => [file.path, file.content]));
+    // `src/main.rs` is handed back as the whole sketch (main plus header): a generated project is two source
+    // files now, and calling the header half of it is the one right answer for a test that names `main.rs`.
+    map.set('src/main.rs', sketchSource(map));
+    return map;
 }
 
 test('the catalog contains the three Espressif boards', () => {
@@ -408,7 +412,8 @@ test('the panel template initialises the panel over its own pins', () => {
         'RgbColor is reached through the prelude, not a second import of the same crate');
     contains(main, `Output::new(peripherals.GPIO${panel.dc}, Level::Low, OutputConfig::default())`);
     contains(main, `peripherals.GPIO${panel.backlight}`, 'the backlight has to be switched on');
-    contains(main, 'SPIInterface::new(spi, dc, &mut buffer)');
+    contains(main, 'let buffer: &\'static mut [u8; 512] = BUFFER_CELL.init([0u8; 512]);');
+    contains(main, 'SPIInterface::new(spi, dc, buffer)');
 });
 
 // A panel that lights up is not the same as a panel that is *right*: cropped active area, swapped colour
@@ -440,7 +445,7 @@ test('the panel template draws a diagnostic screen, not a flat fill', () => {
     contains(main, 'for &text in layout.status_lines');
     contains(main, 'Hello Grumpy!');
     // The blink is the only moving pixel: it proves the loop runs without covering a diagnostic.
-    contains(main, 'let colour = if tick % 2 == 0 { Rgb565::WHITE } else { Rgb565::BLACK };');
+    contains(main, 'let colour = if state.tick % 2 == 0 { Rgb565::WHITE } else { Rgb565::BLACK };');
     contains(main, 'Timer::after(Duration::from_millis(700))');
     // Every extra text line is a size asked of the font, so check the font that fits the width.
     contains(main, 'FONT_6X10');
@@ -609,7 +614,7 @@ test('the touch template shares the panel bus and speaks the XPT2046 protocol', 
 
     // The bus goes into a RefCell and each chip gets its own device, with its own chip select.
     contains(main, 'use core::cell::RefCell;');
-    contains(main, 'let bus = RefCell::new(spi);');
+    contains(main, "let bus: &'static HalBus = BUS_CELL.init(RefCell::new(spi));");
     contains(main, 'RefCellDevice::new(&bus, cs, Delay::new())');
     contains(main, `RefCellDevice::new(&bus, touch_cs, Delay::new())`);
     notContains(main, 'ExclusiveDevice', 'one bus, two devices: the exclusive adapter cannot express that');
@@ -642,7 +647,11 @@ test('a touch is the axes moving, never the interrupt line on its own', () => {
     // Measured: the interrupt line reads low with nothing near the glass, and every phantom tap arrived
     // with both axes still on their idle values -- it walked the calibration through all four corners by
     // itself. A touch is the axes moving, and the interrupt is logged next to it rather than OR-ed in.
-    contains(main, 'pressed = (raw_a - idle_a).abs() > TOUCH_MOVE || (raw_b - idle_b).abs() > TOUCH_MOVE;');
+    contains(
+        main,
+        'state.pressed = (state.raw_a - state.idle_a).abs() > TOUCH_MOVE'
+        + ' || (state.raw_b - state.idle_b).abs() > TOUCH_MOVE;',
+    );
     notContains(main, 'irq ||');
     contains(main, '"touch test alive: a={} b={} idle a={} b={} pen={}",',
         'the interrupt is still logged, just not trusted');
@@ -658,12 +667,12 @@ test('the touch template asks for the four corners and says what it measured', (
     contains(main, 'Touch: numbers below, and the log');
     // The calibration starts from whatever the flash sector holds, so a calibrated panel never sees this
     // screen again; the fourth corner ends it either way.
-    contains(main, 'let mut calibrated = stored.is_some();');
+    contains(main, 'let calibrated = stored.is_some();');
     contains(main, 'calibrated = true;', 'the fourth corner ends the calibration');
     contains(main, 'FlashStorage::new(peripherals.FLASH)', 'and the values are read back at boot');
     contains(main, 'flash.write(CALIBRATION_OFFSET, &bytes)', 'and written once the fourth corner lands');
     contains(main, 'const CALIBRATION_OFFSET: u32 = 0x3F_F000', 'in the sector the application partition leaves free');
-    contains(main, 'if !calibrated {', 'the calibration screen is the first thing shown');
+    contains(main, 'if !state.calibrated {', 'the calibration screen is the first thing shown');
     // And the live readout the panel shows while a finger is down.
     contains(main, 'raw a={} b={}', 'the raw pair');
     contains(main, 'x={} y={}', 'the mapped pair');
@@ -698,9 +707,9 @@ test('the peripherals template reads the LDR and drives the DAC the board actual
     const main = files.get('src/main.rs');
     const cargo = files.get('Cargo.toml');
 
-    contains(main, 'use esp_hal::analog::adc::{Adc, AdcConfig, Attenuation};');
+    contains(main, 'pub use esp_hal::analog::adc::{Adc, AdcConfig, AdcPin, Attenuation};');
     contains(main, 'enable_pin(peripherals.GPIO34, Attenuation::_11dB)', 'the LDR pin, at full range');
-    contains(main, 'adc.read_oneshot(&mut light)', 'an ADC read, not a digital one');
+    contains(main, 'state.adc.read_oneshot(&mut state.light)', 'an ADC read, not a digital one');
     contains(main, 'use esp_hal::analog::dac::Dac;');
     contains(main, 'Dac::new(peripherals.DAC2, peripherals.GPIO26)', 'the speaker is DAC channel 2');
     // The polarity is the thing that looks like a broken sensor if it is assumed backwards.
@@ -725,17 +734,17 @@ test('the board template has the panel, touch, the LED, the sensor and the speak
     contains(main, 'Touch: numbers below, and the log');
     // And the rest of the board.
     contains(main, 'LED::Low'.replace('LED::', 'Level::'), 'the RGB LED is driven');
-    contains(main, 'let mut led_red = Output::new(peripherals.GPIO4');
-    contains(main, 'let mut led_green = Output::new(peripherals.GPIO17');
-    contains(main, 'let mut led_blue = Output::new(peripherals.GPIO16');
-    contains(main, 'adc.read_oneshot(&mut light)', 'the light sensor is read');
+    contains(main, 'let led_red = Output::new(peripherals.GPIO4');
+    contains(main, 'let led_green = Output::new(peripherals.GPIO17');
+    contains(main, 'let led_blue = Output::new(peripherals.GPIO16');
+    contains(main, 'state.adc.read_oneshot(&mut state.light)', 'the light sensor is read');
     contains(main, 'Dac::new(peripherals.DAC2, peripherals.GPIO26)', 'and the speaker is driven');
     contains(main, 'board hardware: RGB LED, LDR on GPIO34, speaker on GPIO26');
     // The speaker answers every touch, not only a recorded corner: with the calibration kept in flash, a
     // calibrated board never records a corner again, so a corner-only beep left the amplifier untestable.
     contains(main, 'macro_rules! beep');
-    contains(main, 'beep!(speaker, 40);', 'a short reply to any touch');
-    contains(main, 'beep!(speaker, 200);', 'and a longer confirmation at a corner');
+    contains(main, 'beep!(state.speaker, 40);', 'a short reply to any touch');
+    contains(main, 'beep!(state.speaker, 200);', 'and a longer confirmation at a corner');
     // The dependencies the analog half needs.
     contains(cargo, '"unstable"');
     contains(cargo, 'embedded-hal = "1.0.0"');
@@ -819,7 +828,7 @@ test('a calibration measured in one orientation is not used in another', () => {
     const main = filesFor(espBoard('sunton-3248s035r'), 'touch').get('src/main.rs');
     contains(main, 'rotation: u8,', 'the record is written with a rotation');
     contains(main, 'bytes[22] = rotation;', 'and stores it');
-    contains(main, 'calibration_bytes(rotation_code, raw_x_axis, x_from, x_to, y_from, y_to);');
+    contains(main, 'calibration_bytes(state.rotation_code, state.raw_x_axis, state.x_from, state.x_to');
     contains(main, 'Some(found) if found.0 == rotation_code => Some(found)');
     contains(main, 'recalibrating', 'a record from another orientation is reported, not used silently');
     // The checksum has to cover the rotation byte, or a stale record could pass it after a change.
@@ -834,10 +843,10 @@ test('a calibrated panel can be recalibrated from the firmware', () => {
     // A touch in the first couple of seconds now means "recalibrate".
     const main = filesFor(espBoard('sunton-3248s035r'), 'touch').get('src/main.rs');
     contains(main, 'const RECALIBRATE_TICKS: u32 = 100;', 'the window is about two seconds of 20 ms ticks');
-    contains(main, 'if calibrated && ticks < RECALIBRATE_TICKS {');
+    contains(main, 'if state.calibrated && state.ticks < RECALIBRATE_TICKS {');
     contains(main, 'discarded by a touch in the first');
     // The triggering touch must be consumed by the gesture rather than recorded as a corner.
-    contains(main, '} else if !calibrated {');
+    contains(main, '} else if !state.calibrated {');
     contains(main, 'corner = 0;');
     contains(main, 'redraw_screen = true;');
     // And the README has to tell the reader, since it is the only way to recalibrate by hand.
@@ -849,11 +858,12 @@ test('a Designer project does not paint the diagnostic readout over the design',
     // the diagnostic screen -- so without a guard, a touch anywhere repainted it on top of the design. Reported
     // from the board: "I can touch anywhere on the screen to update the touch readout."
     const mainOf = (template) =>
-        generateProjectFiles({ board: boardById('sunton-3248s035r'), projectName: 'x', template, rotation: 3 })
-            .find((file) => file.path === 'src/main.rs').content;
+        sketchSource(
+            generateProjectFiles({ board: boardById('sunton-3248s035r'), projectName: 'x', template, rotation: 3 }),
+        );
 
-    contains(mainOf('designer'), 'if !DESIGNER && redraw_box', 'the readout is guarded out of a design');
-    contains(mainOf('touch'), 'if redraw_box {', 'the touch template keeps its readout');
+    contains(mainOf('designer'), 'if !DESIGNER && state.redraw_box', 'the readout is guarded out of a design');
+    contains(mainOf('touch'), 'if state.redraw_box {', 'the touch template keeps its readout');
     notContains(mainOf('touch'), 'DESIGNER', 'and has no design branch at all');
 });
 
@@ -861,13 +871,13 @@ test('a Designer project carries the touch setting, and its firmware reads it', 
     const filesOf = (template, touch) =>
         generateProjectFiles({ board: boardById('sunton-3248s035r'), projectName: 'x', template, rotation: 3, touch });
     const configOf = (files) => files.find((file) => file.path === '.cargo/esp-config.toml').content;
-    const mainOf = (files) => files.find((file) => file.path === 'src/main.rs').content;
+    const mainOf = (files) => sketchSource(files);
 
     const on = filesOf('designer', true);
     contains(configOf(on), 'TOUCH_ENABLED = "1"', 'the setting is written for every Designer project');
     contains(mainOf(on), 'const TOUCH: bool', 'and the firmware reads it at compile time');
-    contains(mainOf(on), 'if TOUCH && ticks % 3 == 0', 'so the sampling folds away when it is off');
-    contains(mainOf(on), 'if TOUCH && !calibrated', 'and so does the calibration screen');
+    contains(mainOf(on), 'if TOUCH && state.ticks % 3 == 0', 'so the sampling folds away when it is off');
+    contains(mainOf(on), 'if TOUCH && !state.calibrated', 'and so does the calibration screen');
     contains(mainOf(on), 'if TOUCH { calibration_load', 'and the calibration is not even read');
 
     const off = filesOf('designer', false);
@@ -877,7 +887,7 @@ test('a Designer project carries the touch setting, and its firmware reads it', 
     for (const template of ['touch', 'board']) {
         const files = filesOf(template, false);
         notContains(configOf(files), 'TOUCH_ENABLED', `${template} has no setting to make`);
-        contains(mainOf(files), 'if ticks % 3 == 0', `${template} samples unconditionally`);
+        contains(mainOf(files), 'if state.ticks % 3 == 0', `${template} samples unconditionally`);
         notContains(mainOf(files), 'const TOUCH: bool', `${template} has no constant to read`);
     }
 
