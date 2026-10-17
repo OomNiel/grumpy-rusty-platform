@@ -140,8 +140,14 @@ export function handlerName(id: string, event: DesignerEvent): string {
 
 /** The parameter the handler takes, if the event carries anything beyond its widget. */
 function handlerParameters(event: DesignerEvent): string {
-    const parameter = EVENT_SPECS[event].parameter;
-    return parameter === undefined ? '' : `${parameter.name}: ${parameter.type}`;
+    const spec = EVENT_SPECS[event];
+    const parameter = spec.parameter;
+    if (parameter !== undefined) {
+        return `${parameter.name}: ${parameter.type}`;
+    }
+    // An argument fetched from the GUI rather than bound from the event (a keypad's submitted
+    // line) still has to be named in the signature the generated arm calls.
+    return spec.argumentType === undefined ? '' : `text: ${spec.argumentType}`;
 }
 
 /** Every handler a design needs, in document order, without duplicates. */
@@ -158,15 +164,132 @@ export function requiredHandlers(document: DesignerDocument): string[] {
     return names;
 }
 
+/**
+ * The movement the code-behind attaches to a clock: one second on every attached face.
+ *
+ * The crate's clock holds a *time*, not a running clock, so the engine is here rather than in the
+ * widget: it reads embassy's clock when the app paints, advances the widget by however many seconds
+ * have passed, and the damage the widget reports is its own cell -- one hand moving is not a reason
+ * to repaint a 480x320 panel.
+ *
+ * There is no `Timer` to await: `render` is called from the app's synchronous paint path, and the
+ * project's main loop already asks `is_dirty()` every pass. Answering "yes" once a second is what
+ * makes an untouched panel keep up with the time.
+ */
+function movementMethodsFor(clocks: readonly DesignerWidget[]): string {
+    const advances = clocks
+        .map((widget) => `            let _ = self.gui.advance_clock(self.widgets.${rustFieldName(widget.id)});`)
+        .join('\n');
+    // The same clocks, told the time a wall clock says rather than stepped by a count of ticks.
+    const shows = clocks
+        .map(
+            (widget) =>
+                `                let _ = self.gui.set_clock_time(self.widgets.${rustFieldName(widget.id)}, hour, minute, second);`,
+        )
+        .join('\n');
+    return `
+    /// The time the design is showing: the wall clock advanced to now, or \`None\` before one has
+    /// been handed over.
+    pub fn wall_clock(&self) -> Option<(u8, u8, u8)> {
+        let (anchor, start) = self.wall_base?;
+        let seconds = (start + anchor.elapsed().as_secs() as u32) % 86_400;
+        Some((
+            (seconds / 3600) as u8,
+            ((seconds / 60) % 60) as u8,
+            (seconds % 60) as u8,
+        ))
+    }
+
+    /// Whether a wall clock has been handed over -- what a board with no RTC (or one that has not
+    /// been told yet) answers \`false\` to. The app's to use; the movement asks wall_clock.
+    #[allow(dead_code)]
+    pub fn has_wall_clock(&self) -> bool {
+        self.wall_base.is_some()
+    }
+
+    /// Whether a whole second has passed since the clocks were last advanced.
+    ///
+    /// A design nobody is touching only paints when something says it changed, so this is what keeps
+    /// the panel awake: once a second, and not once a frame.
+    fn clock_due(&self) -> bool {
+        match self.last_tick {
+            None => true,
+            Some(last) => Instant::now().duration_since(last).as_secs() > 0,
+        }
+    }
+
+    /// The movement: the wall clock when the board has one, the one-second timer otherwise.
+    ///
+    /// With a wall clock the hands are *set* to what it says, so nothing accumulates and nothing
+    /// drifts; without one, a frame that took two seconds advances the hands by two, so a slow
+    /// panel does not make the design's own time lose seconds either.
+    fn tick_clocks(&mut self) {
+        let shown = self.wall_clock();
+        if let Some((hour, minute, second)) = shown {
+            self.last_tick = Some(Instant::now());
+${shows}
+            return;
+        }
+        let now = Instant::now();
+        let last = match self.last_tick {
+            None => {
+                self.last_tick = Some(now);
+                return;
+            }
+            Some(last) => last,
+        };
+        let elapsed = now.duration_since(last).as_secs();
+        if elapsed == 0 {
+            return;
+        }
+        self.last_tick = Some(last + Duration::from_secs(elapsed));
+        for _ in 0..elapsed {
+${advances}
+        }
+    }
+`;
+}
+
+/**
+ * The wall clock, emitted for every design whether or not one of its widgets shows the time.
+ *
+ * `main.rs` calls it whenever the console hands a time over, so it has to exist even in a design
+ * with no clock: the hand-over is the firmware's, not any widget's.
+ */
+function wallMethodsFor(movement: boolean): string {
+    const resume = movement ? '        self.last_tick = Some(now);\n' : '';
+    return `
+    /// Tells the design what time it is, as local time.
+    ///
+    /// The toolchain sends this over the console once the board is running: an ESP32's internal RTC
+    /// has no battery, so a board that has been powered off has no idea of the time until it is
+    /// told. The anchor is kept rather than the time being counted, so a frame that took two
+    /// seconds -- or a loop that was asleep -- cannot make the hands lose a second.
+    ///
+    /// Out-of-range fields are clamped rather than wrapped, the same rule the clock itself follows.
+    pub fn set_wall_clock(&mut self, hour: u8, minute: u8, second: u8) {
+        let now = Instant::now();
+        let start = hour.min(23) as u32 * 3600 + minute.min(59) as u32 * 60 + second.min(59) as u32;
+        self.wall_base = Some((now, start % 86_400));
+${resume}
+    }
+`;
+}
+
 /** The call an event makes, with whatever the variant carries. */
 function handlerCall(widget: DesignerWidget, event: DesignerEvent): string {
     const name = handlerName(widget.id, event);
-    const parameter = EVENT_SPECS[event].parameter;
-    if (parameter === undefined) {
-        return `${name}()`;
-    }
+    const spec = EVENT_SPECS[event];
     // `Scroll { id, delta }` binds `delta`, `TextInput { id, ch }` binds `ch`.
-    return `${name}(${parameter.name})`;
+    if (spec.parameter !== undefined) {
+        return `${name}(${spec.parameter.name})`;
+    }
+    // A keypad's Enter carries only the id, so the line is read back from the widget: submitting
+    // clears the live line, which leaves the copy the widget keeps for exactly this call.
+    if (spec.argument !== undefined) {
+        return `${name}(${spec.argument})`;
+    }
+    return `${name}()`;
 }
 
 /**
@@ -191,6 +314,46 @@ export function emitUiRs(document: DesignerDocument, touch = true): string {
     // warning it did not ask for. Allowed only when there are no arms, so a design that does raise events
     // still hears about the handle if it really is unused (found by building a real project whose design had
     // no events at all, 2026-10-12).
+    // The clocks whose movement is attached, in design order: a checkbox in the clock's properties
+    // panel decides, and the design says so with a property the markup never carries (`designerOnly`
+    // in the catalogue), because it is about the generated code rather than about the drawn face.
+    const movingClocks = document.widgets.filter(
+        (widget) => widget.tag === 'clock' && widget.props.movement === true,
+    );
+    const movement = movingClocks.length > 0;
+    // `Instant` is always needed: the wall clock's anchor is one, whether or not the design shows a
+    // clock. `Duration` is the stepping fallback's business alone.
+    const movementImport = movement
+        ? 'use embassy_time::{Duration, Instant};\n'
+        : 'use embassy_time::Instant;\n';
+    // The wall clock is a field of every design: `main.rs` hands the time over as soon as the board
+    // is running, and a design with no clock in it still stores it (the app may add one later).
+    const wallField =
+        '    /// The wall clock the hands follow once the board has been told the time: the local\n' +
+        '    /// time it was told, and the instant it was told. `None` until then -- and on a board\n' +
+        '    /// with no RTC that survives power-off, for ever.\n' +
+        '    #[allow(dead_code)]\n' +
+        '    wall_base: Option<(Instant, u32)>,\n';
+    const wallInit = '            wall_base: None,\n';
+    const movementField = movement
+        ? '    /// When the clocks were last advanced. `None` until the first frame sets it.\n' +
+          '    last_tick: Option<Instant>,\n'
+        : '';
+    const movementInit = movement ? '            last_tick: None,\n' : '';
+    // The extra sentence on `is_dirty` is there only in a design that has a movement: a project with
+    // no clock generates exactly the file it generated before this existed.
+    const isDirtyDoc = movement
+        ? '    ///\n' +
+          '    /// A clock whose movement is attached is due once a second has passed, which is what\n' +
+          '    /// makes the hands move on a panel nobody is touching.\n'
+        : '';
+    const movementTick = movement ? '        self.tick_clocks();\n' : '';
+    const isDirty = movement
+        ? '        !self.gui.dirty_regions().is_empty() || self.clock_due()'
+        : '        !self.gui.dirty_regions().is_empty()';
+    const movementMethods = movement ? movementMethodsFor(movingClocks) : '';
+    const wallMethods = wallMethodsFor(movement);
+
     const widgetsField =
         arms.length > 0
             ? '    pub widgets: '
@@ -213,7 +376,7 @@ export function emitUiRs(document: DesignerDocument, touch = true): string {
 use embedded_graphics::draw_target::DrawTarget;
 use embedded_graphics::pixelcolor::Rgb565;
 use embedded_gui::prelude::*;
-
+${movementImport}
 /// The screen, compiled from the markup the designer writes.
 mod design {
     use embedded_gui::prelude::*;
@@ -228,6 +391,16 @@ pub const NODES: usize = design::${PINNED_SCREEN_ID}App::NODE_COUNT + 8;
 pub const EVENTS: usize = 16;
 pub const DIRTY: usize = 8;
 
+/// What the panel is cleared to before the design is first painted.
+///
+/// The sketch does that clear (it owns the display), and a partial repaint has to agree with it:
+/// the damaged regions are cleared to this same colour first, so a widget with no face of its own
+/// -- a clock's hands are drawn straight onto the panel -- cannot leave its previous drawing behind
+/// where nothing else repaints those pixels. Changing this means changing the clear in main.rs
+/// to match. Spelled out as a raw value rather than Rgb565::BLACK: that constant comes from the
+/// RgbColor trait, which this file does not pull in.
+pub const SCREEN_BACKGROUND: Rgb565 = Rgb565::new(0, 0, 0);
+
 /// The screen, and the pointer state the widgets need to see a press and a release as a pair.
 ${touch ? '' : `///
 /// A board with no touch controller cannot raise an event, so the pointer plumbing below is never called --
@@ -239,7 +412,7 @@ ${touch ? '' : `///
 ${widgetsField}${PINNED_SCREEN_ID}Widgets,
     down: bool,
     painted: bool,
-}
+${wallField}${movementField}}
 
 ${touch ? '' : '#[allow(dead_code)]\n'}impl Designer {
     /// Builds the screen once, at the size the panel is actually drawn at.
@@ -251,7 +424,7 @@ ${touch ? '' : '#[allow(dead_code)]\n'}impl Designer {
             widgets: app.widgets,
             down: false,
             painted: false,
-        }
+${wallInit}${movementInit}        }
     }
 
     /// The design's own context, for an app that drives a widget itself.
@@ -313,8 +486,8 @@ ${armText}
     }
 
     /// True when something changed and the panel needs repainting.
-    pub fn is_dirty(&self) -> bool {
-        !self.gui.dirty_regions().is_empty()
+${isDirtyDoc}    pub fn is_dirty(&self) -> bool {
+${isDirty}
     }
 
     /// Paints the whole screen whatever the damage says.
@@ -336,8 +509,14 @@ ${armText}
     where
         D: DrawTarget<Color = Rgb565>,
     {
-        let result = if self.painted {
-            self.gui.render_dirty(target)
+${movementTick}        let result = if self.painted {
+            // A partial repaint paints the damaged regions and nothing else, and the design paints
+            // no screen background of its own -- so the regions are cleared to the colour the panel
+            // started as first. Without this a moving clock drew each new hand and left the old one
+            // on the glass (reported 2026-10-17).
+            self.gui
+                .paint_damage(target, SCREEN_BACKGROUND)
+                .and_then(|()| self.gui.render_dirty(target))
         } else {
             self.gui.render(target)
         };
@@ -345,7 +524,7 @@ ${armText}
         self.gui.clear_dirty();
         result
     }
-}
+${wallMethods}${movementMethods}}
 `;
 }
 
@@ -365,9 +544,16 @@ export function emitHandlersRs(document: DesignerDocument, touch = true): string
         const parameters = event === undefined ? '' : handlerParameters(event.candidate);
         // On a board with no touch controller nothing in the generated code can call these; the user still can,
         // from a timer or a sensor, so they are declared and the allowance says why they look unused.
+        // A stub has to *use* its argument or a freshly generated project builds with an
+        // `unused_variables` warning, which reads as broken: a submitted line is the one an
+        // argument is ever handed over for.
+        const usesArgument =
+            EVENT_SPECS[event?.candidate ?? 'clicked'].argumentType !== undefined;
+        const message = `\"design: ${name} fired${usesArgument ? ': {}' : ''}\"`;
+        const forwarded = usesArgument ? ', text' : '';
         return `${touch ? '' : '#[allow(dead_code)]\n'}/// Raised by the design. Called from \`ui::Designer::pump\`.
 pub fn ${name}(${parameters}) {
-    log::info!("design: ${name} fired");
+    log::info!(${message}${forwarded});
 }`;
     });
 

@@ -8,8 +8,8 @@ use crate::{
     render::TextAlign,
     style::{Style, WidgetStyle},
     widget::{FocusGroupId, StyleClassId, Widget, WidgetId},
-    widgets::{
-        CarouselSpec, ChartMode, CheckboxLabelPosition, CompositeIconSpec, KeyboardLayout,
+    widgets::{KeypadWidget, 
+        CarouselSpec, ChartMode, CheckboxLabelPosition, ClockWidget, CompositeIconSpec, KeyboardLayout,
         MenuCell, NotificationLevel, RollerSelection, ScaleMode, SurfaceState, WidgetKind,
     },
 };
@@ -346,10 +346,106 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
     where
         S: Into<WidgetStyle>,
     {
+        // This fork's default grip: upstream drew a fixed three pixels, which read as a speck in anything
+        // taller than a line of text. Eight pixels wide, full inner height -- and the same value the markup's
+        // absent `knob_width` and the designer's own default resolve to, so all three agree.
+        self.add_slider_sized(rect, value, min, max, 8, style)
+    }
+
+    /// A slider whose grip is `knob_w` pixels wide.
+    ///
+    /// The grip's *height* is not a parameter: it is the block's inner height, so it fills the space between
+    /// the top and bottom borders whatever the widget's height is. `0` is read as the default eight pixels,
+    /// which is what [`Self::add_slider`] passes.
+    #[cfg(feature = "rich-widgets")]
+    pub fn add_slider_sized<S>(
+        &mut self,
+        rect: Rect,
+        value: f32,
+        min: f32,
+        max: f32,
+        knob_w: u32,
+        style: S,
+    ) -> Result<WidgetId, GuiError>
+    where
+        S: Into<WidgetStyle>,
+    {
         let value = value.clamp(min.min(max), min.max(max));
-        let id = self.add_widget(rect, WidgetKind::Slider { value, min, max }, style)?;
+        let id = self.add_widget(
+            rect,
+            WidgetKind::Slider {
+                value,
+                min,
+                max,
+                knob_w,
+            },
+            style,
+        )?;
         self.ensure_focus();
         Ok(id)
+    }
+
+    /// A clock face showing `hour:minute:second`, with this fork's own colours.
+    ///
+    /// The widget holds a time, not a running clock: the application sets the three fields as it
+    /// ticks, the same way it sets a slider's value.
+    #[cfg(feature = "rich-widgets")]
+    pub fn add_clock<S>(
+        &mut self,
+        rect: Rect,
+        hour: u8,
+        minute: u8,
+        second: u8,
+        style: S,
+    ) -> Result<WidgetId, GuiError>
+    where
+        S: Into<WidgetStyle>,
+    {
+        self.add_clock_styled(rect, ClockWidget::new(hour, minute, second), style)
+    }
+
+    /// A clock face whose hands, ticks and numerals the design colours.
+    ///
+    /// `ClockWidget` has a field per colour rather than one style colour per hand, because the three
+    /// hands and the two tick lengths are five things a design must be able to tell apart; the
+    /// numerals' face comes from the style, their size from `label_scale`.
+    #[cfg(feature = "rich-widgets")]
+    pub fn add_clock_styled<S>(
+        &mut self,
+        rect: Rect,
+        clock: ClockWidget,
+        style: S,
+    ) -> Result<WidgetId, GuiError>
+    where
+        S: Into<WidgetStyle>,
+    {
+        self.add_widget(rect, WidgetKind::Clock(clock), style)
+    }
+
+    /// A touch keypad, in text mode and this fork's colours.
+    #[cfg(feature = "rich-widgets")]
+    pub fn add_keypad<S>(&mut self, rect: Rect, style: S) -> Result<WidgetId, GuiError>
+    where
+        S: Into<WidgetStyle>,
+    {
+        self.add_keypad_styled(rect, KeypadWidget::new(), style)
+    }
+
+    /// A keypad a design has coloured and given a face.
+    ///
+    /// The whole keypad is one widget: its modes, Shift, the line being typed and the line the last
+    /// Enter submitted all live in it, so a design gets one event out of it rather than one per key.
+    #[cfg(feature = "rich-widgets")]
+    pub fn add_keypad_styled<S>(
+        &mut self,
+        rect: Rect,
+        keypad: KeypadWidget,
+        style: S,
+    ) -> Result<WidgetId, GuiError>
+    where
+        S: Into<WidgetStyle>,
+    {
+        self.add_widget(rect, WidgetKind::Keypad(keypad), style)
     }
 
     #[cfg(feature = "rich-widgets")]
@@ -1059,6 +1155,24 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
     where
         S: Into<WidgetStyle>,
     {
+        // Upstream left-aligned both the selected item and the list; a design that names no alignment keeps
+        // exactly that.
+        self.add_dropdown_aligned(rect, items, selected, TextAlign::Left, style)
+    }
+
+    /// A dropdown whose selected item and popup rows are drawn with `align`.
+    #[cfg(feature = "rich-widgets")]
+    pub fn add_dropdown_aligned<S>(
+        &mut self,
+        rect: Rect,
+        items: &'a [&'a str],
+        selected: usize,
+        align: TextAlign,
+        style: S,
+    ) -> Result<WidgetId, GuiError>
+    where
+        S: Into<WidgetStyle>,
+    {
         let selected = selected.min(items.len().saturating_sub(1));
         let id = self.add_widget(
             rect,
@@ -1066,6 +1180,7 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
                 items,
                 selected,
                 open: false,
+                align,
             },
             style,
         )?;

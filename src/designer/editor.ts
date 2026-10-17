@@ -21,6 +21,8 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import type { BoardProfile } from '../boards/types';
 import { readActiveProject, readProjectAt } from '../project/activeProject';
+import { pickSerialPort, serialPortCandidates, serialPortEntriesForPlatform } from '../flash/espFlash';
+import { runShellCommand, updateClock } from '../flash/clockSync';
 import { lcdRotationFromConfig, setLcdRotationInConfig, type LcdRotation } from '../display/rotation';
 import { setTouchInConfig, touchFromConfig, touchNeededBy } from '../display/touchSetting';
 import {
@@ -30,6 +32,7 @@ import {
     DESIGNER_MODULE_PATH,
     createDocument,
     designCanvasSize,
+    pinKeypads,
     screenIdFrom,
     type DesignerDocument,
 } from './model';
@@ -44,7 +47,7 @@ import {
     vendoredState,
     vendoredUpdateNeeded,
 } from './vendored';
-import type { DesignerAssetKind, DesignerInbound, DesignerReport } from './protocol';
+import type { DesignerActionId, DesignerAssetKind, DesignerInbound, DesignerReport } from './protocol';
 import { designerStyles } from './styles';
 
 /**
@@ -337,6 +340,9 @@ class DesignerPanel {
 
     private async sendInit(): Promise<void> {
         const canvas = designCanvasSize(this.document.panelWidth, this.document.panelHeight, this.document.rotation);
+        // A keypad is pinned to the bottom strip, and a design saved under another rotation has the
+        // old shape's box: re-solve it before the canvas sees it, or the first drag is what fixes it.
+        this.document = pinKeypads(this.document, canvas);
         await this.panel.webview.postMessage({
             type: 'init',
             document: this.document,
@@ -358,8 +364,9 @@ class DesignerPanel {
      * the text has not changed, because a drag would otherwise rewrite the same files dozens of times.
      */
     private async save(document: DesignerDocument): Promise<void> {
-        this.document = document;
-        const rendered = renderDesign(document);
+        const canvas = designCanvasSize(document.panelWidth, document.panelHeight, document.rotation);
+        this.document = pinKeypads(document, canvas);
+        const rendered = renderDesign(this.document);
         const assets = missingAssets(document, (relative) => this.assetExists(relative));
         // Reported, never enforced: a design with controls in it and touch switched off is a decision the user
         // is allowed to make -- a half-built design, or placeholder buttons -- but not a silent one.
@@ -470,16 +477,47 @@ class DesignerPanel {
         return fs.existsSync(path.join(this.folder.fsPath, relative));
     }
 
-    private async act(action: 'revealKdl' | 'revealDocument' | 'build' | 'revealProject'): Promise<void> {
+    private async act(action: DesignerActionId): Promise<void> {
         if (action === 'revealKdl') {
             await this.reveal(DESIGNER_KDL_PATH);
         } else if (action === 'revealDocument') {
             await this.reveal(DESIGNER_DOCUMENT_PATH);
         } else if (action === 'build') {
             await vscode.commands.executeCommand('rustyPlatform.build');
+        } else if (action === 'updateClockTime') {
+            await this.updateClockTime();
         } else {
             await vscode.commands.executeCommand('revealInExplorer', this.folder);
         }
+    }
+
+    /**
+     * Sets the module's RTC to this PC's time, without a flash.
+     *
+     * The rules live in `../flash/clockSync`, where they are tested without a board: a design with no clock
+     * is refused, a machine with no board on a port is refused, and a write that fails comes back as a
+     * sentence rather than an exception -- a Monitor terminal holding the port is the usual cause. The
+     * port is the same one Flash would use, so a configured `rustyPlatform.serialPort` is honoured.
+     */
+    private async updateClockTime(): Promise<void> {
+        const hasClock = this.document.widgets.some((widget) => widget.tag === 'clock');
+        const configured = vscode.workspace.getConfiguration('rustyPlatform').get<string>('serialPort');
+        const port = hasClock
+            ? pickSerialPort(serialPortCandidates(serialPortEntriesForPlatform()), configured)
+            : undefined;
+        const result = updateClock({
+            hasClock,
+            port,
+            run: (command) => runShellCommand(command),
+        });
+        this.output.appendLine(`[designer] update time: ${result.message}`);
+        if (result.ok) {
+            void vscode.window.showInformationMessage(result.message);
+        } else {
+            void vscode.window.showWarningMessage(result.message);
+        }
+        // Said in the panel too: the developer's eye is on the canvas, not the notification corner.
+        await this.panel.webview.postMessage({ type: 'report', problems: [], note: result.message });
     }
 
     private async reveal(relative: string): Promise<void> {

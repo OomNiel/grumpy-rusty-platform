@@ -14,7 +14,7 @@
 const fs = require('fs');
 const path = require('path');
 const { test, ok, notOk, equal, contains, notContains, throws, compiled, repoRoot } = require('../../lib/harness');
-const { KDL_WIDGETS, EVENT_SPECS, DESIGNER_EVENTS, widgetSpec, widgetRaises, toolboxGroups, CATEGORY_LABELS, widgetAddressable, propertyHelp, widgetHelp } =
+const { KDL_WIDGETS, EVENT_SPECS, DESIGNER_EVENTS, widgetSpec, widgetRaises, toolboxGroups, toolboxOffers, CATEGORY_LABELS, widgetAddressable, propertyHelp, widgetHelp } =
     compiled('designer/catalog');
 const { layoutToGrid, resolveGrid, trackSpec, describeGrid, GRID_FILLER } = compiled('designer/grid');
 const {
@@ -26,6 +26,7 @@ const {
     defaultChildren,
     designCanvasSize,
     placeWidget,
+    pinKeypads,
     circleCentre,
     circleRadius,
     circleRect,
@@ -40,6 +41,7 @@ const {
     trianglePoints,
 } = compiled('designer/model');
 const { emitKdl, layoutDocument } = compiled('designer/kdl');
+const { emitUiRs, emitHandlersRs } = compiled('designer/generate');
 const { fontConstName } = compiled('designer/model');
 const {
     rgb565Expression,
@@ -96,6 +98,7 @@ const UI_EVENT_VARIANTS = [
     'Opened',
     'Closed',
     'ValueChanged',
+    'Submitted',
     'Gesture',
     'TextInput',
     'Focused',
@@ -106,7 +109,7 @@ const UI_EVENT_VARIANTS = [
 ];
 
 /**
- * The thirty KDL tags `parse_widget` matches, from the same list the catalogue was built from. A tag missing
+ * The thirty-one KDL tags `parse_widget` matches, from the same list the catalogue was built from. A tag missing
  * here means the Toolbox is hiding a widget the crate supports; an extra one means it offers markup that will
  * not build.
  */
@@ -119,6 +122,8 @@ const PARSER_TAGS = [
     'dropdown',
     'roller',
     'scale',
+    'clock',
+    'keypad',
     'spinbox',
     'progress',
     'arc',
@@ -301,8 +306,11 @@ test('the shapes the board now paints reach the markup, and the ones it cannot a
 test('the Toolbox offers every widget that can be built, and only into known categories', () => {
     const groups = toolboxGroups();
     const offered = groups.flatMap((group) => group.widgets.map((widget) => widget.tag));
-    const usable = KDL_WIDGETS.filter((widget) => widget.unavailable === undefined).map((widget) => widget.tag);
-    equal(offered.length, usable.length, 'every buildable widget appears exactly once');
+    // Every tag the catalogue hands out appears once and only once. `toolboxOffers` is the
+    // single answer to "is this in the palette", so a tag hidden from it cannot creep back in
+    // through the grouping.
+    const usable = KDL_WIDGETS.filter((widget) => toolboxOffers(widget.tag)).map((widget) => widget.tag);
+    equal(offered.length, usable.length, 'every offered widget appears exactly once');
     equal(new Set(offered).size, offered.length, 'and none of them twice');
     for (const group of groups) {
         equal(group.label, CATEGORY_LABELS[group.category], `${group.category} label`);
@@ -311,12 +319,15 @@ test('the Toolbox offers every widget that can be built, and only into known cat
 
     // Nothing is refused any more. The ten tags that used to be documented-but-withheld -- a slider whose
     // value arrived in the wrong order, an arc whose builder takes ten arguments, an arc's missing `add_busy_wheel`
-    // and the five widgets the runtime did not dispatch at all -- now generate code the runtime accepts, so the
-    // Toolbox hands out the whole catalogue. `unavailable` stays as the channel for the next defect: a tag that
-    // cannot be built must say why rather than produce a project that does not compile.
+    // and the five widgets the runtime did not dispatch at all -- now generate code the runtime accepts.
+    // `unavailable` stays as the channel for the next defect: a tag that cannot be built must say why
+    // rather than produce a project that does not compile. `hidden` is the other channel, and it is not
+    // about building at all -- the Time picker builds fine and is simply no longer offered.
     const refused = KDL_WIDGETS.filter((widget) => widget.unavailable !== undefined);
     equal(refused.length, 0, 'no tag is refused today');
-    equal(offered.length, KDL_WIDGETS.length, 'so every widget in the catalogue is offered');
+    const hidden = KDL_WIDGETS.filter((widget) => !toolboxOffers(widget.tag)).map((widget) => widget.tag);
+    equal(hidden.length, 1, 'exactly one tag is kept out of the palette');
+    equal(hidden[0], 'time_picker', 'and it is the Time picker');
     ok(usable.length > 0, 'and the toolbox is not empty');
 });
 
@@ -1088,6 +1099,108 @@ test('the six point attributes are the ones the whole chain spells the same way'
     );
 });
 
+test('the keypad is offered, and dropping one pins it to the bottom of the panel', () => {
+    // Asked for 2026-10-17: a keypad that fills the bottom 33% of a portrait panel and the bottom
+    // 50% of a landscape one. Its own box cannot decide which: the keypad spans the panel in both,
+    // so the *panel* is what the fraction follows, and the designer places the box.
+    ok(toolboxOffers('keypad'), 'the Toolbox offers it');
+    const spec = widgetSpec('keypad');
+    ok(spec !== undefined, 'it is in the catalogue');
+    equal(spec.events.join(','), 'submitted', 'its Enter is the event it raises');
+    for (const property of [
+        'text_color',
+        'key_color',
+        'legend_color',
+        'pressed_key_color',
+        'accent_color',
+        'entry_face',
+        'entry_border',
+        'font',
+    ]) {
+        ok(
+            spec.props.some((candidate) => candidate.name === property),
+            `${property} is a setting`,
+        );
+    }
+
+    // Portrait 320x480: a third of the height, the full width, flush with the bottom.
+    const portrait = placeWidget('keypad', 10, 10, { width: 320, height: 480 });
+    equal(portrait, { x: 0, y: 480 - 158, width: 320, height: 158 }, 'portrait box');
+    // Landscape 480x320: half of it.
+    const landscape = placeWidget('keypad', 10, 10, { width: 480, height: 320 });
+    equal(landscape, { x: 0, y: 160, width: 480, height: 160 }, 'landscape box');
+    // Wherever it was dropped: the drop point does not matter.
+    equal(placeWidget('keypad', 250, 5, { width: 480, height: 320 }), landscape, 'drop point ignored');
+
+    // And a rotation re-solves the box instead of carrying the old one over.
+    const document = {
+        version: 1,
+        boardId: 'sunton-3248s035r',
+        panelWidth: 320,
+        panelHeight: 480,
+        rotation: 3,
+        screenId: 'RustyPanel',
+        canvas: { width: 320, height: 480 },
+        fonts: [],
+        widgets: [
+            { id: 'pad', tag: 'keypad', ...portrait, props: {}, events: ['submitted'] },
+            { id: 'title', tag: 'label', x: 4, y: 4, width: 100, height: 20, props: {}, events: [] },
+        ],
+    };
+    const turned = pinKeypads(document, { width: 480, height: 320 });
+    equal(
+        turned.widgets.find((widget) => widget.id === 'pad'),
+        { id: 'pad', tag: 'keypad', ...landscape, props: {}, events: ['submitted'] },
+        'the keypad is re-pinned for the new shape',
+    );
+    equal(
+        turned.widgets.find((widget) => widget.id === 'title'),
+        document.widgets[1],
+        'and nothing else moves',
+    );
+});
+
+test('a keypad is emitted with its mode and colours, and its Enter hands the line to a handler', () => {
+    const pad = widget(
+        'pad',
+        'keypad',
+        { x: 0, y: 322, width: 320, height: 158 },
+        { events: ['submitted'] },
+    );
+    const design = document(0, [pad]);
+    const kdl = emitKdl(design);
+    contains(kdl, 'keypad', 'the markup carries it');
+    contains(kdl, 'mode="text"', 'with its starting mode');
+    contains(kdl, 'key_color="#0c1820"', 'and its colours');
+    // The generated pump fetches the submitted line from the widget: the event itself carries the
+    // id only, and submitting clears the live line.
+    const ui = emitUiRs(design);
+    contains(ui, 'UiEvent::Submitted(id) if id == self.widgets.pad');
+    contains(ui, 'crate::ui_handlers::on_pad_submitted(self.gui.keypad_submitted(id).unwrap_or(""))');
+    const handlers = emitHandlersRs(design);
+    contains(handlers, 'pub fn on_pad_submitted(text: &str)', 'the handler is given the line');
+    contains(handlers, '{}", text', 'and its stub logs it, so a fresh project has no warnings');
+});
+
+test('the Toolbox no longer offers the Time picker, but a design with one still works', () => {
+    // Asked for 2026-10-17: "Remove the Time Picker widget from the toolbox." It is the Clock's
+    // older cousin and both in one palette invited the one that cannot run.
+    const offered = toolboxGroups().flatMap((group) => group.widgets.map((item) => item.tag));
+    notOk(offered.includes('time_picker'), 'the Time picker is not in the Toolbox');
+    notOk(toolboxOffers('time_picker'), 'and the palette predicate agrees');
+    ok(toolboxOffers('clock'), 'the Clock is, which is what replaced it');
+    // Removing it from the palette must not break a design that already has one: the catalogue
+    // still documents it, and validation still accepts it.
+    const spec = widgetSpec('time_picker');
+    ok(spec !== undefined, 'the tag is still in the catalogue');
+    equal(spec.unavailable, undefined, 'and it is not refused: a design with one still builds');
+    contains(spec.note, 'clock face', 'its note still describes it');
+    const design = document(0, [
+        widget('tp', 'time_picker', { x: 0, y: 0, width: 120, height: 32 }),
+    ]);
+    equal(validateDocument(design).length, 0, 'a design containing one is still valid');
+});
+
 test('every shape is offered, and each declares how it is drawn', () => {
     // The canvas paints from `draws`; a shape without one would fall back to the panel look and quietly lie.
     const shapes = ['rect', 'line', 'circle', 'triangle'];
@@ -1576,4 +1689,168 @@ test('a load that had to tidy an older design writes it back, and says what it d
     contains(main, "setList('load-notes', message.loadNotes ?? [])", 'which are listed under the properties');
     contains(main, 'showVerdict(problems,', 'along with the verdict');
     contains(main, "properties.removeChild(existing)", 'and both lists are rebuilt, not appended to');
+});
+
+test('a slider\'s grip width is a property, and its default is the crate\'s own eight pixels', () => {
+    // Asked 2026-10-17: *"The slider widget's drag grip box is minute. The grip box height must fill the
+    // vertical area (between top and bottom borders) and its width must be adjustable."* The height is not a
+    // property -- the runtime gives the grip the block's inner height always -- so the only field is the
+    // width, and its default has to be the value the builder passes for a design that never names one, or
+    // the canvas and the glass would disagree the moment the field was left alone.
+    const slider = widget('sld', 'slider', { x: 0, y: 0, width: 160, height: 28 });
+    equal(slider.props.knob_width, 8, 'a dropped slider starts eight pixels wide');
+    contains(emitKdl(document(0, [slider])), 'knob_width=8', 'and the markup says so');
+    equal(validateDocument(document(0, [slider])).length, 0, 'which is a valid design');
+
+    slider.props.knob_width = 20;
+    contains(emitKdl(document(0, [slider])), 'knob_width=20', 'a chosen width is written');
+
+    // Zero would be read by the runtime as "the default", so it must not be a value the panel accepts: the
+    // field would silently mean something other than what it shows.
+    slider.props.knob_width = 0;
+    const problems = validateDocument(document(0, [slider]));
+    equal(problems.length, 1, JSON.stringify(problems));
+    contains(problems[0], 'Grip width cannot be less than 1', 'the field is named by its label');
+});
+
+test('a dropdown\'s text alignment is a property, left by default', () => {
+    // Asked 2026-10-17: *"the Dropdown widget text items centering must be adjustable (Left, Middle, Right)."*
+    // Upstream left-aligned the selected item and the popup rows; a design that says nothing keeps that.
+    const dropdown = widget('dd', 'dropdown', { x: 0, y: 0, width: 120, height: 28 });
+    dropdown.children = { kind: 'options', values: ['one', 'two', 'three'] };
+    equal(dropdown.props.align, 'left', 'a dropped dropdown starts left-aligned');
+    contains(emitKdl(document(0, [dropdown])), 'align="left"', 'and the markup says so');
+
+    dropdown.props.align = 'middle';
+    contains(emitKdl(document(0, [dropdown])), 'align="middle"', 'the middle is written as the panel spells it');
+    equal(validateDocument(document(0, [dropdown])).length, 0, 'and is valid');
+
+    dropdown.props.align = 'right';
+    contains(emitKdl(document(0, [dropdown])), 'align="right"');
+
+    dropdown.props.align = 'centered';
+    const problems = validateDocument(document(0, [dropdown]));
+    equal(problems.length, 1, JSON.stringify(problems));
+    contains(problems[0], 'centered', 'a value the crate does not read is refused, not dropped');
+});
+
+test('a clock says the time it shows, and the colours of its hands and ticks', () => {
+    // Asked 2026-10-17: *"add a Clock Widget (derived from the Gauge widget) with Hour, Minute and Second hands
+    // (needles). Each hand's colour must be settable, as well as the hour number's label font, colour and size.
+    // Tics must be provided for hours and minutes."*
+    const clock = widget('clk', 'clock', { x: 0, y: 0, width: 96, height: 96 });
+    const kdl = emitKdl(document(0, [clock]));
+    contains(kdl, 'clock id="clk"');
+    contains(kdl, 'hour=10');
+    contains(kdl, 'minute=10');
+    contains(kdl, 'second=0');
+    contains(kdl, 'hour_color="#ffffff"', 'the hour hand has a colour of its own');
+    contains(kdl, 'minute_color="#ffffff"');
+    contains(kdl, 'second_color="#ff0000"', 'and so does the second hand');
+    contains(kdl, 'hour_tick_color="#808080"', 'the ticks are named separately, hours and minutes');
+    contains(kdl, 'minute_tick_color="#525252"');
+    contains(kdl, 'label_color="#ffffff"', 'the numerals have a colour');
+    contains(kdl, 'label_scale=1', 'and a size');
+    contains(kdl, 'show_labels=true');
+    equal(validateDocument(document(0, [clock])).length, 0, 'a dropped clock is a valid design');
+
+    clock.props.label_scale = 5;
+    const problems = validateDocument(document(0, [clock]));
+    equal(problems.length, 1, JSON.stringify(problems));
+    contains(problems[0], 'Number size', 'the size past its maximum is refused by its label');
+});
+
+test('a clock\'s Run checkbox is the designer\'s own, and never reaches the markup', () => {
+    // Asked 2026-10-17: *"Add code behind to attach the clock widget to a 'movement' engine driven by a 1
+    // sec timer. The code behind must sync the three clock hands. The engine can be attached to the widget
+    // with a checkbox in the clock settings panel."*
+    const clock = widget('clk', 'clock', { x: 0, y: 0, width: 96, height: 96 });
+    equal(clock.props.movement, true, 'a dropped clock runs its movement');
+    // The crate draws whatever time the design says; the movement is a statement about the generated
+    // code-behind, so the markup must not carry it -- an attribute the parser ignores would be a lie
+    // about what the build depends on.
+    notOk(emitKdl(document(0, [clock])).includes('movement'), 'the markup says nothing about the movement');
+    equal(validateDocument(document(0, [clock])).length, 0, 'and a clock with it is still a valid design');
+});
+
+test('the generated code-behind runs a clock whose Run is on, from a one-second tick', () => {
+    const clock = widget('clk', 'clock', { x: 0, y: 0, width: 96, height: 96 });
+    const ui = emitUiRs(document(0, [clock]));
+    // The engine: embassy's clock, read when the app paints, so no `Timer` has to be awaited and no
+    // line of main.rs has to change.
+    contains(ui, 'use embassy_time::{Duration, Instant};', 'the timer it reads');
+    contains(ui, 'last_tick: Option<Instant>,');
+    contains(ui, 'fn clock_due(&self) -> bool', 'when a second has passed');
+    contains(ui, 'self.gui.advance_clock(self.widgets.clk)', 'one second on the clock, by its own id');
+    contains(ui, '|| self.clock_due()', 'and the app is told to paint when it is due');
+    contains(ui, 'self.tick_clocks();', 'render advances it');
+    // Three hands are one time, so the widget -- not the code-behind -- owns the arithmetic.
+    notOk(ui.includes('minute = minute + 1'), 'the carries are the crate\'s, not a second copy here');
+});
+
+test('a clock whose Run is off generates none of that', () => {
+    const clock = widget('clk', 'clock', { x: 0, y: 0, width: 96, height: 96 });
+    clock.props.movement = false;
+    const ui = emitUiRs(document(0, [clock]));
+    for (const absent of ['advance_clock', 'clock_due', 'Duration', 'last_tick']) {
+        notOk(ui.includes(absent), `a design with no movement must not mention ${absent}`);
+    }
+    // The wall clock survives: `main.rs` hands the time over whatever the design shows, and the app
+    // may drive its own clock from it.
+    contains(ui, 'pub fn set_wall_clock(&mut self, hour: u8, minute: u8, second: u8)');
+});
+
+test('a partial repaint clears the damage first, so a moving hand leaves no trace', () => {
+    // Reported 2026-10-17: "the clock hand's previous positions are not erased as the new
+    // positions are drawn". The design paints no screen background of its own -- the clock's face
+    // is transparent -- and only the damaged regions are repainted, so the previous hands survived
+    // unless the damage was cleared to the colour the panel started as.
+    const clock = widget('clk', 'clock', { x: 0, y: 0, width: 96, height: 96 });
+    const ui = emitUiRs(document(0, [clock]));
+    contains(
+        ui,
+        'pub const SCREEN_BACKGROUND: Rgb565 = Rgb565::new(0, 0, 0);',
+        'the colour the sketch clears the panel to',
+    );
+    contains(
+        ui,
+        '.paint_damage(target, SCREEN_BACKGROUND)',
+        'the damaged regions are cleared to it before they are repainted',
+    );
+    // Only on the damaged path: a whole repaint covers what it clears, so a clear there would be
+    // a frame of work for nothing.
+    const repaintAt = ui.indexOf('pub fn repaint<D>');
+    const renderAt = ui.indexOf('pub fn render<D>');
+    ok(repaintAt !== -1 && renderAt > repaintAt, 'repaint comes before render');
+    notOk(
+        ui.slice(repaintAt, renderAt).includes('paint_damage'),
+        'the whole-screen path does not clear anything',
+    );
+    contains(ui.slice(renderAt, renderAt + 2000), 'paint_damage', 'render clears what it damages');
+});
+
+test('a running clock follows the wall clock when the board has been told the time', () => {
+    // Asked for 2026-10-17: drive the clock from the RTC rather than a one-second timer. An ESP32's
+    // internal RTC has no battery, so the board is told the PC's local time over the console; the
+    // hands are *set* to what it says rather than stepped by a count of ticks, and the timer is what
+    // steps the design's own time when nothing has been handed over.
+    const clock = widget('clk', 'clock', { x: 0, y: 0, width: 96, height: 96 });
+    const ui = emitUiRs(document(0, [clock]));
+    contains(ui, 'wall_base: Option<(Instant, u32)>', 'the anchor is a field of the design');
+    contains(ui, 'pub fn set_wall_clock(&mut self, hour: u8, minute: u8, second: u8)', 'and is set by the app');
+    contains(ui, 'pub fn wall_clock(&self) -> Option<(u8, u8, u8)>', 'read back as a time');
+    contains(ui, 'let shown = self.wall_clock();', 'the movement asks it first');
+    contains(ui, 'self.gui.set_clock_time(self.widgets.clk, hour, minute, second)', 'and sets the hands');
+    // The fallback is still there, for a board with no RTC and for the first frame of any board.
+    contains(ui, 'let _ = self.gui.advance_clock(self.widgets.clk);', 'the timer steps in without one');
+    notOk(ui.includes('minute = minute + 1'), 'the carries stay the crate\'s');
+});
+
+test('two clocks, one running: only the attached one is advanced', () => {
+    const running = widget('clk', 'clock', { x: 0, y: 0, width: 96, height: 96 });
+    const stopped = widget('stopped', 'clock', { x: 100, y: 0, width: 96, height: 96 });
+    stopped.props.movement = false;
+    const ui = emitUiRs(document(0, [running, stopped]));
+    contains(ui, 'self.gui.advance_clock(self.widgets.clk);');
+    notOk(ui.includes('self.gui.advance_clock(self.widgets.stopped);'), 'the stopped clock is left alone');
 });

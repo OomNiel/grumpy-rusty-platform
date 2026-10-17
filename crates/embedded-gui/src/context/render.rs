@@ -34,6 +34,36 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
         self.render_into::<D, crate::render::Blend>(&mut ctx, 0, 0, 255)
     }
 
+    /// Fills every damaged region with `colour`, leaving the damage in place for
+    /// [`GuiContext::render_dirty`].
+    ///
+    /// A partial repaint paints the damaged regions and nothing else, so a widget whose face is
+    /// transparent -- a clock's hands over the panel -- draws its new position and leaves the old
+    /// one behind: no ancestor covers those pixels again, because the design paints no screen
+    /// background of its own and the panel is cleared once, before the first frame. Filling the
+    /// damaged regions with that same colour first makes a partial repaint produce exactly the
+    /// pixels a whole one would.
+    ///
+    /// [`render_dirty_buffered`](GuiContext::render_dirty_buffered) already does this to its scratch
+    /// buffer; this is the same step for a target that is painted directly.
+    pub fn paint_damage<D>(&self, target: &mut D, colour: Rgb565) -> Result<(), D::Error>
+    where
+        D: embedded_graphics_core::draw_target::DrawTarget<Color = Rgb565>,
+    {
+        for &rect in self.dirty.as_slice() {
+            let area = rect.intersection(self.viewport);
+            if area.is_empty() {
+                continue;
+            }
+            let window = embedded_graphics_core::primitives::Rectangle::new(
+                embedded_graphics_core::geometry::Point::new(area.x, area.y),
+                embedded_graphics_core::geometry::Size::new(area.w, area.h),
+            );
+            embedded_graphics_core::draw_target::DrawTarget::fill_solid(target, &window, colour)?;
+        }
+        Ok(())
+    }
+
     pub fn render_dirty<D>(&self, target: &mut D) -> Result<(), D::Error>
     where
         D: embedded_graphics_core::draw_target::DrawTarget<Color = Rgb565>,

@@ -118,8 +118,22 @@ export type HostToDesigner = DesignerInit | DesignerReport | DesignerAssetPicked
  * Kind to the host because two of them cannot be done in the webview: revealing the generated markup in the
  * editor, and asking the extension to build the project.
  */
+export type DesignerActionId =
+    | 'revealKdl'
+    | 'revealDocument'
+    | 'build'
+    | 'revealProject'
+    /**
+     * Set the module's RTC to this PC's time, over the console.
+     *
+     * Offered from the clock widget's own pane, because it is the clock the time is for -- and refused
+     * when the design holds no clock or no board is on a port (see `../flash/clockSync`). Only the
+     * extension can write to a serial port, so the panel asks and does not wait on the answer.
+     */
+    | 'updateClockTime';
+
 export type DesignerAction =
-    | { type: 'action'; action: 'revealKdl' | 'revealDocument' | 'build' | 'revealProject' }
+    | { type: 'action'; action: DesignerActionId }
     /**
      * A middle-click on a widget that has code behind it.
      *

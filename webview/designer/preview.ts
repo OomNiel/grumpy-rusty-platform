@@ -1527,10 +1527,14 @@ function previewCheckbox(context: CanvasRenderingContext2D, widget: DesignerWidg
 }
 
 /**
- * Slider (spec 4.6, `widgets/mod.rs:1851-1874`): a one-pixel track and a 3x5 accent knob.
+ * Slider (spec 4.6, `widgets/mod.rs:1851-1874`): a one-pixel track and an accent grip.
  *
- * The track is `style.text` and the knob `style.accent`, and all three numbers are floats, so the base
+ * The track is `style.text` and the grip `style.accent`, and all three numbers are floats, so the base
  * style is the tag's own `Style::default()` (`emitter.rs:314-325`) with the design's appearance folded on.
+ *
+ * The grip fills the block's inner height -- the space between the top and bottom borders -- and is `Grip
+ * width` pixels across (`render_slider`, `widgets/mod.rs`), travelling across `inner.w - knobWidth` so it
+ * sits flush with either end. An absent width means eight pixels, the same default the builder passes.
  */
 function previewSlider(context: CanvasRenderingContext2D, widget: DesignerWidget, state: VisualState): void {
     const style = resolveVisual(designStyle(widget, styleNew()), state);
@@ -1545,8 +1549,13 @@ function previewSlider(context: CanvasRenderingContext2D, widget: DesignerWidget
     const t = Math.min(Math.max((value - min) / range, 0), 1);
     const trackY = inner.y + Math.floor(inner.h / 2);
     fillSolid(context, { x: inner.x, y: trackY, w: inner.w, h: 1 }, 0, style.text, 255);
-    const knobX = inner.x + Math.trunc(Math.max(0, inner.w - 3) * t);
-    fillSolid(context, { x: knobX, y: trackY - 2, w: 3, h: 5 }, 0, style.accent, 255);
+    const requested = Math.trunc(numberProp(widget.props, 'knob_width', 0));
+    const knobWidth = Math.min(Math.max(requested === 0 ? 8 : requested, 1), Math.max(inner.w, 1));
+    if (inner.h === 0) {
+        return;
+    }
+    const knobX = inner.x + Math.trunc(Math.max(0, inner.w - knobWidth) * t);
+    fillSolid(context, { x: knobX, y: inner.y, w: knobWidth, h: inner.h }, 0, style.accent, 255);
 }
 
 /**
@@ -1571,14 +1580,27 @@ function previewProgress(context: CanvasRenderingContext2D, widget: DesignerWidg
 
 /** Dropdown (spec 4.8, `widgets/mod.rs:2606-2666`): the selected item and a centred arrow, `Style::panel()`. */
 function previewDropdown(context: CanvasRenderingContext2D, widget: DesignerWidget, state: VisualState): void {
-    const style = resolveVisual(stylePanel(), state);
+    // `designStyle`, not a bare `stylePanel()`: the widget carries its own style, and a chosen font, base
+    // style or colour lives in it. Dropping it here was why a dropdown's Font field changed nothing on the
+    // canvas while the KDL -- and so the glass -- already had it.
+    const style = resolveVisual(designStyle(widget, stylePanel()), state);
     const rect = rectOf(widget);
     drawBlock(context, rect, style);
     const inner = blockInner(rect, style);
     const items = optionValues(widget);
     const selected = Math.min(numberProp(widget.props, 'selected', 0), Math.max(0, items.length - 1));
     const text = items[selected] ?? '-';
-    drawTextIn(context, { x: inner.x, y: inner.y, w: Math.max(0, inner.w - 8), h: inner.h }, text, style.font, style.text);
+    // `render_dropdown` (`widgets/mod.rs`) passes the design's alignment to both the selected item and the
+    // popup rows; `middle` is the markup's spelling of the crate's `TextAlign::Center`.
+    const align: 'left' | 'center' | 'right' =
+        stringProp(widget.props, 'align') === 'middle'
+            ? 'center'
+            : stringProp(widget.props, 'align') === 'right'
+                ? 'right'
+                : 'left';
+    drawTextIn(context, { x: inner.x, y: inner.y, w: Math.max(0, inner.w - 8), h: inner.h }, text, style.font, style.text, {
+        align,
+    });
     // The design exposes no `open` property, so the popup is never drawn (spec 4.8).
     drawTextIn(
         context,
@@ -1620,7 +1642,9 @@ function previewRoller(context: CanvasRenderingContext2D, widget: DesignerWidget
 
 /** Table (spec 4.10, `widgets/mod.rs:2714-2760`, with the corrected emitter). */
 function previewTable(context: CanvasRenderingContext2D, widget: DesignerWidget, state: VisualState): void {
-    const style = resolveVisual(stylePanel(), state);
+    // The design's own style, font included -- a table's headers and cells are drawn in it (see the
+    // catalogue's note on the tag).
+    const style = resolveVisual(designStyle(widget, stylePanel()), state);
     const rect = rectOf(widget);
     drawBlock(context, rect, style);
     const rows = tableRows(widget);
@@ -1652,7 +1676,9 @@ function previewTable(context: CanvasRenderingContext2D, widget: DesignerWidget,
 
 /** Dialog (spec 4.11, `widgets/mod.rs:2025-2063`): a panel block with a centred title and a wrapped body. */
 function previewDialog(context: CanvasRenderingContext2D, widget: DesignerWidget, state: VisualState): void {
-    const style = resolveVisual(stylePanel(), state);
+    // Title, body and the block itself all come from the design's style, so the widget's own one has to be
+    // read here rather than the bare panel default.
+    const style = resolveVisual(designStyle(widget, stylePanel()), state);
     const rect = rectOf(widget);
     const title = stringProp(widget.props, 'title');
     // An empty title is treated as absent so content_area returns `inner`; the crate's `Block` would carry
@@ -1777,13 +1803,6 @@ function previewCarousel(context: CanvasRenderingContext2D, widget: DesignerWidg
 // ---------------------------------------------------------------------------
 
 /**
- * `CHAR_WIDTH` (spec 1.1, `render/text_style.rs:7`): the crate's monospace cell width, a fixed `4` whatever
- * the font. The spinbox measures and underlines with it even though the text engine advances by the font's
- * own `advance()`, so the two can disagree on a wide face -- and that disagreement is the crate's, kept here.
- */
-const CHAR_WIDTH = 4;
-
-/**
  * `SpinboxWidget::format_text` (`widgets/spinbox.rs:95-125`): the sign, the integer part zero-padded to
  * `digits`, and `decimals` digits after the point.
  *
@@ -1817,13 +1836,18 @@ function spinboxValue(widget: DesignerWidget): number {
 }
 
 /**
- * Spinbox (`widgets/spinbox.rs:127-205`): the block, the value centred on `CHAR_WIDTH` cells, the focused
- * digit's two-pixel underline, and the `-`/`+` chevrons when the inner width reaches 80.
+ * Spinbox (`widgets/spinbox.rs:127-205`): the block, the value centred on the chosen font's advance, the
+ * focused digit's two-pixel underline, and the `-`/`+` chevrons when the inner width reaches 80.
+ *
+ * The runtime fork measures with `resolved.font.advance()` and `line_height()` rather than the crate's fixed
+ * four-pixel cell (`spinbox.rs:146-150`), because measuring with a constant while drawing in a wider face
+ * clipped the number and underlined the wrong digit. The canvas mirrors that, so a spinbox in a big font
+ * shows the same placement here as on the glass.
  *
  * Every board-built spinbox has `focused_digit: 0` (`builders.rs:1187`), so the underline sits under the
- * *last* formatted character at `start_y + line_h + 1`, two pixels tall and one cell wide. The chevrons are
- * 14-wide boxes at inset 2, stroked in `chevron_color`, with the `-`/`+` centred in them in the text colour;
- * they are skipped entirely below 80 pixels, exactly as the crate's `if inner.w >= 80` does.
+ * *last* formatted character at `start_y + line_h + 1`, two pixels tall and one advance wide. The chevrons
+ * are 14-wide boxes at inset 2, stroked in `chevron_color`, with the `-`/`+` centred in them in the text
+ * colour; they are skipped entirely below 80 pixels, exactly as the crate's `if inner.w >= 80` does.
  */
 function previewSpinbox(context: CanvasRenderingContext2D, widget: DesignerWidget, state: VisualState): void {
     const style = resolveVisual(designStyle(widget, stylePanel()), state);
@@ -1834,16 +1858,18 @@ function previewSpinbox(context: CanvasRenderingContext2D, widget: DesignerWidge
     const digits = numberProp(widget.props, 'digits', 4);
     const decimals = numberProp(widget.props, 'decimals', 0);
     const text = spinboxText(spinboxValue(widget), digits, decimals);
-    const lineHeight = lineHeightOf(style);
+    const metrics = glyphMetrics(style.font);
+    const lineHeight = metrics.lineHeight;
+    const cellWidth = metrics.advance;
     const totalChars = charCount(text);
-    const startX = inner.x + Math.floor(Math.max(0, inner.w - totalChars * CHAR_WIDTH) / 2);
+    const startX = inner.x + Math.floor(Math.max(0, inner.w - totalChars * cellWidth) / 2);
     const startY = inner.y + Math.floor(Math.max(0, inner.h - lineHeight) / 2);
     drawCrateText(context, startX, startY, text, style.font, style.text);
 
     const underline: Rect = {
-        x: startX + Math.max(0, totalChars - 1) * CHAR_WIDTH,
+        x: startX + Math.max(0, totalChars - 1) * cellWidth,
         y: startY + lineHeight + 1,
-        w: CHAR_WIDTH,
+        w: cellWidth,
         h: 2,
     };
     fillSolid(context, underline, 0, colourProp(widget.props, 'accent_color') ?? rgb(0, 63, 31), 255);
@@ -2454,6 +2480,171 @@ function pathCubic(
  * evaluates the same expression. The frame is filled, and painted *after* the sector, so only the sector
  * outside the frame is visible -- the crate's own order, kept.
  */
+/**
+ * Clock (`widgets/clock.rs`): the gauge's radial dial with twelve hour marks, sixty minute marks,
+ * the hour numerals, and three hands.
+ *
+ * The angles are the crate's: degrees with `y` down, so -90 is twelve o'clock. The hands sit
+ * *between* the marks as the smaller units pass (`3:30` points halfway between 3 and 4), which is
+ * what makes a clock face read as a time rather than as three unrelated needles. The numerals are
+ * magnified by `Number size`, because the built-in faces are fixed bitmaps -- `drawClockLabel`
+ * mirrors `draw_scaled_text` in the crate, one block per glyph pixel.
+ */
+function previewClock(context: CanvasRenderingContext2D, widget: DesignerWidget, state: VisualState): void {
+    const style = resolveVisual(designStyle(widget, stylePanel()), state);
+    const rect = rectOf(widget);
+    drawBlock(context, rect, style);
+    if (rectEmpty(rect)) {
+        return;
+    }
+    const inner = blockInner(rect, style);
+    const cx = inner.x + Math.trunc(inner.w / 2);
+    const cy = inner.y + Math.trunc(inner.h / 2);
+    const radius = Math.max(0, Math.trunc(Math.min(inner.w, inner.h) / 2) - 4);
+    if (radius < 12) {
+        return;
+    }
+
+    // `TWELVE_OCLOCK` and the two step sizes, exactly as `clock.rs` has them.
+    const twelve = -90;
+    const hourTick = colourProp(widget.props, 'hour_tick_color') ?? rgb(16, 32, 16);
+    const minuteTick = colourProp(widget.props, 'minute_tick_color') ?? rgb(10, 20, 10);
+    const tick = (angleDeg: number, length: number, width: number, colour: Rgb565) => {
+        const radians = (angleDeg * Math.PI) / 180;
+        const innerR = Math.max(0, radius - length);
+        strokeClockLine(
+            context,
+            cx + Math.trunc(innerR * Math.cos(radians)),
+            cy + Math.trunc(innerR * Math.sin(radians)),
+            cx + Math.trunc(radius * Math.cos(radians)),
+            cy + Math.trunc(radius * Math.sin(radians)),
+            colour,
+            width,
+            'butt',
+        );
+    };
+    // The minutes first: an hour mark is drawn over the position it shares with one, so the long
+    // tick is never half-hidden behind a short one.
+    for (let minute = 0; minute < 60; minute += 1) {
+        if (minute % 5 === 0) {
+            continue;
+        }
+        tick(twelve + minute * 6, 4, 1, minuteTick);
+    }
+    for (let hour = 0; hour < 12; hour += 1) {
+        tick(twelve + hour * 30, 8, 2, hourTick);
+    }
+
+    if (boolProp(widget.props, 'show_labels', true) && radius > 24) {
+        const labelColour = colourProp(widget.props, 'label_color') ?? rgb(31, 63, 31);
+        const scale = Math.max(1, Math.trunc(numberProp(widget.props, 'label_scale', 1)));
+        const inset = Math.max(0, radius - 16);
+        for (let hour = 1; hour <= 12; hour += 1) {
+            const radians = ((twelve + hour * 30) * Math.PI) / 180;
+            drawClockLabel(
+                context,
+                cx + Math.trunc(inset * Math.cos(radians)),
+                cy + Math.trunc(inset * Math.sin(radians)),
+                String(hour),
+                style.font,
+                labelColour,
+                scale,
+            );
+        }
+    }
+
+    const hour = Math.min(Math.max(Math.trunc(numberProp(widget.props, 'hour', 10)), 0), 23);
+    const minute = Math.min(Math.max(Math.trunc(numberProp(widget.props, 'minute', 10)), 0), 59);
+    const second = Math.min(Math.max(Math.trunc(numberProp(widget.props, 'second', 0)), 0), 59);
+    const hands: [number, number, number, Rgb565][] = [
+        [twelve + (hour % 12 + minute / 60) * 30, 0.5, 3, colourProp(widget.props, 'hour_color') ?? rgb(31, 63, 31)],
+        // The minute hand steps half a tick at a time, exactly as `clock.rs` draws it: on the mark
+        // for the first half of the minute, halfway between marks for the second half.
+        [twelve + (minute + (second >= 30 ? 0.5 : 0)) * 6, 0.72, 2, colourProp(widget.props, 'minute_color') ?? rgb(31, 63, 31)],
+        [twelve + second * 6, 0.88, 1, colourProp(widget.props, 'second_color') ?? rgb(31, 0, 0)],
+    ];
+    for (const [angle, fraction, width, colour] of hands) {
+        const radians = (angle * Math.PI) / 180;
+        const length = radius * fraction;
+        strokeClockLine(
+            context,
+            cx,
+            cy,
+            cx + Math.trunc(length * Math.cos(radians)),
+            cy + Math.trunc(length * Math.sin(radians)),
+            colour,
+            width,
+            'round',
+        );
+    }
+    fillSolid(context, { x: cx - 3, y: cy - 3, w: 6, h: 6 }, 3, colourProp(widget.props, 'hour_color') ?? rgb(31, 63, 31), 255);
+}
+
+/** One straight stroke, the way `draw_line_styled` paints it: a colour, a width and a cap. */
+function strokeClockLine(
+    context: CanvasRenderingContext2D,
+    x1: number,
+    y1: number,
+    x2: number,
+    y2: number,
+    colour: Rgb565,
+    width: number,
+    cap: 'butt' | 'round',
+): void {
+    context.strokeStyle = css(colour);
+    context.lineWidth = width;
+    context.lineCap = cap;
+    context.beginPath();
+    context.moveTo(x1, y1);
+    context.lineTo(x2, y2);
+    context.stroke();
+}
+
+/**
+ * The crate's `draw_scaled_text`: text centred on a point, every glyph pixel a block.
+ *
+ * The block follows the face -- `Scaled6x10` is two-by-two blocks of the 3x5 table, everything else one
+ * pixel per bit (`render/mod.rs`) -- and the box that is centred is the glyph's **ink** (three columns,
+ * five rows), not its cell: a packed digit's ink is three of the four pixels of its advance, so
+ * centring the cell leaves the number visibly off to one side of the tick it belongs to.
+ *
+ * The bit test is the crate's: bits 2..0 of each row are the three columns, so the ink of a 3x5 face
+ * occupies columns 0..2 of its cell. Reading those bits as columns 5..7 is what made every numeral sit
+ * a few pixels to the right of its tick.
+ */
+function drawClockLabel(
+    context: CanvasRenderingContext2D,
+    centreX: number,
+    centreY: number,
+    text: string,
+    font: string,
+    colour: Rgb565,
+    scale: number,
+): void {
+    const metrics = glyphMetrics(font);
+    const block = glyphBlockSize(font) * scale;
+    const advance = metrics.advance * scale;
+    const inkWidth = GLYPH_COLUMNS * block;
+    const inkHeight = GLYPH_ROWS * block;
+    const width = inkWidth + Math.max(0, charCount(text) - 1) * advance;
+    const top = centreY - Math.trunc(inkHeight / 2);
+    let cursor = centreX - Math.trunc(width / 2);
+    for (const ch of text) {
+        const rows = glyphRows(font, ch);
+        for (let row = 0; row < GLYPH_ROWS; row += 1) {
+            const bits = rows[row] ?? 0;
+            for (let col = 0; col < GLYPH_COLUMNS; col += 1) {
+                if ((bits & (1 << (GLYPH_COLUMNS - 1 - col))) === 0) {
+                    continue;
+                }
+                context.fillStyle = css(colour);
+                context.fillRect(cursor + col * block, top + row * block, block, block);
+            }
+        }
+        cursor += advance;
+    }
+}
+
 function previewArc(context: CanvasRenderingContext2D, widget: DesignerWidget, state: VisualState): void {
     const style = resolveVisual(designStyle(widget, stylePanel()), state);
     const rect = rectOf(widget);
@@ -2635,13 +2826,17 @@ function previewPath(context: CanvasRenderingContext2D, widget: DesignerWidget, 
 /**
  * `StatusBarWidget::render` (`widgets/status_bar.rs:134-240`) with the fields `render_status_bar`
  * (`widgets/mod.rs:1666-1691`) maps a style onto: background from `style.background` when set, foreground
- * from `style.text`, accent from `style.accent`. Everything else is `StatusBarWidget::default()`: mode
- * ClockAndIcons, 85 % discharging battery, Bluetooth connected, DND off, separator `rgb(6,12,18)`.
+ * from `style.text`, accent from `style.accent`, and the face from `style.font` -- which reaches every glyph
+ * the bar draws: the clock, the Bluetooth mark and the battery's charge mark.
+ *
+ * The clock is centred on the *chosen* font's advance and sits on its line height (`status_bar.rs:164-175`),
+ * so a bar in a big face draws a big clock in the middle rather than a big clock pushed off to one side.
  */
 function drawStatusBar(
     context: CanvasRenderingContext2D,
     rect: Rect,
     time: string,
+    font: string,
     background: Rgb565,
     foreground: Rgb565,
     accent: Rgb565,
@@ -2650,17 +2845,25 @@ function drawStatusBar(
     if (rectEmpty(rect)) {
         return;
     }
+    const metrics = glyphMetrics(font);
     fillSolid(context, rect, 0, background, 255);
     fillSolid(context, { x: rect.x, y: rectBottom(rect) - 1, w: rect.w, h: 1 }, 0, rgb(6, 12, 18), 255);
     const centerY = rect.y + Math.trunc(rect.h / 2);
-    // Clock: centred on a fixed four-pixel cell width (`status_bar.rs:164-169`).
-    const textWidth = time.length * 4;
-    drawCrateText(context, rect.x + Math.trunc((rect.w - textWidth) / 2), centerY - 3, time, 'Tiny3x5', foreground);
+    // Clock: centred on the font's own advance (`status_bar.rs:170-183`).
+    const textWidth = time.length * metrics.advance;
+    drawCrateText(
+        context,
+        rect.x + Math.trunc((rect.w - textWidth) / 2),
+        centerY - Math.trunc(metrics.lineHeight / 2),
+        time,
+        font,
+        foreground,
+    );
     // Bluetooth glyph, left inset six (`status_bar.rs:176-185`).
     const bx = rect.x + 6;
     const by = centerY - 4;
     strokeRounded(context, { x: bx, y: by, w: 6, h: 8 }, 0, { color: accent, width: 1 }, 255);
-    drawCrateText(context, bx + 1, by + 1, 'B', 'Tiny3x5', accent);
+    drawCrateText(context, bx + 1, by + 1, 'B', font, accent);
     // Battery shell, terminal nipple and level (`status_bar.rs:195-230`).
     const battW = 16;
     const battH = 8;
@@ -2679,11 +2882,168 @@ function drawStatusBar(
  * The style maps onto the widget's own fields, so `text_color` is the clock and icon colour and `accent`
  * the Bluetooth colour; the separator and the battery's own geometry come from the default widget.
  */
+/** The keypad's rows, exactly as `keypad.rs` lays them out: a legend (or an action) and its weight. */
+type KeypadKeySpec = readonly [string, number];
+
+/** The mode key's label is the mode it moves to, so the action is a placeholder until it is drawn. */
+const KEYPAD_MODE_KEY = 'mode';
+
+function letterRow(text: string): readonly KeypadKeySpec[] {
+    return Array.from(text).map((ch): KeypadKeySpec => [ch, 1]);
+}
+
+const KEYPAD_TEXT_ROWS: readonly (readonly KeypadKeySpec[])[] = [
+    // The digit row sits above `qwerty`, which is why the mode key no longer offers a digits page.
+    letterRow('1234567890'),
+    letterRow('qwertyuiop'),
+    letterRow('asdfghjkl;'),
+    letterRow('zxcvbnm,./'),
+    // Shift and the mode key are wide enough to hit with a thumb; the space bar takes the middle.
+    // The keys that act are labelled with words, not single letters that read as alphabet keys.
+    [['SHIFT', 2], [KEYPAD_MODE_KEY, 2], [' ', 4], ['<', 2]],
+    [['CLR', 4], ['ENT', 6]],
+];
+
+const KEYPAD_NUMERIC_ROWS: readonly (readonly KeypadKeySpec[])[] = [
+    letterRow('123'),
+    letterRow('456'),
+    letterRow('789'),
+    [['.', 1], ['0', 1], ['<', 1]],
+    [[KEYPAD_MODE_KEY, 1], ['CLR', 1], ['ENT', 1]],
+];
+
+// The set asked for on 2026-10-17: `~!@#$%^&*()-=_+[]\{}|;':",./<>?`, in that order, broken at eight.
+const KEYPAD_SYMBOL_ROWS: readonly (readonly KeypadKeySpec[])[] = [
+    letterRow('~!@#$%^&'),
+    letterRow('*()-_=+['),
+    letterRow("]\\{}|;':"),
+    letterRow('",./<>?'),
+    [[KEYPAD_MODE_KEY, 2], [' ', 4], ['<', 2]],
+    [['CLR', 3], ['ENT', 5]],
+];
+
+/** The mode key says where it goes, so the key is a promise rather than a label. */
+function keypadModeLabel(mode: string): string {
+    // Two pages: the digits are on the letters page now, so the key promises the symbols instead.
+    return mode === 'text' ? '%%...' : 'ABC';
+}
+
+/**
+ * `KeypadWidget::render` (`keypad.rs`): the entry box on the top edge, then the mode's rows of keys
+ * whose widths are their share of the row's weights.
+ *
+ * The geometry is the widget's own and is written out the same way there, so a drag in the canvas
+ * lands on the key the panel would act on. The typed line is the app's, not the design's, so the
+ * preview shows the empty box and its caret.
+ */
+function previewKeypad(
+    context: CanvasRenderingContext2D,
+    widget: DesignerWidget,
+    state: VisualState,
+): void {
+    const style = resolveVisual(designStyle(widget, stylePanel()), state);
+    const rect = rectOf(widget);
+    drawBlock(context, rect, style);
+    if (rectEmpty(rect)) {
+        return;
+    }
+    const mode = stringProp(widget.props, 'mode', 'text');
+    const shift = boolProp(widget.props, 'shift', false);
+    const rows =
+        mode === 'numeric' ? KEYPAD_NUMERIC_ROWS : mode === 'symbol' ? KEYPAD_SYMBOL_ROWS : KEYPAD_TEXT_ROWS;
+    const line = glyphMetrics(style.font).lineHeight;
+    const entryHeight = Math.min(Math.max(1, Math.trunc(line + 5)), Math.max(1, Math.trunc(rect.h / 2)));
+    const entry: Rect = {
+        x: rect.x + 2,
+        y: rect.y + 2,
+        w: Math.max(0, rect.w - 4),
+        h: Math.min(entryHeight, Math.max(0, rect.h - 2)),
+    };
+    const areaY = entry.y + entry.h + 1;
+    const area: Rect = {
+        x: rect.x + 2,
+        y: areaY,
+        w: Math.max(0, rect.w - 4),
+        h: Math.max(0, rect.y + rect.h - areaY - 1),
+    };
+
+    // The six surfaces the design colours, with the widget's own defaults behind them.
+    const textColour = colourProp(widget.props, 'text_color') ?? rgb(31, 63, 31);
+    const keyColour = colourProp(widget.props, 'key_color') ?? rgb(6, 12, 16);
+    const legendColour = colourProp(widget.props, 'legend_color') ?? rgb(31, 63, 31);
+    const accentColour = colourProp(widget.props, 'accent_color') ?? rgb(2, 16, 24);
+    // Caps lock is shown the only way a keypad can show it: the Shift key wears the pressed face.
+    const pressedColour = colourProp(widget.props, 'pressed_key_color') ?? rgb(12, 24, 31);
+    const entryFace = colourProp(widget.props, 'entry_face') ?? rgb(1, 2, 4);
+    const entryBorder = colourProp(widget.props, 'entry_border') ?? rgb(16, 32, 16);
+
+    // The entry box: its face, its one-pixel edge and the caret of an empty line.
+    fillSolid(context, entry, 0, entryFace, 255);
+    fillSolid(context, { x: entry.x, y: entry.y, w: entry.w, h: 1 }, 0, entryBorder, 255);
+    fillSolid(context, { x: entry.x, y: entry.y + entry.h - 1, w: entry.w, h: 1 }, 0, entryBorder, 255);
+    fillSolid(context, { x: entry.x, y: entry.y, w: 1, h: entry.h }, 0, entryBorder, 255);
+    fillSolid(context, { x: entry.x + entry.w - 1, y: entry.y, w: 1, h: entry.h }, 0, entryBorder, 255);
+    // The line is left-justified three pixels in and centred between the box's edges, as the widget
+    // draws it; the caret is an underscore after the last character.
+    drawTextIn(context, { x: entry.x + 3, y: entry.y, w: Math.max(0, entry.w - 6), h: entry.h }, '_', style.font, textColour, {
+        align: 'left',
+        verticalAlign: 'middle',
+    });
+
+    const rowHeight = Math.trunc(area.h / rows.length);
+    rows.forEach((keys, row) => {
+        const total = keys.reduce((sum, [, weight]) => sum + weight, 0);
+        const y = area.y + row * rowHeight;
+        const height = row + 1 === rows.length ? Math.max(0, area.y + area.h - y) : rowHeight;
+        let used = 0;
+        keys.forEach(([legend, weight]) => {
+            const x = area.x + Math.trunc((area.w * used) / total);
+            const nextX = area.x + Math.trunc((area.w * (used + weight)) / total);
+            used += weight;
+            const cell: Rect = { x, y, w: Math.max(0, nextX - x), h: Math.max(0, height) };
+            if (cell.w <= 2 || cell.h <= 2) {
+                return;
+            }
+            // The keys that act instead of typing wear the accent colour, as the widget draws them.
+            const control =
+                legend === 'SHIFT' || legend === KEYPAD_MODE_KEY || legend === '<' || legend === 'CLR' || legend === 'ENT';
+            const lit = control && legend === 'SHIFT' && shift;
+            const face = lit ? pressedColour : control ? accentColour : keyColour;
+            const inner: Rect = { x: cell.x + 1, y: cell.y + 1, w: cell.w - 2, h: cell.h - 2 };
+            fillSolid(context, inner, 0, face, 255);
+            // Shift is a caps lock: the letter keys say what they will type, exactly as the widget
+            // redraws them when it toggles.
+            const shifted = shift && legend.length === 1 && /[a-z]/.test(legend);
+            const label =
+                legend === KEYPAD_MODE_KEY
+                    ? keypadModeLabel(mode)
+                    : shifted
+                        ? legend.toUpperCase()
+                        : legend;
+            if (label !== ' ') {
+                const colour = control ? textColour : legendColour;
+                drawTextIn(context, inner, label, style.font, colour, {
+                    align: 'center',
+                    verticalAlign: 'middle',
+                });
+            }
+        });
+    });
+}
+
 function previewStatusBar(context: CanvasRenderingContext2D, widget: DesignerWidget, state: VisualState): void {
     const style = resolveVisual(designStyle(widget, stylePanel()), state);
     const rect = rectOf(widget);
     drawBlock(context, rect, style);
-    drawStatusBar(context, rect, stringProp(widget.props, 'time'), style.background ?? rgb(2, 4, 8), style.text, style.accent);
+    drawStatusBar(
+        context,
+        rect,
+        stringProp(widget.props, 'time'),
+        style.font,
+        style.background ?? rgb(2, 4, 8),
+        style.text,
+        style.accent,
+    );
 }
 
 /**
@@ -2708,6 +3068,7 @@ function previewTimePicker(context: CanvasRenderingContext2D, widget: DesignerWi
     const background = style.background ?? rgb(3, 6, 12);
     const textColour = style.text;
     const focusColour = style.accent;
+    const metrics = glyphMetrics(style.font);
     fillSolid(context, rect, 6, background, 255);
     strokeRounded(context, rect, 6, { color: rgb(6, 16, 26), width: 1 }, 255);
     const numFields = is12h ? 3 : 2;
@@ -2728,12 +3089,21 @@ function previewTimePicker(context: CanvasRenderingContext2D, widget: DesignerWi
         strokeRounded(context, cell, 4, { color: isFocused ? focusColour : rgb(8, 16, 24), width: 1 }, 255);
         const text =
             field === 'hour' ? String(hour).padStart(2, '0') : field === 'minute' ? String(minute).padStart(2, '0') : isPm ? 'PM' : 'AM';
-        const textX = cell.x + Math.trunc((cellW - text.length * 4) / 2);
-        drawCrateText(context, textX, cell.y + Math.trunc(cellH / 2) - 3, text, 'Tiny3x5', isFocused ? focusColour : textColour);
+        // `TimePickerWidget::render` centres each field on the font's own advance and sits it on that font's
+        // line height (`picker.rs:293-300`), which is the only way a bigger face stays inside its cell.
+        const textX = cell.x + Math.trunc((cellW - text.length * metrics.advance) / 2);
+        drawCrateText(
+            context,
+            textX,
+            cell.y + Math.trunc(cellH / 2) - Math.trunc(metrics.lineHeight / 2),
+            text,
+            style.font,
+            isFocused ? focusColour : textColour,
+        );
         if (isFocused) {
             const caretX = cell.x + Math.trunc(cellW / 2) - 2;
-            drawCrateText(context, caretX, cell.y - 8, '^', 'Tiny3x5', focusColour);
-            drawCrateText(context, caretX, rectBottom(cell) + 2, 'v', 'Tiny3x5', focusColour);
+            drawCrateText(context, caretX, cell.y - 8, '^', style.font, focusColour);
+            drawCrateText(context, caretX, rectBottom(cell) + 2, 'v', style.font, focusColour);
         }
     }
 }
@@ -2743,9 +3113,10 @@ function previewTimePicker(context: CanvasRenderingContext2D, widget: DesignerWi
  * `widgets/mod.rs:1725-1746`).
  *
  * The widget always paints its own focused card -- `rgb(0,30,40)` with a `CSS_CYAN` border -- and its text
- * is always `CSS_WHITE`; `render_number_picker` passes no style field to it, so the design's `text_color`
- * reaches only the block underneath, which the card covers. The value is clamped the way the builder does
- * before `NumberPickerWidget::new` clamps it again.
+ * is always `CSS_WHITE`; `render_number_picker` passes no colour field to it, so the design's `text_color`
+ * reaches only the block underneath, which the card covers. The face, though, *is* handed over
+ * (`picker.rs:395-407`), and the value is centred on that face's advance and sits on its line height.
+ * The value is clamped the way the builder does before `NumberPickerWidget::new` clamps it again.
  */
 function previewNumberPicker(context: CanvasRenderingContext2D, widget: DesignerWidget, state: VisualState): void {
     const style = resolveVisual(designStyle(widget, stylePanel()), state);
@@ -2762,8 +3133,16 @@ function previewNumberPicker(context: CanvasRenderingContext2D, widget: Designer
     fillSolid(context, rect, 4, rgb(0, 30, 40), 255);
     strokeRounded(context, rect, 4, { color: rgb(0, 63, 31), width: 1 }, 255);
     const text = `${value} ${unit}`;
-    const textX = rect.x + Math.trunc((rect.w - text.length * 4) / 2);
-    drawCrateText(context, textX, rect.y + Math.trunc(rect.h / 2) - 3, text, 'Tiny3x5', rgb(31, 63, 31));
+    const metrics = glyphMetrics(style.font);
+    const textX = rect.x + Math.trunc((rect.w - text.length * metrics.advance) / 2);
+    drawCrateText(
+        context,
+        textX,
+        rect.y + Math.trunc(rect.h / 2) - Math.trunc(metrics.lineHeight / 2),
+        text,
+        style.font,
+        rgb(31, 63, 31),
+    );
 }
 
 /**
@@ -2889,6 +3268,12 @@ export function previewWidget(
         case 'scale':
         case 'gauge':
             previewScale(context, widget, state);
+            return true;
+        case 'clock':
+            previewClock(context, widget, state);
+            return true;
+        case 'keypad':
+            previewKeypad(context, widget, state);
             return true;
         case 'arc':
         case 'sweeping_arc':

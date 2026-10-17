@@ -112,6 +112,14 @@ export interface StyleValues {
  * One entry per tag whose emitted default is not `Style::default()`: the codegen fork writes exactly these
  * fallbacks in its arms (see `crates/embedded-gui/README.md` for why the runtime is vendored alongside), so a
  * colour the design sets is layered onto the surface the widget already had.
+ *
+ * **Every tag the emitter gives `Style::panel()` belongs here.** Leaving one out is invisible until a design
+ * sets a single appearance field: with nothing set the codegen's own fallback applies, but *setting*
+ * something routes through this table, so the widget silently becomes `Style::label()` -- no background, no
+ * border, no shadow, no rounding -- on the glass, while the canvas keeps drawing the panel it was told the
+ * widget has. `status_bar`, `time_picker`, `number_picker`, `arc`, `busy_wheel`, `chart`, `plotter`,
+ * `content_indicator` and `crumbs` were all in that state, and the Font field is how it was first noticed.
+ * `designer-widget-fonts.test.js` now reads the emitter's own fallbacks and fails if this table drifts.
  */
 const OWN_STYLE: Record<string, string> = {
     button: 'button',
@@ -123,6 +131,18 @@ const OWN_STYLE: Record<string, string> = {
     scale: 'panel',
     table: 'panel',
     dialog: 'panel',
+    status_bar: 'panel',
+    time_picker: 'panel',
+    number_picker: 'panel',
+    arc: 'panel',
+    sweeping_arc: 'panel',
+    busy_wheel: 'panel',
+    spinner: 'panel',
+    chart: 'panel',
+    plotter: 'panel',
+    content_indicator: 'panel',
+    crumbs: 'panel',
+    crumbs_indicator: 'panel',
 };
 
 export function ownStyleOf(tag: string): string {

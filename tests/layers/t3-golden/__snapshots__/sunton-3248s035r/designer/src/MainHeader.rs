@@ -25,6 +25,7 @@ pub use esp_hal::clock::CpuClock;
 pub use esp_hal::delay::Delay;
 pub use esp_hal::gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull};
 pub use esp_storage::FlashStorage;
+pub use esp_hal::uart::{Config as UartConfig, Uart};
 pub use esp_hal::spi::master::{Config as SpiConfig, Spi};
 pub use esp_hal::time::Rate;
 pub use esp_hal::timer::timg::TimerGroup;
@@ -78,11 +79,20 @@ pub const TOUCH_SAMPLES: u32 = 3;
 // change comes back as zero, which is what a 2 us delay still did on this board.
 pub const TOUCH_SETTLE_NS: u32 = 20_000;
 pub const TOUCH_REPAINT: i32 = 4;
-// A touch this soon after boot means "I want to recalibrate" rather than "use the stored calibration".
-// The loop below sleeps 20 ms, so 100 ticks is about two seconds. Without this the stored record could
-// only ever be *replaced* by completing a new calibration, never discarded - so a panel calibrated for
-// the wrong orientation, or with a mapping that has drifted, had no way back to the corner screen.
-pub const RECALIBRATE_TICKS: u32 = 100;
+// "Forget the calibration" is a finger held still in the top-left corner of the display. It is the
+// only way back once a panel has been calibrated, and it has to be *deliberate*: it used to be
+// "any touch in the first two seconds after a reset", which caught the ordinary touch of someone
+// testing a slider straight after a flash and threw a good calibration away -- reported from the
+// board as "when I try to drag the slider, or when long touching the screen, the screen
+// calibration routine fires". A corner hold cannot be mistaken for a drag (the finger moves), for
+// a long press on a widget (it is not in the corner) or for the tap that starts a test.
+//
+// The square is in content pixels, so it is the corner the user can see whatever the rotation;
+// the hold is counted in samples, each about 60 ms (every third 20 ms tick); and the slop is in
+// raw controller counts, so a finger that is merely resting is not also "moving".
+pub const RECALIBRATE_CORNER: i32 = 48;
+pub const RECALIBRATE_HOLD_SAMPLES: u32 = 33;
+pub const RECALIBRATE_SLOP: i32 = 300;
 
 // Numbers have to become text for the panel, and there is no allocator here: a fixed buffer that
 // implements core::fmt::Write is the usual no_std answer. It is deliberately not named after the
@@ -224,6 +234,59 @@ pub fn calibration_load(flash: &mut FlashStorage<'_>) -> Option<(u8, usize, i32,
 }
 
 pub const MARGIN: i32 = 24;
+
+// The line the toolchain sends over the console once the board is running: TIME HH:MM:SS,
+// local time, no date and no zone -- an ESP32's internal RTC has no battery, so a board that
+// has been powered off has no idea of the time until it is told, and the toolchain is the only
+// thing that knows what the PC's clock says.
+//
+// Anything else on the console is ignored rather than half-parsed: a line the user typed must
+// not be able to set the clock by accident.
+pub fn parse_clock_time(line: &[u8]) -> Option<(u8, u8, u8)> {
+    let text = core::str::from_utf8(line).ok()?;
+    let mut words = text.split_whitespace();
+    if !words.next()?.eq_ignore_ascii_case("TIME") {
+        return None;
+    }
+    let mut fields = words.next()?.split(':');
+    let hour: u8 = fields.next()?.parse().ok()?;
+    let minute: u8 = fields.next()?.parse().ok()?;
+    let second: u8 = fields.next()?.parse().ok()?;
+    if fields.next().is_some() || hour > 23 || minute > 59 || second > 59 {
+        return None;
+    }
+    Some((hour, minute, second))
+}
+
+// Where a raw reading lands on the display, in content pixels.
+//
+// The touch readout, the design and the corner gesture that throws a calibration away all use
+// this one mapping, so "the top-left corner" means the corner on the glass whatever the
+// rotation and whichever raw axis is the horizontal one.
+pub fn touch_pixel(
+    raw_x: i32,
+    raw_y: i32,
+    x_from: i32,
+    x_to: i32,
+    y_from: i32,
+    y_to: i32,
+    width_i: i32,
+    height_i: i32,
+) -> (i32, i32) {
+    let px = if x_to == x_from {
+        width_i / 2
+    } else {
+        MARGIN + (raw_x - x_from) * (width_i - 2 * MARGIN) / (x_to - x_from)
+    }
+    .clamp(0, width_i - 1);
+    let py = if y_to == y_from {
+        height_i / 2
+    } else {
+        MARGIN + (raw_y - y_from) * (height_i - 2 * MARGIN) / (y_to - y_from)
+    }
+    .clamp(0, height_i - 1);
+    (px, py)
+}
 
 // --- A helper of your own ---------------------------------------------------------------------
 //

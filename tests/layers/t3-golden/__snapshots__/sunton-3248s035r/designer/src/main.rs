@@ -152,6 +152,30 @@ pub struct State {
     /// The touch position in screen coordinates, after calibration.
     point: (i32, i32),
 
+    /// How many samples a corner finger has been held still for.
+    hold_samples: u32,
+
+    /// The raw readings a corner hold started at: a finger that moves is
+    hold_a: i32,
+
+    /// a drag, not a request to forget the calibration.
+    hold_b: i32,
+
+    /// The console the toolchain hands the time over on, when it
+    console: Option<Uart<'static, esp_hal::Blocking>>,
+
+    /// One line of it, in the making.
+    console_line: [u8; 32],
+
+    /// How much of that line is filled.
+    console_len: usize,
+
+    /// The local time the toolchain sent, and whether the design has
+    wall_clock: Option<(u8, u8, u8)>,
+
+    /// been told yet: the design only exists after the first frame.
+    wall_clock_applied: bool,
+
     /// The design, built on the first calibrated frame and driven by touch from then on.
     screen: Option<ui::Designer>,
 }
@@ -307,9 +331,9 @@ pub async fn setup() -> State {
         (0, 0)
     };
 
-    // A stored calibration is used straight away; a touch within RECALIBRATE_TICKS of boot throws it away
-    // and asks for the corners again (see the press edge in the loop below). That gesture is the only way back
-    // to the calibration screen once a panel has been calibrated.
+    // A stored calibration is used straight away; a finger held in the top-left corner for a couple of
+    // seconds throws it away and asks for the corners again (see the press edge in the loop below). That
+    // gesture is the only way back to the calibration screen once a panel has been calibrated.
     // A calibration is only valid for the orientation it was measured in: the mapping is a linear fit in the
     // content coordinate space, and that space is a different shape after a rotation. A record from another
     // orientation is discarded and the corners are asked for again -- otherwise every touch would land
@@ -388,6 +412,33 @@ pub async fn setup() -> State {
     let redraw_screen = true;
     let redraw_box = true;
     let ticks: u32 = 0;
+    // The corner-hold gesture that throws a stored calibration away: how many samples it has lasted,
+    // and where the finger was when it started (the raw readings, for the "still" test). Zero means
+    // "no gesture running" -- a press that began anywhere but the corner sets it to zero.
+    let hold_samples: u32 = 0;
+    let hold_a: i32 = 0;
+    let hold_b: i32 = 0;
+    // The console the toolchain talks over. It is the same UART0 the logger writes to, and only
+    // its receiver is taken: the log keeps working, and a quiet console costs one register read
+    // per pass.
+    //
+    // Optional, and never an expect: a console that cannot be opened costs the wall clock and
+    // nothing else -- the one-second timer still steps the design's own time, which is the fallback
+    // a board with no RTC gets anyway. Found the hard way: an expect here took the whole panel down
+    // on a board that had been flashing happily until the reader was added.
+    let console = match Uart::new(peripherals.UART0, UartConfig::default().with_baudrate(115_200)) {
+        Ok(uart) => Some(uart.with_rx(peripherals.GPIO3)),
+        Err(error) => {
+            log::warn!("clock: the console UART did not open ({:?}); the timer will step the clock", error);
+            None
+        }
+    };
+    let console_line = [0u8; 32];
+    let console_len: usize = 0;
+    // The local time the toolchain handed over, and whether the design has been told. The design
+    // does not exist until the first calibrated frame, and the line arrives long before that.
+    let wall_clock: Option<(u8, u8, u8)> = None;
+    let wall_clock_applied = false;
     // Whether the four corners have been measured -- by this run or by a previous one, which is what the
     // flash sector is for. Until they have, the panel shows the calibration screen.
     let calibrated = stored.is_some();
@@ -429,6 +480,14 @@ pub async fn setup() -> State {
         redraw_box,
         ticks,
         point,
+        hold_samples,
+        hold_a,
+        hold_b,
+        console,
+        console_line,
+        console_len,
+        wall_clock,
+        wall_clock_applied,
         screen,
     }
 }
@@ -615,6 +674,56 @@ async fn main(_spawner: Spawner) -> ! {
             state.redraw_box = false;
         }
 
+        // Whatever the toolchain sent over the console. Non-blocking: an empty FIFO reads zero
+        // bytes, so a quiet console costs one register read a pass.
+        if let Some(uart) = state.console.as_mut() {
+            let mut byte = [0u8; 1];
+            // A plain read *waits* for a byte that may never come: that stopped the whole panel at
+            // the first frame, found on the board (2026-10-17). read_ready costs one register read
+            // and answers at once, so a quiet console costs one test a pass and nothing else.
+            while uart.read_ready() {
+                if !matches!(uart.read(&mut byte), Ok(1)) {
+                    break;
+                }
+                match byte[0] {
+                    b'\r' => {}
+                    b'\n' => {
+                        // A local, because a range ending in console_len reads as a field access
+                        // to the code that rewrites the loop's names onto state.
+                        let filled = state.console_len;
+                        if let Some((hour, minute, second)) =
+                            parse_clock_time(&state.console_line[..filled])
+                        {
+                            state.wall_clock = Some((hour, minute, second));
+                            state.wall_clock_applied = false;
+                            log::info!(
+                                "clock: the console says {:02}:{:02}:{:02}",
+                                hour,
+                                minute,
+                                second
+                            );
+                        }
+                        state.console_len = 0;
+                    }
+                    _ if state.console_len < state.console_line.len() => {
+                        state.console_line[state.console_len] = byte[0];
+                        state.console_len += 1;
+                    }
+                    // A line longer than the buffer is not a time line: start again rather than
+                    // keeping half of it.
+                    _ => state.console_len = 0,
+                }
+            }
+        }
+        // The design exists only from the first calibrated frame, and the time line arrives long
+        // before that: the hand-over is remembered until there is a design to tell.
+        if !state.wall_clock_applied {
+            if let (Some(design), Some((hour, minute, second))) = (state.screen.as_mut(), state.wall_clock) {
+                design.set_wall_clock(hour, minute, second);
+                state.wall_clock_applied = true;
+            }
+        }
+
         // Every third tick is about 60 ms; a burst is a few bytes at 2 MHz, so the panel's clock is only
         // away for microseconds.
         state.ticks = state.ticks.wrapping_add(1);
@@ -648,19 +757,7 @@ async fn main(_spawner: Spawner) -> ! {
                     frames_b[1],
                     frames_b[2]
                 );
-                if state.calibrated && state.ticks < RECALIBRATE_TICKS {
-                    // The touch that triggers the gesture is *consumed* by it, not recorded as a corner: the
-                    // finger is wherever the user aimed at the middle of the screen, and calibrating from that
-                    // would be worse than not calibrating at all.
-                    state.calibrated = false;
-                    state.corner = 0;
-                    state.redraw_screen = true;
-                    state.redraw_box = true;
-                    log::info!(
-                        "calibration: discarded by a touch in the first {} ticks - measure the four corners again",
-                        RECALIBRATE_TICKS
-                    );
-                } else if !state.calibrated {
+                if !state.calibrated {
                     state.measured[state.corner] = [a, b];
                     log::info!("touch: corner {} {} recorded", state.corner + 1, state.corners[state.corner]);
                     state.corner += 1;
@@ -692,7 +789,60 @@ async fn main(_spawner: Spawner) -> ! {
                         );
                     }
                     state.redraw_screen = true;
+                } else {
+                    // Calibrated: a press that lands in the top-left corner starts the gesture that
+                    // throws this calibration away. Anywhere else is an ordinary touch, and a press
+                    // that starts anywhere else can never finish the gesture.
+                    let (raw_x, raw_y) = if state.raw_x_axis == 0 {
+                        (i32::from(a), i32::from(b))
+                    } else {
+                        (i32::from(b), i32::from(a))
+                    };
+                    let (corner_x, corner_y) = touch_pixel(
+                        raw_x,
+                        raw_y,
+                        state.x_from,
+                        state.x_to,
+                        state.y_from,
+                        state.y_to,
+                        state.width_i,
+                        state.height_i,
+                    );
+                    state.hold_samples = if corner_x < RECALIBRATE_CORNER
+                        && corner_y < RECALIBRATE_CORNER
+                    {
+                        1
+                    } else {
+                        0
+                    };
+                    state.hold_a = state.raw_a;
+                    state.hold_b = state.raw_b;
                 }
+            } else if state.pressed && state.hold_samples > 0 {
+                // Still down, and it began in the corner: count it, unless the finger has moved --
+                // a drag is not a request to recalibrate.
+                if (state.raw_a - state.hold_a).abs() <= RECALIBRATE_SLOP
+                    && (state.raw_b - state.hold_b).abs() <= RECALIBRATE_SLOP
+                {
+                    state.hold_samples += 1;
+                } else {
+                    state.hold_samples = 0;
+                }
+                if state.hold_samples >= RECALIBRATE_HOLD_SAMPLES {
+                    // The finger is consumed by the gesture rather than recorded as a corner: it is
+                    // still down, so no press edge will fire until it is lifted and put back.
+                    state.calibrated = false;
+                    state.corner = 0;
+                    state.redraw_screen = true;
+                    state.redraw_box = true;
+                    state.hold_samples = 0;
+                    log::info!(
+                        "calibration: discarded by a finger held in the corner for {} samples - measure the four corners again",
+                        RECALIBRATE_HOLD_SAMPLES
+                    );
+                }
+            } else if !state.pressed {
+                state.hold_samples = 0;
             }
 
             // The mapped position follows the finger for as long as it is down, and the readout is
@@ -700,27 +850,23 @@ async fn main(_spawner: Spawner) -> ! {
             if state.calibrated && (state.pressed || state.was_touched) {
                 let axis_x = if state.raw_x_axis == 0 { a } else { b };
                 let axis_y = if state.raw_x_axis == 0 { b } else { a };
-                let px = if state.x_to == state.x_from {
-                    state.width_i / 2
-                } else {
-                    MARGIN + (i32::from(axis_x) - state.x_from) * (state.width_i - 2 * MARGIN) / (state.x_to - state.x_from)
-                }
-                .clamp(0, state.width_i - 1);
-                let py = if state.y_to == state.y_from {
-                    state.height_i / 2
-                } else {
-                    MARGIN + (i32::from(axis_y) - state.y_from) * (state.height_i - 2 * MARGIN) / (state.y_to - state.y_from)
-                }
-                .clamp(0, state.height_i - 1);
+                let (px, py) = touch_pixel(
+                    i32::from(axis_x),
+                    i32::from(axis_y),
+                    state.x_from,
+                    state.x_to,
+                    state.y_from,
+                    state.y_to,
+                    state.width_i,
+                    state.height_i,
+                );
                 state.point = (px, py);
                 // Hand the sample to the design: the press and the release are what a widget acts on, and the
-                // moves are what let a slider follow the finger.
+                // moves are what let a slider follow the finger. Painting is *not* done here -- see the
+                // pass-level check below, which is what keeps a design that changes on its own moving.
                 if let Some(design) = state.screen.as_mut() {
                     design.pointer(px, py, state.pressed);
                     design.pump();
-                    if design.is_dirty() {
-                        design.render(&mut state.display).expect("the design did not render");
-                    }
                 }
                 if state.pressed && !state.was_touched {
                     log::info!("touch: a={} b={} -> pixel ({}, {})", state.raw_a, state.raw_b, px, py);
@@ -734,6 +880,16 @@ async fn main(_spawner: Spawner) -> ! {
                 state.redraw_box = true;
             }
             state.was_touched = state.pressed;
+        }
+
+        // The design paints what changed on every pass, not only while a finger is down. A clock with
+        // its movement attached is due once a second, so a panel nobody has touched for an hour still
+        // has to show the time -- and this used to live inside the touch branch above, which is why a
+        // clock sat at whatever time it was flashed at.
+        if let Some(design) = state.screen.as_mut() {
+            if design.is_dirty() {
+                design.render(&mut state.display).expect("the design did not render");
+            }
         }
 
         // Not in a Designer project: the per-touch lines below and the design's own event logs are the sign of

@@ -498,4 +498,95 @@ mod tests {
         // Root panel + label + button + inner row panel + inner label + inner button = 6 widgets
         assert_eq!(ctx.widgets().len(), 6);
     }
+
+    #[test]
+    fn a_slider_keeps_its_grip_width_and_a_dropdown_its_alignment() {
+        // The two fields a design can now name ride on the widget the builder makes: the gap grip width
+        // (`knob_width=8` in the markup) and the dropdown's text alignment (`align="middle"`). The grip's
+        // *height* is not stored -- `render_slider` takes it from the block's inner rect every draw.
+        let mut ctx: GuiContext<32, 16, 16> = GuiContext::new(Rect::new(0, 0, 320, 240));
+        let items: &[&str] = &["one", "two"];
+
+        let plain = ctx
+            .add_slider(Rect::new(0, 0, 100, 20), 5.0, 0.0, 10.0, crate::style::Style::new())
+            .unwrap();
+        match ctx.node(plain).unwrap().kind {
+            crate::widgets::WidgetKind::Slider { knob_w, .. } => assert_eq!(knob_w, 8),
+            _ => panic!("add_slider did not make a slider"),
+        }
+
+        let sized = ctx
+            .add_slider_sized(Rect::new(0, 30, 100, 20), 5.0, 0.0, 10.0, 20, crate::style::Style::new())
+            .unwrap();
+        match ctx.node(sized).unwrap().kind {
+            crate::widgets::WidgetKind::Slider { knob_w, .. } => assert_eq!(knob_w, 20),
+            _ => panic!("add_slider_sized did not make a slider"),
+        }
+
+        let left = ctx
+            .add_dropdown(Rect::new(0, 60, 100, 20), items, 0, crate::style::Style::new())
+            .unwrap();
+        match ctx.node(left).unwrap().kind {
+            crate::widgets::WidgetKind::Dropdown { align, .. } => {
+                assert_eq!(align, crate::render::TextAlign::Left)
+            }
+            _ => panic!("add_dropdown did not make a dropdown"),
+        }
+
+        let centred = ctx
+            .add_dropdown_aligned(
+                Rect::new(0, 90, 100, 20),
+                items,
+                0,
+                crate::render::TextAlign::Center,
+                crate::style::Style::new(),
+            )
+            .unwrap();
+        match ctx.node(centred).unwrap().kind {
+            crate::widgets::WidgetKind::Dropdown { align, .. } => {
+                assert_eq!(align, crate::render::TextAlign::Center)
+            }
+            _ => panic!("add_dropdown_aligned did not make a dropdown"),
+        }
+    }
+
+    #[test]
+    fn a_clock_keeps_the_time_and_the_colours_it_was_given() {
+        // The widget holds a *time*, not a running clock: the application sets the three fields as it
+        // ticks, the way it sets a slider's value. The colours are fields of their own because the three
+        // hands cross each other, so telling them apart is the design's decision.
+        let mut ctx: GuiContext<32, 16, 16> = GuiContext::new(Rect::new(0, 0, 320, 240));
+
+        let plain = ctx
+            .add_clock(Rect::new(0, 0, 100, 100), 10, 9, 30, crate::style::Style::new())
+            .unwrap();
+        match ctx.node(plain).unwrap().kind {
+            crate::widgets::WidgetKind::Clock(clock) => {
+                assert_eq!((clock.hour, clock.minute, clock.second), (10, 9, 30));
+                let defaults = crate::widgets::ClockWidget::new(0, 0, 0);
+                assert_eq!(clock.hour_color, defaults.hour_color);
+                assert_eq!(clock.label_scale, 1);
+                assert!(clock.show_labels);
+            }
+            _ => panic!("add_clock did not make a clock"),
+        }
+
+        let mut styled = crate::widgets::ClockWidget::new(3, 4, 5);
+        let white = crate::widgets::ClockWidget::new(0, 0, 0).hour_color;
+        styled.second_color = white;
+        styled.label_scale = 3;
+        styled.show_labels = false;
+        let id = ctx
+            .add_clock_styled(Rect::new(0, 110, 100, 100), styled, crate::style::Style::new())
+            .unwrap();
+        match ctx.node(id).unwrap().kind {
+            crate::widgets::WidgetKind::Clock(clock) => {
+                assert_eq!(clock.label_scale, 3);
+                assert!(!clock.show_labels);
+                assert_eq!(clock.second_color, white);
+                assert_ne!(clock.second_color, crate::widgets::ClockWidget::new(0, 0, 0).second_color);
+            }
+            _ => panic!("add_clock_styled did not make a clock"),
+        }
+    }
 }

@@ -26,7 +26,7 @@ import {
     widgetRaises,
     widgetSpec,
 } from '../../src/designer/catalog';
-import type { DesignerAssetKind } from '../../src/designer/protocol';
+import type { DesignerActionId, DesignerAssetKind } from '../../src/designer/protocol';
 import {
     type DesignerFont,
     type DesignerWidget,
@@ -66,6 +66,14 @@ export interface PanelCallbacks {
      * which is why it hands over the *apply* rather than the field's name.
      */
     onBrowseAsset(kind: DesignerAssetKind, apply: (path: string) => void): void;
+    /**
+     * A widget's action button was pressed.
+     *
+     * Actions are the work only the extension can do -- it owns the filesystem, the terminal and the
+     * serial port -- so the panel sends the id and forgets it. Nothing is awaited: the answer arrives
+     * as a report, the same channel a save uses.
+     */
+    onAction(action: DesignerActionId): void;
 }
 
 /** A short element factory, because the DOM API is otherwise nine lines per control. */
@@ -258,6 +266,9 @@ export function renderProperties(
         if (spec.props.length > 0) {
             root.append(propertyForm(state, widget, spec, callbacks));
         }
+        if (spec.actions !== undefined && spec.actions.length > 0) {
+            root.append(actionForm(spec, callbacks));
+        }
         root.append(eventForm(state, widget, callbacks, spec));
         if (spec.children !== undefined) {
             root.append(childrenForm(state, widget, callbacks));
@@ -272,6 +283,24 @@ function identityForm(state: DesignerState, widget: DesignerWidget, callbacks: P
         field('Name', textInput(widget.id, (value) => callbacks.onEdit(renameWidget(state, widget.id, value)))),
     );
     node.append(field('Tag', element('span', 'field-static', widget.tag)));
+    return node;
+}
+
+/**
+ * The buttons a widget offers beyond its properties.
+ *
+ * One per action the catalogue declares, with its help text as the tooltip -- which is where a caveat like
+ * "needs the board connected" belongs, since the button has no room for it and the panel should not nag.
+ */
+function actionForm(spec: KdlWidgetSpec, callbacks: PanelCallbacks): HTMLElement {
+    const node = section('Board');
+    for (const action of spec.actions ?? []) {
+        const item = button(action.label, 'secondary-button', () => callbacks.onAction(action.id));
+        if (action.help !== undefined) {
+            item.title = action.help;
+        }
+        node.append(item);
+    }
     return node;
 }
 

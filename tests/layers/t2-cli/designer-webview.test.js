@@ -19,7 +19,7 @@ const { repoRoot } = require('../../lib/harness');
 const dom = require('../../lib/dom');
 
 const { starterDocument } = compiled('designer/generate');
-const { KDL_WIDGETS, widgetSpec } = compiled('designer/catalog');
+const { KDL_WIDGETS, widgetSpec, toolboxOffers } = compiled('designer/catalog');
 const { createDocument, defaultChildren, defaultProps } = compiled('designer/model');
 
 const BUNDLE = path.join(repoRoot(), 'out', 'webview', 'designer.js');
@@ -155,14 +155,20 @@ test('the designer panel boots, builds itself from the catalogue, and posts its 
         'including the description of the text property',
     );
 
-    // The Toolbox is generated from the catalogue, so it holds one entry per tag that can actually be built.
-    // The tags the crate's codegen cannot produce are in the catalogue but not in the toolbox.
+    // The Toolbox is generated from the catalogue, so it holds one entry per tag the palette offers.
+    // A tag in the catalogue but not in the toolbox is either one the codegen cannot produce
+    // (`unavailable`) or one that is simply no longer handed out (`toolboxOffers`, which is what hides
+    // the Time picker).
     const toolboxItems = all().filter((element) => element.classList.contains('toolbox-item'));
-    const usable = KDL_WIDGETS.filter((widget) => widget.unavailable === undefined);
+    const offered = KDL_WIDGETS.filter((widget) => toolboxOffers(widget.tag));
     equal(
         toolboxItems.length,
-        usable.length,
-        `every buildable widget tag is offered, catalogue has ${KDL_WIDGETS.length}`,
+        offered.length,
+        `every offered widget tag appears, catalogue has ${KDL_WIDGETS.length}`,
+    );
+    notOk(
+        toolboxItems.some((item) => item.textContent === 'Time picker'),
+        'the Time picker is not in the Toolbox',
     );
     ok(
         toolboxItems.some((item) => item.textContent === 'Button'),
@@ -729,19 +735,23 @@ function fillsWithColour(calls, colour) {
     return calls.filter((call, index) => call.method === 'fillRect' && fillColourAt(calls, index) === colour);
 }
 
-test('a slider knob sits at the left track end at min, the right end at max, and moves with value', () => {
-    // The knob is a 3x5 accent rectangle (preview-spec.md §4.6); the one-pixel track is 160x1. The default
-    // slider style is `Style::default()`, so the block paints nothing and `inner == rect`.
-    const knobX = (value) => {
-        const { calls } = boot(documentWith(widgetOf('slider', { min: 0, max: 100, value })));
-        const knob = fillRects(calls).filter((call) => call.args[2] === 3 && call.args[3] === 5);
-        equal(knob.length, 1, `exactly one knob at value ${value}`);
-        return knob[0].args[0];
+test('a slider grip sits at the left track end at min, the right end at max, and moves with value', () => {
+    // The grip fills the block's inner height (28 here: the widget is 160x28 with no border or padding) and is
+    // eight pixels wide unless the design names a width (`render_slider`, `widgets/mod.rs`). The one-pixel
+    // track is `style.text`; the grip is `style.accent`.
+    const gripX = (value, width = 8) => {
+        const { calls } = boot(documentWith(widgetOf('slider', { min: 0, max: 100, value, knob_width: width })));
+        const grip = fillRects(calls).filter((call) => call.args[2] === width && call.args[3] === 28);
+        equal(grip.length, 1, `exactly one grip at value ${value}`);
+        return grip[0].args[0];
     };
-    equal(knobX(0), 40, 'at min the knob is at the inner left edge');
-    equal(knobX(100), 40 + 160 - 3, 'at max the knob reaches the right track end');
-    equal(knobX(50), 40 + Math.trunc((160 - 3) / 2), 'and at the midpoint it is halfway along');
-    ok(knobX(50) > knobX(0) && knobX(50) < knobX(100), 'it moves with the value rather than sitting still');
+    equal(gripX(0), 40, 'at min the grip is flush with the inner left edge');
+    equal(gripX(100), 40 + 160 - 8, 'at max the grip reaches the inner right edge');
+    equal(gripX(50), 40 + Math.trunc((160 - 8) / 2), 'and at the midpoint it is halfway along');
+    ok(gripX(50) > gripX(0) && gripX(50) < gripX(100), 'it moves with the value rather than sitting still');
+    // A wider grip keeps the same travel rule, so it still sits flush at both ends.
+    equal(gripX(100, 20), 40 + 160 - 20, 'a twenty-pixel grip stops at the same right edge');
+    equal(gripX(0, 20), 40, 'and starts at the same left edge');
 });
 
 test('a progress bar fills in proportion to value, and not at all at zero', () => {
@@ -909,3 +919,63 @@ test('a design that does not validate says so as it opens', () => {
     ok(listed('load-notes') !== undefined, 'while the note about the load stays put');
 });
 
+
+// ---------------------------------------------------------------------------
+// Every widget that offers a Font responds to it on the canvas.
+//
+// The canvas is the designer's promise: what it draws is what the board draws. A Font field that changes
+// nothing here is worse than a missing field, because the design looks finished. Three widgets drew their
+// text in a hard-coded `Tiny3x5` (the status bar, the time picker and the number picker), three more read
+// a bare `Style::panel()` instead of the widget's own style (the dropdown, the table and the dialog), and
+// the spinbox measured with the crate's fixed four-pixel cell while the runtime forks had moved to the
+// font's own advance. So the assertion is per widget: two fonts, two different drawings.
+// ---------------------------------------------------------------------------
+
+/** The tags whose catalogue entry offers a Font -- the set the user is looking at. */
+const FONT_TAGS = KDL_WIDGETS.filter((spec) => spec.props.some((property) => property.kind === 'font')).map(
+    (spec) => spec.tag,
+);
+
+/** What the canvas drew, as one comparable string: every recorded context call and its arguments. */
+function paintOf(tag, font) {
+    const { calls } = boot(documentWith(widgetOf(tag, { font, message: 'Body text' }, defaultChildren(tag))));
+    return calls.map((call) => `${call.method}(${call.args.join(',')})`).join(';');
+}
+
+test('the font-capable widget list is the catalogue\'s own, not a copy', () => {
+    ok(FONT_TAGS.length >= 14, `expected every font-capable tag, found ${FONT_TAGS.length}`);
+    for (const tag of ['label', 'button', 'dropdown', 'time_picker', 'number_picker', 'status_bar', 'table']) {
+        ok(FONT_TAGS.includes(tag), `${tag} offers a Font and belongs in this check`);
+    }
+});
+
+test('every widget with a Font field paints differently when the font changes', () => {
+    for (const tag of FONT_TAGS) {
+        // Same design twice, one field changed. A widget that draws no text at all cannot satisfy this,
+        // which is the point: every one of these tags has text on the glass.
+        notOk(
+            paintOf(tag, 'Tiny3x5') === paintOf(tag, 'Medium4x7'),
+            `${tag} drew exactly the same pixels for two different fonts, so its Font field does nothing`,
+        );
+    }
+});
+
+test('and the same font paints the same pixels twice', () => {
+    // The guard on the test above: if the canvas were non-deterministic, "the pixels differ" would prove
+    // nothing. One widget is enough to show that the comparison means what it says.
+    equal(paintOf('time_picker', 'Medium4x7'), paintOf('time_picker', 'Medium4x7'));
+});
+
+test('naming a font changes nothing for the widgets whose base already uses it', () => {
+    // `fonts.ts` says picking `Tiny3x5` is the same as picking nothing: both `Style::new()` and
+    // `Style::label()` start there. The one exception is the button, whose own base is
+    // `Style::button()` -- `Medium4x7` -- and that is asserted too, because it is the widget whose default
+    // font is *not* the crate's smallest and so the one where "no font chosen" must not mean "Tiny3x5".
+    for (const tag of FONT_TAGS) {
+        if (tag === 'button') {
+            notOk(paintOf(tag, 'Tiny3x5') === paintOf(tag, ''), 'a button\'s own base is Medium4x7');
+            continue;
+        }
+        equal(paintOf(tag, 'Tiny3x5'), paintOf(tag, ''), `${tag} draws the same with its default font named`);
+    }
+});

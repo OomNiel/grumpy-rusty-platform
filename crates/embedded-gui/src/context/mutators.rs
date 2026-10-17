@@ -10,7 +10,10 @@ use crate::{
         EventContext, EventPhase, EventPolicy, FocusGroupId, PropertyKey, PropertyValue,
         WidgetFlags, WidgetId,
     },
-    widgets::{KeyboardLayout, SurfaceState, WidgetKind, WidgetNode, TEXTAREA_CAPACITY},
+    widgets::{
+        ClockWidget, KeyboardLayout, KeypadMode, SurfaceState, WidgetKind, WidgetNode,
+        TEXTAREA_CAPACITY,
+    },
 };
 use embedded_graphics_core::pixelcolor::Rgb565;
 
@@ -649,6 +652,7 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
                 value: ref mut v,
                 min,
                 max,
+                ..
             } => {
                 let mut state = SliderState::new(*v, min, max);
                 state.set_value(value);
@@ -666,6 +670,156 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
             WidgetKind::Slider { value, .. } => Some(value),
             _ => None,
         }
+    }
+
+    /// The time a clock face shows, `(hour, minute, second)`.
+    #[cfg(feature = "rich-widgets")]
+    pub fn clock_time(&self, id: WidgetId) -> Option<(u8, u8, u8)> {
+        match self.node(id)?.kind {
+            WidgetKind::Clock(clock) => Some((clock.hour, clock.minute, clock.second)),
+            _ => None,
+        }
+    }
+
+    /// Sets the time a clock face shows, clamping each field and repainting only the hands.
+    ///
+    /// Not the clock's cell: a face of sixty ticks and twelve numerals is most of the work of
+    /// drawing it, and none of it changes when a second passes. The damage is the union of the
+    /// hands *before* and *after* the change ([`ClockWidget::hands_rect`]), so the old second hand
+    /// is erased, the new one drawn, and the rim -- ticks, numerals, frame -- is not touched at all.
+    /// Reported 2026-10-17: "the complete clock widget is redrawn at 1 sec intervals. Only the
+    /// hands should be redrawn as and when needed."
+    #[cfg(feature = "rich-widgets")]
+    pub fn set_clock_time(
+        &mut self,
+        id: WidgetId,
+        hour: u8,
+        minute: u8,
+        second: u8,
+    ) -> Result<(), GuiError> {
+        let rect = self.absolute_rect(id).ok_or(GuiError::NotFound)?;
+        let node = self.node_mut(id).ok_or(GuiError::NotFound)?;
+        // The geometry is the renderer's, and the block's measured before the time moves.
+        let style = node.style.resolve(crate::style::VisualState::Normal);
+        match node.kind {
+            WidgetKind::Clock(ref mut clock) => {
+                let next = clock.with_time(hour, minute, second);
+                if next != *clock {
+                    // Only the hands that moved: the hour hand once a minute, the minute hand twice,
+                    // the second hand every second. See `ClockWidget::hand_damage_rect`.
+                    let moved = clock.hand_damage_rect(&next, rect, style);
+                    *clock = next;
+                    if let Some(moved) = moved {
+                        self.dirty.add(moved)?;
+                    }
+                }
+                Ok(())
+            }
+            _ => Err(GuiError::NotFound),
+        }
+    }
+
+    /// The line a keypad is holding, for an app that reads it as it is typed.
+    #[cfg(feature = "rich-widgets")]
+    pub fn keypad_text(&self, id: WidgetId) -> Option<&str> {
+        match self.node(id)?.kind {
+            WidgetKind::Keypad(ref pad) => Some(pad.text()),
+            _ => None,
+        }
+    }
+
+    /// The line the last Enter submitted.
+    ///
+    /// The handler is called with this rather than with the live line, because submitting clears
+    /// the line: by the time a handler runs, what was typed only exists here.
+    #[cfg(feature = "rich-widgets")]
+    pub fn keypad_submitted(&self, id: WidgetId) -> Option<&str> {
+        match self.node(id)?.kind {
+            WidgetKind::Keypad(ref pad) => Some(pad.submitted()),
+            _ => None,
+        }
+    }
+
+    /// The mode a keypad is in.
+    #[cfg(feature = "rich-widgets")]
+    pub fn keypad_mode(&self, id: WidgetId) -> Option<KeypadMode> {
+        match self.node(id)?.kind {
+            WidgetKind::Keypad(ref pad) => Some(pad.mode),
+            _ => None,
+        }
+    }
+
+    /// Whether a keypad is typing upper case.
+    #[cfg(feature = "rich-widgets")]
+    pub fn keypad_shift(&self, id: WidgetId) -> Option<bool> {
+        match self.node(id)?.kind {
+            WidgetKind::Keypad(ref pad) => Some(pad.shift),
+            _ => None,
+        }
+    }
+
+    /// Replaces a keypad's line, which is how an app puts a value in for the user to edit.
+    #[cfg(feature = "rich-widgets")]
+    pub fn set_keypad_text(&mut self, id: WidgetId, text: &str) -> Result<(), GuiError> {
+        let rect = self.absolute_rect(id).ok_or(GuiError::NotFound)?;
+        let node = self.node_mut(id).ok_or(GuiError::NotFound)?;
+        let font = node.style.resolve(crate::style::VisualState::Normal).font;
+        match node.kind {
+            WidgetKind::Keypad(ref mut pad) => {
+                pad.set_text(text);
+                // Only the line changed, so only the entry box has to be repainted.
+                let entry = pad.entry_rect(rect, font);
+                self.dirty.add(entry)?;
+                Ok(())
+            }
+            _ => Err(GuiError::NotFound),
+        }
+    }
+
+    /// Sets a keypad's mode, which changes the whole key grid: the face is damaged as a whole.
+    #[cfg(feature = "rich-widgets")]
+    pub fn set_keypad_mode(&mut self, id: WidgetId, mode: KeypadMode) -> Result<(), GuiError> {
+        let rect = self.absolute_rect(id).ok_or(GuiError::NotFound)?;
+        let node = self.node_mut(id).ok_or(GuiError::NotFound)?;
+        match node.kind {
+            WidgetKind::Keypad(ref mut pad) => {
+                if pad.mode != mode {
+                    pad.mode = mode;
+                    pad.pressed = -1;
+                    self.dirty.add(rect)?;
+                }
+                Ok(())
+            }
+            _ => Err(GuiError::NotFound),
+        }
+    }
+
+    /// Turns Shift on or off; every letter legend changes, so the grid is damaged as a whole.
+    #[cfg(feature = "rich-widgets")]
+    pub fn set_keypad_shift(&mut self, id: WidgetId, shift: bool) -> Result<(), GuiError> {
+        let rect = self.absolute_rect(id).ok_or(GuiError::NotFound)?;
+        let node = self.node_mut(id).ok_or(GuiError::NotFound)?;
+        match node.kind {
+            WidgetKind::Keypad(ref mut pad) => {
+                if pad.shift != shift {
+                    pad.shift = shift;
+                    self.dirty.add(rect)?;
+                }
+                Ok(())
+            }
+            _ => Err(GuiError::NotFound),
+        }
+    }
+
+    /// Moves a clock on by one second, carrying into the minutes and hours and wrapping at midnight.
+    ///
+    /// This is what an attached movement calls: the widget is the movement's memory, so an app that
+    /// missed a frame can call it once per elapsed second and the time stays right.
+    #[cfg(feature = "rich-widgets")]
+    pub fn advance_clock(&mut self, id: WidgetId) -> Result<(), GuiError> {
+        let (hour, minute, second) = self.clock_time(id).ok_or(GuiError::NotFound)?;
+        let (hour, minute, second) = ClockWidget::next_second(hour, minute, second);
+        self.set_clock_time(id, hour, minute, second)
     }
 
     #[cfg(feature = "rich-widgets")]

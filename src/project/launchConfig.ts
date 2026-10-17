@@ -454,7 +454,7 @@ export function validateLaunchConfiguration(
     if (requestSchema === undefined) {
         return [
             `"${name}": the installed debugger has no "${request}" request ` +
-                `(it declares ${Object.keys(schema.requests).join(', ')})`,
+            `(it declares ${Object.keys(schema.requests).join(', ')})`,
         ];
     }
     return validateAgainstProperties(configuration, requestSchema, `"${name}"`, 0, true);
@@ -483,9 +483,9 @@ function validateAgainstProperties(
             const suggestion = closestSchemaKey(key, declared);
             problems.push(
                 `${label} → "${key}": the installed debugger does not know this key` +
-                    (suggestion === undefined
-                        ? ', so it is ignored'
-                        : ` -- did you mean "${suggestion}"? This one is ignored.`),
+                (suggestion === undefined
+                    ? ', so it is ignored'
+                    : ` -- did you mean "${suggestion}"? This one is ignored.`),
             );
             continue;
         }

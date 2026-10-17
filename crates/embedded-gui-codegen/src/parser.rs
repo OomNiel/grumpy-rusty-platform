@@ -508,16 +508,69 @@ pub fn parse_widget(node: &KdlNode) -> Result<(GridPlacementDef, WidgetDef), Cod
                 style,
             }
         }
+        "keypad" => {
+            // A hand-written file may leave the mode out: a keypad that types letters is what a
+            // design wants by default, and every other mode is one key press away at run time.
+            let mode = get_string_prop(node, "mode")
+                .map(str::to_ascii_lowercase)
+                .filter(|mode| matches!(mode.as_str(), "text" | "numeric" | "symbol"))
+                .unwrap_or_else(|| "text".to_string());
+            let shift = get_bool_prop(node, "shift").unwrap_or(false);
+            WidgetDef::Keypad {
+                id,
+                mode,
+                shift,
+                text_color: get_string_prop(node, "text_color").map(str::to_string),
+                key_color: get_string_prop(node, "key_color").map(str::to_string),
+                legend_color: get_string_prop(node, "legend_color").map(str::to_string),
+                pressed_key_color: get_string_prop(node, "pressed_key_color").map(str::to_string),
+                accent_color: get_string_prop(node, "accent_color").map(str::to_string),
+                entry_face: get_string_prop(node, "entry_face").map(str::to_string),
+                entry_border: get_string_prop(node, "entry_border").map(str::to_string),
+                style,
+            }
+        }
+        "clock" => {
+            // A hand-written file may leave the time out; a served clock face reads best at ten
+            // past ten, which is why that is the fallback rather than midnight.
+            let hour = get_i64_prop(node, "hour").unwrap_or(10).clamp(0, 23) as u8;
+            let minute = get_i64_prop(node, "minute").unwrap_or(10).clamp(0, 59) as u8;
+            let second = get_i64_prop(node, "second").unwrap_or(0).clamp(0, 59) as u8;
+            let label_scale = get_i64_prop(node, "label_scale")
+                .unwrap_or(1)
+                .clamp(1, 4) as u8;
+            let show_labels = get_bool_prop(node, "show_labels").unwrap_or(true);
+            WidgetDef::Clock {
+                id,
+                hour,
+                minute,
+                second,
+                hour_color: get_string_prop(node, "hour_color").map(str::to_string),
+                minute_color: get_string_prop(node, "minute_color").map(str::to_string),
+                second_color: get_string_prop(node, "second_color").map(str::to_string),
+                hour_tick_color: get_string_prop(node, "hour_tick_color").map(str::to_string),
+                minute_tick_color: get_string_prop(node, "minute_tick_color").map(str::to_string),
+                label_color: get_string_prop(node, "label_color").map(str::to_string),
+                label_scale,
+                show_labels,
+                style,
+            }
+        }
         "slider" => {
             let min = get_f64_prop(node, "min").unwrap_or(0.0) as f32;
             let max = get_f64_prop(node, "max").unwrap_or(100.0) as f32;
             let value = get_f64_prop(node, "value").unwrap_or(0.0) as f32;
+            // Pixels, and clamped to what a widget can hold: a negative or absurd width is a design mistake,
+            // not something the renderer should have to guard against.
+            let knob_width = get_i64_prop(node, "knob_width")
+                .map(|w| w.clamp(0, 1024) as u32);
             WidgetDef::Slider {
                 id,
                 min,
                 max,
                 value,
                 style,
+                knob_width,
             }
         }
         "dropdown" => {
@@ -532,11 +585,15 @@ pub fn parse_widget(node: &KdlNode) -> Result<(GridPlacementDef, WidgetDef), Cod
                 }
             }
             let selected = get_i64_prop(node, "selected").unwrap_or(0).max(0) as usize;
+            // Read as a string and translated at emission, so a typo reaches a clear message rather than
+            // silently becoming the default.
+            let align = get_string_prop(node, "align").map(|value| value.to_string());
             WidgetDef::Dropdown {
                 id,
                 options,
                 selected,
                 style,
+                align,
             }
         }
         "roller" => {

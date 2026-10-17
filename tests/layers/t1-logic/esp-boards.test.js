@@ -837,20 +837,33 @@ test('a calibration measured in one orientation is not used in another', () => {
     contains(main, 'let width_i: i32 = if rotated { height as i32 } else { width as i32 };');
 });
 
-test('a calibrated panel can be recalibrated from the firmware', () => {
+test('a calibrated panel is recalibrated by a deliberate corner hold, never by an ordinary touch', () => {
     // The record could only ever be replaced by completing a fresh calibration, never discarded, so a panel
     // calibrated for the wrong orientation (or with a drifted mapping) had no way back to the corner screen.
-    // A touch in the first couple of seconds now means "recalibrate".
+    // That gesture used to be "touch the glass within two seconds of a reset", which caught the ordinary
+    // touch of someone testing a slider just after a flash. Reported 2026-10-17: "when I try to drag the
+    // slider, or when long touching the screen, the screen calibration routine fires". It is now a finger
+    // held still in the top-left corner, which a drag, a tap or a long press elsewhere cannot be.
     const main = filesFor(espBoard('sunton-3248s035r'), 'touch').get('src/main.rs');
-    contains(main, 'const RECALIBRATE_TICKS: u32 = 100;', 'the window is about two seconds of 20 ms ticks');
-    contains(main, 'if state.calibrated && state.ticks < RECALIBRATE_TICKS {');
-    contains(main, 'discarded by a touch in the first');
-    // The triggering touch must be consumed by the gesture rather than recorded as a corner.
-    contains(main, '} else if !state.calibrated {');
+    contains(main, 'const RECALIBRATE_CORNER: i32 = 48;', 'the corner square, in content pixels');
+    contains(main, 'const RECALIBRATE_HOLD_SAMPLES: u32 = 33;', 'held for about two seconds of samples');
+    contains(main, 'const RECALIBRATE_SLOP: i32 = 300;', 'and still, not sliding');
+    // The gesture starts on a press edge that lands in the corner and is counted only while still.
+    contains(main, '} else if state.pressed && state.hold_samples > 0 {');
+    contains(main, 'corner_x < RECALIBRATE_CORNER');
+    contains(main, 'if state.hold_samples >= RECALIBRATE_HOLD_SAMPLES {');
+    contains(main, 'discarded by a finger held in the corner');
+    // The triggering finger is consumed by the gesture rather than recorded as a corner.
     contains(main, 'corner = 0;');
     contains(main, 'redraw_screen = true;');
+    // A press that starts anywhere else, or a finger that moves, clears the count -- that is what keeps a
+    // slider drag from recalibrating the panel.
+    contains(main, '} else if !state.pressed {');
+    contains(main, 'state.hold_samples = 0;');
+    // No boot window survives: the old rule was the bug.
+    notContains(main, 'RECALIBRATE_TICKS');
     // And the README has to tell the reader, since it is the only way to recalibrate by hand.
-    contains(filesFor(espBoard('sunton-3248s035r'), 'touch').get('README.md'), 'first two seconds');
+    contains(filesFor(espBoard('sunton-3248s035r'), 'touch').get('README.md'), 'top-left corner');
 });
 
 test('a Designer project does not paint the diagnostic readout over the design', () => {

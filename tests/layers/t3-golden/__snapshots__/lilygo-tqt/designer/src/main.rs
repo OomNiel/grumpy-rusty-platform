@@ -34,6 +34,12 @@ pub struct State {
     /// The backlight pin, held on. Nothing reads it: it is here so that it is not dropped with the rest of `setup()`’s locals, which would leave the panel lit but the glass dark.
     #[allow(dead_code)]
     backlight: Output<'static>,
+
+    /// The design. On a panel with no touchscreen this loop is the only thing that asks it whether anything changed.
+    screen: ui::Designer,
+
+    /// Poll counter. The heartbeat is one line every hundred passes, not one per poll.
+    alive: u32,
 }
 
 /// One-time initialisation -- the Arduino setup().
@@ -132,7 +138,7 @@ pub async fn setup() -> State {
     } else {
         (width as u32, height as u32)
     };
-    let mut screen = ui::Designer::new(width_i, height_i);
+    let screen = ui::Designer::new(width_i, height_i);
     display.clear(Rgb565::BLACK).expect("panel write failed");
     // Timed, like the diagnostics screen and for the same reason: the number is what turns "the panel is
     // slow" into something a change can be compared against. The shapes draw in rows -- one canvas call
@@ -145,9 +151,14 @@ pub async fn setup() -> State {
         height_i,
         drawn_at.elapsed().as_millis()
     );
+
+    // Counts passes, so the heartbeat below is one line every ten seconds rather than one per poll.
+    let alive: u32 = 0;
     State {
         display,
         backlight,
+        screen,
+        alive,
     }
 }
 
@@ -157,11 +168,21 @@ pub async fn setup() -> State {
 /// function to edit: everything it needs from setup() is in state.
 #[esp_rtos::main]
 async fn main(_spawner: Spawner) -> ! {
-    let _state = setup().await;
+    let mut state = setup().await;
 
     loop {
-        log::info!("design alive");
-        Timer::after(Duration::from_secs(10)).await;
+        // Asked every pass, for the same reason as the touch body: a design that changes on its own --
+        // a clock with its movement attached -- has no finger to make it repaint.
+        if state.screen.is_dirty() {
+            state.screen.render(&mut state.display).expect("the design did not render");
+        }
+        state.alive += 1;
+        if state.alive % 100 == 0 {
+            log::info!("design alive");
+        }
+        // 100 ms: often enough for a clock to be a second-keeping clock, cheap enough that the dirty
+        // check is the only work most passes do.
+        Timer::after(Duration::from_millis(100)).await;
     }
 }
 // --- Your own code goes below this line ---------------------------------------------------------

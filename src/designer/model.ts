@@ -274,6 +274,11 @@ export function placeWidget(
     y: number,
     canvas: { width: number; height: number },
 ): { x: number; y: number; width: number; height: number } {
+    // A keypad is not dragged into place: it fills the bottom of the panel -- a third of it in
+    // portrait, half in landscape -- so where it was dropped does not matter.
+    if (tag === 'keypad') {
+        return keypadBox(canvas);
+    }
     const spec = widgetSpec(tag);
     const width = Math.max(1, Math.min(spec?.defaultSize.width ?? 48, canvas.width));
     const height = Math.max(1, Math.min(spec?.defaultSize.height ?? 48, canvas.height));
@@ -283,6 +288,60 @@ export function placeWidget(
         width,
         height,
     };
+}
+
+/**
+ * The box a keypad is pinned to: the bottom third of a portrait panel, the bottom half of a
+ * landscape one, always the full width.
+ *
+ * The fraction is decided by the *panel*, not by the keypad's own box: a box that spans the panel is
+ * wide in both orientations, so its own aspect cannot tell the two apart. That is also why the box
+ * is the designer's to set rather than the widget's to measure -- the layout the firmware runs puts
+ * the node where this says, and the keypad fills whatever rect it is given.
+ */
+export function keypadBox(canvas: { width: number; height: number }): {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+} {
+    const portrait = canvas.height > canvas.width;
+    const height = Math.max(1, Math.min(Math.round(canvas.height * (portrait ? 0.33 : 0.5)), canvas.height));
+    return { x: 0, y: Math.max(0, canvas.height - height), width: canvas.width, height };
+}
+
+/**
+ * Puts every keypad back on its box.
+ *
+ * A rotation changes the panel's shape, and a keypad drawn for a landscape panel is stretched over a
+ * portrait one -- so the box is re-solved rather than carried over. Everything else is left exactly
+ * as it is.
+ */
+export function pinKeypads(
+    document: DesignerDocument,
+    canvas: { width: number; height: number },
+): DesignerDocument {
+    if (!document.widgets.some((widget) => widget.tag === 'keypad')) {
+        return document;
+    }
+    const box = keypadBox(canvas);
+    let changed = false;
+    const widgets = document.widgets.map((widget) => {
+        if (widget.tag !== 'keypad') {
+            return widget;
+        }
+        if (
+            widget.x === box.x &&
+            widget.y === box.y &&
+            widget.width === box.width &&
+            widget.height === box.height
+        ) {
+            return widget;
+        }
+        changed = true;
+        return { ...widget, ...box };
+    });
+    return changed ? { ...document, widgets } : document;
 }
 
 /**

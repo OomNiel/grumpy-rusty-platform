@@ -25,6 +25,8 @@ pub mod action_menu;
 pub mod bandmeter;
 pub mod basic;
 pub mod cinematic;
+pub mod clock;
+pub mod keypad;
 pub mod compass;
 pub mod controls;
 pub mod data;
@@ -56,6 +58,8 @@ pub use action_menu::{ActionMenuError, ActionMenuItem, ActionMenuWidget};
 pub use bandmeter::{BandMeterWidget, MeterOrientation};
 pub use basic::{ButtonWidget, LabelWidget, PanelWidget, SpacerWidget};
 pub use cinematic::GlanceTileWidget;
+pub use clock::ClockWidget;
+pub use keypad::{KeypadKey, KeypadMode, KeypadWidget, KEYPAD_CAPACITY};
 pub use compass::{CompassMode, CompassWidget};
 pub use controls::{
     CheckboxLabelPosition, CheckboxWidget, RollerSelection, SliderWidget, ToggleWidget,
@@ -292,7 +296,23 @@ pub enum WidgetKind<'a> {
         value: f32,
         min: f32,
         max: f32,
+        /// The grip's width in pixels. Its *height* is always the block's inner height, so the grip fills the
+        /// space between the top and bottom borders instead of being the fixed 3x5 block upstream drew.
+        /// `0` reads as this fork's default of eight pixels, which is what a design that names no width gets.
+        knob_w: u32,
     },
+    /// A clock face: hour and minute ticks, hour numerals and three hands.
+    ///
+    /// The widget is a value, not a running clock: the application sets `hour`/`minute`/`second` when it
+    /// ticks, exactly as it would set a slider's value.
+    #[cfg(feature = "rich-widgets")]
+    Clock(clock::ClockWidget),
+    /// A touch keypad: a one-line entry box and the key grid beneath it.
+    ///
+    /// The whole keypad is one widget, so its modes, Shift and the line being typed live in one
+    /// place -- an Enter is a single event rather than twenty buttons to wire together.
+    #[cfg(feature = "rich-widgets")]
+    Keypad(keypad::KeypadWidget),
     #[cfg(feature = "rich-widgets")]
     ValueLabel {
         label: &'a str,
@@ -453,6 +473,9 @@ pub enum WidgetKind<'a> {
         items: &'a [&'a str],
         selected: usize,
         open: bool,
+        /// Where the selected item -- and the rows of the popup -- are drawn horizontally. Upstream always
+        /// left-aligned them; a design can now ask for middle or right.
+        align: TextAlign,
     },
     #[cfg(feature = "rich-widgets")]
     Roller {
@@ -664,6 +687,7 @@ impl WidgetKind<'_> {
                 | Self::Roller { .. }
                 | Self::TextArea { .. }
                 | Self::Keyboard { .. }
+                | Self::Keypad(_)
                 | Self::Menu { .. }
                 | Self::RichMenu { .. }
                 | Self::FeedTimeline { .. }
@@ -830,7 +854,9 @@ impl<'a> WidgetNode<'a> {
             #[cfg(feature = "rich-widgets")]
             (
                 PropertyKey::Value,
-                WidgetKind::Slider { value, min, max },
+                WidgetKind::Slider {
+                    value, min, max, ..
+                },
                 PropertyValue::Float(v),
             ) => {
                 *value = v.clamp(*min, *max);
@@ -1115,9 +1141,16 @@ impl<'a> WidgetNode<'a> {
                 state,
             ),
             #[cfg(feature = "rich-widgets")]
-            WidgetKind::Slider { value, min, max } => {
-                render_slider(ctx, rect, value, min, max, self.style, state)
-            }
+            WidgetKind::Slider {
+                value,
+                min,
+                max,
+                knob_w,
+            } => render_slider(ctx, rect, value, min, max, knob_w, self.style, state),
+            #[cfg(feature = "rich-widgets")]
+            WidgetKind::Clock(clock) => clock.render(ctx, rect, self.style, state),
+            #[cfg(feature = "rich-widgets")]
+            WidgetKind::Keypad(pad) => pad.render(ctx, rect, self.style, state),
             #[cfg(feature = "rich-widgets")]
             WidgetKind::ValueLabel { label, value } => {
                 render_value_label(ctx, rect, label, value, self.style, state)
@@ -1327,7 +1360,8 @@ impl<'a> WidgetNode<'a> {
                 items,
                 selected,
                 open,
-            } => render_dropdown(ctx, rect, items, selected, open, self.style, state),
+                align,
+            } => render_dropdown(ctx, rect, items, selected, open, align, self.style, state),
             #[cfg(feature = "rich-widgets")]
             WidgetKind::Roller {
                 items, selected, ..
@@ -2013,6 +2047,46 @@ where
     )
 }
 
+/// Where a slider's grip can travel, and how wide it is.
+///
+/// Both halves are shared with the touch path ([`slider_value_at_x`]), so the pixel a finger
+/// presses is the pixel the grip is drawn at: one geometry, two callers.
+#[cfg(feature = "rich-widgets")]
+pub(crate) fn slider_geometry(rect: Rect, style: Style, knob_w: u32) -> (Rect, u32) {
+    let inner = Block::styled(style).inner(rect);
+    // The grip fills the block's inner height -- the space between the top and bottom borders -- and
+    // travels across `inner.w - knob_w`, so at either end it sits flush with the block's inner edge
+    // rather than hanging over it. `0` keeps the default width of eight pixels, and a width wider
+    // than the widget is clamped so a design cannot draw outside its own cell.
+    let knob_w = if knob_w == 0 { 8 } else { knob_w };
+    (inner, knob_w.clamp(1, inner.w.max(1)))
+}
+
+/// The value a finger at `x` is asking a slider for.
+///
+/// The grip is centred on the finger, which is what makes a drag feel attached to it rather than
+/// offset by half a grip: the left edge is `x - knob_w / 2`, clamped to the travel the grip has,
+/// and the fraction across that travel is the fraction across the range.
+#[cfg(feature = "rich-widgets")]
+pub fn slider_value_at_x(
+    rect: Rect,
+    style: Style,
+    min: f32,
+    max: f32,
+    knob_w: u32,
+    x: i32,
+) -> f32 {
+    let (inner, knob_w) = slider_geometry(rect, style, knob_w);
+    let travel = inner.w.saturating_sub(knob_w);
+    if travel == 0 {
+        // A grip as wide as its track cannot move, so anywhere on it is the whole range.
+        return min;
+    }
+    let left = x - inner.x - knob_w as i32 / 2;
+    let t = (left as f32 / travel as f32).clamp(0.0, 1.0);
+    min + (max - min) * t
+}
+
 #[cfg(feature = "rich-widgets")]
 fn render_slider<D, C>(
     ctx: &mut RenderCtx<'_, D, C>,
@@ -2020,6 +2094,7 @@ fn render_slider<D, C>(
     value: f32,
     min: f32,
     max: f32,
+    knob_w: u32,
     style: WidgetStyle,
     state: VisualState,
 ) -> Result<(), D::Error>
@@ -2030,13 +2105,16 @@ where
     let style = style.resolve(state);
     let block = Block::styled(style);
     block.render(rect, ctx)?;
-    let inner = block.inner(rect);
+    let (inner, knob_w) = slider_geometry(rect, style, knob_w);
     let range = (max - min).max(f32::EPSILON);
     let t = ((value - min) / range).clamp(0.0, 1.0);
     let track_y = inner.y + inner.h as i32 / 2;
     ctx.fill_rect(Rect::new(inner.x, track_y, inner.w, 1), style.text)?;
-    let knob_x = inner.x + ((inner.w.saturating_sub(3) as f32 * t) as i32);
-    ctx.fill_rect(Rect::new(knob_x, track_y - 2, 3, 5), style.accent)
+    if inner.h == 0 {
+        return Ok(());
+    }
+    let knob_x = inner.x + ((inner.w.saturating_sub(knob_w) as f32 * t) as i32);
+    ctx.fill_rect(Rect::new(knob_x, inner.y, knob_w, inner.h), style.accent)
 }
 
 fn render_dial<D, C>(
@@ -3141,6 +3219,7 @@ fn render_dropdown<D, C>(
     items: &[&str],
     selected: usize,
     open: bool,
+    align: TextAlign,
     style: WidgetStyle,
     state: VisualState,
 ) -> Result<(), D::Error>
@@ -3156,7 +3235,9 @@ where
     ctx.draw_text_in(
         Rect::new(inner.x, inner.y, inner.w.saturating_sub(8), inner.h),
         text,
-        TextStyle::new(style.text).with_font(style.font),
+        TextStyle::new(style.text)
+            .with_font(style.font)
+            .with_align(align),
     )?;
     ctx.draw_text_in(
         Rect::new(inner.right() - 7, inner.y, 7, inner.h),
@@ -3190,7 +3271,9 @@ where
             ctx.draw_text_in(
                 row.inset(EdgeInsets::all(1)),
                 item,
-                TextStyle::new(style.text).with_font(style.font),
+                TextStyle::new(style.text)
+                    .with_font(style.font)
+                    .with_align(align),
             )?;
         }
     }
@@ -4519,6 +4602,7 @@ mod tests {
             value: 5.0,
             min: 0.0,
             max: 10.0,
+            knob_w: 3,
         });
         assert_eq!(
             slider.get_property(PropertyKey::Min),
@@ -4646,6 +4730,50 @@ mod tests {
         let spec = CarouselSpec::new(12, 4);
         assert_eq!(spec.item_step, 12);
         assert_eq!(spec.visible_slots, 4);
+    }
+
+    /// The grip the renderer draws and the pixel a finger presses are the same geometry.
+    ///
+    /// Drawn first, then read back: the middle of the accent block is fed through the touch path
+    /// and has to give the value the block was drawn for. A drift between the two -- the grip
+    /// travelling `inner.w - knob_w` while the finger is mapped across `inner.w` -- is exactly the
+    /// kind of bug that makes a slider feel "off by an inch" on a panel.
+    #[cfg(feature = "rich-widgets")]
+    #[test]
+    fn a_sliders_grip_and_its_finger_share_one_geometry() {
+        use crate::context::GuiContext;
+        use crate::test_buffer::TestBuffer;
+
+        let rect = Rect::new(10, 10, 200, 24);
+        let style = Style::panel();
+        let mut ctx: GuiContext<16, 8, 8> = GuiContext::new(Rect::new(0, 0, 240, 60));
+        let _ = ctx
+            .add_slider_sized(rect, 25.0, 0.0, 100.0, 12, style)
+            .unwrap();
+        let mut buffer = TestBuffer::new(240, 60);
+        ctx.render(&mut buffer).unwrap();
+
+        // The accent block is the grip, and `Style::panel()`'s accent is the only accent on the
+        // panel -- the track is `text` and the face is a gradient.
+        let (inner, knob_w) = slider_geometry(rect, style, 12);
+        let mut left = None;
+        let mut right = None;
+        let y = inner.y + inner.h as i32 / 2;
+        for x in 0..240i32 {
+            if buffer.pixel_at(x, y) == Some(style.accent) {
+                left.get_or_insert(x);
+                right = Some(x);
+            }
+        }
+        let (left, right) = (left.expect("the grip was drawn"), right.unwrap());
+        assert_eq!(right - left + 1, knob_w as i32, "the grip is as wide as it was asked to be");
+
+        let centre = (left + right) / 2;
+        let asked = slider_value_at_x(rect, style, 0.0, 100.0, 12, centre);
+        assert!(
+            (asked - 25.0).abs() < 1.5,
+            "the middle of the drawn grip asks for 25, got {asked}"
+        );
     }
 
     #[test]

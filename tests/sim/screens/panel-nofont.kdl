@@ -33,7 +33,7 @@ screen id="SimPanel" width=480 height=320 theme="dark" {
             option "Three"
         }
         scale id="gauge" mode="radial" min=0 max=10 value=7 major_ticks=3 minor_ticks=2 start_angle=180 end_angle=0 show_labels=true show_needle=true tick_color="#00ffff" needle_color="#ff00ff" col=20 row=11 col_span=4 row_span=14
-        slider id="sld" min=0 max=10 value=5 col=5 row=11 col_span=4 row_span=1
+        slider id="sld" min=0 max=10 value=5 knob_width=8 col=5 row=11 col_span=4 row_span=1
         arc id="arc" progress=0.7 clockwise=false arc_radius=0 frame_inset=3 corner_radius=0 bg_color="#220044" arc_color="#ff8800" frame_color="#00ffff" col=5 row=13 col_span=4 row_span=4
         busy_wheel id="whl" phase=0.25 col=5 row=18 col_span=2 row_span=5
         content_indicator id="ind" count=4 active=2 col=5 row=24 col_span=3 row_span=5

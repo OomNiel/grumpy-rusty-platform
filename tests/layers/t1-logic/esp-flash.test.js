@@ -16,6 +16,7 @@ const {
     espMonitorArgs,
     espFlashCommand,
     espMonitorCommand,
+    clockHandoverLine,
     espFlashAndMonitorCommand,
     isEspProgrammerName,
     serialPortCandidates,
@@ -194,4 +195,34 @@ test('flashing and monitoring chain in a way the shell accepts', () => {
     notContains(windows, '&&', 'Windows PowerShell 5.1 rejects && outright');
     contains(windows, '; if ($LASTEXITCODE -eq 0) { espflash monitor', 'the monitor runs only after a good flash');
     contains(windows, '}', 'and the block is closed');
+});
+
+test('the PC clock is handed over the console once the write finishes', () => {
+    // An ESP32's internal RTC has no battery: the extension sends `TIME HH:MM:SS` (local, no zone)
+    // after espflash exits, and the firmware's console reader takes the design's clock from it. The
+    // write belongs *between* the flash and the monitor, because the monitor holds the port.
+    equal(clockHandoverLine(new Date(2026, 9, 17, 14, 5, 9)), 'TIME 14:05:09');
+    equal(clockHandoverLine(new Date(2026, 9, 17, 0, 0, 0)), 'TIME 00:00:00');
+
+    const handover = { port: '/dev/ttyUSB0', line: 'TIME 14:05:09' };
+    const flash = espFlashCommand('espflash', 'esp32', 'app', '/dev/ttyUSB0', handover, 'linux');
+    contains(flash, 'TIME 14:05:09', 'the line is written');
+    contains(flash, '> /dev/ttyUSB0', 'to the board\'s port');
+    ok(flash.indexOf('espflash flash') < flash.indexOf('TIME 14:05:09'), 'after the write');
+
+    // Flash and monitor: the hand-over sits between them, and the monitor is last.
+    const both = espFlashAndMonitorCommand('espflash', 'esp32', 'app', '/dev/ttyUSB0', 'linux', handover);
+    ok(both.indexOf('TIME 14:05:09') < both.indexOf('espflash monitor'), 'before the monitor takes the port');
+
+    // Windows has no `&&` in PowerShell 5.1: the same intent, written the way it accepts.
+    const windows = espFlashAndMonitorCommand('espflash', 'esp32', 'app', 'COM5', 'win32', handover);
+    contains(windows, 'System.IO.Ports.SerialPort', 'PowerShell opens the port');
+    ok(windows.indexOf('TIME 14:05:09') < windows.indexOf('espflash monitor'));
+
+    // Without a port there is nothing to write to, and the commands are exactly what they were.
+    equal(
+        espFlashCommand('espflash', 'esp32', 'app', undefined, undefined),
+        'espflash flash --chip esp32 "app"',
+        'no hand-over, no change',
+    );
 });

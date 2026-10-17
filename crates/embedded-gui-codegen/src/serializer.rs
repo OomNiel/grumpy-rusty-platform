@@ -285,11 +285,17 @@ pub fn serialize_kdl_screen(screen: &ScreenDef) -> String {
                     p.row
                 );
             }
-            WidgetDef::Slider {
+            WidgetDef::Keypad {
                 id,
-                min,
-                max,
-                value,
+                mode,
+                shift,
+                text_color,
+                key_color,
+                legend_color,
+                pressed_key_color,
+                accent_color,
+                entry_face,
+                entry_border,
                 style,
             } => {
                 let id_attr = id
@@ -300,10 +306,103 @@ pub fn serialize_kdl_screen(screen: &ScreenDef) -> String {
                     .as_ref()
                     .map(|s| format!(" style=\"{}\"", s))
                     .unwrap_or_default();
+                let colour = |value: &Option<String>, name: &str| {
+                    value
+                        .as_ref()
+                        .map(|c| format!(" {}=\"{}\"", name, c))
+                        .unwrap_or_default()
+                };
                 let _ = writeln!(
                     &mut out,
-                    "        slider{} min={} max={} value={}{}{} col={} row={}",
-                    id_attr, min, max, value, style_attr, span_attrs, p.col, p.row
+                    "        keypad{} mode=\"{}\" shift={}{}{}{}{}{}{}{}{}{} col={} row={}",
+                    id_attr,
+                    mode,
+                    shift,
+                    colour(text_color, "text_color"),
+                    colour(key_color, "key_color"),
+                    colour(legend_color, "legend_color"),
+                    colour(pressed_key_color, "pressed_key_color"),
+                    colour(accent_color, "accent_color"),
+                    colour(entry_face, "entry_face"),
+                    colour(entry_border, "entry_border"),
+                    style_attr,
+                    "",
+                    p.col,
+                    p.row
+                );
+            }
+            WidgetDef::Clock {
+                id,
+                hour,
+                minute,
+                second,
+                hour_color,
+                minute_color,
+                second_color,
+                hour_tick_color,
+                minute_tick_color,
+                label_color,
+                label_scale,
+                show_labels,
+                style,
+            } => {
+                let id_attr = id
+                    .as_ref()
+                    .map(|s| format!(" id=\"{}\"", s))
+                    .unwrap_or_default();
+                let style_attr = style
+                    .as_ref()
+                    .map(|s| format!(" style=\"{}\"", s))
+                    .unwrap_or_default();
+                let colour = |value: &Option<String>, name: &str| {
+                    value
+                        .as_ref()
+                        .map(|c| format!(" {}=\"{}\"", name, c))
+                        .unwrap_or_default()
+                };
+                let _ = writeln!(
+                    &mut out,
+                    "        clock{} hour={} minute={} second={}{}{}{}{}{}{} label_scale={} show_labels={}{} col={} row={}",
+                    id_attr,
+                    hour,
+                    minute,
+                    second,
+                    colour(hour_color, "hour_color"),
+                    colour(minute_color, "minute_color"),
+                    colour(second_color, "second_color"),
+                    colour(hour_tick_color, "hour_tick_color"),
+                    colour(minute_tick_color, "minute_tick_color"),
+                    colour(label_color, "label_color"),
+                    label_scale,
+                    show_labels,
+                    style_attr,
+                    p.col,
+                    p.row
+                );
+            }
+            WidgetDef::Slider {
+                id,
+                min,
+                max,
+                value,
+                style,
+                knob_width,
+            } => {
+                let id_attr = id
+                    .as_ref()
+                    .map(|s| format!(" id=\"{}\"", s))
+                    .unwrap_or_default();
+                let style_attr = style
+                    .as_ref()
+                    .map(|s| format!(" style=\"{}\"", s))
+                    .unwrap_or_default();
+                let knob_attr = knob_width
+                    .map(|w| format!(" knob_width={}", w))
+                    .unwrap_or_default();
+                let _ = writeln!(
+                    &mut out,
+                    "        slider{} min={} max={} value={}{}{}{} col={} row={}",
+                    id_attr, min, max, value, knob_attr, style_attr, span_attrs, p.col, p.row
                 );
             }
             WidgetDef::Dropdown {
@@ -311,6 +410,7 @@ pub fn serialize_kdl_screen(screen: &ScreenDef) -> String {
                 options,
                 selected,
                 style,
+                align,
             } => {
                 let id_attr = id
                     .as_ref()
@@ -320,10 +420,14 @@ pub fn serialize_kdl_screen(screen: &ScreenDef) -> String {
                     .as_ref()
                     .map(|s| format!(" style=\"{}\"", s))
                     .unwrap_or_default();
+                let align_attr = align
+                    .as_ref()
+                    .map(|a| format!(" align=\"{}\"", a))
+                    .unwrap_or_default();
                 let _ = writeln!(
                     &mut out,
-                    "        dropdown{} selected={}{}{} col={} row={} {{",
-                    id_attr, selected, style_attr, span_attrs, p.col, p.row
+                    "        dropdown{} selected={}{}{}{} col={} row={} {{",
+                    id_attr, selected, align_attr, style_attr, span_attrs, p.col, p.row
                 );
                 for opt in options {
                     let _ = writeln!(&mut out, "            option \"{}\"", opt);

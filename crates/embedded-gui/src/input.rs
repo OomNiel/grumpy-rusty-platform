@@ -76,6 +76,9 @@ pub enum UiEvent {
     PointerReleased(WidgetId),
     Gesture(WidgetId),
     ValueChanged(WidgetId),
+    /// A keypad's Enter: the line it submitted is held by the widget, which is what the handler is
+    /// given (`GuiContext::keypad_submitted`).
+    Submitted(WidgetId),
     TextInput {
         id: WidgetId,
         ch: char,
@@ -155,6 +158,7 @@ impl UiEvent {
             | Self::PointerReleased(id)
             | Self::Gesture(id)
             | Self::ValueChanged(id)
+            | Self::Submitted(id)
             | Self::TextInput { id, .. }
             | Self::Focused(id)
             | Self::Defocused(id)
@@ -182,7 +186,9 @@ impl UiEvent {
             Self::PointerPressed(_) | Self::PointerReleased(_) | Self::Gesture(_) => {
                 UiEventFilter::POINTER
             }
-            Self::ValueChanged(_) | Self::TextInput { .. } => UiEventFilter::VALUE,
+            Self::ValueChanged(_) | Self::Submitted(_) | Self::TextInput { .. } => {
+                UiEventFilter::VALUE
+            }
             Self::Scroll { .. } => UiEventFilter::SCROLL,
             Self::LayoutChanged(_) => UiEventFilter::LAYOUT,
             Self::StyleChanged(_) => UiEventFilter::STYLE,
@@ -704,6 +710,7 @@ mod tests {
             UiEvent::PointerReleased(id),
             UiEvent::Gesture(id),
             UiEvent::ValueChanged(id),
+            UiEvent::Submitted(id),
             UiEvent::TextInput { id, ch: 'x' },
             UiEvent::Focused(id),
             UiEvent::Defocused(id),

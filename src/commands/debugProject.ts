@@ -324,8 +324,8 @@ async function reportLaunchConfigProblems(
     if (report.replacement === undefined) {
         void vscode.window.showWarningMessage(
             `The debug configurations do not match the installed probe-rs debugger:\n\n${body}\n\n` +
-                'They were left untouched because they may be yours. Compare them with a freshly ' +
-                'generated project, or delete them and let the wizard write new ones.',
+            'They were left untouched because they may be yours. Compare them with a freshly ' +
+            'generated project, or delete them and let the wizard write new ones.',
             { modal: true },
             'OK',
         );
@@ -334,8 +334,8 @@ async function reportLaunchConfigProblems(
 
     const choice = await vscode.window.showWarningMessage(
         `The debug configurations do not match the installed probe-rs debugger:\n\n${body}\n\n` +
-            `Regenerating rewrites .vscode/launch.json from the wizard template and keeps the old ` +
-            `file as ${report.backupPath}.`,
+        `Regenerating rewrites .vscode/launch.json from the wizard template and keeps the old ` +
+        `file as ${report.backupPath}.`,
         { modal: true },
         'Regenerate',
     );

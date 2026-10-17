@@ -829,3 +829,194 @@ fn an_image_on_the_card_is_read_at_runtime_rather_than_embedded() {
     );
     assert_eq!(screen, parse_kdl_screen(&serialized).unwrap());
 }
+
+/// A slider's grip width and a dropdown's alignment, from markup to the builder call.
+///
+/// Both are opt-in: a design that names neither keeps `add_slider` (eight-pixel grip) and `add_dropdown`
+/// (left-aligned), which is what every markup file written before these attributes existed expects. A
+/// design that does name them reaches the builders that take the value.
+#[test]
+fn slider_grip_width_and_dropdown_alignment_reach_the_builders() {
+    let plain = compile_kdl_to_rust(
+        r#"
+screen id="Plain" width=200 height=100 {
+    grid cols="100px 100px" rows="40px 50px" gap=0 padding=0 {
+        slider id="Sld" col=0 row=0 min=0 max=10 value=5
+        dropdown id="DD" col=1 row=0 selected=1 {
+            option "one"
+            option "two"
+        }
+    }
+}
+"#,
+    )
+    .unwrap();
+    assert!(
+        plain.contains("gui.add_slider(cells["),
+        "no width keeps the upstream builder:\n{plain}"
+    );
+    assert!(
+        plain.contains("gui.add_dropdown(cells["),
+        "no alignment keeps the upstream builder:\n{plain}"
+    );
+
+    let named = compile_kdl_to_rust(
+        r#"
+screen id="Named" width=200 height=100 {
+    grid cols="100px 100px" rows="40px 50px" gap=0 padding=0 {
+        slider id="Sld" col=0 row=0 min=0 max=10 value=5 knob_width=20
+        dropdown id="DD" col=1 row=0 selected=1 align="middle" {
+            option "one"
+            option "two"
+        }
+        dropdown id="DD2" col=1 row=1 align="right" {
+            option "one"
+        }
+    }
+}
+"#,
+    )
+    .unwrap();
+    assert!(
+        named.contains("gui.add_slider_sized(cells["),
+        "a named width reaches the sized builder:\n{named}"
+    );
+    assert!(named.contains(", 20, "), "and is passed through:\n{named}");
+    assert!(
+        named.contains("gui.add_dropdown_aligned(cells[") && named.contains("TextAlign::Center"),
+        "`middle` is the markup's spelling of the crate's centre:\n{named}"
+    );
+    assert!(
+        named.contains("TextAlign::Right"),
+        "and `right` reaches the crate's own variant:\n{named}"
+    );
+}
+
+/// A keypad's markup becomes one `add_keypad_styled` call carrying its mode and every colour.
+///
+/// The widget is whole: a design that asks for a keypad gets the entry box, the three key sets,
+/// Shift, backspace, clear and Enter in one place, which is why the emitted call carries colours
+/// and a mode rather than twenty keys.
+#[test]
+fn a_keypad_reaches_the_builder_with_its_mode_and_colours() {
+    let kdl = r##"
+screen {
+    grid cols="10" rows="10" {
+        keypad id="Pad" col=0 row=0 mode="numeric" shift=true text_color="#ff0000" key_color="#0000ff" legend_color="#00ff00" entry_face="#101010" entry_border="#808080" style="panel"
+    }
+}
+"##;
+    let rust_code = generate_rust_code(&parse_kdl_screen(kdl).unwrap());
+    assert!(
+        rust_code.contains("gui.add_keypad_styled(cells["),
+        "the keypad reaches its own builder:\n{rust_code}"
+    );
+    assert!(
+        rust_code.contains(".with_mode(KeypadMode::Numeric)"),
+        "the mode is carried:\n{rust_code}"
+    );
+    assert!(
+        rust_code.contains(".with_shift(true)"),
+        "and so is Shift:\n{rust_code}"
+    );
+    // Every colour is its own field: the six surfaces a design has to be able to tell apart.
+    for expected in [
+        ".with_text_color(Rgb565::new(31, 0, 0))",
+        ".with_key_color(Rgb565::new(0, 0, 31))",
+        ".with_legend_color(Rgb565::new(0, 63, 0))",
+        ".with_entry_face(Rgb565::new(1, 3, 1))",
+        ".with_entry_border(Rgb565::new(15, 31, 15))",
+    ] {
+        assert!(
+            rust_code.contains(expected),
+            "expected {expected} in:\n{rust_code}"
+        );
+    }
+    // The widget's own colours are the fallbacks, so a design that names none of them still draws.
+    assert!(
+        rust_code.contains(".with_pressed_key_color(Rgb565::new(12, 24, 31))")
+            || rust_code.contains(".with_pressed_key_color(Rgb565::new"),
+        "the pressed key has a colour even when the design names none:\n{rust_code}"
+    );
+}
+
+/// The keypad survives a write-back: the parser's defaults are what is written, so a second read is
+/// the same design.
+#[test]
+fn a_keypad_round_trips_through_the_serializer() {
+    let kdl = r#"
+screen {
+    grid cols="10" rows="10" {
+        keypad id="Pad" col=0 row=0
+    }
+}
+"#;
+    let screen = parse_kdl_screen(kdl).unwrap();
+    let written = serialize_kdl_screen(&screen);
+    assert!(written.contains("keypad"), "the keypad is written back:\n{written}");
+    assert!(written.contains("mode=\"text\""), "with its mode:\n{written}");
+    let again = parse_kdl_screen(&written).unwrap();
+    assert_eq!(
+        format!("{:?}", screen.grid.children),
+        format!("{:?}", again.grid.children),
+        "a second read is the same design"
+    );
+}
+
+/// A clock's markup becomes one `add_clock_styled` call carrying the time and every colour.
+///
+/// The widget has a field per colour rather than a style colour per hand, so the emitter has to pass
+/// all of them; a colour the design leaves out falls back to `ClockWidget::new`'s own, which is what a
+/// hand-written `add_clock` would draw.
+#[test]
+fn a_clock_reaches_the_builder_with_its_time_and_colours() {
+    let rust_code = compile_kdl_to_rust(
+        r##"
+screen id="ClockFace" width=200 height=200 {
+    grid cols="200px" rows="200px" gap=0 padding=0 {
+        clock id="Clk" col=0 row=0 hour=7 minute=45 second=30 hour_color="#ff0000" second_color="#00ff00" label_scale=2 show_labels=false
+    }
+}
+"##,
+    )
+    .unwrap();
+    assert!(
+        rust_code.contains("gui.add_clock_styled(cells["),
+        "the clock reaches its own builder:\n{rust_code}"
+    );
+    assert!(
+        rust_code.contains("ClockWidget { hour: 7, minute: 45, second: 30"),
+        "with the time it shows:\n{rust_code}"
+    );
+    assert!(
+        rust_code.contains("hour_color: Rgb565::new(31, 0, 0)"),
+        "and the hour hand's colour:\n{rust_code}"
+    );
+    assert!(
+        rust_code.contains("second_color: Rgb565::new(0, 63, 0)"),
+        "and the second hand's:\n{rust_code}"
+    );
+    assert!(
+        rust_code.contains("label_scale: 2") && rust_code.contains("show_labels: false"),
+        "and the numerals' size and switch:\n{rust_code}"
+    );
+    // A colour the design does not name keeps the widget's own.
+    assert!(
+        rust_code.contains("minute_color: Rgb565::WHITE"),
+        "an unnamed hand keeps the default:\n{rust_code}"
+    );
+
+    // And the markup writes them back, so a design round-trips through the serializer.
+    let screen = parse_kdl_screen(
+        r##"screen id="ClockFace" width=200 height=200 {
+    grid cols="200px" rows="200px" gap=0 padding=0 {
+        clock id="Clk" col=0 row=0 hour=7 minute=45 second=30 label_scale=2 show_labels=false
+    }
+}"##,
+    )
+    .unwrap();
+    let kdl = serialize_kdl_screen(&screen);
+    assert!(kdl.contains("clock"), "the clock is written back:\n{kdl}");
+    assert!(kdl.contains("hour=7"), "with its time:\n{kdl}");
+    assert!(kdl.contains("label_scale=2"), "and its label size:\n{kdl}");
+}

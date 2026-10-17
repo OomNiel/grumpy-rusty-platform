@@ -12,12 +12,15 @@ use crate::{
     state::{FeedTimelineState, ListState, ScrollState, SliderState, TabsState},
     style::{VisualState, WidgetStyle},
     widget::{EventPhase, EventPolicy, WidgetId},
-    widgets::{
-        roller_row, KeyboardLayout, RollerSelection, WidgetKind, WidgetNode, ROLLER_ROWS,
-        TEXTAREA_CAPACITY,
-    },
+    widgets::{KeyboardLayout, RollerSelection, WidgetKind, WidgetNode, TEXTAREA_CAPACITY},
     Block,
 };
+
+// Gated like the definition: a roller is a `rich-widgets` kind, so the row geometry it shares with the
+// renderer only exists there. Importing it unconditionally is what broke `--no-default-features`, where
+// `cargo check` reported "unresolved imports crate::widgets::roller_row, crate::widgets::ROLLER_ROWS".
+#[cfg(feature = "rich-widgets")]
+use crate::widgets::{roller_row, KeypadKey, ROLLER_ROWS};
 
 use super::*;
 
@@ -1004,6 +1007,7 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
                     items,
                     selected: ref mut current,
                     open,
+                    ..
                 } => {
                     if !open {
                         return Ok(false);
@@ -1162,6 +1166,7 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
                     value: ref mut current,
                     min,
                     max,
+                    ..
                 } => {
                     let mut state = SliderState::new(*current, min, max);
                     changed = state.step_by(direction);
@@ -1324,8 +1329,27 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
         let hit = self.pointer_hit(x, y, true);
 
         if let Some(id) = hit {
-            self.dispatch_activation(id, true)?;
+            // A keypad is a container of keys: the key under the finger shows the press, so the
+            // widget's own pressed/focused look would repaint the whole face for no visible change
+            // -- and a key tap has to stay a key-sized repaint on a panel this size.
+            #[cfg(feature = "rich-widgets")]
+            let is_keypad = matches!(
+                self.node(id).map(|node| node.kind),
+                Some(WidgetKind::Keypad(_))
+            );
+            #[cfg(not(feature = "rich-widgets"))]
+            let is_keypad = false;
+            if !is_keypad {
+                self.dispatch_activation(id, true)?;
+            }
             self.update_dial_value_at_pointer(id, x, y)?;
+            // A slider takes the position it was pressed at, so a tap anywhere on the track moves
+            // the grip there and a drag carries on from it.
+            #[cfg(feature = "rich-widgets")]
+            self.update_slider_value_at_pointer(id, x)?;
+            // A keypad marks the key under the finger; the key acts when the finger leaves it.
+            #[cfg(feature = "rich-widgets")]
+            self.keypad_track(id, x, y)?;
             self.pressed = Some(PressTracker {
                 id,
                 start_x: x,
@@ -1368,6 +1392,9 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
             // moves on.
             #[cfg(feature = "rich-widgets")]
             self.select_touched_roller_bar(&pressed)?;
+            // The key under the finger when it lifts is the one that acts.
+            #[cfg(feature = "rich-widgets")]
+            self.keypad_release(pressed.id)?;
             released_id = Some(pressed.id);
         }
         self.pressed = None;
@@ -1405,6 +1432,13 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
             return Ok(());
         };
         self.update_dial_value_at_pointer(pressed.id, x, y)?;
+        // The grip follows the finger for as long as the press lasts: the press captured the
+        // widget, so a finger that wanders off the slider still drags it.
+        #[cfg(feature = "rich-widgets")]
+        self.update_slider_value_at_pointer(pressed.id, x)?;
+        // A finger that slides across a keypad takes the key it is over with it.
+        #[cfg(feature = "rich-widgets")]
+        self.keypad_track(pressed.id, x, y)?;
         #[allow(unused_variables)]
         let dy = y - pressed.last_y;
         pressed.last_x = x;
@@ -2158,6 +2192,111 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
         self.push_event(UiEvent::Back)
     }
 
+    /// Remembers the key a finger landed on and paints it pressed.
+    ///
+    /// A keypad acts on *release* over the key the finger is on, which is what a phone keypad does
+    /// and what lets a finger slide off a key to cancel it: the press only marks the key.
+    #[cfg(feature = "rich-widgets")]
+    pub(crate) fn keypad_track(&mut self, id: WidgetId, x: i32, y: i32) -> Result<(), GuiError> {
+        let rect = self.absolute_rect(id).ok_or(GuiError::NotFound)?;
+        let node = self.node_mut(id).ok_or(GuiError::NotFound)?;
+        // The face the keypad is drawn in: the geometry is measured from it, so the key a finger
+        // presses is the key whose legend it read.
+        let font = node.style.resolve(VisualState::Normal).font;
+        let WidgetKind::Keypad(ref mut pad) = node.kind else {
+            return Ok(());
+        };
+        let next = pad
+            .key_index_at(rect, x, y, font)
+            .map_or(-1i16, |index| index as i16);
+        let previous = pad.pressed;
+        pad.pressed = next;
+        if next == previous {
+            return Ok(());
+        }
+        let pad = *pad;
+        for index in [previous, next] {
+            if index >= 0 {
+                if let Some(cell) = pad.key_rect_at(rect, index as usize, font) {
+                    self.dirty.add(cell)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Applies the key the finger came off, and clears the press.
+    ///
+    /// The damage is the key itself plus the entry box: typing changes one character, and a mode or
+    /// a Shift changes every legend -- which is the only case that damages the whole face.
+    #[cfg(feature = "rich-widgets")]
+    pub(crate) fn keypad_release(&mut self, id: WidgetId) -> Result<(), GuiError> {
+        let rect = self.absolute_rect(id).ok_or(GuiError::NotFound)?;
+        let node = self.node_mut(id).ok_or(GuiError::NotFound)?;
+        let font = node.style.resolve(VisualState::Normal).font;
+        let WidgetKind::Keypad(ref mut pad) = node.kind else {
+            return Ok(());
+        };
+        let index = pad.pressed;
+        pad.pressed = -1;
+        let Some(key) = (index >= 0)
+            .then(|| pad.key_for_index(index as usize))
+            .flatten()
+        else {
+            return Ok(());
+        };
+        let mut entered = false;
+        let relayout = match key {
+            // `legend` is what the key shows, so Shift's capitals are what gets typed -- the key
+            // itself is always the lower-case one, like a phone keypad.
+            KeypadKey::Char(_) => {
+                if let Some(ch) = pad.legend(key) {
+                    pad.push(ch);
+                }
+                false
+            }
+            KeypadKey::Space => {
+                pad.push(' ');
+                false
+            }
+            KeypadKey::Backspace => {
+                pad.backspace();
+                false
+            }
+            KeypadKey::Clear => {
+                pad.clear();
+                false
+            }
+            KeypadKey::Shift => {
+                pad.toggle_shift();
+                true
+            }
+            KeypadKey::Mode => {
+                pad.cycle_mode();
+                true
+            }
+            KeypadKey::Enter => {
+                pad.submit();
+                entered = true;
+                false
+            }
+        };
+        let pad = *pad;
+        if relayout {
+            // Every key's legend or the whole grid changed.
+            self.dirty.add(rect)?;
+        } else {
+            if let Some(cell) = pad.key_rect_at(rect, index as usize, font) {
+                self.dirty.add(cell)?;
+            }
+            self.dirty.add(pad.entry_rect(rect, font))?;
+        }
+        if entered {
+            self.push_event(UiEvent::Submitted(id))?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn update_dial_value_at_pointer(
         &mut self,
         id: WidgetId,
@@ -2188,6 +2327,45 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
                     self.push_event(UiEvent::ValueChanged(id))?;
                 }
             }
+        }
+        Ok(())
+    }
+
+    /// A finger on a slider sets it, and keeps setting it while the finger moves.
+    ///
+    /// The geometry is the renderer's own ([`crate::widgets::slider_value_at_x`]), so the pixel a
+    /// finger presses is the pixel the grip is drawn at. A press on the track jumps the grip there
+    /// before the drag starts, which is what a slider does everywhere else -- and the release keeps
+    /// the value, because a slider's value is the position the finger left it in.
+    ///
+    /// Reported 2026-10-17: the grip did not drag at all. The value could only be moved by the
+    /// arrow keys (`adjust_focused_scalar`) and by `set_slider_value`, so a finger on the panel
+    /// pressed the grip and nothing followed it.
+    #[cfg(feature = "rich-widgets")]
+    pub(crate) fn update_slider_value_at_pointer(
+        &mut self,
+        id: WidgetId,
+        x: i32,
+    ) -> Result<(), GuiError> {
+        let rect = self.absolute_rect(id).ok_or(GuiError::NotFound)?;
+        let node = self.node_mut(id).ok_or(GuiError::NotFound)?;
+        // The resolved normal style is what the geometry is built from: the border width and the
+        // padding are the block's, not the visual state's.
+        let style = node.style.resolve(VisualState::Normal);
+        let WidgetKind::Slider {
+            value,
+            min,
+            max,
+            knob_w,
+        } = &mut node.kind
+        else {
+            return Ok(());
+        };
+        let next = crate::widgets::slider_value_at_x(rect, style, *min, *max, *knob_w, x);
+        if (*value - next).abs() > 0.001 {
+            *value = next;
+            self.dirty.add(rect)?;
+            self.push_event(UiEvent::ValueChanged(id))?;
         }
         Ok(())
     }
@@ -2626,6 +2804,343 @@ pub(crate) fn textarea_row_end_col(text: &str, target_row: usize, wrap_cols: usi
         }
     }
     col
+}
+
+/// A finger on a keypad, through the same events the generated `pointer()` sends.
+#[cfg(all(test, feature = "rich-widgets"))]
+mod keypad_touch_tests {
+    use crate::geometry::Rect;
+    use crate::input::{InputEvent, PointerButton, PointerState, UiEvent};
+    use crate::style::Style;
+    use crate::widget::WidgetId;
+    use crate::widgets::{KeypadKey, KeypadMode, KeypadWidget, WidgetKind};
+    use crate::GuiContext;
+
+    type Ctx = GuiContext<'static, 32, 64, 16>;
+
+    /// A keypad filling the bottom of a portrait panel, as the designer pins it.
+    const RECT: Rect = Rect::new(0, 242, 320, 158);
+
+    fn keypad() -> (Ctx, WidgetId, KeypadWidget) {
+        let mut ctx: Ctx = GuiContext::new(Rect::new(0, 0, 320, 400));
+        let pad = KeypadWidget::new();
+        let id = ctx.add_keypad_styled(RECT, pad, Style::panel()).unwrap();
+        (ctx, id, pad)
+    }
+
+    fn point(ctx: &mut Ctx, x: i32, y: i32, state: PointerState) {
+        ctx.handle_input(InputEvent::Pointer {
+            x,
+            y,
+            state,
+            button: PointerButton::Primary,
+        })
+        .unwrap();
+    }
+
+    fn key_centre(pad: &KeypadWidget, key: KeypadKey) -> (i32, i32) {
+        let index = (0..pad.key_count())
+            .find(|index| pad.key_for_index(*index) == Some(key))
+            .unwrap_or_else(|| panic!("no {key:?} key in {:?}", pad.mode));
+        let cell = pad
+            .key_rect_at(RECT, index, crate::font::FontId::Tiny3x5)
+            .expect("the key is laid out");
+        (cell.x + cell.w as i32 / 2, cell.y + cell.h as i32 / 2)
+    }
+
+    fn tap(ctx: &mut Ctx, pad: &KeypadWidget, key: KeypadKey) {
+        let (x, y) = key_centre(pad, key);
+        point(ctx, x, y, PointerState::Pressed);
+        point(ctx, x, y, PointerState::Released);
+    }
+
+    /// The keypad as it is *now*: a mode or a Shift changes the layout, so a stale copy would look
+    /// for digits among the letters.
+    fn current(ctx: &Ctx, id: WidgetId) -> KeypadWidget {
+        match ctx
+            .widgets()
+            .iter()
+            .find(|node| node.id == id)
+            .map(|node| node.kind)
+        {
+            Some(WidgetKind::Keypad(pad)) => pad,
+            _ => panic!("the keypad is gone"),
+        }
+    }
+
+    fn text(ctx: &Ctx, id: WidgetId) -> heapless::String<64> {
+        let mut out = heapless::String::new();
+        let _ = out.push_str(ctx.keypad_text(id).unwrap_or(""));
+        out
+    }
+
+    #[test]
+    fn a_tap_types_its_key_and_enter_hands_the_line_over() {
+        let (mut ctx, id, pad) = keypad();
+        tap(&mut ctx, &pad, KeypadKey::Char('h'));
+        tap(&mut ctx, &pad, KeypadKey::Char('i'));
+        assert_eq!(text(&ctx, id).as_str(), "hi");
+        while let Some(_) = ctx.pop_event() {}
+        // Enter submits: the handler gets the line and the box is empty for the next one.
+        tap(&mut ctx, &pad, KeypadKey::Enter);
+        assert_eq!(ctx.keypad_submitted(id), Some("hi"));
+        assert_eq!(
+            ctx.keypad_text(id),
+            Some(""),
+            "the line is cleared by submitting it"
+        );
+        let mut entered = false;
+        while let Some(event) = ctx.pop_event() {
+            if event == UiEvent::Submitted(id) {
+                entered = true;
+            }
+        }
+        assert!(
+            entered,
+            "an Enter raises Submitted, which is what the handler hangs off"
+        );
+    }
+
+    #[test]
+    fn the_mode_key_cycles_and_the_digits_type_where_the_letters_were() {
+        let (mut ctx, id, pad) = keypad();
+        // The digits are on the letters page now, so the mode key goes straight to the symbols.
+        tap(&mut ctx, &pad, KeypadKey::Char('7'));
+        assert_eq!(ctx.keypad_text(id), Some("7"));
+        tap(&mut ctx, &pad, KeypadKey::Mode);
+        assert_eq!(ctx.keypad_mode(id), Some(KeypadMode::Symbol));
+        // The layout moved with the mode: a symbol is where a letter used to be, so the keys are
+        // read back from the widget rather than from the copy taken before the tap.
+        let symbols = current(&ctx, id);
+        tap(&mut ctx, &symbols, KeypadKey::Char('~'));
+        assert_eq!(ctx.keypad_text(id), Some("7~"));
+        tap(&mut ctx, &symbols, KeypadKey::Mode);
+        assert_eq!(ctx.keypad_mode(id), Some(KeypadMode::Text));
+        let letters = current(&ctx, id);
+        tap(&mut ctx, &letters, KeypadKey::Char('a'));
+        assert_eq!(ctx.keypad_text(id), Some("7~a"));
+    }
+
+    #[test]
+    fn shift_is_a_caps_lock_through_the_touch_path() {
+        let (mut ctx, id, pad) = keypad();
+        tap(&mut ctx, &pad, KeypadKey::Shift);
+        assert_eq!(ctx.keypad_shift(id), Some(true));
+        tap(&mut ctx, &pad, KeypadKey::Char('q'));
+        tap(&mut ctx, &pad, KeypadKey::Char('w'));
+        assert_eq!(
+            ctx.keypad_text(id),
+            Some("QW"),
+            "caps lock outlives one letter"
+        );
+        assert_eq!(ctx.keypad_shift(id), Some(true), "and is still on");
+        // Pressing it again goes back to lower case, which is what a toggle means.
+        tap(&mut ctx, &pad, KeypadKey::Shift);
+        assert_eq!(ctx.keypad_shift(id), Some(false));
+        tap(&mut ctx, &pad, KeypadKey::Char('e'));
+        assert_eq!(ctx.keypad_text(id), Some("QWe"));
+    }
+
+    #[test]
+    fn backspace_deletes_one_item_and_clear_empties_the_line() {
+        let (mut ctx, id, pad) = keypad();
+        for ch in ['a', 'b', 'c'] {
+            tap(&mut ctx, &pad, KeypadKey::Char(ch));
+        }
+        tap(&mut ctx, &pad, KeypadKey::Backspace);
+        assert_eq!(ctx.keypad_text(id), Some("ab"));
+        tap(&mut ctx, &pad, KeypadKey::Clear);
+        assert_eq!(ctx.keypad_text(id), Some(""));
+    }
+
+    #[test]
+    fn a_finger_that_slides_off_the_key_types_nothing() {
+        let (mut ctx, id, pad) = keypad();
+        let (x, y) = key_centre(&pad, KeypadKey::Char('q'));
+        point(&mut ctx, x, y, PointerState::Pressed);
+        // Off the key and out of the widget entirely, then up.
+        point(&mut ctx, x, RECT.y - 40, PointerState::Moved);
+        point(&mut ctx, x, RECT.y - 40, PointerState::Released);
+        assert_eq!(
+            ctx.keypad_text(id),
+            Some(""),
+            "sliding off a key cancels it"
+        );
+        // And sliding *onto* another key presses that one, like a phone keypad.
+        point(&mut ctx, x, y, PointerState::Pressed);
+        let (nx, ny) = key_centre(&pad, KeypadKey::Char('w'));
+        point(&mut ctx, nx, ny, PointerState::Moved);
+        point(&mut ctx, nx, ny, PointerState::Released);
+        assert_eq!(ctx.keypad_text(id), Some("w"));
+    }
+
+    #[test]
+    fn a_key_damages_itself_and_the_entry_box_not_the_whole_face() {
+        let (mut ctx, id, pad) = keypad();
+        // One frame first, so the whole panel is not the damage.
+        let mut buffer = crate::test_buffer::TestBuffer::new(320, 400);
+        ctx.render(&mut buffer).unwrap();
+        ctx.clear_dirty();
+        while let Some(_) = ctx.pop_event() {}
+        tap(&mut ctx, &pad, KeypadKey::Char('k'));
+        let damaged = ctx.dirty_regions();
+        assert!(!damaged.is_empty(), "a tap repaints something");
+        let face = RECT.w * RECT.h;
+        for region in damaged {
+            let area = region.w * region.h;
+            assert!(
+                area * 2 < face,
+                "a key tap must not repaint the whole face: {region:?} of {RECT:?}"
+            );
+        }
+        assert_eq!(ctx.keypad_text(id), Some("k"));
+    }
+}
+
+/// A finger on a slider's grip (reported 2026-10-17).
+///
+/// The grip could be seen on the panel but not dragged: a press focused it and drew it pressed,
+/// and the value only ever moved from the arrow keys, so a finger on the glass did nothing. These
+/// drive the same events the generated `pointer()` sends, and hold the geometry to the promise the
+/// renderer makes -- the pixel a finger presses is the pixel the grip is drawn at.
+#[cfg(all(test, feature = "rich-widgets"))]
+mod slider_touch_tests {
+    use crate::geometry::Rect;
+    use crate::input::{InputEvent, PointerButton, PointerState};
+    use crate::style::Style;
+    use crate::widget::WidgetId;
+    use crate::widgets::slider_value_at_x;
+    use crate::GuiContext;
+
+    type Ctx = GuiContext<'static, 32, 64, 16>;
+
+    /// A slider from 0 to 100 across the panel, a ten-pixel grip, and a label beside it to press
+    /// by mistake.
+    fn slider() -> (Ctx, WidgetId) {
+        let mut ctx: Ctx = GuiContext::new(Rect::new(0, 0, 320, 240));
+        let id = ctx
+            .add_slider_sized(
+                Rect::new(20, 40, 200, 24),
+                0.0,
+                0.0,
+                100.0,
+                10,
+                Style::panel(),
+            )
+            .unwrap();
+        (ctx, id)
+    }
+
+    fn point(ctx: &mut Ctx, x: i32, y: i32, state: PointerState) {
+        ctx.handle_input(InputEvent::Pointer {
+            x,
+            y,
+            state,
+            button: PointerButton::Primary,
+        })
+        .unwrap();
+    }
+
+    /// The track's inner rect for `Style::panel()`: two pixels of padding and one of border on
+    /// every side. Spelled out rather than imported so a change to either shows up here.
+    const INNER_X: i32 = 23;
+    const INNER_W: u32 = 194;
+    /// The grip is ten pixels wide, so it travels `INNER_W - 10` and is centred on the finger.
+    const TRAVEL: i32 = INNER_W as i32 - 10;
+
+    fn value_of(ctx: &Ctx, id: WidgetId) -> f32 {
+        ctx.slider_value(id).expect("the slider is still a slider")
+    }
+
+    #[test]
+    fn a_press_puts_the_grip_under_the_finger() {
+        let (mut ctx, id) = slider();
+        // The grip is centred on the finger, so the middle of the *range* is half the travel plus
+        // half a grip: pressing at half the travel would ask for a little under fifty, which is
+        // what a grip whose left edge followed the finger would do.
+        let middle = INNER_X + TRAVEL / 2 + 5;
+        point(&mut ctx, middle, 52, PointerState::Pressed);
+        assert!(
+            (value_of(&ctx, id) - 50.0).abs() < 0.5,
+            "a press in the middle asked for 50, got {}",
+            value_of(&ctx, id)
+        );
+        // And the same x is what the renderer's geometry says the finger meant.
+        let expected = slider_value_at_x(
+            Rect::new(20, 40, 200, 24),
+            Style::panel(),
+            0.0,
+            100.0,
+            10,
+            middle,
+        );
+        assert_eq!(value_of(&ctx, id), expected);
+    }
+
+    #[test]
+    fn a_drag_carries_the_grip_and_says_so() {
+        let (mut ctx, id) = slider();
+        point(&mut ctx, INNER_X, 52, PointerState::Pressed);
+        ctx.clear_dirty();
+        while let Some(_) = ctx.pop_event() {}
+        let mut x = INNER_X;
+        let mut seen = 0usize;
+        for _ in 0..8 {
+            x += 20;
+            point(&mut ctx, x, 52, PointerState::Moved);
+            if ctx.pop_event().is_some() {
+                seen += 1;
+            }
+        }
+        // 160 pixels of travel out of 184 is most of the range, not none of it.
+        assert!(
+            value_of(&ctx, id) > 80.0,
+            "a drag to the right should raise the value, got {}",
+            value_of(&ctx, id)
+        );
+        assert!(
+            seen >= 7,
+            "each move that changed the value reported it, saw {seen}"
+        );
+        // A move repaints the slider, not the panel.
+        let damaged = ctx.dirty_regions();
+        assert_eq!(damaged.len(), 1, "one damaged region");
+        assert!(
+            damaged[0].w <= 200 && damaged[0].h <= 24,
+            "and it is the slider's own cell: {:?}",
+            damaged[0]
+        );
+    }
+
+    #[test]
+    fn a_release_keeps_the_value_and_going_past_the_end_clamps() {
+        let (mut ctx, id) = slider();
+        point(&mut ctx, INNER_X + 40, 52, PointerState::Pressed);
+        let held = value_of(&ctx, id);
+        point(&mut ctx, INNER_X + 40, 52, PointerState::Released);
+        assert_eq!(value_of(&ctx, id), held, "a release must not undo the drag");
+        // A finger that wanders off the widget still has the grip: the press captured it, and the
+        // ends are the ends rather than a value outside the range.
+        point(&mut ctx, INNER_X, 52, PointerState::Pressed);
+        point(&mut ctx, -500, 52, PointerState::Moved);
+        assert_eq!(value_of(&ctx, id), 0.0);
+        point(&mut ctx, 5000, 52, PointerState::Moved);
+        assert_eq!(value_of(&ctx, id), 100.0);
+    }
+
+    #[test]
+    fn a_press_elsewhere_leaves_the_slider_alone() {
+        let (mut ctx, id) = slider();
+        let before = value_of(&ctx, id);
+        point(&mut ctx, 300, 200, PointerState::Pressed);
+        point(&mut ctx, 250, 200, PointerState::Moved);
+        point(&mut ctx, 250, 200, PointerState::Released);
+        assert_eq!(
+            value_of(&ctx, id),
+            before,
+            "a press on the panel is not a press on the slider"
+        );
+    }
 }
 
 /// The finger as a way to turn a selector (`GuiContext::drag_step_selection`).

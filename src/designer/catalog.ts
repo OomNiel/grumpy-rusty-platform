@@ -22,6 +22,7 @@
 
 import { NAMED_STYLES, type StyleField } from './appearance';
 import type { FontSupport } from './fonts';
+import type { DesignerActionId } from './protocol';
 
 /**
  * The kinds a property can take, which is what decides the editor the property panel shows.
@@ -87,6 +88,16 @@ export interface KdlProperty {
      */
     optional?: boolean;
     /**
+     * True when the property is the designer's own business and has no markup attribute at all.
+     *
+     * The clock's `movement` is the first: it decides whether the generated code-behind attaches a
+     * one-second engine to the widget, which is a statement about the project rather than about the
+     * face the crate draws. Writing it into the markup would put an attribute in `ui.kdl` that the
+     * crate's parser ignores -- a silent lie about what the build depends on -- so the emitter skips
+     * these properties and the generated `ui.rs` reads them from the design instead.
+     */
+    designerOnly?: boolean;
+    /**
      * True when the property is still read but no longer offered.
      *
      * The checkbox's single `box_size` is the case: the box has a width and a height of its own now, and a
@@ -132,11 +143,22 @@ export type DesignerEvent =
     | 'scroll'
     | 'opened'
     | 'closed'
-    | 'textInput';
+    | 'textInput'
+    | 'submitted';
 
 export interface DesignerEventSpec {
     /** The `UiEvent` variant that carries it. */
     variant: string;
+    /**
+     * How the handler's argument is fetched from the GUI, when the event does not carry it.
+     *
+     * A keypad's Enter raises `Submitted(id)` and nothing else: the line it submitted is kept by
+     * the widget (the live line is cleared), so the arm reads it back by id rather than binding a
+     * payload the event does not have.
+     */
+    argument?: string;
+    /** The type the argument has, for the handler's signature. */
+    argumentType?: string;
     /**
      * How the variant is matched, with the widget id bound to `id`.
      *
@@ -165,6 +187,16 @@ export const EVENT_SPECS: Record<DesignerEvent, DesignerEventSpec> = {
     doubleClicked: { variant: 'DoubleClicked', pattern: 'DoubleClicked(id)', suffix: 'double_clicked' },
     longPressed: { variant: 'LongPressed', pattern: 'LongPressed(id)', suffix: 'long_pressed' },
     valueChanged: { variant: 'ValueChanged', pattern: 'ValueChanged(id)', suffix: 'value_changed' },
+    submitted: {
+        variant: 'Submitted',
+        pattern: 'Submitted(id)',
+        suffix: 'submitted',
+        // The line the keypad handed over, which is what a handler wants to act on.
+        // An empty line rather than a panic: the arm only fires for a keypad, and a keypad with
+        // nothing submitted has nothing to hand over.
+        argument: 'self.gui.keypad_submitted(id).unwrap_or("")',
+        argumentType: '&str',
+    },
     scroll: {
         variant: 'Scroll',
         pattern: 'Scroll { id, delta }',
@@ -193,6 +225,9 @@ export const DESIGNER_EVENTS: DesignerEvent[] = [
     'textInput',
     'opened',
     'closed',
+    // A keypad's Enter. The line it submitted comes with the event rather than from a payload the
+    // crate does not carry (see `EVENT_SPECS.submitted`).
+    'submitted',
 ];
 
 /** Toolbox grouping. Purely presentational, but it keeps thirty tags navigable. */
@@ -272,6 +307,24 @@ export interface KdlWidgetSpec {
     unavailable?: string;
     props: readonly KdlProperty[];
     events: readonly DesignerEvent[];
+    /**
+     * Buttons the properties panel offers below the properties, for a widget that has something to *do*
+     * rather than something to set.
+     *
+     * A widget's panes are its properties, so an action has to be declared here or the panel has no way
+     * to know it exists; the panel draws one button per entry and sends the id to the extension, which
+     * is where the work happens. Only the clock has one so far: it is the widget whose subject -- the
+     * time -- lives on the board rather than in the design.
+     */
+    actions?: readonly WidgetAction[];
+}
+
+/** One button in a widget's pane: a label, the id the extension acts on, and why it is there. */
+export interface WidgetAction {
+    id: DesignerActionId;
+    label: string;
+    /** Shown as the button's tooltip, which is where the "only works with a board attached" caveat goes. */
+    help?: string;
 }
 
 /**
@@ -527,7 +580,10 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         aliases: [],
         label: 'Slider',
         category: 'input',
-        note: 'A track with a knob. The track is the widget\'s text colour and the knob its accent.',
+        note:
+            'A track with a grip. The track is the widget\'s text colour and the grip its accent. The grip fills ' +
+            'the height between the borders and is `Grip width` pixels wide, so it can be a thin bar or a ' +
+            'handle that can be seen from across the room.',
         defaultSize: { width: 160, height: 28 },
         props: [
             // Floats, because the crate's slider is a float widget and its value is what it reports back:
@@ -535,6 +591,10 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
             { name: 'min', kind: 'float', label: 'Minimum', defaultValue: 0 },
             { name: 'max', kind: 'float', label: 'Maximum', defaultValue: 100 },
             { name: 'value', kind: 'float', label: 'Value', defaultValue: 0 },
+            // The grip's height is not a property: it is the block's inner height, so the grip always fills the
+            // space between the top and bottom borders. Only the width needed a field -- the crate drew a fixed
+            // three-pixel block, which is why the grip was a speck in anything taller than a line of text.
+            { name: 'knob_width', kind: 'int', label: 'Grip width', defaultValue: 8, min: 1, max: 64 },
             TEXT_COLOUR_PROPERTY,
             APPEARANCE_ACCENT,
             ...APPEARANCE_BLOCK,
@@ -551,6 +611,15 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         props: [
             { name: 'selected', kind: 'int', label: 'Selected index', defaultValue: 0, min: 0 },
             { name: 'font', kind: 'font', label: 'Font', defaultValue: '' },
+            // The selected item and the popup rows share one alignment. Upstream left-aligned both, which is
+            // what a design that names nothing keeps.
+            {
+                name: 'align',
+                kind: 'enum',
+                label: 'Text alignment',
+                defaultValue: 'left',
+                options: ['left', 'middle', 'right'],
+            },
         ],
         // The dropdown's style used to be dropped by the emitter, which hard-coded `Style::panel()` and
         // discarded the one the markup carried -- so there was no route to a font at all. It is carried now.
@@ -725,6 +794,93 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         ],
         fontSupport: 'style',
         events: ['valueChanged'],
+    },
+    {
+        tag: 'clock',
+        aliases: [],
+        label: 'Clock',
+        category: 'value',
+        note:
+            'A clock face drawn the way the gauge draws its dial: hour ticks, minute ticks, the hour numerals, and ' +
+            'three hands. The widget holds a time, not a running clock -- the application sets Hour, Minute and ' +
+            'Second as it ticks, so a design can show any time it likes.',
+        defaultSize: { width: 96, height: 96 },
+        props: [
+            { name: 'hour', kind: 'int', label: 'Hour', defaultValue: 10, min: 0, max: 23 },
+            { name: 'minute', kind: 'int', label: 'Minute', defaultValue: 10, min: 0, max: 59 },
+            { name: 'second', kind: 'int', label: 'Second', defaultValue: 0, min: 0, max: 59 },
+            // One colour per hand: they cross each other, so telling them apart matters more than
+            // matching a palette.
+            { name: 'hour_color', kind: 'color', label: 'Hour hand', defaultValue: '#ffffff' },
+            { name: 'minute_color', kind: 'color', label: 'Minute hand', defaultValue: '#ffffff' },
+            { name: 'second_color', kind: 'color', label: 'Second hand', defaultValue: '#ff0000' },
+            { name: 'hour_tick_color', kind: 'color', label: 'Hour ticks', defaultValue: '#808080' },
+            { name: 'minute_tick_color', kind: 'color', label: 'Minute ticks', defaultValue: '#525252' },
+            { name: 'label_color', kind: 'color', label: 'Number colour', defaultValue: '#ffffff' },
+            // The face comes from the Font field (the style's own font); the size is a magnification,
+            // because the built-in faces are fixed bitmaps.
+            { name: 'font', kind: 'font', label: 'Number font', defaultValue: '' },
+            { name: 'label_scale', kind: 'int', label: 'Number size', defaultValue: 1, min: 1, max: 4 },
+            { name: 'show_labels', kind: 'bool', label: 'Hour numbers', defaultValue: true },
+            // The code-behind: the generated `ui.rs` attaches a one-second movement to the widget and
+            // pushes the time into it, so the hands move on their own. Nothing in the markup changes --
+            // the crate draws whatever time the design says until an app tells it another.
+            { name: 'movement', kind: 'bool', label: 'Run (movement)', defaultValue: true, designerOnly: true },
+            ...APPEARANCE_BLOCK,
+        ],
+        fontSupport: 'style',
+        events: [],
+        // The clock is the one widget whose subject lives on the board: the time. This sets the
+        // module's RTC to the PC's clock without a rebuild, and says so plainly when there is no board
+        // to set (see `../flash/clockSync`).
+        actions: [
+            {
+                id: 'updateClockTime',
+                label: 'Update Time',
+                help:
+                    'Sets the module\'s clock to this computer\'s time, over its serial port. Needs the board ' +
+                    'connected and running, and Monitor closed -- Monitor holds the port.',
+            },
+        ],
+    },
+    {
+        tag: 'keypad',
+        aliases: [],
+        label: 'Touch keypad',
+        category: 'input',
+        note:
+            'A whole keypad in one widget: a one-line entry box on its top edge and the keys beneath it. ' +
+            'The letters page carries a row of digits above QWERTY and its mode key leads to the symbols; ' +
+            'Shift toggles capitals (digits are unaffected), and Backspace, Clear and Enter act on the ' +
+            'line. The keypad always fills the bottom of the panel -- a third of it ' +
+            'in portrait, half in landscape -- so its box is pinned there rather than dragged.',
+        // The pinned box is what the designer writes; the fraction follows the panel's shape.
+        defaultSize: { width: 320, height: 158 },
+        props: [
+            {
+                name: 'mode',
+                kind: 'enum',
+                label: 'Starting mode',
+                defaultValue: 'text',
+                options: ['text', 'numeric', 'symbol'],
+            },
+            { name: 'shift', kind: 'bool', label: 'Start shifted', defaultValue: false },
+            // Six surfaces a design has to be able to tell apart: the line, the key faces, their
+            // legends, the key under a finger, the keys that act, and the entry box (face and edge).
+            { name: 'text_color', kind: 'color', label: 'Typed text', defaultValue: '#ffffff' },
+            { name: 'key_color', kind: 'color', label: 'Key face', defaultValue: '#0c1820' },
+            { name: 'legend_color', kind: 'color', label: 'Key legend', defaultValue: '#ffffff' },
+            { name: 'pressed_key_color', kind: 'color', label: 'Pressed key', defaultValue: '#183031' },
+            { name: 'accent_color', kind: 'color', label: 'Shift / mode / Enter', defaultValue: '#021018' },
+            { name: 'entry_face', kind: 'color', label: 'Entry box', defaultValue: '#010508' },
+            { name: 'entry_border', kind: 'color', label: 'Entry border', defaultValue: '#808080' },
+            { name: 'font', kind: 'font', label: 'Font', defaultValue: '' },
+            ...APPEARANCE_BLOCK,
+        ],
+        // The legends and the line are drawn in the style's font, which is what the geometry is
+        // measured from: one face, one measurement.
+        fontSupport: 'style',
+        events: ['submitted'],
     },
     {
         tag: 'arc',
@@ -1144,15 +1300,43 @@ export function widgetSpec(tag: string): KdlWidgetSpec | undefined {
     return WIDGET_BY_TAG.get(tag);
 }
 
+/**
+ * Tags that stay in the catalogue but that the Toolbox no longer hands out.
+ *
+ * The Time picker is the Clock's ancestor: a small dial that shows an hour and a minute and edits
+ * one with the arrow keys. Both in one palette invited the one that cannot run, so the picker is
+ * documented but not offered. A design that already contains one keeps working -- the tag, its
+ * properties, its preview and its handler are all still here, and validation still checks it.
+ */
+const HIDDEN_FROM_TOOLBOX: ReadonlySet<string> = new Set(['time_picker']);
+
+/**
+ * True when the Toolbox hands the tag out.
+ *
+ * Not the same question as "can it be built": a hidden tag builds perfectly well and is only kept
+ * out of the palette, while an `unavailable` one would fail to compile.
+ */
+export function toolboxOffers(tag: string): boolean {
+    const spec = widgetSpec(tag);
+    return (
+        spec !== undefined &&
+        spec.unavailable === undefined &&
+        !HIDDEN_FROM_TOOLBOX.has(spec.tag)
+    );
+}
+
 /** The widgets, grouped for the Toolbox, in catalogue order and without the empty groups. */
 export function toolboxGroups(): { category: KdlCategory; label: string; widgets: KdlWidgetSpec[] }[] {
     const categories: KdlCategory[] = ['text', 'input', 'value', 'container', 'media', 'shape'];
     const groups = categories.map((category) => ({
         category,
         label: CATEGORY_LABELS[category],
-        // Only what can be built. An unavailable tag is still in the catalogue -- its properties are documented
-        // and a design that already contains one is reported by name -- but it is not something to hand out.
-        widgets: KDL_WIDGETS.filter((widget) => widget.category === category && widget.unavailable === undefined),
+        // Only what can be built and is offered. An unavailable or hidden tag is still in the
+        // catalogue -- its properties are documented and a design that already contains one keeps
+        // working -- but it is not something to hand out.
+        widgets: KDL_WIDGETS.filter(
+            (widget) => widget.category === category && toolboxOffers(widget.tag),
+        ),
     }));
     return groups.filter((group) => group.widgets.length > 0);
 }
@@ -1199,6 +1383,7 @@ const PROPERTY_HELP: Record<string, string> = {
     box_height: 'How tall the box is, in pixels. Zero keeps the crate\'s own eight-pixel rule',
     box_size: 'Superseded by the box width and height, and still read so an older design keeps its size',
     label_position: 'Which side of the box the label is drawn on',
+    knob_width: 'How wide the slider\'s grip is, in pixels. Its height is the space between the borders',
     chevron_color: 'Colour of the outline around the minus and plus buttons',
     clockwise: 'Which way the arc sweeps',
     colour: 'Colour to stroke the path in',
@@ -1211,9 +1396,19 @@ const PROPERTY_HELP: Record<string, string> = {
     show_labels: 'Whether the numbers beside the gauge\'s major ticks are drawn',
     show_needle: 'Whether the gauge\'s needle is drawn at all',
     tick_color: 'Colour of the gauge\'s ticks',
+    second: 'The second the face shows, 0 to 59',
+    hour_color: 'Colour of the short hand, which sits between the hour marks',
+    minute_color: 'Colour of the long hand, which sits between the minute marks',
+    second_color: 'Colour of the thin hand, which steps once a second',
+    hour_tick_color: 'Colour of the twelve long ticks',
+    minute_tick_color: 'Colour of the forty-eight short ticks between them',
+    label_color: 'Colour the hour numbers are drawn in',
+    label_scale: 'How many pixels each pixel of the hour numbers covers: 1 is the font\'s own size',
+    movement: 'Whether the generated code-behind runs the clock: attached, its hands move once a second',
+
     head: 'Which value is the newest one; the older ones wrap around behind it',
     values: 'The numbers to draw, separated by commas',
-    align: 'Where the parts sit inside the widget',
+    align: 'Where the text or the parts sit inside the widget: left, centred, or right',
     bg: 'Background colour, drawn instead of the base style\'s fill',
     border_color: 'Colour of the border',
     camera_distance: 'How far the camera sits from the model',
@@ -1293,6 +1488,16 @@ const PROPERTY_HELP: Record<string, string> = {
 
 /** The properties whose meaning depends on the widget they belong to. */
 const TAG_PROPERTY_HELP: Record<string, string> = {
+    // The keypad's six surfaces, named for what they are on the glass rather than for their field.
+    'keypad.text_color': 'The line being typed, and the caret at its end',
+    'keypad.key_color': 'The face of a key that types a character',
+    'keypad.legend_color': 'The character drawn on a key',
+    'keypad.pressed_key_color': 'The face of the key under a finger',
+    'keypad.accent_color': 'Shift, the mode key, Backspace, Clear and Enter',
+    'keypad.entry_face': 'The inside of the entry box',
+    'keypad.entry_border': 'The line around the entry box',
+    'keypad.mode': 'Which key set a new keypad starts with; the mode key cycles at run time',
+    'keypad.shift': 'Whether letters start in upper case',
     'checkbox.box_size': 'Zero keeps the crate\'s own rule: the row height, up to eight pixels',
     'arc.arc_radius': 'Zero fits the arc to the widget\'s shorter side',
     'busy_wheel.phase': 'One full turn is 0 to 1; feed it from your animation clock',
@@ -1317,6 +1522,8 @@ const TAG_PROPERTY_HELP: Record<string, string> = {
 
 /** One line of help per widget, shown as a tooltip in the Toolbox. */
 const WIDGET_HELP: Record<string, string> = {
+    clock: 'A clock face: hour and minute ticks, hour numbers and three hands',
+    keypad: 'A touch keypad with an entry box: letters, digits and symbols',
     label: 'Plain text',
     button: 'A pressable button, with a click event',
     toggle: 'A switch that stays on or off',

@@ -30,6 +30,7 @@ import {
     widgetById,
 } from '../../src/designer/state';
 import type {
+    DesignerActionId,
     DesignerAssetKind,
     DesignerAssetPicked,
     DesignerInbound,
@@ -152,6 +153,10 @@ const panels = {
         const requestId = `asset-${assetRequest}`;
         pendingAssets.set(requestId, apply);
         host.postMessage({ type: 'pickAsset', requestId, kind });
+    },
+    onAction(action: DesignerActionId) {
+        // The extension owns the serial port and the terminal, so the panel only asks.
+        host.postMessage({ type: 'action', action });
     },
 };
 

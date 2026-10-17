@@ -43,10 +43,27 @@ export function espFlashCommand(
     chip: string,
     elfPath: string,
     port?: string,
+    handover?: ClockHandover,
+    platform: NodeJS.Platform = process.platform,
 ): string {
     const args = espFlashArgs(chip, elfPath, port);
     const rendered = [args[0], ...args.slice(1, -1), quotePath(elfPath)];
-    return `${espflash} ${rendered.join(' ')}`;
+    const flash = `${espflash} ${rendered.join(' ')}`;
+    if (handover === undefined) {
+        return flash;
+    }
+    // The board only boots into the new image after the write has finished, so the line is sent a
+    // couple of seconds later; a write that fails is not a flash that failed.
+    const write = writeSerialLineCommand(handover.port, handover.line, platform);
+    return platform === 'win32'
+        ? `${flash}; if ($LASTEXITCODE -eq 0) { Start-Sleep -Milliseconds 2000; try { ${write} } catch { } }`
+        : `${flash} && (sleep 2; ${write} || true)`;
+}
+
+/** The local time to hand the board, and the port to hand it over on. */
+export interface ClockHandover {
+    port: string;
+    line: string;
 }
 
 /**
@@ -55,6 +72,47 @@ export function espFlashCommand(
  */
 export function espMonitorCommand(espflash: string, chip: string, port?: string): string {
     return `${espflash} ${espMonitorArgs(chip, port).join(' ')}`;
+}
+
+/**
+ * The line the firmware takes its clock from: `TIME HH:MM:SS`, the PC's local time.
+ *
+ * An ESP32's internal RTC has no battery, so a board that has been powered off has no idea of the
+ * time. The firmware reads this line off the console (see `parse_clock_time` in the generated
+ * `main.rs`), and a design's clock follows it from then on -- so the hands show the PC's clock, not
+ * a count that started when the board booted.
+ */
+export function clockHandoverLine(now: Date = new Date()): string {
+    const pad = (value: number): string => String(value).padStart(2, '0');
+    return `TIME ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+}
+
+/**
+ * A shell command that writes one line to the serial port, quoted once, for the platform's own
+ * shell.
+ *
+ * There is no serial library in this extension and adding one for a single line would be a
+ * dependency on a native module, so the platform's shell does it: `stty` and a redirect on a POSIX
+ * shell, `System.IO.Ports` in PowerShell. Both assume the port is free, which it is: this runs
+ * after `espflash` has exited and before `espflash monitor` opens it.
+ */
+export function writeSerialLineCommand(
+    port: string,
+    line: string,
+    platform: NodeJS.Platform = process.platform,
+): string {
+    if (platform === 'win32') {
+        return (
+            `$p = [System.IO.Ports.SerialPort]::new('${port}', 115200); $p.Open(); ` +
+            `$p.Write("${line}\`n"); $p.Close()`
+        );
+    }
+    // `-F` is GNU stty, `-f` is BSD/macOS: try the one this machine has, so the same command works
+    // on both.
+    return (
+        `(stty -F ${port} 115200 raw -echo 2>/dev/null || stty -f ${port} 115200 raw -echo) && ` +
+        `printf '%s\\n' '${line}' > ${port}`
+    );
 }
 
 /**
@@ -71,12 +129,26 @@ export function espFlashAndMonitorCommand(
     elfPath: string,
     port?: string,
     platform: NodeJS.Platform = process.platform,
+    handover?: ClockHandover,
 ): string {
+    // The hand-over goes between the two: the monitor holds the port, so it is the last thing that
+    // may run. The flash half is built *without* one, so the pair is assembled here exactly once.
     const flash = espFlashCommand(espflash, chip, elfPath, port);
     const monitor = espMonitorCommand(espflash, chip, port);
-    return platform === 'win32'
-        ? `${flash}; if ($LASTEXITCODE -eq 0) { ${monitor} }`
-        : `${flash} && ${monitor}`;
+    const write =
+        handover === undefined
+            ? undefined
+            : writeSerialLineCommand(handover.port, handover.line, platform);
+    if (platform === 'win32') {
+        const between =
+            write === undefined ? '' : `Start-Sleep -Milliseconds 2000; try { ${write} } catch { } `;
+        return `${flash}; if ($LASTEXITCODE -eq 0) { ${between}${monitor} }`;
+    }
+    if (write === undefined) {
+        return `${flash} && ${monitor}`;
+    }
+    // One `&&`, then the write and the monitor in sequence: a failed write must not cost the log.
+    return `${flash} && (sleep 2; ${write} || true; ${monitor})`;
 }
 
 /**

@@ -16,7 +16,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { test, ok, equal, contains, repoRoot } = require('../../lib/harness');
+const { test, ok, notOk, equal, contains, repoRoot } = require('../../lib/harness');
 
 const SOURCE = fs.readFileSync(path.join(repoRoot(), 'webview', 'designer', 'glyphs.ts'), 'utf8');
 
@@ -46,21 +46,25 @@ test('the canvas draws with the crate\'s own glyphs, and says where they came fr
     }
 });
 
-test('a font with its own spelling of a glyph gets its own table', () => {
-    // The fonts share one table **almost** exactly: `Medium4x7` spells `*` and `@` differently. Storing one
-    // table for all of them was the first thing the generator did, and this is what caught it.
+test('the fonts share one table when they spell every glyph the same way', () => {
+    // The generator keeps a table per *distinct* font, so it never ships five copies of the same
+    // ninety-five glyphs. Since 0.8.0 there is only one: the 4x7 overrides (`? ! * @`) now spell
+    // those four exactly as the base face does, which is why `Medium4x7` no longer needs a table of
+    // its own. The rule is still the interesting part -- a font whose glyphs differ must get its own
+    // table rather than being folded into the first -- and `glyph-table.js` dedupes by content.
     const tables = (SOURCE.match(/^const TABLE_\d+: readonly number\[\] = \[$/gm) ?? []).length;
-    equal(tables, 2, 'two distinct glyph tables, deduped by content');
-    contains(SOURCE, '0, 5, 2, 5, 0', "Medium4x7's `*`");
-    ok(SOURCE.includes('table: 1'), 'and it is the one the font points at');
+    equal(tables, 1, 'one table, shared by all five fonts');
+    contains(SOURCE, '0, 5, 2, 5, 0', "the face's `*`");
+    notOk(SOURCE.includes('table: 1'), 'and nothing points at a second table');
 
-    // The fonts that share a table (including both scales of the vector face) must not have been given copies.
-    contains(SOURCE, '"Tiny3x5": DEFAULT_FONT,', 'the default font points at the first table');
+    // The fonts that share it (including both scales of the vector face) must not have been given
+    // copies.
+    contains(SOURCE, '"Tiny3x5": DEFAULT_FONT,', 'the default font points at the table');
     for (const name of ['Scaled6x10', 'Vector(2)', 'Vector(3)']) {
         contains(SOURCE, `"${name}": { advance: `, `${name} is listed`);
     }
-    // Four mentions: the `DEFAULT_FONT` constant and the three fonts that point at the same table.
-    equal((SOURCE.match(/table: 0 \}/g) ?? []).length, 4, 'four of the five point at the first table');
+    // Five mentions: the `DEFAULT_FONT` constant and the four fonts that point at the same table.
+    equal((SOURCE.match(/table: 0 \}/g) ?? []).length, 5, 'all five point at it');
 });
 
 test('a character the crate has no glyph for falls back the way the crate does', () => {

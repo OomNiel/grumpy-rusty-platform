@@ -7280,3 +7280,96 @@ request, jsonc tolerance, the regeneration guard, `closestSchemaKey`, and that t
 
 **931 hermetic green** (t1 872 · t2 55 · t3 4) and **943 with `--e2e`** (6 real `cargo build`s plus
 the designer simulator, 100 s).
+
+## §147 — A clock that keeps the time, a keypad, and a font that has the characters (0.6.1–0.8.0, 2026-10-17)
+
+A day of small requests, each one a defect on the glass rather than a plan. They turned out to share two
+causes at the bottom: **what a widget repaints**, and **what the built-in face can draw**.
+
+The first half of the day (0.3.1–0.5.1: fourteen widgets made to honour their Font setting, the Clock widget
+itself, and its numerals centred on their ticks) is recorded in `CHANGELOG.md` only — this section picks up from
+the clock that would not run.
+
+### The clock, from "not running" to "only the hand that moved"
+
+1. **The clock did not run** because the design poll sat inside the touch branch of the generated loop: with no
+   finger on the glass there was nothing to poll it. Moved to every pass, and the no-touch body now polls every
+   100 ms.
+2. **The old hands stayed behind** — a partial repaint has no background. `paint_damage()` clears the damaged
+   region to the generated `SCREEN_BACKGROUND` first, and a test holds a cleared partial repaint to the same
+   pixels as a whole one.
+3. **The whole widget repainted every second.** A face of sixty ticks and twelve numerals is most of the work of
+   drawing it and none of it changes when a second passes, so `ClockWidget::hands_rect()` measures the hands and
+   the damage is their union.
+4. **Then the hands themselves.** *"The minute hand must only redraw when sufficient time has passed so that the
+   hand have passed more than half of the time between minute ticks … The hour hand can update every minute."*
+   The minute hand now takes half a minute tick at a time and the hour hand whole minutes, and — the part that
+   actually saves the panel — `hand_damage_rect()` unions **only the hands whose angle changed**, so a tick
+   normally damages the second hand alone. The old union repainted the long minute hand sixty times a minute for
+   the fifty-eight seconds it was not moving.
+
+The angles live in one `hand_spec()`, used by the renderer *and* the damage: a hand drawn from one set of angles
+and measured from another would leave a smear of its old positions.
+
+### The keypad
+
+Asked for as one brief with eight numbered requirements, and built as **one widget**: the line being typed, the
+mode, caps lock and the last submitted line all live in `KeypadWidget`, so a design gets one `submitted` event
+rather than thirty buttons to wire. It pins itself to the bottom strip (a third of the panel in portrait, half in
+landscape) and re-solves that box when the rotation changes.
+
+What the requests added, in order: `CLR`/`ENT`/`SHIFT` instead of `C`/`E`/`^`; a row of digits above `qwerty`
+and the symbol set `~!@#$%^&*()-=_+[]\{}|;':",./<>?`, which retired the digits-only page — the mode key now goes
+letters ⇄ symbols and reads `%%…` / `ABC`; the typed line left-justified and centred between the box's edges
+(0.7.7 read that request the wrong way and centred it across the whole box, which makes a line jump sideways as
+it grows); and the caret an underscore sitting on the baseline.
+
+### The RTC, and the crash that was not a crash
+
+An ESP32's RTC has no battery, so a board that has been powered off has no idea of the time. The flash now hands
+it over: `TIME HH:MM:SS` is written to the console by the same terminal that flashed, the generated firmware
+parses it and calls `set_wall_clock`, and the movement follows the wall clock from then on (falling back to
+stepping when it has been given no time).
+
+*"The screen draws complete but then crash."* It was not a crash. The log ended on `painted 480x320 in 691 ms`
+— the *first* frame — and `esp-hal`'s `Uart::read` **waits** for a byte when the FIFO is empty, so the first
+pass after painting stopped dead until one arrived, which on an idle console is never. `read_ready()` answers at
+once and costs one register read, so a quiet console costs one test a pass. The two lessons: a `.expect()` on the
+UART was never the fault (the log had passed it), and a firmware that paints once and goes quiet is a loop that
+stopped, not a panic.
+
+**Update Time** (0.7.9) is the same line on its own, from the clock's Properties pane: the rules live in
+`src/flash/clockSync.ts` with the shell runner injected, so a test asserts the exact command that would reach the
+port without a device on the bench. Refusals — no clock in the design, no board on a port, a port a Monitor
+terminal holds — are one sentence each, in the panel and in a notification, and nothing throws.
+
+### The face: lower case and the missing half of the punctuation
+
+Two reports in one breath — *"The shift key is not toggling uppercase/lowercase. Also, it seems that the the
+fonts does not support symbols"* — and both were the built-in 3x5 table in `build.rs`:
+
+- it matched on `ch.to_ascii_uppercase()`, so `q` and `Q` were **the same five rows**. The keypad had grown a
+  private `UPPER_3X5` table in 0.7.1 to work around it; since it held the same shapes, all it changed was the
+  centring by a pixel. The face now carries a real lower case and the workaround is deleted.
+- only nine punctuation marks existed. Everything else fell through to the fallback — so the new symbol page
+  drew rows of identical boxes. All of printable ASCII 32–126 is drawn now, and the fallback is a **solid
+  block** rather than a hollow one, because the hollow one was `0`'s own shape: an unsupported character read as
+  a nought.
+
+The canvas table is generated from the crate (`node tests/tools/glyph-table.js`), so the preview moved with it
+and the two cannot drift. `Medium4x7`'s four overrides now spell their glyphs exactly as the base face does, so
+the generator ships one table instead of two.
+
+The visible cost, said plainly: lower-case text in every existing design now renders as lower case (a button
+labelled "Press me" used to draw as "PRESS ME"). That is the honest fix, but it is a change to any older design.
+
+### Tests
+
+- crate (`cargo test --features rich-widgets`): **306**, up from 297 — clock stepping and per-hand damage, the
+  keypad's pages and its entry box, every printable character having a glyph of its own, and lower case differing
+  from upper.
+- extension: **971** hermetic (t1 · t2 65 · t3 4), up from 961 — the clock-sync rules and the panel test that
+  drops a clock and presses the button.
+- goldens re-recorded twice (the generated `main.rs` gained the console reader and the wall clock).
+- every release was built for the CYD, packaged, installed and `cmp`-verified against the source, with the
+  previous version's folder removed; `retest/codegen` was re-vendored and rebuilt each time.

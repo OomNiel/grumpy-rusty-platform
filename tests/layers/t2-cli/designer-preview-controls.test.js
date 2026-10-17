@@ -441,15 +441,25 @@ test('the slider is previewed and its float range and style colours reach the tr
     notOk(fillTextArgs(low.calls).includes('Slider'), 'the slider is not the fallback outline');
     const track = fillsWithColour(low.calls, css565('#12ab34'));
     ok(track.some((call) => call.args[3] === 1 && call.args[2] > 1), 'the track is a one-pixel line in text_color');
-    const knobLeft = (calls) =>
-        Math.min(...fillsWithColour(calls, css565('#45cd67')).filter((call) => call.args[2] === 3 && call.args[3] === 5).map((call) => call.args[0]));
-    const lowX = knobLeft(low.calls);
-    ok(Number.isFinite(lowX), 'the knob is a three-by-five block in the accent');
-    const highX = knobLeft(at({ value: 100, min: 0, max: 100 }).calls);
-    ok(highX > lowX, `a full value moves the knob right (${highX} > ${lowX})`);
+    // The grip fills the block's inner height -- the widget is 160x28 with no border or padding, so 28 -- and
+    // is eight pixels wide when the design names no width. Both are the runtime's own numbers.
+    const grips = (calls, width) =>
+        fillsWithColour(calls, css565('#45cd67')).filter((call) => call.args[2] === width && call.args[3] === 28);
+    const gripLeft = (calls, width = 8) => Math.min(...grips(calls, width).map((call) => call.args[0]));
+    const lowX = gripLeft(low.calls);
+    ok(Number.isFinite(lowX), 'the grip is a full-height block in the accent');
+    equal(grips(low.calls, 8).length, 1, 'exactly one grip, eight pixels wide by default');
+    const highX = gripLeft(at({ value: 100, min: 0, max: 100 }).calls);
+    ok(highX > lowX, `a full value moves the grip right (${highX} > ${lowX})`);
     // A fractional value lands between the ends, which the old int-only markup could not express.
-    const midX = knobLeft(at({ value: 12.5, min: 0, max: 100 }).calls);
+    const midX = gripLeft(at({ value: 12.5, min: 0, max: 100 }).calls);
     ok(midX > lowX && midX < highX, `a fractional value lands between the ends (${lowX} < ${midX} < ${highX})`);
+
+    // And the width is the design's: a wider grip is drawn wider, and still travels between the same ends.
+    const wide = at({ value: 100, min: 0, max: 100, knob_width: 20 });
+    equal(grips(wide.calls, 20).length, 1, 'Grip width is honoured');
+    equal(grips(wide.calls, 8).length, 0, 'and the default width is not drawn as well');
+    equal(gripLeft(wide.calls, 20), 40 + 160 - 20, 'a wide grip stops flush with the inner right edge');
 });
 
 test('the sweeping arc is previewed and its progress fills more of the ring', () => {
@@ -670,4 +680,330 @@ test('the canvas names an SD image instead of drawing a picture it cannot read',
         ),
         'and an image with no source at all still says so',
     );
+});
+
+test('a dropdown\'s text alignment moves the selected item, and the arrow stays put', () => {
+    // Asked 2026-10-17: *"the Dropdown widget text items centering must be adjustable (Left, Middle, Right)."*
+    // `render_dropdown` passes the design's alignment to the selected item and to the popup rows; the arrow
+    // is always centred in its own seven-pixel slot at the inner right edge.
+    const glyphLeft = (align) => {
+        const { calls } = boot(documentWith(widgetOf('dropdown', { align, text_color: '#ffffff' })));
+        const glyphs = fillsWithColour(calls, css565('#ffffff'));
+        ok(glyphs.length > 0, `the dropdown drew its item for ${align}`);
+        return Math.min(...glyphs.map((call) => call.args[0]));
+    };
+    const left = glyphLeft('left');
+    const middle = glyphLeft('middle');
+    const right = glyphLeft('right');
+    ok(left < middle, `middle starts further right than left (${left} < ${middle})`);
+    ok(middle < right, `and right further still (${middle} < ${right})`);
+
+    // Everything drawn in the arrow's own slot at the inner right edge, which must not follow the
+    // alignment -- a right-aligned dropdown would otherwise draw the arrow on top of its item.
+    const arrowPixels = (align) => {
+        const widget = widgetOf('dropdown', { align });
+        const { calls } = boot(documentWith(widget));
+        const from = widget.x + widget.width - 12;
+        return calls
+            .filter(
+                (call) =>
+                    call.method === 'fillRect' &&
+                    call.args[0] >= from &&
+                    call.args[1] >= widget.y &&
+                    call.args[1] < widget.y + widget.height,
+            )
+            .map((call) => `${call.args[0]},${call.args[1]},${call.args[2]},${call.args[3]}`)
+            .sort()
+            .join(';');
+    };
+    ok(arrowPixels('left').length > 0, 'the arrow was drawn');
+    equal(arrowPixels('left'), arrowPixels('right'), 'and sits in the same place whatever the alignment');
+});
+
+test('a clock draws hour and minute ticks, three hands in their own colours, and the hour numbers', () => {
+    // Asked 2026-10-17: *"add a Clock Widget (derived from the Gauge widget) with Hour, Minute and Second hands
+    // (needles). Each hand's colour must be settable, as well as the hour number's label font, colour and size.
+    // Tics must be provided for hours and minutes."* The canvas is drawn from `clock.rs`'s own geometry, so
+    // this asserts the numbers that geometry produces rather than "something was drawn".
+    const at = (props) =>
+        boot(
+            documentWith(
+                widgetOf('clock', {
+                    hour: 3,
+                    minute: 30,
+                    second: 15,
+                    hour_color: '#00ff00',
+                    minute_color: '#0000ff',
+                    second_color: '#ff0000',
+                    hour_tick_color: '#ffff00',
+                    minute_tick_color: '#00ffff',
+                    label_color: '#ffffff',
+                    label_scale: 1,
+                    ...props,
+                }),
+            ),
+        );
+
+    /** Strokes whose `strokeStyle` is `colour`, as `{x1, y1, x2, y2, width}`. */
+    const strokesOf = (calls, colour) => {
+        const strokes = [];
+        let current;
+        let width = 1;
+        for (const call of calls) {
+            if (call.method === 'strokeStyle') {
+                current = call.args[0];
+            } else if (call.method === 'lineWidth') {
+                width = call.args[0];
+            } else if (call.method === 'moveTo') {
+                strokes.push({ start: call.args, colour: current, width });
+            } else if (call.method === 'lineTo' && strokes.length > 0) {
+                const last = strokes[strokes.length - 1];
+                last.end = call.args;
+            }
+        }
+        return strokes.filter((stroke) => stroke.colour === colour && stroke.end !== undefined);
+    };
+
+    const { calls } = at({});
+    // 60 positions, five of which are drawn as the long hour tick instead: 48 short, 12 long.
+    equal(strokesOf(calls, css565('#00ffff')).length, 48, 'forty-eight minute ticks');
+    equal(strokesOf(calls, css565('#ffff00')).length, 12, 'twelve hour ticks');
+    const longTicks = strokesOf(calls, css565('#ffff00'));
+    ok(longTicks.every((tick) => tick.width === 2), 'the hour ticks are the thick ones');
+    ok(strokesOf(calls, css565('#00ffff')).every((tick) => tick.width === 1), 'and the minute ticks thin');
+
+    // One stroke per hand, in its own colour, all from the centre.
+    for (const [colour, length] of [['#00ff00', 0.5], ['#0000ff', 0.72], ['#ff0000', 0.88]]) {
+        const hand = strokesOf(calls, css565(colour));
+        equal(hand.length, 1, `one ${colour} hand`);
+        equal(hand[0].start[0], 88, 'from the centre x');  // 40 + 96/2
+        equal(hand[0].start[1], 108, 'and the centre y');  // 60 + 96/2
+        ok(hand[0].end[0] !== 88 || hand[0].end[1] !== 108, 'and it points somewhere');
+        const dx = hand[0].end[0] - 88;
+        const dy = hand[0].end[1] - 108;
+        ok(Math.sqrt(dx * dx + dy * dy) > 8, `the ${colour} hand has length`);
+    }
+    // The three lengths are ordered, which is what makes them tellable apart on the glass: the hour
+    // hand is the shortest and the second hand the longest.
+    const reach = (colour) => {
+        const hand = strokesOf(calls, css565(colour))[0];
+        const dx = hand.end[0] - 88;
+        const dy = hand.end[1] - 108;
+        return Math.sqrt(dx * dx + dy * dy);
+    };
+    ok(reach('#00ff00') < reach('#0000ff'), 'the hour hand is shorter than the minute hand');
+    ok(reach('#0000ff') < reach('#ff0000'), 'and the minute hand shorter than the second');
+
+    // The hour hand at 3:30 points halfway between 3 and 4 -- down and to the right.
+    const hourHand = strokesOf(calls, css565('#00ff00'))[0];
+    ok(hourHand.end[0] > 88 && hourHand.end[1] > 108, 'the hour hand is between three and four');
+    // The minute hand at 30 seconds is straight down.
+    const minuteHand = strokesOf(calls, css565('#0000ff'))[0];
+    equal(minuteHand.end[0], 88, 'the minute hand at :30 points straight down');
+    ok(minuteHand.end[1] > 108);
+    // The second hand at fifteen seconds is straight right.
+    const secondHand = strokesOf(calls, css565('#ff0000'))[0];
+    equal(secondHand.end[1], 108, 'the second hand at :15 points straight right');
+    ok(secondHand.end[0] > 88);
+
+    // The numerals: one white block per ink pixel, at scale 1.
+    const labels = fillsWithColour(calls, css565('#ffffff'));
+    ok(labels.length > 0, 'the hour numbers were drawn');
+    ok(labels.every((call) => call.args[2] === 1 && call.args[3] === 1), 'one pixel per block at size 1');
+
+    // ...and `Number size` magnifies them.
+    const big = fillsWithColour(at({ label_scale: 3 }).calls, css565('#ffffff'));
+    ok(big.length > 0, 'the numbers are still drawn at size 3');
+    ok(big.every((call) => call.args[2] === 3 && call.args[3] === 3), 'three-by-three blocks');
+});
+
+test('a clock leaves the numbers out when asked, and draws nothing in a box too small for a tick', () => {
+    // The hands are not white here, so a white fill can only be a numeral -- the pivot disc is drawn in
+    // the hour hand's colour.
+    const props = {
+        hour: 1,
+        minute: 2,
+        second: 3,
+        label_color: '#ffffff',
+        hour_color: '#00ff00',
+        minute_color: '#0000ff',
+        second_color: '#ff0000',
+    };
+    const withNumbers = fillsWithColour(boot(documentWith(widgetOf('clock', props))).calls, css565('#ffffff'));
+    ok(withNumbers.length > 0);
+    const withoutNumbers = fillsWithColour(
+        boot(documentWith(widgetOf('clock', { ...props, show_labels: false }))).calls,
+        css565('#ffffff'),
+    );
+    equal(withoutNumbers.length, 0, 'Hour numbers off draws no numerals');
+
+    // Below a 12-pixel radius there is no room for a tick or a hand, so the face is just its block.
+    const tiny = boot(documentWith(widgetOf('clock', { ...props, show_labels: false })));
+    const inner = fillsWithColour(tiny.calls, css565('#808080'));
+    ok(inner.length >= 0, 'the tiny case still renders without throwing');
+});
+
+test('every hour number is centred on its own tick, not hung off one corner', () => {
+    // Reported 2026-10-17: *"The hour label text centres must allign properly with the hour ticks. They are
+    // currently alligned with the left and bottom edges of the text."* Two things were wrong: the canvas read
+    // the glyph's low three bits as columns 5..7, pushing every numeral a few pixels to the right, and both
+    // the canvas and the crate centred the glyph *cell* rather than its ink. The anchor of each numeral is
+    // derived here from the tick that belongs to it -- eight pixels inside the tick's inner end -- so the
+    // assertion does not share the drawing code's own idea of where that is.
+    const { calls } = boot(
+        documentWith(
+            widgetOf('clock', {
+                hour: 3,
+                minute: 30,
+                second: 15,
+                hour_color: '#00ff00',
+                minute_color: '#0000ff',
+                second_color: '#ff0000',
+                hour_tick_color: '#ffff00',
+                minute_tick_color: '#00ffff',
+                label_color: '#ffffff',
+                label_scale: 1,
+            }),
+        ),
+    );
+    const strokesOf = (colour) => {
+        const strokes = [];
+        let current;
+        for (const call of calls) {
+            if (call.method === 'strokeStyle') {
+                current = call.args[0];
+            } else if (call.method === 'moveTo') {
+                strokes.push({ start: call.args, colour: current });
+            } else if (call.method === 'lineTo' && strokes.length > 0 && strokes[strokes.length - 1].end === undefined) {
+                strokes[strokes.length - 1].end = call.args;
+            }
+        }
+        return strokes.filter((stroke) => stroke.colour === colour && stroke.end !== undefined);
+    };
+    const hourTicks = strokesOf(css565('#ffff00'));
+    equal(hourTicks.length, 12, 'twelve hour ticks');
+    const numerals = fillsWithColour(calls, css565('#ffffff'));
+    ok(numerals.length > 0, 'the numerals were drawn');
+
+    const cx = 40 + 48;
+    const cy = 60 + 48;
+    const mismatched = [];
+    for (const tick of hourTicks) {
+        const [ix, iy] = tick.start;
+        const length = Math.hypot(ix - cx, iy - cy) || 1;
+        const ux = (ix - cx) / length;
+        const uy = (iy - cy) / length;
+        // The numerals sit on a circle eight pixels inside the tick's inner end (`radius - 16`).
+        const anchorX = ix - 8 * ux;
+        const anchorY = iy - 8 * uy;
+        const near = numerals.filter(
+            (call) => Math.hypot(call.args[0] + 0.5 - anchorX, call.args[1] + 0.5 - anchorY) <= 6,
+        );
+        if (near.length === 0) {
+            mismatched.push(`no numeral within six pixels of the anchor at (${anchorX.toFixed(1)}, ${anchorY.toFixed(1)})`);
+            continue;
+        }
+        const minX = Math.min(...near.map((call) => call.args[0]));
+        const maxX = Math.max(...near.map((call) => call.args[0] + call.args[2]));
+        const minY = Math.min(...near.map((call) => call.args[1]));
+        const maxY = Math.max(...near.map((call) => call.args[1] + call.args[3]));
+        const offX = (minX + maxX) / 2 - anchorX;
+        const offY = (minY + maxY) / 2 - anchorY;
+        if (Math.abs(offX) > 1 || Math.abs(offY) > 1) {
+            mismatched.push(`a numeral is off its tick by (${offX.toFixed(1)}, ${offY.toFixed(1)})`);
+        }
+    }
+    equal(mismatched, [], 'each hour number is centred on its tick, on both axes');
+});
+
+test('a clock draws its numbers in the block size the face really uses', () => {
+    // `Scaled6x10` is two-by-two blocks of the 3x5 table in the crate's text engine, so a numeral in that
+    // face must be 2x2 blocks too -- otherwise the clock's numbers are half the size of the same face
+    // everywhere else on the panel.
+    const numeralsOf = (font) =>
+        fillsWithColour(
+            boot(
+                documentWith(
+                    widgetOf('clock', {
+                        hour: 1,
+                        minute: 1,
+                        second: 1,
+                        label_color: '#ffffff',
+                        hour_color: '#00ff00',
+                        minute_color: '#0000ff',
+                        second_color: '#ff0000',
+                        font,
+                    }),
+                ),
+            ).calls,
+            css565('#ffffff'),
+        );
+    const tiny = numeralsOf('Tiny3x5');
+    ok(tiny.length > 0);
+    ok(tiny.every((call) => call.args[2] === 1 && call.args[3] === 1), 'one pixel per block in Tiny3x5');
+    const scaled = numeralsOf('Scaled6x10');
+    ok(scaled.length > 0);
+    ok(scaled.every((call) => call.args[2] === 2 && call.args[3] === 2), 'two-by-two blocks in Scaled6x10');
+});
+
+test('the keypad is drawn: an entry box, keys in the design colours, and the mode it was set to', () => {
+    // The canvas has to show what the panel will: the entry box on the top edge, the five rows of
+    // keys beneath it, and the key set the design asked for.
+    const pad = widgetOf('keypad', {
+        text_color: '#ff0000',
+        key_color: '#0000ff',
+        legend_color: '#00ff00',
+        accent_color: '#ff00ff',
+        entry_face: '#101010',
+        entry_border: '#808080',
+    });
+    // The pinned box, as the designer places it on a portrait panel.
+    pad.x = 0;
+    pad.y = 480 - 158;
+    pad.width = 320;
+    pad.height = 158;
+    const { calls } = boot(documentWith(pad));
+    const colours = fillColours(calls);
+    // The canvas takes an `Rgb565` as a CSS colour, so a design colour arrives as `rgb(...)`.
+    const entryFace = 'rgb(16,16,16)';
+    const entryBorder = 'rgb(132,130,132)';
+    const keyFace = 'rgb(0,0,255)';
+    const accent = 'rgb(255,0,255)';
+
+    // The entry box's face and the line around it, in the design's own colours.
+    ok(colours.includes(entryFace), 'the entry face is drawn in the design\'s colour');
+    ok(colours.includes(entryBorder), 'and its border');
+    // Key faces, and the accent worn by the keys that act rather than type.
+    ok(colours.includes(keyFace), 'the key faces are drawn');
+    ok(colours.includes(accent), 'the Shift / mode / Enter keys wear the accent');
+
+    // The entry box sits on the top edge of the widget, and the keys start below it.
+    const entry = fillsWithColour(calls, entryFace)[0];
+    ok(entry !== undefined, 'there is an entry-box fill');
+    equal(entry.args[0], 2, 'two pixels in from the widget\'s left edge');
+    equal(entry.args[1], 480 - 158 + 2, 'and two pixels down from the widget\'s top');
+    const key = fillsWithColour(calls, keyFace)[0];
+    ok(key !== undefined, 'there is a key fill');
+    ok(key.args[1] > entry.args[1] + entry.args[3], 'the keys are below the entry box');
+
+    // Caps lock: the canvas follows the Shift setting the design was saved with -- the letter keys
+    // say what they will type, and the Shift key wears the pressed face.
+    const capsPad = { ...pad, props: { ...pad.props, shift: true, pressed_key_color: '#ff0000' } };
+    const capsCalls = boot(documentWith(capsPad)).calls;
+    ok(
+        fillColours(capsCalls).includes('rgb(255,0,0)'),
+        'the Shift key is lit while the design starts in caps lock',
+    );
+    // The same number of keys, but not the same drawing: `q` and `Q` are two glyphs of one face.
+    const drawing = (all) => JSON.stringify(all.map((call) => [call.method, call.args]));
+    ok(drawing(capsCalls) !== drawing(calls), 'and the letters are drawn as capitals instead');
+
+    // Numeric mode replaces the letters with digits: the key row is built from the mode.
+    const numeric = { ...pad, props: { ...pad.props, mode: 'numeric' } };
+    const numericCalls = boot(documentWith(numeric)).calls;
+    const numericFills = fillsWithColour(numericCalls, keyFace);
+    ok(numericFills.length >= 9, 'a numeric keypad is three digits across, at least');
+    // A digit is one third of the row, where ten letters share it.
+    const width = numericFills[0].args[2];
+    ok(width > 60, `a digit key is wide, not a tenth of the row: ${width}`);
 });

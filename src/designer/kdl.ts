@@ -112,6 +112,11 @@ function widgetLine(
         if (isEmpty(value)) {
             continue;
         }
+        // A property the designer keeps for itself: the clock's movement is about the generated
+        // code-behind, not about the face the crate draws, so it has no attribute to write.
+        if (property.designerOnly === true) {
+            continue;
+        }
         if (property.kind === 'font' && isBuiltInFont(value as string)) {
             continue;
         }

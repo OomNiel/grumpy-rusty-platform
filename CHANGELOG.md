@@ -11,6 +11,391 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.8.0] - 2026-10-17
+
+*"The shift key is not toggling uppercase/lowercase. Also, it seems that the the fonts does not
+support symbols. check please."*
+
+Both were the built-in 3x5 face, and both were real.
+
+### Fixed
+
+- **The face has lower case of its own.** `build.rs` folded case with `to_ascii_uppercase`, so `q` and
+  `Q` were the same five rows: a keypad's Shift key changed the string and nothing a finger could see.
+  The widget had grown a private capital table to paper over it, which changed the *centring* and not
+  the shape. The table now carries a real lower case, the workaround table and its drawing path are
+  gone, and `a`..`z` differ from `A`..`Z` on the glass and in the typed line.
+- **Every printable character has a glyph.** Only nine punctuation marks did; the rest -- the whole
+  `~ # $ ^ & ( ) = + [ ] \ { } | ; ' " , / < >` set -- fell through to the fallback, so a symbol page
+  of keys each showed the same box. All of printable ASCII 32..126 is now drawn, and the fallback is a
+  solid block rather than a hollow one (which was `0`'s own shape, so an unsupported character read as
+  a nought).
+- The designer's canvas is regenerated from the crate (`node tests/tools/glyph-table.js`), so the
+  preview shows the same lower case and the same symbols.
+
+## [0.7.9] - 2026-10-17
+
+*"Place an 'Update Time' button in the Clock widgit's settings pane. This button must update the RTC on
+the module but only if a Clock widget was dropped in the canvas. It must fail gracefully if no module is
+connected."*
+
+### Added
+
+- **Update Time, in the clock's own pane.** It sends the same `TIME HH:MM:SS` line a flash sends, on the
+  same port Flash would pick (so `rustyPlatform.serialPort` is honoured), without rebuilding anything --
+  which is what a board that has drifted, or one that has been running since yesterday, needs.
+- **The refusal is a sentence, not a spin.** No clock in the design, no board on a port, or a port that
+  will not take the line (a Monitor terminal holds it) each come back as one line in the panel and a
+  notification, with the shell's own words when there are any. Nothing throws: a designer click must
+  never be an exception.
+- The rules live in `src/flash/clockSync.ts` where a test can inject the shell runner, so "the line that
+  would have been written" is asserted without a device on the bench.
+
+## [0.7.8] - 2026-10-17
+
+*"The text must be left-justified in the box (just centred between the top and bottom edges). Also,
+change the cursor to an underscore character."*
+
+### Fixed
+
+- **0.7.7 read that request the wrong way.** The typed line was centred across the whole box, which
+  makes a line jump sideways as it grows. It is left-justified again -- three pixels in, where it
+  always was -- and only centred between the top and bottom edges, which is what was being asked for.
+- **The caret is an underscore**, sitting on the line's own baseline instead of a bar running the
+  full height of the glyph box. The designer's canvas draws the same.
+
+## [0.7.7] - 2026-10-17
+
+Asked for 2026-10-17: *"On the keypad, insert a numerical keys row above the 'qwerty' row ... change
+the text on the '123' key to '%%...' ... A 'shift' keeps the numericals unchanged."* and *"centre the
+text horizontally in the centre of the box"*.
+
+### Changed
+
+- **The letters page carries a row of digits above `qwerty`**, so a phone number can be typed without
+  leaving it. Shift leaves those digits alone -- in the string and on the glass.
+- **Two pages, not three.** With digits on the letters page, a page of nothing but digits was a second
+  way to type the same ten keys, so the mode key goes letters ⇄ symbols and reads `%%...` on the
+  letters page and `ABC` on the symbols page. A design whose `mode` starts at `numeric` still gets
+  that page, and its mode key takes it back to the letters.
+- **The symbol page is the set that was asked for**: `~!@#$%^&*()-=_+[]\{}|;':",./<>?`, in that
+  order and broken at eight, in four rows. All three pages keep six rows, so switching pages does not
+  resize the keys under a finger.
+- **The typed line is centred in its entry box**, on both axes, instead of starting three pixels from
+  the left edge. A short line is centred whole -- text and caret together -- and a line long enough to
+  fill the box takes it edge to edge, so the text does not drift as it grows.
+- A test measures the ink of the typed line against the box: it reads 14.5 against 159.5 on the old
+  drawing, so the centring cannot silently regress.
+
+## [0.7.6] - 2026-10-17
+
+*"The minute hand must only redraw when sufficient time has passed so that the hand have passed more
+than half of the time between minute ticks ... The hour hand can update every minute."*
+
+### Changed
+
+- **The hands step instead of creeping, and only the ones that moved are repainted.** The minute hand
+  takes half a minute tick at a time -- on the mark for the first thirty seconds, halfway between
+  marks for the second thirty -- and the hour hand counts whole minutes only. The second hand, which
+  really does move every second, is the only hand a tick normally touches.
+- The damage for a time change is now measured from the hands that moved, not from all three: a clock
+  that repainted its long minute hand sixty times a minute (for the fifty-eight seconds it was not
+  moving) now paints it twice. `ClockWidget::hand_damage_rect` is the new measurement;
+  `hands_rect` still answers for the whole face.
+- The designer's canvas draws the same hand angles, so a design previews what the panel will show.
+
+## [0.7.5] - 2026-10-17
+
+### Fixed
+
+- **The keypad's typed line is set in the keys' own face.** The entry box reserved a line at the
+  style's height and then drew the text in the library default (3x5), so a design using a larger face
+  showed full-size keys above a line of text half their size. The caret follows it.
+- A test draws the line at `Scaled6x10` and measures the ink in the entry box, so the two cannot drift
+  apart again -- it reads 5 rows on the old code and 10 on the fix.
+
+## [0.7.4] - 2026-10-17
+
+*"The screen draws complete but then crash."* -- the log ended on `design: painted 480x320 in 691 ms`,
+which was the loop stopping rather than a panic.
+
+### Fixed
+
+- **The console read no longer blocks the main loop.** `esp-hal`'s `Uart::read` *waits* for a byte when
+  the FIFO is empty ("If the hardware buffer is empty, blocks until data is available"), so the first pass
+  through the loop stopped dead after the first frame and waited for a byte that never came. It is now
+  guarded by `read_ready`, which costs one register read and answers at once. Two lessons worth keeping:
+  the 0.7.2/0.7.3 `.expect` was **not** the crash -- the UART opened fine -- and a firmware that paints
+  once and then goes quiet is a loop that stopped, not a panic.
+
+## [0.7.3] - 2026-10-17
+
+*"project retest board is crashing after flash."*
+
+### Fixed
+
+- **The console UART can no longer take the panel down.** 0.7.2 opened UART0 with `.expect("console
+  UART")`; a configuration the driver refuses is now a warning and the timer fallback, not a panic at
+  boot. The receiver is optional in the state, and the loop reads it only when it opened, so a board that
+  cannot give the console to the reader runs exactly as it did before the clock was made to follow a wall
+  clock.
+
+## [0.7.2] - 2026-10-17
+
+*"The esp32 module have a RTC on-board. Drive the clock from the RTC instead of a 1 second timer. On boards with
+no RTC, the timer steps in. Set up the RTC with the local system time when the firmware is flashed."*
+
+### Added
+
+- **The design's clock follows a wall clock when the board has been given one.** An ESP32's internal RTC has
+  no battery, so the board cannot know the time after a power cycle -- the toolchain hands it over instead:
+  `flash` now sends `TIME HH:MM:SS` (the PC's local time, no zone) down the console two seconds after the
+  write finishes, and the generated `main.rs` reads it off UART0 (non-blocking, so a quiet console costs one
+  register read a pass) and calls `Designer::set_wall_clock`. From then on the hands are *set* to what the
+  anchor says rather than stepped by a count of ticks, so a slow frame or a sleeping loop cannot make the
+  clock lose a second. `wall_clock()` reads the time back.
+- **Without a wall clock the one-second timer still steps in**, which is the old behaviour exactly: the
+  design's own hour/minute/second advanced by the seconds that have passed.
+- The hand-over belongs *between* the flash and the monitor (`espFlashCommand` / `espFlashAndMonitorCommand`
+  take an optional `ClockHandover`), written by the platform's own shell: `stty` + a redirect on a POSIX
+  shell, `System.IO.Ports` in PowerShell. No serial library or native module was added.
+
+### Notes
+
+- The console reader is in the **touch** designer template (the CYD and its like). A designer project on a
+  panel with no touch controller keeps the timer fallback, and the wall clock's API is there for the app to
+  call directly (`set_wall_clock`).
+- An external, battery-backed I2C RTC is the door this leaves open: the same `set_wall_clock` call is where
+  its driver would hand the time over, so nothing above it has to change.
+
+## [0.7.1] - 2026-10-17
+
+For the keypad: *"replace 'C' with CLR, 'E' with ENT and shift with SHIFT (the shift key must be a toggle
+key - caps lock). The key pad text must change with the shift state."*
+
+### Fixed
+
+- **The keys that act are labelled with words.** `CLR`, `ENT` and `SHIFT` replace `C`, `E` and `^` -- `C`
+  and `E` read as letters of the alphabet on a keypad that types them. Backspace keeps its arrow.
+- **Caps lock is visible.** Shift stays on until it is pressed again (it always did), but the built-in
+  `Tiny3x5`/`Scaled6x10` face is a landmark font whose `a` and `A` are the same bitmap, so the letters on
+  the glass never changed. The keypad now carries its own capitals for those faces and draws them at the
+  face's own block size; a bitmap or vector font of the design's own is left alone, since it may have
+  capitals of its own. The Shift key also wears the pressed face while caps lock is on, so the state is
+  visible on the key itself.
+- The designer canvas follows both: the words, the upper-case letters when the design starts shifted, and
+  the lit Shift key.
+
+## [0.7.0] - 2026-10-17
+
+A new widget, asked for in full: *"Build a touch keypad ..."* -- a one-line entry box on the keypad's top
+edge, three key sets (letters, digits, symbols), Shift, Backspace, Clear and Enter, and font and colour
+settings.
+
+### Added
+
+- **`keypad`, a touch keypad in one widget** (`crates/embedded-gui/src/widgets/keypad.rs`). It fills the
+  bottom of the panel -- a third of it in portrait, half in landscape -- so the designer pins its box
+  there (`placeWidget`/`pinKeypads`) instead of leaving it to be dragged, and re-solves it when the
+  rotation changes. Which of the two versions it draws follows the *panel*: the box spans the panel in
+  both orientations, so its own aspect cannot tell them apart.
+  - Keys stretch to fill the width in five rows, so the same face works at 320x480 and 480x320: ten
+    letters across in text mode, three digits in numeric mode, eight symbols in symbol mode, plus the
+    control rows.
+  - The mode key cycles letters -> digits -> symbols and says where it goes; Shift toggles capitals; the
+    typed line scrolls to keep its end in view.
+  - Backspace deletes one character (not one byte), Clear empties the line, and Enter submits it: the
+    line is handed to `on_<id>_submitted(text: &str)` and the box is cleared for the next one.
+    `UiEvent::Submitted(id)` is the new event; `keypad_submitted(id)` is what the handler is given.
+  - Seven colours are settings: typed text, key face, legend, pressed key, the accent worn by Shift / mode
+    / Backspace / Clear / Enter, and the entry box's face and border. The font (and the size it measures)
+    comes from the style, like every other widget.
+  - A tap repaints the key and the entry box, not the face; a finger that slides off a key cancels it.
+
+### Changed
+
+- `set_keypad_text`, `set_keypad_mode`, `set_keypad_shift`, `keypad_text`, `keypad_submitted`,
+  `keypad_mode` and `keypad_shift` are the app's route into a keypad's line and mode.
+- The generated handler stub now logs a submitted line (`... fired: {}`) rather than leaving the
+  argument unused, so a fresh project builds with no warnings.
+
+## [0.6.2] - 2026-10-17
+
+Three more from the same panel: *"Remove the Time Picker widget from the toolbox"*, *"The complete clock
+widget is redrawn at 1 sec intervals. Only the hands should be redrawn as and when needed"*, and *"When I try
+to drag the slider, or when long touching the screen, the screen calibration routine fires???"*.
+
+### Changed
+
+- **The Time picker is no longer in the Toolbox.** It is the Clock's older cousin and both in one palette
+  invited the one that cannot run. It stays in the catalogue: a design that already contains one keeps
+  working, keeps its properties and its handler, and still validates (`toolboxOffers` in the catalogue).
+- **A running clock repaints only its hands.** A time change used to damage the clock's whole cell, so every
+  second drew sixty ticks, twelve numerals and the frame again. The damage is now the union of the hands
+  before and after the change (`ClockWidget::hands_rect`), which never reaches the rim -- the old second hand
+  is erased over the few hundred pixels it used, and the face is left alone.
+
+### Fixed
+
+- **A slider drag, or a long touch, could throw a good touch calibration away.** The "forget the calibration"
+  gesture was *any touch in the first two seconds after a reset*, which caught the ordinary touch of someone
+  testing a slider straight after a flash -- and then the next touch started measuring corners. The gesture
+  is now a finger held still in the top-left corner for about two seconds: a drag moves (so it never
+  qualifies), and a press anywhere else, or a long press on a widget, clears the count. The README says so,
+  and the boot window is gone entirely.
+
+## [0.6.1] - 2026-10-17
+
+Three reports from a real panel: *"Clock not running"*, *"the clock hand's previous positions are not erased as
+the new positions are drawn"*, and *"the slider grab handle is not working (does not drag via the touch
+screen)"*.
+
+### Fixed
+
+- **A clock's movement only ran while a finger was on the panel.** The generated `main.rs` asked the design
+  whether it was dirty *inside* the touch branch (`if calibrated && (pressed || was_touched)`), so an idle panel
+  never painted and a clock sat at whatever time it was flashed at. The design is now polled on every pass, after
+  the touch handling, in both designer loop bodies -- the touch one and the paint-once-then-sleep body a panel
+  without a touchscreen gets (which now polls every 100 ms instead of sleeping ten seconds, and keeps the design
+  in `State` so the loop can ask it anything at all).
+- **A moving clock left its hands behind.** A design paints no screen background of its own and the panel is
+  cleared once, so a partial repaint only covered the pixels the new hands reached. The generated `render` now
+  clears each damaged region to `SCREEN_BACKGROUND` before repainting it (new `GuiContext::paint_damage`), which
+  makes a partial repaint pixel-for-pixel what a whole one would produce.
+- **The slider's grip could not be dragged.** The value only ever moved from the arrow keys: a press focused the
+  slider and drew it pressed, and every move was ignored. A press now puts the grip under the finger and every
+  move carries it, through the same geometry the renderer draws with (`slider_value_at_x`), so the pixel pressed
+  is the pixel seen. A press elsewhere on the panel still leaves the slider alone.
+
+### Changed
+
+- `set_clock_time`, `advance_clock` and `clock_time` are gated behind `rich-widgets`, like the clock widget they
+  address: a `--no-default-features` build failed on them.
+
+## [0.6.0] - 2026-10-17
+
+Asked for as *"Add code behind to attach the clock widget to a 'movement' engine driven by a 1 sec timer. The
+code behind must sync the three clock hands. The engine can be attached to the widget with a checkbox in the
+clock settings panel."*
+
+### Added
+- **A clock's movement, as generated code-behind.** `Run (movement)` — a checkbox in the Clock's properties,
+  on by default — makes the designer generate a one-second engine in the project's `ui.rs`:
+  - it reads **embassy's clock** when the app paints, so nothing has to be awaited in `ui.rs` and no line of
+    `main.rs` changes — the loop that already asks `is_dirty()` is told "yes" once a second;
+  - it advances each attached clock by **every second that has passed**, so a frame that took two seconds
+    does not make the hands lose one, and a panel that has been asleep catches up in one call;
+  - each second damages **only the clock's own cell**, not the panel.
+- The crate carries the movement's arithmetic, so the three hands are one time rather than three guesses:
+  `ClockWidget::next_second` (59 → next minute, 59:59 → next hour, 23:59:59 → midnight) and
+  `GuiContext::clock_time` / `set_clock_time` / `advance_clock`.
+
+### Changed
+- A property can now be **the designer's own** (`designerOnly` in the catalogue). The movement is the first:
+  it says nothing about the face the crate draws, so it is never written into `ui.kdl` — an attribute the
+  parser ignores would misrepresent what the build depends on.
+- A design with no clock, or with its Run switched off, generates **exactly** the `ui.rs` it generated
+  before: the extra import, field and methods are not emitted at all.
+
+## [0.5.1] - 2026-10-17
+
+Reported as *"The hour label text centres must allign properly with the hour ticks. They are currently
+alligned with the left and bottom edges of the text."*
+
+### Fixed
+- **The clock's hour numbers are centred on their ticks.** The canvas read a glyph's low three bits as
+  columns 5–7 instead of 0–2, so every numeral was drawn four or five pixels to the right of its tick —
+  and twice that at `Number size` 2 and above.
+- Both the canvas and the runtime now centre a numeral on its **ink** (three columns, five rows per
+  glyph) rather than on its cell, which is what leaves the visible digits — not just their box — on the
+  radial line of the tick that belongs to them.
+- The numerals also follow the face's real block size, so `Scaled6x10` numbers are drawn as two-by-two
+  blocks, the way the text engine draws that face everywhere else on the panel, instead of at half size.
+
+## [0.5.0] - 2026-10-17
+
+Asked for as *"Fix the Roller issue then: Next, add a Clock Widget (derived from the Gauge widget) with Hour,
+Minute and Second hands (needles). Each hand's colour must be settable, as well as the hour number's label
+font, colour and size. Tics must be provided for hours and minutes."*
+
+### Added
+- **Clock** widget, in the Toolbox's *value* group and drawn from the gauge's own dial maths:
+  - **Hour and minute ticks** — twelve long, thick marks and forty-eight short, thin ones between
+    them, each with its own colour (`Hour ticks`, `Minute ticks`). The hour mark is drawn over the
+    position it shares with a minute mark, so the long tick is never half-hidden.
+  - **Hour, minute and second hands**, each with its own colour and length (½, ¾ and just under the
+    full radius), thin to thick: a hand sits *between* the marks as the smaller units pass, so
+    `3:30` points halfway between 3 and 4.
+  - **Hour numerals** — the face and colour are fields (`Number font`, `Number colour`), and the size
+    is `Number size` (1–4): the built-in faces are fixed bitmaps, so a size is a magnification, one
+    block per glyph pixel. `Hour numbers` switches them off.
+  - The widget holds a **time**, not a running clock: the application sets `hour`/`minute`/`second` as
+    it ticks, the way it sets a slider's value.
+
+### Fixed
+- **The minimal (`--no-default-features`) build of `embedded-gui` failed to compile**: `context/input.rs`
+  imported `roller_row` and `ROLLER_ROWS` unconditionally, although both only exist with
+  `rich-widgets`. The import is gated like the definitions now, and both supported no_std
+  configurations (`libm`, `micromath`) build.
+
+### Notes
+- The new widget lives in the vendored crates (`embedded-gui`, `embedded-gui-codegen`), so a project's
+  copy has to be updated before a clock appears on the glass. The marker moved with this version and the
+  designer offers it as usual.
+
+## [0.4.0] - 2026-10-17
+
+Asked for as *"The slider widget's drag grip box is minute. The grip box height must fill the vertical area
+(between top and bottom borders) and its width must be adjustable. Also, the Dropdown widget text items
+centering must be adjustable (Left, Middle Right)."*
+
+### Added
+- **Slider — `Grip width`** (1–64 px, eight by default). The grip's *height* is not a setting: it is the
+  block's inner height, so the grip now fills the space between the top and bottom borders whatever the
+  widget's height is. It travels across `inner.w − grip` and so sits flush with either end. Upstream drew a
+  fixed 3x5 block, which is why the grip was a speck in anything taller than a line of text.
+- **Dropdown — `Text alignment`** (`left` · `middle` · `right`, left by default). The selected item *and*
+  the popup rows follow it; the arrow keeps its own seven-pixel slot at the right edge. Upstream always
+  left-aligned both.
+
+### Changed
+- `embedded-gui`: `WidgetKind::Slider` carries the grip width and `WidgetKind::Dropdown` its alignment;
+  `add_slider_sized` and `add_dropdown_aligned` are the new builders, while `add_slider` and
+  `add_dropdown` keep their signatures and pass the old behaviour (a grip that is now eight pixels wide,
+  left alignment).
+- `embedded-gui-codegen`: `slider` reads `knob_width` and `dropdown` reads `align`, and only a design that
+  names one takes the new builder — so markup written before this release still compiles to the same calls.
+- **A project's vendored crates must be updated for the new grip to appear on the glass**, and the marker
+  moved with this version, so the designer offers it as usual.
+
+## [0.3.1] - 2026-10-17
+
+Asked for as *"Very few of the current widgets respond to their Font setting (e.g. Time Picker, Number
+Picker, Dropdown etc.). Run though ALL the widgets that offer a Font setting and fix that please."*
+
+### Fixed
+- **Dropdown, Table and Dialog** previews read a bare `Style::panel()` instead of the widget's own style,
+  so their Font — and every colour and base style they offer — changed nothing on the canvas.
+- **Status bar, Time picker and Number picker** drew their text in a hard-coded `Tiny3x5` at a
+  four-pixel advance. They now use the chosen font's own metrics for the run width, the line height, the
+  centring and the focus carets, as the runtime does.
+- **Spinbox** measured with the crate's fixed four-pixel cell while the runtime measures with the font's
+  advance, which put the underline on the wrong digit as soon as a wider face was picked.
+- **Choosing any appearance field no longer changes a widget's base style.** Nine tags (`status_bar`,
+  `time_picker`, `number_picker`, `arc`, `busy_wheel`, `chart`, `plotter`, `content_indicator`, `crumbs`)
+  were missing from the designer's base-style table, so setting a font or a colour emitted
+  `Style::label()` where the codegen's own fallback is `Style::panel()`: the widget lost its background,
+  border, shadow and rounding on the glass while the canvas still drew a panel. Choosing a Font is how it
+  was noticed.
+
+### Notes
+- All fourteen widgets that offer a Font now respond to it on the canvas and on the glass: label, button,
+  toggle, checkbox, dropdown, roller, spinbox, number picker, time picker, gauge, status bar, dialog,
+  table, carousel. The runtime and the codegen already read `style.font` for every one of them, so **no
+  vendored crate changed** and an existing project needs no "Update now".
+- The base-style table is now checked against the codegen's own fallbacks (`emitter.rs`) by a test, and
+  every font-capable widget is checked for a visible change in the canvas, so neither can drift again.
+
 ## [0.3.0] - 2026-10-17
 
 Asked for as *"Do the launch-config guard rails and the Windows thing next."*

@@ -238,6 +238,23 @@ designer for the active project. Either way it works on a board that carries a p
 - **Touch is optional** — asked when the project is made and changeable from the toolbar. With it off there is no
   touch driver, no calibration read and no calibration screen; dropping a control that raises events turns it on
   by itself.
+- **A touch keypad is one widget, not thirty buttons** — a one-line entry box on its top edge and the keys
+  beneath it. The letters page carries a row of digits above `qwerty`, and its mode key leads to a symbols
+  page of all of `~!@#$%^&*()-=_+[]\{}|;':",./<>?`; the key says where it leads (`%%…` / `ABC`), Shift is a
+  caps lock that changes the letters on the glass, and Backspace, Clear and Enter act on the line. An Enter
+  raises one `submitted` event and the line it submitted is kept for the handler. The keypad pins itself to
+  the bottom of the panel — a third of it in portrait, half in landscape — rather than leaving the box to be
+  dragged.
+- **A clock face that keeps time by itself** — ticks, numerals and three hands, and the movement is generated
+  for you: `src/ui.rs` attaches a one-second tick and pushes the time in. The hands *step* rather than creep
+  (the minute hand by half a minute, the hour hand by a whole one), and the damage for a tick is measured from
+  the hands that actually moved, so a running clock repaints the second hand alone — not the face, and not
+  the long minute hand fifty-eight times a minute for standing still. On an ESP32 the time comes from the
+  board's RTC, which is handed this computer's clock over the console after a flash.
+- **Update Time, without a rebuild** — the clock's Properties pane carries the button. It sends the same
+  `TIME HH:MM:SS` line a flash sends, on the port Flash would have used, and says plainly what it did: no clock
+  in the design, no board on a port, or a port a Monitor terminal is holding each come back as one sentence
+  rather than as silence.
 
 The design is the source of truth and lives in `designer/panel.ui.json`; `src/ui.kdl` is generated from it, and
 the crate's `include_gui!` compiles that at build time. The rotation control writes the project's own
@@ -279,9 +296,10 @@ and no measurable extra static RAM against the same board's touch template.
 ### Status
 
 The canvas, the model, the generated markup and the firmware all compile and are tested; the canvas-to-glass
-mapping is verified by a host renderer (`node tests/tools/designer-sim.js`). What has **not** happened yet is a
-flash: whether the design appears at the right size and place on glass, and whether a touch lands on the widget
-it looks like it should, is the next thing to check on hardware.
+mapping is verified by a host renderer (`node tests/tools/designer-sim.js`). A Designer project has now been
+flashed and driven on an **ESP32-035**: the design lands at the size and place the canvas showed, a touch lands
+on the widget it looks like it should, the clock keeps the time the board's RTC was handed and repaints only the
+hand that moved, and the keypad types on the glass.
 
 ## Debugging
 

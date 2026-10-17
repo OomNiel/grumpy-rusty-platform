@@ -320,21 +320,117 @@ pub fn generate_rust_code(screen: &ScreenDef) -> String {
                 max,
                 value,
                 style,
+                knob_width,
                 ..
             } => {
                 // `add_slider` takes `value` first, then `min`, `max`, and every one is an `f32`; the
                 // old arm passed three `i32`s in `min, max, value` order.
                 let st = style_expr(style.as_deref(), "Style::default()");
+                match knob_width {
+                    Some(width) => {
+                        let _ = writeln!(
+                            &mut out,
+                            "        let {} = gui.add_slider_sized(cells[{}], {:.1}, {:.1}, {:.1}, {}, {})?;",
+                            var_name, idx, value, min, max, width, st
+                        );
+                    }
+                    None => {
+                        let _ = writeln!(
+                            &mut out,
+                            "        let {} = gui.add_slider(cells[{}], {:.1}, {:.1}, {:.1}, {})?;",
+                            var_name, idx, value, min, max, st
+                        );
+                    }
+                }
+            }
+            WidgetDef::Keypad {
+                mode,
+                shift,
+                text_color,
+                key_color,
+                legend_color,
+                pressed_key_color,
+                accent_color,
+                entry_face,
+                entry_border,
+                style,
+                ..
+            } => {
+                // A keypad is one widget with six surfaces a design colours separately: the line
+                // being typed, the key faces, their legends, the key under a finger, the keys that
+                // act (Shift, mode, backspace, clear, Enter) and the entry box. The fallbacks are
+                // `KeypadWidget::new`'s own, so a design that names none of them draws what a
+                // hand-written `add_keypad` would.
+                let st = style_expr(style.as_deref(), "Style::panel()");
+                let mode = match mode.as_str() {
+                    "numeric" => "KeypadMode::Numeric",
+                    "symbol" => "KeypadMode::Symbol",
+                    _ => "KeypadMode::Text",
+                };
                 let _ = writeln!(
                     &mut out,
-                    "        let {} = gui.add_slider(cells[{}], {:.1}, {:.1}, {:.1}, {})?;",
-                    var_name, idx, value, min, max, st
+                    "        let {} = gui.add_keypad_styled(cells[{}], KeypadWidget::new()\
+        .with_mode({})\
+        .with_shift({})\
+        .with_text_color({})\
+        .with_key_color({})\
+        .with_legend_color({})\
+        .with_pressed_key_color({})\
+        .with_accent_color({})\
+        .with_entry_face({})\
+        .with_entry_border({}), {})?;",
+                    var_name,
+                    idx,
+                    mode,
+                    shift,
+                    rgb565_or(text_color, "Rgb565::WHITE"),
+                    rgb565_or(key_color, "Rgb565::new(6, 12, 16)"),
+                    rgb565_or(legend_color, "Rgb565::WHITE"),
+                    rgb565_or(pressed_key_color, "Rgb565::new(12, 24, 31)"),
+                    rgb565_or(accent_color, "Rgb565::new(2, 16, 24)"),
+                    rgb565_or(entry_face, "Rgb565::new(1, 2, 4)"),
+                    rgb565_or(entry_border, "Rgb565::CSS_GRAY"),
+                    st
+                );
+            }
+            WidgetDef::Clock {
+                hour,
+                minute,
+                second,
+                hour_color,
+                minute_color,
+                second_color,
+                hour_tick_color,
+                minute_tick_color,
+                label_color,
+                label_scale,
+                show_labels,
+                style,
+                ..
+            } => {
+                // One field per colour, because the three hands and the two tick lengths are five
+                // things a design has to be able to tell apart. The fallbacks are `ClockWidget::new`'s
+                // own, so a design that names none of them draws exactly what a hand-written
+                // `add_clock` would.
+                let st = style_expr(style.as_deref(), "Style::panel()");
+                let hour_c = rgb565_or(hour_color, "Rgb565::WHITE");
+                let minute_c = rgb565_or(minute_color, "Rgb565::WHITE");
+                let second_c = rgb565_or(second_color, "Rgb565::CSS_RED");
+                let hour_tick = rgb565_or(hour_tick_color, "Rgb565::CSS_GRAY");
+                let minute_tick = rgb565_or(minute_tick_color, "Rgb565::new(10, 20, 10)");
+                let label = rgb565_or(label_color, "Rgb565::WHITE");
+                let _ = writeln!(
+                    &mut out,
+                    "        let {} = gui.add_clock_styled(cells[{}], ClockWidget {{ hour: {}, minute: {}, second: {}, hour_color: {}, minute_color: {}, second_color: {}, hour_tick_color: {}, minute_tick_color: {}, label_color: {}, label_scale: {}, show_labels: {} }}, {})?;",
+                    var_name, idx, hour, minute, second, hour_c, minute_c, second_c, hour_tick,
+                    minute_tick, label, label_scale, show_labels, st
                 );
             }
             WidgetDef::Dropdown {
                 options,
                 selected,
                 style,
+                align,
                 ..
             } => {
                 let opts_joined = options
@@ -343,11 +439,30 @@ pub fn generate_rust_code(screen: &ScreenDef) -> String {
                     .collect::<Vec<_>>()
                     .join(", ");
                 let st = style_expr(style.as_deref(), "Style::panel()");
-                let _ = writeln!(
-                    &mut out,
-                    "        let {} = gui.add_dropdown(cells[{}], &[{}], {}, {})?;",
-                    var_name, idx, opts_joined, selected, st
-                );
+                // A design that names no alignment keeps upstream's builder, and with it the left-aligned
+                // text every design written before this choice existed expects. Only an explicit `align`
+                // reaches the builder that takes one.
+                match align.as_deref().map(|value| value.trim().to_ascii_lowercase()) {
+                    Some(value) => {
+                        let align = match value.as_str() {
+                            "middle" | "center" | "centre" => "TextAlign::Center",
+                            "right" => "TextAlign::Right",
+                            _ => "TextAlign::Left",
+                        };
+                        let _ = writeln!(
+                            &mut out,
+                            "        let {} = gui.add_dropdown_aligned(cells[{}], &[{}], {}, {}, {})?;",
+                            var_name, idx, opts_joined, selected, align, st
+                        );
+                    }
+                    None => {
+                        let _ = writeln!(
+                            &mut out,
+                            "        let {} = gui.add_dropdown(cells[{}], &[{}], {}, {})?;",
+                            var_name, idx, opts_joined, selected, st
+                        );
+                    }
+                }
             }
             WidgetDef::Roller {
                 options,

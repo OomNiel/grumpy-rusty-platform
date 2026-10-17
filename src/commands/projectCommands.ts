@@ -10,6 +10,7 @@ import { describeUf2Info } from '../flash/bootsel';
 import { flashRouteForProject, routeReason, uf2FamilyForProject, usesSerialFlash } from '../flash/route';
 import { probeFlashCommand } from '../flash/probeFlash';
 import {
+    clockHandoverLine,
     espFlashAndMonitorCommand,
     espFlashCommand,
     espMonitorCommand,
@@ -281,9 +282,19 @@ export function registerProjectCommands(
             output.appendLine(
                 `Writing ${path.basename(elf)} over USB serial (chip ${chip}${port === undefined ? '' : `, port ${port}`})`,
             );
+            // An ESP32's internal RTC has no battery, so the board is told the PC's local time
+            // over the console once it is running: that is what a design's clock follows. Without a
+            // port of our own there is nothing to write to -- espflash is left to pick one, and the
+            // design starts from its own time instead.
+            const handover = port === undefined ? undefined : { port, line: clockHandoverLine() };
+            if (handover !== undefined) {
+                output.appendLine(
+                    `clock: handing the board ${handover.line} on ${handover.port} when the write finishes`,
+                );
+            }
             const command = monitorAfter
-                ? espFlashAndMonitorCommand(espflashCommand(), chip, elf, port)
-                : espFlashCommand(espflashCommand(), chip, elf, port);
+                ? espFlashAndMonitorCommand(espflashCommand(), chip, elf, port, process.platform, handover)
+                : espFlashCommand(espflashCommand(), chip, elf, port, handover);
             runInTerminal('Rusty: flash', command, project.folder);
             // Remember what the chip now holds, the same way the RP routes do.
             await context.workspaceState.update(LAST_FLASHED_KEY, profile);

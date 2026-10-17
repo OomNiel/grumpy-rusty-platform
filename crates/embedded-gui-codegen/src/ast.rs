@@ -153,18 +153,60 @@ pub enum WidgetDef {
         box_color: Option<String>,
         style: Option<String>,
     },
+    /// A touch keypad: a one-line entry box and the key grid beneath it.
+    ///
+    /// The whole keypad is one widget, so its modes, Shift and the line being typed live in one
+    /// place rather than in twenty buttons the design would have to wire together.
+    Keypad {
+        id: Option<String>,
+        /// `text`, `numeric` or `symbol`.
+        mode: String,
+        shift: bool,
+        /// `#rrggbb`, or `None` for the widget's own colour.
+        text_color: Option<String>,
+        key_color: Option<String>,
+        legend_color: Option<String>,
+        pressed_key_color: Option<String>,
+        accent_color: Option<String>,
+        entry_face: Option<String>,
+        entry_border: Option<String>,
+        style: Option<String>,
+    },
+    /// A clock face: hour and minute ticks, hour numerals and three hands.
+    Clock {
+        id: Option<String>,
+        hour: u8,
+        minute: u8,
+        second: u8,
+        /// `#rrggbb`, or `None` for the widget's own colour.
+        hour_color: Option<String>,
+        minute_color: Option<String>,
+        second_color: Option<String>,
+        hour_tick_color: Option<String>,
+        minute_tick_color: Option<String>,
+        label_color: Option<String>,
+        /// How many pixels each glyph pixel of the numerals covers; `1` is the font's own size.
+        label_scale: u8,
+        show_labels: bool,
+        style: Option<String>,
+    },
     Slider {
         id: Option<String>,
         min: f32,
         max: f32,
         value: f32,
         style: Option<String>,
+        /// The grip's width in pixels; `None` keeps upstream's three. Its height always fills the block's
+        /// inner height.
+        knob_width: Option<u32>,
     },
     Dropdown {
         id: Option<String>,
         options: Vec<String>,
         selected: usize,
         style: Option<String>,
+        /// `left`, `middle`/`center` or `right`; `None` keeps upstream's left alignment.
+        align: Option<String>,
     },
     Roller {
         id: Option<String>,
@@ -425,6 +467,8 @@ impl WidgetDef {
             | WidgetDef::Toggle { id, .. }
             | WidgetDef::Checkbox { id, .. }
             | WidgetDef::Slider { id, .. }
+            | WidgetDef::Clock { id, .. }
+            | WidgetDef::Keypad { id, .. }
             | WidgetDef::Dropdown { id, .. }
             | WidgetDef::Roller { id, .. }
             | WidgetDef::Scale { id, .. }

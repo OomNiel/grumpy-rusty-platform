@@ -231,12 +231,12 @@ impl Font for embedded_graphics::mono_font::MonoFont<'static> {
     }
 
     fn draw_glyph(&self, ch: char, draw_pixel: &mut dyn FnMut(i32, i32)) {
-        use embedded_graphics::Drawable;
         use embedded_graphics::draw_target::DrawTarget;
         use embedded_graphics::geometry::{OriginDimensions, Point, Size};
         use embedded_graphics::mono_font::MonoTextStyle;
         use embedded_graphics::pixelcolor::BinaryColor;
         use embedded_graphics::text::Text;
+        use embedded_graphics::Drawable;
 
         struct Collector<'a> {
             f: &'a mut dyn FnMut(i32, i32),
@@ -675,5 +675,42 @@ mod tests {
         }
         let fallback = get_vector_glyph('é');
         assert!(!fallback.is_empty());
+    }
+
+    /// The face the keypad and every label is drawn in has a glyph for every printable character.
+    ///
+    /// Found 2026-10-17: "it seems that the fonts does not support symbols". They did not -- all but
+    /// nine punctuation marks fell through to the fallback, so a symbol page of keys each showed the
+    /// same box. This walks the whole range so the next gap is a failing test rather than a page of
+    /// boxes on the glass.
+    #[test]
+    fn every_printable_character_has_a_glyph_of_its_own() {
+        for font in [FontId::Tiny3x5, FontId::Medium4x7, FontId::Scaled6x10] {
+            for code in 32u8..=126u8 {
+                let ch = code as char;
+                assert_ne!(
+                    glyph_rows(font, ch),
+                    MISSING_GLYPH,
+                    "{font:?} has no glyph for {ch:?} ({code})"
+                );
+            }
+        }
+    }
+
+    /// Lower case is its own drawing, which is what makes a Shift key a thing you can see.
+    ///
+    /// The table used to fold case with `to_ascii_uppercase`, so a keypad's `q` and `Q` were the same
+    /// pixels and pressing Shift changed nothing on the glass.
+    #[test]
+    fn lower_case_is_drawn_differently_from_upper_case() {
+        for (lower, upper) in [('a', 'A'), ('g', 'G'), ('m', 'M'), ('q', 'Q'), ('z', 'Z')] {
+            for font in [FontId::Tiny3x5, FontId::Scaled6x10] {
+                assert_ne!(
+                    glyph_rows(font, lower),
+                    glyph_rows(font, upper),
+                    "{font:?}: {lower:?} and {upper:?} are the same pixels"
+                );
+            }
+        }
     }
 }

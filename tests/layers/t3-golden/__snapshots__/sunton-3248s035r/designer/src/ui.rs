@@ -12,6 +12,7 @@
 use embedded_graphics::draw_target::DrawTarget;
 use embedded_graphics::pixelcolor::Rgb565;
 use embedded_gui::prelude::*;
+use embassy_time::Instant;
 
 /// The screen, compiled from the markup the designer writes.
 mod design {
@@ -27,6 +28,16 @@ pub const NODES: usize = design::RustyPanelApp::NODE_COUNT + 8;
 pub const EVENTS: usize = 16;
 pub const DIRTY: usize = 8;
 
+/// What the panel is cleared to before the design is first painted.
+///
+/// The sketch does that clear (it owns the display), and a partial repaint has to agree with it:
+/// the damaged regions are cleared to this same colour first, so a widget with no face of its own
+/// -- a clock's hands are drawn straight onto the panel -- cannot leave its previous drawing behind
+/// where nothing else repaints those pixels. Changing this means changing the clear in main.rs
+/// to match. Spelled out as a raw value rather than Rgb565::BLACK: that constant comes from the
+/// RgbColor trait, which this file does not pull in.
+pub const SCREEN_BACKGROUND: Rgb565 = Rgb565::new(0, 0, 0);
+
 /// The screen, and the pointer state the widgets need to see a press and a release as a pair.
 pub struct Designer {
     gui: GuiContext<'static, NODES, EVENTS, DIRTY>,
@@ -34,6 +45,11 @@ pub struct Designer {
     pub widgets: RustyPanelWidgets,
     down: bool,
     painted: bool,
+    /// The wall clock the hands follow once the board has been told the time: the local
+    /// time it was told, and the instant it was told. `None` until then -- and on a board
+    /// with no RTC that survives power-off, for ever.
+    #[allow(dead_code)]
+    wall_base: Option<(Instant, u32)>,
 }
 
 impl Designer {
@@ -46,6 +62,7 @@ impl Designer {
             widgets: app.widgets,
             down: false,
             painted: false,
+            wall_base: None,
         }
     }
 
@@ -132,12 +149,33 @@ impl Designer {
         D: DrawTarget<Color = Rgb565>,
     {
         let result = if self.painted {
-            self.gui.render_dirty(target)
+            // A partial repaint paints the damaged regions and nothing else, and the design paints
+            // no screen background of its own -- so the regions are cleared to the colour the panel
+            // started as first. Without this a moving clock drew each new hand and left the old one
+            // on the glass (reported 2026-10-17).
+            self.gui
+                .paint_damage(target, SCREEN_BACKGROUND)
+                .and_then(|()| self.gui.render_dirty(target))
         } else {
             self.gui.render(target)
         };
         self.painted = true;
         self.gui.clear_dirty();
         result
+    }
+
+    /// Tells the design what time it is, as local time.
+    ///
+    /// The toolchain sends this over the console once the board is running: an ESP32's internal RTC
+    /// has no battery, so a board that has been powered off has no idea of the time until it is
+    /// told. The anchor is kept rather than the time being counted, so a frame that took two
+    /// seconds -- or a loop that was asleep -- cannot make the hands lose a second.
+    ///
+    /// Out-of-range fields are clamped rather than wrapped, the same rule the clock itself follows.
+    pub fn set_wall_clock(&mut self, hour: u8, minute: u8, second: u8) {
+        let now = Instant::now();
+        let start = hour.min(23) as u32 * 3600 + minute.min(59) as u32 * 60 + second.min(59) as u32;
+        self.wall_base = Some((now, start % 86_400));
+
     }
 }

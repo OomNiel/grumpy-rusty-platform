@@ -28,9 +28,10 @@ screens are solved for the shape that is actually being addressed: a landscape r
 bars, corner markers, status lines and touch targets, and a portrait rotation gets a portrait one. Verified at
 270 degrees on hardware with every edge, corner and bar visible.
 The touch calibration is versioned by rotation: a record measured in one orientation is
-discarded when the rotation changes and the four corners are asked for again. To force that by hand, touch
-the glass within the first two seconds after a reset - the stored calibration is thrown away and the corner
-screen comes back.
+discarded when the rotation changes and the four corners are asked for again. To force that by hand, press
+and hold in the top-left corner of the screen for about two seconds - the stored calibration is thrown away
+and the corner screen comes back. Anything else you do with a finger (a tap, a long press on a widget, a
+drag) leaves the calibration alone.
 
 ## First-time setup
 
