@@ -9,6 +9,10 @@ fn main() {
     let font_dir = env::var("EMBEDDED_GUI_FONT_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| manifest_dir.join("assets").join("fonts"));
+    // Without this, editing a glyph table changes nothing: the build script declares one
+    // rerun-if-env-changed, and once any rerun-if-* is printed cargo stops scanning the package.
+    // A font fix that never reached the board would be the worst kind of silent.
+    println!("cargo:rerun-if-changed={}", font_dir.display());
 
     let map_3x5 = load_glyph_overrides(&font_dir.join("ascii_3x5.txt"));
     let map_4x7 = load_glyph_overrides(&font_dir.join("ascii_4x7.txt"));
@@ -40,7 +44,110 @@ fn main() {
     // not read as a real one: this used to be a hollow box, which is `0`'s own glyph.
     src.push_str("\npub static MISSING_GLYPH: [u8; 5] = [0b111, 0b111, 0b111, 0b111, 0b111];\n");
 
+    // The rasterised faces. `BitmapFont` reads one byte per row, the leftmost column in bit 7, so a
+    // glyph is `height` bytes and the table is the whole printable-ASCII range end to end.
+    push_bitmap_table(
+        &mut src,
+        "ASCII_6X10_GLYPHS",
+        6,
+        10,
+        &font_dir.join("dejavu_6x10.txt"),
+    );
+    push_bitmap_table(
+        &mut src,
+        "ASCII_8X16_GLYPHS",
+        8,
+        16,
+        &font_dir.join("dejavu_8x16.txt"),
+    );
+
     fs::write(out_file, src).expect("failed writing generated ascii font");
+}
+
+/// Appends one `BitmapFont` table, read out of a `key:rows` file.
+///
+/// A character the file does not have is filled with the `?` glyph rather than left blank: a hole in
+/// the middle of the range would be drawn as nothing, which reads as a broken font rather than as a
+/// missing character.
+fn push_bitmap_table(src: &mut String, name: &str, width: u8, height: u8, path: &PathBuf) {
+    let rows = load_bitmap_glyphs(path, width, height);
+    src.push_str(&format!(
+        "\npub static {}: [u8; {}] = [\n",
+        name,
+        rows.len()
+    ));
+    for glyph in rows.chunks(height as usize) {
+        src.push_str("    ");
+        for byte in glyph {
+            src.push_str(&format!("{:#010b}, ", byte));
+        }
+        src.push('\n');
+    }
+    src.push_str("];\n");
+}
+
+/// Reads a whole table of `height`-row glyphs of `width` columns, in printable-ASCII order.
+fn load_bitmap_glyphs(path: &PathBuf, width: u8, height: u8) -> Vec<u8> {
+    let per_glyph = height as usize;
+    let mut out = vec![0u8; per_glyph * 95];
+    let mut seen = [false; 95];
+    let contents = fs::read_to_string(path)
+        .unwrap_or_else(|error| panic!("cannot read the font table {}: {error}", path.display()));
+
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        // `rsplit_once`: a `:` row is written `::010,010,...`, and splitting on the first colon
+        // would make its key empty.
+        let Some((key, rows)) = line.rsplit_once(':') else {
+            panic!("{}: no `key:rows` in {line:?}", path.display());
+        };
+        let Some(ch) = parse_key(key.trim()) else {
+            panic!("{}: cannot read the key {key:?}", path.display());
+        };
+        let parts: Vec<&str> = rows.split(',').map(str::trim).collect();
+        assert_eq!(
+            parts.len(),
+            per_glyph,
+            "{}: {ch:?} has {} rows, expected {height}",
+            path.display(),
+            parts.len()
+        );
+        let slot = (ch as usize).wrapping_sub(32);
+        assert!(
+            slot < 95,
+            "{}: {ch:?} is not printable ASCII",
+            path.display()
+        );
+        for (idx, row) in parts.iter().enumerate() {
+            assert_eq!(
+                row.len(),
+                width as usize,
+                "{}: {ch:?} row {idx}",
+                path.display()
+            );
+            for (col, c) in row.chars().enumerate() {
+                match c {
+                    '1' => out[slot * per_glyph + idx] |= 1 << (7 - col),
+                    '0' => {}
+                    other => panic!("{}: {ch:?} has {other:?} in a row", path.display()),
+                }
+            }
+        }
+        seen[slot] = true;
+    }
+
+    let question = (b'?' as usize) - 32;
+    for slot in 0..95 {
+        if !seen[slot] {
+            let from = question * per_glyph;
+            let to = slot * per_glyph;
+            out.copy_within(from..from + per_glyph, to);
+        }
+    }
+    out
 }
 
 fn load_glyph_overrides(path: &PathBuf) -> HashMap<char, [u8; 5]> {
@@ -54,7 +161,9 @@ fn load_glyph_overrides(path: &PathBuf) -> HashMap<char, [u8; 5]> {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        let Some((key, rows)) = line.split_once(':') else {
+        // `rsplit_once`: a `:` row is written `::010,010,010,010,010`, and splitting on the first
+        // colon would make its key empty.
+        let Some((key, rows)) = line.rsplit_once(':') else {
             continue;
         };
         let Some(ch) = parse_key(key.trim()) else {

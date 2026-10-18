@@ -1,10 +1,11 @@
 /**
  * The fonts `embedded-gui` itself provides, and how a design can ask for one.
  *
- * The crate ships three bitmap fonts and a scalable vector one -- `FontId::Tiny3x5`, `Medium4x7` (the default),
- * `Scaled6x10` and `Vector(scale)` -- but the markup has **no attribute for them**. A widget's `font="name"`
- * refers to a font the *screen declares*, which means a BDF file in the project; the code generator drops a name
- * it cannot resolve in silence, so a built-in name typed there would do nothing at all.
+ * The crate ships five drawn bitmap faces and a scalable vector one -- `FontId::Tiny3x5`, `Medium4x7` (the
+ * default), `Scaled6x10`, `Mono6x10`, `Mono8x16` and `Vector(scale)` -- but the markup has **no attribute for
+ * them**. A widget's `font="name"` refers to a font the *screen declares*, which means a BDF file in the project;
+ * the code generator drops a name it cannot resolve in silence, so a built-in name typed there would do nothing
+ * at all.
  *
  * What reaches them is `style`. The crate's own style resolver (`style_expr` in `embedded-gui-codegen`) accepts a
  * Rust expression and passes it through, and its own named styles read like a font menu: `body`, `menu` and
@@ -34,6 +35,11 @@ export interface BuiltInFont {
  * start there, so choosing it is the same as choosing nothing -- which is worth saying, because it is the
  * smallest of the three and reads as "no font" on screen.
  *
+ * `Mono6x10` and `Mono8x16` are the two faces rasterised from DejaVu Sans Mono (`crates/embedded-gui/assets/`),
+ * added because a 3x5 bitmap is as legible as hand-drawn pixels get: everything larger than a few characters
+ * wants one of these. The sizes are the cell, not the ink -- 6x10 keeps 68 characters on a 480-pixel panel,
+ * 8x16 keeps 53 -- and both carry a real lower case and the whole of printable ASCII.
+ *
  * `Vector` takes a scale, so it appears once per scale worth offering rather than as a free number: the id
  * carries the scale (`Vector(2)`), which is what the reference in the generated code needs.
  */
@@ -41,6 +47,8 @@ export const BUILT_IN_FONTS: readonly BuiltInFont[] = [
     { id: 'Tiny3x5', label: 'Tiny 3x5 (the default)' },
     { id: 'Medium4x7', label: 'Medium 4x7' },
     { id: 'Scaled6x10', label: 'Scaled 6x10' },
+    { id: 'Mono6x10', label: 'Mono 6x10 (DejaVu)' },
+    { id: 'Mono8x16', label: 'Mono 8x16 (DejaVu)' },
     { id: 'Vector(2)', label: 'Vector, scale 2' },
     { id: 'Vector(3)', label: 'Vector, scale 3' },
 ];

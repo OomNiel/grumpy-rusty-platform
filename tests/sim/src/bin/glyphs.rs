@@ -7,23 +7,49 @@
 //!
 //! Output format, one font per section, plain text so the tool does not need a JSON library:
 //!
-//!     font <name> advance=<n> line_height=<n>
-//!     <code> <b0> <b1> <b2> <b3> <b4>
+//!     font <name> advance=<n> line_height=<n> width=<n> height=<n>
+//!     <code> <r0> <r1> ... <r(height-1)>
 //!
-//! Each entry is five row bytes; bit `1 << (2 - col)` is set when the pixel at column `col` (0 = left) is ink.
+//! Each entry is `height` row numbers. In row `r`, bit `1 << (width - 1 - col)` is set when the pixel at
+//! column `col` (0 = left) is ink -- the 3x5 faces are three columns, the rasterised ones six or eight.
 
-use embedded_gui::font::{get_vector_glyph, glyph_rows};
+use embedded_gui::font::{get_vector_glyph, glyph_rows, ASCII_6X10_FONT, ASCII_8X16_FONT};
 use embedded_gui::prelude::FontId;
 
 /// The fonts a design can ask for, in the order the picker offers them. `Vector` carries its scale in the
 /// variant, and the scale is part of what the advance is computed from, so each scale is its own section.
-const FONTS: [(&str, FontId); 5] = [
+const FONTS: [(&str, FontId); 7] = [
     ("Tiny3x5", FontId::Tiny3x5),
     ("Medium4x7", FontId::Medium4x7),
     ("Scaled6x10", FontId::Scaled6x10),
+    ("Mono6x10", FontId::Mono6x10),
+    ("Mono8x16", FontId::Mono8x16),
     ("Vector(2)", FontId::Vector(2)),
     ("Vector(3)", FontId::Vector(3)),
 ];
+
+/// One glyph as `height` row numbers of `width` bits, whichever kind of face it came from.
+///
+/// The 3x5 shapes are already that; a rasterised face stores whole bytes with the leftmost column in
+/// bit 7, so its rows are shifted down to `width` bits and the canvas indexes them the same way.
+fn rows_of(font: FontId, ch: char) -> (u8, u8, Vec<u8>) {
+    let unpack = |bitmap: &'static embedded_gui::font::BitmapFont| {
+        let width = bitmap.width;
+        let height = bitmap.height;
+        let rows = bitmap
+            .glyph_bytes(ch)
+            .unwrap_or(&[])
+            .iter()
+            .map(|byte| byte >> (8 - width))
+            .collect::<Vec<u8>>();
+        (width, height, rows)
+    };
+    match font {
+        FontId::Mono6x10 => unpack(&ASCII_6X10_FONT),
+        FontId::Mono8x16 => unpack(&ASCII_8X16_FONT),
+        other => (3, 5, glyph_rows(other, ch).to_vec()),
+    }
+}
 
 fn main() {
     // The vector face is not a bitmap at all: the engine strokes a polyline through these points, scaled by
@@ -44,11 +70,21 @@ fn main() {
 
     vector();
     for (name, font) in FONTS {
-        println!("font {name} advance={} line_height={}", font.advance(), font.line_height());
+        let (width, height, _) = rows_of(font, 'A');
+        println!(
+            "font {name} advance={} line_height={} width={width} height={height}",
+            font.advance(),
+            font.line_height()
+        );
         for code in 32u32..=126 {
             let ch = char::from_u32(code).unwrap_or('?');
-            let rows = glyph_rows(font, ch);
-            println!("{code} {} {} {} {} {}", rows[0], rows[1], rows[2], rows[3], rows[4]);
+            let (_, _, rows) = rows_of(font, ch);
+            let numbers = rows
+                .iter()
+                .map(|row| row.to_string())
+                .collect::<Vec<_>>()
+                .join(" ");
+            println!("{code} {numbers}");
         }
     }
 }

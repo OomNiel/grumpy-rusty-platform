@@ -5,10 +5,11 @@
  * reads `embedded_gui::font::glyph_rows` for every printable ASCII character. The canvas draws text from this
  * table so that what it shows is the font the board will use, not one that looks a bit like it.
  *
- * A glyph is five row bytes. In row `r`, bit `1 << (2 - col)` is set when the pixel at column `col`
- * (0 = leftmost of three) is ink -- the walk is `PackedFont::draw_glyph` in the crate's `font.rs`. The fonts
- * differ in `advance` and `lineHeight` (which is what spaces characters and lines), and in almost nothing
- * else: the tables are shared, except that `Medium4x7` spells `*` and `@` differently.
+ * A glyph is `height` row numbers. In row `r`, bit `1 << (width - 1 - col)` is set when the pixel at
+ * column `col` (0 = leftmost) is ink -- the walk is `PackedFont::draw_glyph` for the 3x5 faces and
+ * `BitmapFont::draw_glyph_to` for the rasterised ones, both in the crate's `font.rs`. Each font also
+ * carries its own `width`, `height`, `advance` and `lineHeight`, which is what the canvas measures
+ * text with.
  */
 
 /** The first character code the table covers. */
@@ -17,32 +18,32 @@ export const GLYPH_FIRST_CHAR = 32;
 /** The last character code the table covers. */
 export const GLYPH_LAST_CHAR = 126;
 
-/** How many rows a glyph has. */
-export const GLYPH_ROWS = 5;
-
-/** How many columns a glyph has. */
-export const GLYPH_COLUMNS = 3;
-
-/** One line of a glyph: three bits, leftmost column in bit 2. */
+/** One line of a glyph: `width` bits, leftmost column in bit `width - 1`. */
 export interface GlyphMetrics {
     /** Pixels from one character's origin to the next. */
     advance: number;
     /** Pixels from one line's origin to the next. */
     lineHeight: number;
+    /** Columns in a glyph -- three for the 3x5 faces, six or eight for a rasterised one. */
+    width: number;
+    /** Rows in a glyph -- five for the 3x5 faces, ten or sixteen for a rasterised one. */
+    height: number;
     /** Which of `TABLES` holds this font's glyphs. */
     table: number;
 }
 
 /** The crate's default font, and what anything unrecognised falls back to. */
-const DEFAULT_FONT: GlyphMetrics = { advance: 4, lineHeight: 6, table: 0 };
+const DEFAULT_FONT: GlyphMetrics = { advance: 4, lineHeight: 6, width: 3, height: 5, table: 0 };
 
 /** The fonts the designer offers, by the name the design stores. */
 export const GLYPH_FONTS: Record<string, GlyphMetrics> = {
     "Tiny3x5": DEFAULT_FONT,
-    "Medium4x7": { advance: 5, lineHeight: 8, table: 0 },
-    "Scaled6x10": { advance: 7, lineHeight: 11, table: 0 },
-    "Vector(2)": { advance: 16, lineHeight: 24, table: 0 },
-    "Vector(3)": { advance: 24, lineHeight: 36, table: 0 },
+    "Medium4x7": { advance: 5, lineHeight: 8, width: 3, height: 5, table: 0 },
+    "Scaled6x10": { advance: 7, lineHeight: 11, width: 3, height: 5, table: 0 },
+    "Mono6x10": { advance: 7, lineHeight: 12, width: 6, height: 10, table: 1 },
+    "Mono8x16": { advance: 9, lineHeight: 19, width: 8, height: 16, table: 2 },
+    "Vector(2)": { advance: 16, lineHeight: 24, width: 3, height: 5, table: 0 },
+    "Vector(3)": { advance: 24, lineHeight: 36, width: 3, height: 5, table: 0 },
 };
 
 /** Five row bytes per character, from `GLYPH_FIRST_CHAR`, one entry per distinct font table. */
@@ -144,11 +145,217 @@ const TABLE_0: readonly number[] = [
     0, 2, 5, 0, 0,
 ];
 
+const TABLE_1: readonly number[] = [
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 8, 8, 8, 8, 8, 0, 8, 0, 0,
+    0, 20, 20, 0, 0, 0, 0, 0, 0, 0,
+    0, 30, 2, 4, 8, 8, 0, 8, 0, 0,
+    0, 4, 15, 20, 28, 7, 5, 30, 4, 0,
+    0, 56, 40, 58, 12, 30, 10, 14, 0, 0,
+    0, 14, 8, 8, 12, 22, 20, 14, 0, 0,
+    0, 8, 8, 0, 0, 0, 0, 0, 0, 0,
+    4, 8, 8, 8, 8, 8, 8, 4, 0, 0,
+    8, 8, 4, 4, 4, 4, 8, 8, 0, 0,
+    0, 42, 28, 28, 42, 0, 0, 0, 0, 0,
+    0, 0, 0, 8, 8, 62, 8, 8, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 8, 8, 8,
+    0, 0, 0, 0, 0, 12, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 8, 0, 0,
+    0, 4, 8, 8, 24, 16, 16, 32, 0, 0,
+    0, 12, 18, 18, 22, 18, 18, 12, 0, 0,
+    0, 12, 4, 4, 4, 4, 4, 14, 0, 0,
+    0, 12, 18, 2, 6, 12, 24, 30, 0, 0,
+    0, 12, 18, 2, 12, 2, 2, 28, 0, 0,
+    0, 4, 4, 12, 12, 20, 30, 4, 0, 0,
+    0, 30, 16, 16, 28, 2, 2, 28, 0, 0,
+    0, 14, 24, 16, 30, 18, 18, 12, 0, 0,
+    0, 30, 2, 4, 4, 4, 12, 8, 0, 0,
+    0, 12, 18, 18, 12, 18, 18, 12, 0, 0,
+    0, 12, 18, 18, 30, 2, 6, 28, 0, 0,
+    0, 0, 0, 8, 0, 0, 0, 8, 0, 0,
+    0, 0, 0, 8, 0, 0, 0, 8, 8, 8,
+    0, 0, 0, 1, 14, 28, 3, 0, 0, 0,
+    0, 0, 0, 0, 62, 0, 62, 0, 0, 0,
+    0, 0, 0, 16, 14, 7, 24, 0, 0, 0,
+    0, 30, 2, 4, 8, 8, 0, 8, 0, 0,
+    0, 0, 12, 18, 22, 22, 22, 24, 12, 0,
+    0, 12, 12, 12, 18, 18, 30, 18, 0, 0,
+    0, 28, 18, 18, 28, 18, 18, 30, 0, 0,
+    0, 14, 16, 16, 16, 16, 16, 14, 0, 0,
+    0, 28, 18, 18, 18, 18, 18, 28, 0, 0,
+    0, 30, 16, 16, 30, 16, 16, 30, 0, 0,
+    0, 30, 16, 16, 30, 16, 16, 16, 0, 0,
+    0, 14, 16, 16, 22, 18, 18, 14, 0, 0,
+    0, 18, 18, 18, 30, 18, 18, 18, 0, 0,
+    0, 28, 8, 8, 8, 8, 8, 28, 0, 0,
+    0, 14, 2, 2, 2, 2, 2, 30, 0, 0,
+    0, 18, 20, 24, 24, 20, 20, 18, 0, 0,
+    0, 16, 16, 16, 16, 16, 16, 30, 0, 0,
+    0, 18, 30, 30, 30, 30, 18, 18, 0, 0,
+    0, 18, 26, 26, 22, 22, 22, 18, 0, 0,
+    0, 12, 18, 18, 18, 18, 18, 12, 0, 0,
+    0, 28, 18, 18, 28, 16, 16, 16, 0, 0,
+    0, 12, 18, 18, 18, 18, 18, 12, 2, 0,
+    0, 28, 18, 18, 28, 22, 18, 17, 0, 0,
+    0, 12, 18, 16, 14, 2, 18, 12, 0, 0,
+    0, 62, 8, 8, 8, 8, 8, 8, 0, 0,
+    0, 18, 18, 18, 18, 18, 18, 12, 0, 0,
+    0, 18, 18, 12, 12, 12, 12, 12, 0, 0,
+    0, 34, 34, 42, 54, 20, 20, 20, 0, 0,
+    0, 18, 18, 12, 12, 12, 18, 18, 0, 0,
+    0, 34, 20, 20, 8, 8, 8, 8, 0, 0,
+    0, 30, 2, 4, 4, 8, 16, 30, 0, 0,
+    12, 8, 8, 8, 8, 8, 8, 12, 0, 0,
+    0, 32, 16, 16, 24, 8, 8, 4, 0, 0,
+    12, 4, 4, 4, 4, 4, 4, 12, 0, 0,
+    0, 8, 52, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 62,
+    16, 8, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 28, 2, 30, 18, 30, 0, 0,
+    16, 16, 16, 28, 18, 18, 18, 28, 0, 0,
+    0, 0, 0, 14, 16, 16, 16, 14, 0, 0,
+    2, 2, 2, 14, 18, 18, 18, 14, 0, 0,
+    0, 0, 0, 12, 18, 30, 16, 14, 0, 0,
+    6, 8, 8, 30, 8, 8, 8, 8, 0, 0,
+    0, 0, 0, 14, 18, 18, 18, 14, 2, 12,
+    16, 16, 16, 30, 18, 18, 18, 18, 0, 0,
+    8, 0, 0, 24, 8, 8, 8, 62, 0, 0,
+    4, 0, 0, 12, 4, 4, 4, 4, 4, 28,
+    16, 16, 16, 18, 20, 24, 20, 18, 0, 0,
+    56, 8, 8, 8, 8, 8, 8, 6, 0, 0,
+    0, 0, 0, 31, 21, 21, 21, 21, 0, 0,
+    0, 0, 0, 30, 18, 18, 18, 18, 0, 0,
+    0, 0, 0, 12, 18, 18, 18, 12, 0, 0,
+    0, 0, 0, 28, 18, 18, 18, 28, 16, 16,
+    0, 0, 0, 14, 18, 18, 18, 14, 2, 2,
+    0, 0, 0, 14, 8, 8, 8, 8, 0, 0,
+    0, 0, 0, 30, 16, 14, 2, 30, 0, 0,
+    0, 0, 8, 30, 8, 8, 8, 14, 0, 0,
+    0, 0, 0, 18, 18, 18, 18, 30, 0, 0,
+    0, 0, 0, 18, 18, 12, 12, 12, 0, 0,
+    0, 0, 0, 34, 42, 20, 20, 20, 0, 0,
+    0, 0, 0, 18, 12, 12, 12, 18, 0, 0,
+    0, 0, 0, 18, 18, 12, 12, 8, 8, 24,
+    0, 0, 0, 30, 4, 12, 8, 30, 0, 0,
+    12, 8, 8, 16, 8, 8, 8, 12, 0, 0,
+    8, 8, 8, 8, 8, 8, 8, 8, 8, 0,
+    24, 8, 8, 4, 8, 8, 8, 24, 0, 0,
+    0, 0, 0, 0, 28, 3, 0, 0, 0, 0,
+];
+
+const TABLE_2: readonly number[] = [
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 16, 16, 16, 16, 16, 16, 0, 16, 16, 0, 0, 0, 0, 0,
+    0, 0, 40, 40, 40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 28, 34, 2, 12, 24, 16, 0, 16, 16, 0, 0, 0, 0, 0,
+    0, 0, 16, 56, 84, 80, 112, 28, 20, 84, 56, 16, 16, 0, 0, 0,
+    0, 0, 96, 144, 144, 100, 24, 108, 18, 18, 12, 0, 0, 0, 0, 0,
+    0, 0, 28, 32, 32, 48, 48, 74, 78, 100, 58, 0, 0, 0, 0, 0,
+    0, 0, 16, 16, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 12, 8, 8, 16, 16, 16, 16, 16, 8, 8, 12, 0, 0, 0, 0,
+    0, 48, 16, 16, 8, 8, 8, 8, 8, 16, 16, 48, 0, 0, 0, 0,
+    0, 0, 16, 84, 56, 56, 84, 16, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 16, 16, 16, 254, 16, 16, 16, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 16, 16, 32, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 56, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 16, 16, 0, 0, 0, 0, 0,
+    0, 0, 2, 4, 4, 8, 8, 16, 16, 32, 32, 64, 0, 0, 0, 0,
+    0, 0, 60, 36, 66, 66, 74, 66, 66, 36, 60, 0, 0, 0, 0, 0,
+    0, 0, 112, 16, 16, 16, 16, 16, 16, 16, 124, 0, 0, 0, 0, 0,
+    0, 0, 60, 66, 2, 2, 4, 8, 16, 32, 126, 0, 0, 0, 0, 0,
+    0, 0, 60, 66, 2, 2, 28, 2, 2, 66, 60, 0, 0, 0, 0, 0,
+    0, 0, 12, 12, 20, 52, 36, 68, 126, 4, 4, 0, 0, 0, 0, 0,
+    0, 0, 124, 64, 64, 124, 6, 2, 2, 70, 60, 0, 0, 0, 0, 0,
+    0, 0, 28, 34, 64, 92, 102, 66, 66, 38, 60, 0, 0, 0, 0, 0,
+    0, 0, 126, 6, 4, 4, 8, 8, 16, 16, 32, 0, 0, 0, 0, 0,
+    0, 0, 60, 66, 66, 66, 60, 66, 66, 66, 60, 0, 0, 0, 0, 0,
+    0, 0, 60, 100, 66, 66, 70, 58, 2, 68, 56, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 16, 16, 0, 0, 16, 16, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 16, 16, 0, 0, 16, 16, 32, 0, 0, 0, 0,
+    0, 0, 0, 0, 2, 28, 96, 96, 28, 2, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 126, 0, 126, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 64, 56, 6, 6, 56, 64, 0, 0, 0, 0, 0, 0,
+    0, 0, 28, 34, 2, 12, 24, 16, 0, 16, 16, 0, 0, 0, 0, 0,
+    0, 0, 0, 28, 38, 66, 78, 82, 82, 78, 96, 32, 28, 0, 0, 0,
+    0, 0, 24, 24, 24, 36, 36, 36, 60, 66, 66, 0, 0, 0, 0, 0,
+    0, 0, 124, 66, 66, 66, 124, 66, 66, 66, 124, 0, 0, 0, 0, 0,
+    0, 0, 28, 34, 64, 64, 64, 64, 64, 34, 28, 0, 0, 0, 0, 0,
+    0, 0, 120, 68, 66, 66, 66, 66, 66, 68, 120, 0, 0, 0, 0, 0,
+    0, 0, 126, 64, 64, 64, 126, 64, 64, 64, 126, 0, 0, 0, 0, 0,
+    0, 0, 126, 64, 64, 64, 126, 64, 64, 64, 64, 0, 0, 0, 0, 0,
+    0, 0, 28, 34, 64, 64, 70, 66, 66, 34, 28, 0, 0, 0, 0, 0,
+    0, 0, 66, 66, 66, 66, 126, 66, 66, 66, 66, 0, 0, 0, 0, 0,
+    0, 0, 124, 16, 16, 16, 16, 16, 16, 16, 124, 0, 0, 0, 0, 0,
+    0, 0, 28, 4, 4, 4, 4, 4, 4, 68, 56, 0, 0, 0, 0, 0,
+    0, 0, 66, 68, 72, 80, 112, 72, 76, 68, 66, 0, 0, 0, 0, 0,
+    0, 0, 64, 64, 64, 64, 64, 64, 64, 64, 126, 0, 0, 0, 0, 0,
+    0, 0, 66, 102, 102, 90, 90, 90, 66, 66, 66, 0, 0, 0, 0, 0,
+    0, 0, 98, 98, 82, 82, 90, 74, 74, 70, 70, 0, 0, 0, 0, 0,
+    0, 0, 60, 36, 66, 66, 66, 66, 66, 36, 60, 0, 0, 0, 0, 0,
+    0, 0, 124, 66, 66, 66, 124, 64, 64, 64, 64, 0, 0, 0, 0, 0,
+    0, 0, 60, 36, 66, 66, 66, 66, 66, 38, 60, 4, 4, 0, 0, 0,
+    0, 0, 124, 66, 66, 66, 124, 68, 66, 66, 65, 0, 0, 0, 0, 0,
+    0, 0, 60, 66, 64, 96, 60, 2, 2, 66, 60, 0, 0, 0, 0, 0,
+    0, 0, 254, 16, 16, 16, 16, 16, 16, 16, 16, 0, 0, 0, 0, 0,
+    0, 0, 66, 66, 66, 66, 66, 66, 66, 66, 60, 0, 0, 0, 0, 0,
+    0, 0, 66, 66, 36, 36, 36, 36, 24, 24, 24, 0, 0, 0, 0, 0,
+    0, 0, 130, 146, 146, 170, 170, 170, 108, 68, 68, 0, 0, 0, 0, 0,
+    0, 0, 66, 36, 36, 24, 24, 24, 36, 36, 66, 0, 0, 0, 0, 0,
+    0, 0, 130, 68, 40, 40, 16, 16, 16, 16, 16, 0, 0, 0, 0, 0,
+    0, 0, 126, 6, 4, 8, 24, 16, 32, 96, 126, 0, 0, 0, 0, 0,
+    0, 24, 16, 16, 16, 16, 16, 16, 16, 16, 16, 24, 0, 0, 0, 0,
+    0, 0, 64, 32, 32, 16, 16, 8, 8, 4, 4, 2, 0, 0, 0, 0,
+    0, 48, 16, 16, 16, 16, 16, 16, 16, 16, 16, 48, 0, 0, 0, 0,
+    0, 0, 48, 72, 132, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 254, 0, 0,
+    0, 16, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 56, 68, 4, 60, 68, 68, 60, 0, 0, 0, 0, 0,
+    0, 64, 64, 64, 120, 68, 68, 68, 68, 68, 120, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 56, 100, 64, 64, 64, 96, 60, 0, 0, 0, 0, 0,
+    0, 4, 4, 4, 60, 68, 68, 68, 68, 68, 60, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 56, 100, 68, 124, 64, 68, 56, 0, 0, 0, 0, 0,
+    0, 12, 16, 16, 124, 16, 16, 16, 16, 16, 16, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 60, 68, 68, 68, 68, 68, 60, 4, 36, 24, 0, 0,
+    0, 64, 64, 64, 88, 100, 68, 68, 68, 68, 68, 0, 0, 0, 0, 0,
+    0, 16, 0, 0, 112, 16, 16, 16, 16, 16, 124, 0, 0, 0, 0, 0,
+    0, 8, 0, 0, 56, 8, 8, 8, 8, 8, 8, 8, 8, 48, 0, 0,
+    0, 64, 64, 64, 68, 72, 80, 96, 80, 72, 68, 0, 0, 0, 0, 0,
+    0, 112, 16, 16, 16, 16, 16, 16, 16, 16, 12, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 124, 84, 84, 84, 84, 84, 84, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 88, 100, 68, 68, 68, 68, 68, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 56, 68, 68, 68, 68, 68, 56, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 120, 68, 68, 68, 68, 68, 120, 64, 64, 64, 0, 0,
+    0, 0, 0, 0, 60, 68, 68, 68, 68, 68, 60, 4, 4, 4, 0, 0,
+    0, 0, 0, 0, 60, 50, 32, 32, 32, 32, 32, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 56, 68, 64, 56, 4, 68, 56, 0, 0, 0, 0, 0,
+    0, 0, 16, 16, 124, 16, 16, 16, 16, 16, 28, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 68, 68, 68, 68, 68, 68, 60, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 68, 68, 40, 40, 40, 16, 16, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 130, 130, 84, 84, 108, 40, 40, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 68, 40, 40, 16, 40, 40, 68, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 68, 68, 40, 40, 40, 48, 16, 16, 32, 96, 0, 0,
+    0, 0, 0, 0, 124, 4, 8, 16, 32, 64, 124, 0, 0, 0, 0, 0,
+    0, 28, 16, 16, 16, 16, 96, 16, 16, 16, 16, 28, 0, 0, 0, 0,
+    0, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 0, 0, 0,
+    0, 112, 16, 16, 16, 16, 12, 16, 16, 16, 16, 112, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 112, 14, 0, 0, 0, 0, 0, 0, 0, 0,
+];
+
 /** Every distinct table, in the order the fonts above point at them. */
-const TABLES: readonly (readonly number[])[] = [TABLE_0];
+const TABLES: readonly (readonly number[])[] = [TABLE_0, TABLE_1, TABLE_2];
+
+/** How many columns a glyph of this font has. */
+export function glyphColumns(font: string): number {
+    return glyphMetrics(font).width;
+}
+
+/** How many rows a glyph of this font has. */
+export function glyphRowCount(font: string): number {
+    return glyphMetrics(font).height;
+}
 
 /**
- * The five row bytes of one character in the crate's glyph table for a font.
+ * The row numbers of one character in the crate's glyph table for a font.
  *
  * A character outside the table answers with the crate's own fallback, `?` -- which is what `glyph_rows`
  * does, and the canvas has to agree with the board about what an unsupported character looks like.
@@ -158,8 +365,8 @@ export function glyphRows(font: string, ch: string): readonly number[] {
     const table = TABLES[metrics.table] ?? TABLE_0;
     const code = ch.codePointAt(0) ?? 0;
     const wanted = code >= GLYPH_FIRST_CHAR && code <= GLYPH_LAST_CHAR ? code : '?'.codePointAt(0) ?? 0;
-    const start = (wanted - GLYPH_FIRST_CHAR) * GLYPH_ROWS;
-    return table.slice(start, start + GLYPH_ROWS);
+    const start = (wanted - GLYPH_FIRST_CHAR) * metrics.height;
+    return table.slice(start, start + metrics.height);
 }
 
 /** The metrics of a font the design names, falling back to the crate's own default (`Tiny3x5`). */

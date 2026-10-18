@@ -417,11 +417,17 @@ pub fn label_ink_box(font: FontId, glyphs: usize, scale: u32) -> (i32, i32) {
     let block = label_block(font, scale);
     let advance = font.advance() as i32 * scale.max(1) as i32;
     let glyphs = glyphs.max(1) as i32;
-    (3 * block + (glyphs - 1) * advance, 5 * block)
+    let (glyph_width, glyph_height) = crate::font::glyph_ink_box(font, '0');
+    (
+        i32::from(glyph_width) * block + (glyphs - 1) * advance,
+        i32::from(glyph_height) * block,
+    )
 }
 
 /// How many pixels of a numeral one glyph pixel of `font` covers, at `scale`.
 pub fn label_block(font: FontId, scale: u32) -> i32 {
+    // Two faces draw a glyph pixel as a block of their own: `Scaled6x10` is the 3x5 table at 2x2, and
+    // a rasterised face is already the size it says it is. Everything else is one pixel per bit.
     let base = if font == FontId::Scaled6x10 { 2 } else { 1 };
     base * scale.max(1) as i32
 }
@@ -438,9 +444,10 @@ pub fn label_block(font: FontId, scale: u32) -> i32 {
 ///   per bit (`render/mod.rs`), so a numeral has to follow the same rule or it is half the size of
 ///   the same face everywhere else on the screen.
 ///
-/// `packed_font` gives the 3x5 table for the faces that are not packed (a vector or bitmap font),
-/// which is what makes a scaled numeral read as a blocky digit rather than nothing at all -- and the
-/// designer's canvas draws the same pixels from the same tables.
+/// `for_each_glyph_pixel` gives the pixels of the face the design chose -- the 3x5 table for the
+/// packed faces, the rasterised glyphs for the two `Mono` faces -- which is what makes a scaled
+/// numeral read as a digit of *that* face rather than as a blocky 3x5 one, and the designer's canvas
+/// draws the same pixels from the same tables.
 fn draw_scaled_text<D, C>(
     ctx: &mut RenderCtx<'_, D, C>,
     x: i32,
@@ -454,15 +461,14 @@ where
     D: embedded_graphics_core::draw_target::DrawTarget<Color = Rgb565>,
     C: Compositor<D>,
 {
-    let packed = packed_font(font);
     let block = label_block(font, scale);
     let advance = font.advance() as i32 * scale.max(1) as i32;
     let (width, ink_height) = label_ink_box(font, text.chars().count(), scale);
     let top = y - ink_height / 2;
     let mut left = x - width / 2;
     for ch in text.chars() {
-        let mut pixels: heapless::Vec<(i32, i32), 64> = heapless::Vec::new();
-        packed.draw_glyph(ch, &mut |dx, dy| {
+        let mut pixels: heapless::Vec<(i32, i32), 256> = heapless::Vec::new();
+        crate::font::for_each_glyph_pixel(font, ch, &mut |dx, dy| {
             let _ = pixels.push((dx, dy));
         });
         for (dx, dy) in pixels {

@@ -66,6 +66,36 @@ pub static ASCII_4X7_FONT: PackedFont = PackedFont {
     glyphs: &ASCII_4X7_GLYPHS,
 };
 
+/// The first of the two rasterised faces: DejaVu Sans Mono at 9 px, a 6x10 cell.
+///
+/// Generated, not drawn (`assets/fonts/from_truetype.py`), because 3x5 is as far as hand-drawn
+/// glyphs go before text stops being readable at arm's length. The cell is 6 wide with a 7-pixel
+/// advance, so a 480-pixel panel holds 68 characters a line, and the ink is 10 rows in a 12-row
+/// line height.
+pub static ASCII_6X10_FONT: BitmapFont = BitmapFont {
+    width: 6,
+    height: 10,
+    advance: 7,
+    line_height: 12,
+    first_char: 32,
+    bytes_per_row: 1,
+    glyphs: &ASCII_6X10_GLYPHS,
+};
+
+/// The second rasterised face: DejaVu Sans Mono at 12 px, an 8x16 cell.
+///
+/// The one to read at a glance: 9-pixel advance (53 characters across the 480-pixel panel) and a
+/// 19-pixel line height, so two lines of it fit a button with room to spare.
+pub static ASCII_8X16_FONT: BitmapFont = BitmapFont {
+    width: 8,
+    height: 16,
+    advance: 9,
+    line_height: 19,
+    first_char: 32,
+    bytes_per_row: 1,
+    glyphs: &ASCII_8X16_GLYPHS,
+};
+
 /// Bounding-box rendering operation for [`BitmapFont`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GlyphOp {
@@ -278,6 +308,10 @@ pub enum FontId {
     Tiny3x5,
     Medium4x7,
     Scaled6x10,
+    /// DejaVu Sans Mono rasterised into a 6x10 cell (advance 7, line height 12).
+    Mono6x10,
+    /// DejaVu Sans Mono rasterised into an 8x16 cell (advance 9, line height 19).
+    Mono8x16,
     Vector(u8),
     Custom(&'static PackedFont),
     Bitmap(&'static BitmapFont),
@@ -292,6 +326,8 @@ impl core::fmt::Debug for FontId {
             Self::Tiny3x5 => write!(f, "Tiny3x5"),
             Self::Medium4x7 => write!(f, "Medium4x7"),
             Self::Scaled6x10 => write!(f, "Scaled6x10"),
+            Self::Mono6x10 => write!(f, "Mono6x10"),
+            Self::Mono8x16 => write!(f, "Mono8x16"),
             Self::Vector(scale) => f.debug_tuple("Vector").field(scale).finish(),
             Self::Custom(font) => f.debug_tuple("Custom").field(font).finish(),
             Self::Bitmap(font) => f.debug_tuple("Bitmap").field(font).finish(),
@@ -308,6 +344,8 @@ impl PartialEq for FontId {
             (Self::Tiny3x5, Self::Tiny3x5) => true,
             (Self::Medium4x7, Self::Medium4x7) => true,
             (Self::Scaled6x10, Self::Scaled6x10) => true,
+            (Self::Mono6x10, Self::Mono6x10) => true,
+            (Self::Mono8x16, Self::Mono8x16) => true,
             (Self::Vector(a), Self::Vector(b)) => a == b,
             (Self::Custom(a), Self::Custom(b)) => core::ptr::eq(*a, *b),
             (Self::Bitmap(a), Self::Bitmap(b)) => core::ptr::eq(*a, *b),
@@ -330,6 +368,8 @@ impl FontId {
             Self::Tiny3x5 => 4,
             Self::Medium4x7 => 5,
             Self::Scaled6x10 => 7,
+            Self::Mono6x10 => ASCII_6X10_FONT.advance as u32,
+            Self::Mono8x16 => ASCII_8X16_FONT.advance as u32,
             Self::Vector(scale) => (8 * scale) as u32,
             Self::Custom(font) => font.advance as u32,
             Self::Bitmap(font) => font.advance as u32,
@@ -344,6 +384,8 @@ impl FontId {
             Self::Tiny3x5 => 6,
             Self::Medium4x7 => 8,
             Self::Scaled6x10 => 11,
+            Self::Mono6x10 => ASCII_6X10_FONT.line_height as u32,
+            Self::Mono8x16 => ASCII_8X16_FONT.line_height as u32,
             Self::Vector(scale) => (12 * scale) as u32,
             Self::Custom(font) => font.line_height as u32,
             Self::Bitmap(font) => font.line_height as u32,
@@ -359,6 +401,10 @@ pub const fn packed_font(font: FontId) -> &'static PackedFont {
         FontId::Tiny3x5 => &ASCII_3X5_FONT,
         FontId::Medium4x7 => &ASCII_4X7_FONT,
         FontId::Scaled6x10 => &ASCII_3X5_FONT,
+        // Not packed at all: `glyph_rows` is the 3x5 API, and these two are `BitmapFont`s. They draw
+        // through `Bitmap`'s own path (see `for_each_glyph_pixel`), and this answer is only what a
+        // caller that insists on the 3x5 shape gets.
+        FontId::Mono6x10 | FontId::Mono8x16 => &ASCII_3X5_FONT,
         FontId::Vector(_) => &ASCII_3X5_FONT,
         FontId::Custom(font) => font,
         FontId::Bitmap(_) => &ASCII_3X5_FONT,
@@ -533,6 +579,35 @@ pub fn get_vector_glyph(ch: char) -> &'static [(u8, u8)] {
     }
 }
 
+/// The ink box of one glyph, in pixels: `(width, height)`.
+///
+/// The 3x5 faces are three columns by five rows whatever the glyph; a rasterised face says so in its
+/// own table. Anything that centres text by its ink -- the clock's numerals -- needs this rather than
+/// an assumption, or a numeral is centred on the wrong box on a face it was not measured for.
+pub fn glyph_ink_box(font: FontId, _ch: char) -> (u8, u8) {
+    match font {
+        FontId::Mono6x10 => (ASCII_6X10_FONT.width, ASCII_6X10_FONT.height),
+        FontId::Mono8x16 => (ASCII_8X16_FONT.width, ASCII_8X16_FONT.height),
+        FontId::Bitmap(bitmap) => (bitmap.width, bitmap.height),
+        _ => (3, 5),
+    }
+}
+
+/// Walks the set pixels of one glyph, relative to its top-left, whatever kind of face it is.
+///
+/// The 3x5 shapes, the scaled and the vector variants answer through `packed_font`; the rasterised
+/// faces answer through their own `BitmapFont`. A caller that draws text by hand -- the clock's
+/// numerals, scaled up by the design's `label_scale` -- uses this so it draws what the face really has.
+pub fn for_each_glyph_pixel(font: FontId, ch: char, draw: &mut dyn FnMut(i32, i32)) {
+    match font {
+        FontId::Mono6x10 => ASCII_6X10_FONT.draw_glyph(ch, draw),
+        FontId::Mono8x16 => ASCII_8X16_FONT.draw_glyph(ch, draw),
+        FontId::Bitmap(bitmap) => bitmap.draw_glyph(ch, draw),
+        FontId::Dynamic(dyn_font) => dyn_font.draw_glyph(ch, draw),
+        _ => packed_font(font).draw_glyph(ch, draw),
+    }
+}
+
 pub fn glyph_rows(font: FontId, ch: char) -> [u8; 5] {
     let packed = packed_font(font);
     let code = ch as u32;
@@ -692,6 +767,71 @@ mod tests {
                     glyph_rows(font, ch),
                     MISSING_GLYPH,
                     "{font:?} has no glyph for {ch:?} ({code})"
+                );
+            }
+        }
+    }
+
+    /// The rasterised faces are really there: bigger ink than 3x5, and their own metrics.
+    ///
+    /// A generated table can be empty, or shifted off its own cell, without anything failing to
+    /// compile -- so the shape is checked against what the design was told it would get.
+    #[test]
+    fn the_rasterised_faces_have_their_own_shape() {
+        assert_eq!(glyph_ink_box(FontId::Mono6x10, 'M'), (6, 10));
+        assert_eq!(glyph_ink_box(FontId::Mono8x16, 'M'), (8, 16));
+        assert_eq!(FontId::Mono6x10.advance(), 7);
+        assert_eq!(FontId::Mono6x10.line_height(), 12);
+        assert_eq!(FontId::Mono8x16.advance(), 9);
+        assert_eq!(FontId::Mono8x16.line_height(), 19);
+
+        // Every printable character is drawn, and drawn inside its cell.
+        for font in [FontId::Mono6x10, FontId::Mono8x16] {
+            let (width, height) = glyph_ink_box(font, 'M');
+            for code in 33u8..=126u8 {
+                let ch = code as char;
+                let mut ink = 0usize;
+                let mut outside = 0usize;
+                for_each_glyph_pixel(font, ch, &mut |dx, dy| {
+                    ink += 1;
+                    if dx < 0 || dy < 0 || dx >= i32::from(width) || dy >= i32::from(height) {
+                        outside += 1;
+                    }
+                });
+                assert!(ink > 0, "{font:?} draws nothing for {ch:?}");
+                assert_eq!(outside, 0, "{font:?} draws {ch:?} outside its cell");
+            }
+        }
+
+        // The ink of a capital is taller than a 3x5 face's whole cell, which is the reason for the
+        // exercise: at 8x16 a line of text is legible at arm's length.
+        let mut top = i32::MAX;
+        let mut bottom = i32::MIN;
+        for_each_glyph_pixel(FontId::Mono8x16, 'M', &mut |_, dy| {
+            top = top.min(dy);
+            bottom = bottom.max(dy);
+        });
+        assert!(
+            bottom - top + 1 > 5,
+            "the 8x16 capital is {} rows",
+            bottom - top + 1
+        );
+    }
+
+    /// The two faces draw lower case differently from upper -- the same property the 3x5 table has.
+    #[test]
+    fn the_rasterised_faces_have_both_cases() {
+        for font in [FontId::Mono6x10, FontId::Mono8x16] {
+            for (lower, upper) in [('a', 'A'), ('e', 'E'), ('g', 'G'), ('q', 'Q')] {
+                let real = |ch: char| {
+                    let mut pixels = Vec::new();
+                    for_each_glyph_pixel(font, ch, &mut |dx, dy| pixels.push((dx, dy)));
+                    pixels
+                };
+                assert_ne!(
+                    real(lower),
+                    real(upper),
+                    "{font:?}: {lower:?} is drawn as {upper:?}"
                 );
             }
         }

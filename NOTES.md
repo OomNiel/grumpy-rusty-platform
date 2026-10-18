@@ -7373,3 +7373,73 @@ labelled "Press me" used to draw as "PRESS ME"). That is the honest fix, but it 
 - goldens re-recorded twice (the generated `main.rs` gained the console reader and the wall clock).
 - every release was built for the CYD, packaged, installed and `cmp`-verified against the source, with the
   previous version's folder removed; `retest/codegen` was re-vendored and rebuilt each time.
+
+## §148 — Two real faces, and why the 5x7 is not here (0.9.0, 2026-10-18)
+
+Asked for as *"Those fonts are really terrible ... add 5×7 + 8×16; face: DejaVu Sans Mono"*.
+
+### What was actually wrong
+
+Every built-in was a 3x5 bitmap. `Medium4x7` was the same 3x5 drawing in a 5x8 cell — the name says the cell,
+not the ink — and `Scaled6x10` was the same table in 2x2 blocks. Nothing in the crate had a curve, so nothing
+could look good above about eight pixels.
+
+### The measurement that changed the plan
+
+DejaVu Sans Mono, rasterised at each size and measured over printable ASCII:
+
+| em | ascent | descent | widest glyph | verdict |
+| --- | --- | --- | --- | --- |
+| 6-7 px | 5-6 | 1-2 | 5 | mush: `a`, `e`, `s` are the same blob |
+| 9 px | 8 | 2 | 6 | legible |
+| 12 px | 10 | 3 | 8 | very legible |
+| 13 px | 11 | 3 | 9 | legible, but a 9-wide glyph will not fit an 8-wide cell |
+
+**FreeType's monochrome rasteriser is the whole difference.** The anti-aliased render at 6-7 px collapsed the
+letterforms; `getmask2(..., mode='1')` grid-fits stems to whole pixels and gave a readable 6x10 at a 9 px em.
+Everything small was first rendered the anti-aliased way and thrown away.
+
+So the faces shipped are **6x10** (advance 7, line 12) and **8x16** (advance 9, line 19), not 5x7. A 5x7 works
+when the glyphs are *drawn* at 5x7 — the classic LCD fonts — and not when an outline face is squeezed to it.
+
+### How a face is built
+
+`assets/fonts/from_truetype.py` rasterises the TTF into `key:rows` text, committed beside the 3x5 overrides and
+read by the same build script. `BitmapFont` wants one byte per row with the leftmost column in bit 7, so
+`build.rs` emits flat `[u8; 95 * height]` tables; the 3x5 faces keep their `[[u8; 5]; 95]` packing.
+
+Three seams had to be opened, and each was a latent 3x5 assumption:
+
+1. **`build.rs` never rebuilt on a font edit.** It printed only `rerun-if-env-changed`, and once any `rerun-if-*`
+   is printed cargo stops scanning the package: a corrected glyph would not have reached the board. Fixed for the
+   whole font folder.
+2. **The clock's numerals.** `label_ink_box` hard-coded three columns by five rows and `draw_scaled_text` drew
+   from the packed table, so a big face would have drawn 3x5 digits in a box measured for the big one.
+   `font::glyph_ink_box` and `font::for_each_glyph_pixel` now answer for any face.
+3. **The canvas.** `glyphs.ts` carried `GLYPH_ROWS = 5` and `GLYPH_COLUMNS = 3` as module constants. The
+   generator now emits each font's own `width`/`height`, the tables are per distinct *face* (three of them), and
+   the two draw sites read the shape instead of assuming it.
+
+The dumper (`tests/sim/src/bin/glyphs.rs`) also learned to read a `BitmapFont`: its `glyph_bytes` rows are shifted
+down to `width` bits so the canvas indexes every face the same way.
+
+### Two traps met on the way
+
+- **`key:rows` cannot be parsed with `split_once(':')`.** The `:` character's own row is `::010,010,...`, so its
+  key came back empty and the colon silently vanished from every face. `rsplit_once` — in the build script and in
+  the Python that checks it.
+- **`glyph-table.js` used a scratch `CARGO_HOME`** under `tests/tmp`, which the clean-out deleted; offline builds
+  then failed with "no matching package named `embedded-graphics`". It now uses the ambient cargo home: it is a
+  maintenance command, not a test.
+
+### Cost
+
+About **2.5 KB of flash** for both faces, linked once because the renderer names them. `Tiny3x5` stays the
+default, so no existing design changes appearance.
+
+### Tests
+
+crate **308** (up from 306): each rasterised face has its own shape, every printable character draws ink inside
+its cell, lower case differs from upper, and the renderer draws them taller than 3x5. Extension **971** — the
+generated-table checks moved to per-font width/height and three tables. The CYD demo and `retest` both build with
+`FontId::Mono8x16` in a design.

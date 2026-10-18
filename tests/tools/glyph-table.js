@@ -18,11 +18,15 @@
 
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const { spawnSync } = require('child_process');
 const { repoRoot } = require('../lib/harness');
 
 const TARGET = path.join(repoRoot(), 'webview', 'designer', 'glyphs.ts');
-const CARGO_HOME = path.join(repoRoot(), 'tests', 'tmp', 'cargo-home');
+// The ambient cargo home, not a scratch one: this is a maintenance command rather than a test, and
+// the crate it builds shares the workspace's own dependencies, which are already in that cache. A
+// scratch home made it fail outright after a clean-out, because it had nothing to build from offline.
+const CARGO_HOME = process.env.CARGO_HOME ?? path.join(os.homedir(), '.cargo');
 const TARGET_DIR = path.join(repoRoot(), 'tests', 'out', 'sim-target');
 const FIRST_CHAR = 32;
 const LAST_CHAR = 126;
@@ -63,14 +67,23 @@ function readFonts() {
         if (line.startsWith('font')) {
             inVector = false;
         }
-        const header = /^font (\S+) advance=(\d+) line_height=(\d+)$/.exec(line.trim());
+        const header = /^font (\S+) advance=(\d+) line_height=(\d+) width=(\d+) height=(\d+)$/.exec(line.trim());
         if (header !== null) {
-            fonts.push({ name: header[1], advance: Number(header[2]), lineHeight: Number(header[3]), rows: [] });
+            fonts.push({
+                name: header[1],
+                advance: Number(header[2]),
+                lineHeight: Number(header[3]),
+                width: Number(header[4]),
+                height: Number(header[5]),
+                rows: [],
+            });
             continue;
         }
-        const entry = /^(\d+) (\d+) (\d+) (\d+) (\d+) (\d+)$/.exec(line.trim());
+        const entry = /^(\d+)((?: \d+)*)$/.exec(line.trim());
         if (entry !== null && fonts.length > 0) {
-            fonts[fonts.length - 1].rows.push(entry.slice(2).map(Number));
+            fonts[fonts.length - 1].rows.push(
+                (entry[2] ?? '').trim().split(/\s+/).filter((n) => n !== '').map(Number),
+            );
         }
     }
     if (fonts.length === 0) {
@@ -80,6 +93,11 @@ function readFonts() {
         const expected = LAST_CHAR - FIRST_CHAR + 1;
         if (font.rows.length !== expected) {
             throw new Error(`${font.name}: ${font.rows.length} glyphs, expected ${expected}`);
+        }
+        for (const rows of font.rows) {
+            if (rows.length !== font.height) {
+                throw new Error(`${font.name}: a glyph has ${rows.length} rows, expected ${font.height}`);
+            }
         }
     }
     if (vectors.size !== LAST_CHAR - FIRST_CHAR + 1) {
@@ -107,7 +125,9 @@ function render(fonts, vectors) {
     const metrics = fonts
         .map((font) => {
             const table = tableOf(font.rows);
-            const entry = `{ advance: ${font.advance}, lineHeight: ${font.lineHeight}, table: ${table} }`;
+            const entry =
+                `{ advance: ${font.advance}, lineHeight: ${font.lineHeight}, width: ${font.width}, ` +
+                `height: ${font.height}, table: ${table} }`;
             return `    ${JSON.stringify(font.name)}: ${font.name === 'Tiny3x5' ? 'DEFAULT_FONT' : entry},`;
         })
         .join('\n');
@@ -134,10 +154,11 @@ function render(fonts, vectors) {
  * reads \`embedded_gui::font::glyph_rows\` for every printable ASCII character. The canvas draws text from this
  * table so that what it shows is the font the board will use, not one that looks a bit like it.
  *
- * A glyph is five row bytes. In row \`r\`, bit \`1 << (2 - col)\` is set when the pixel at column \`col\`
- * (0 = leftmost of three) is ink -- the walk is \`PackedFont::draw_glyph\` in the crate's \`font.rs\`. The fonts
- * differ in \`advance\` and \`lineHeight\` (which is what spaces characters and lines), and in almost nothing
- * else: the tables are shared, except that \`Medium4x7\` spells \`*\` and \`@\` differently.
+ * A glyph is \`height\` row numbers. In row \`r\`, bit \`1 << (width - 1 - col)\` is set when the pixel at
+ * column \`col\` (0 = leftmost) is ink -- the walk is \`PackedFont::draw_glyph\` for the 3x5 faces and
+ * \`BitmapFont::draw_glyph_to\` for the rasterised ones, both in the crate's \`font.rs\`. Each font also
+ * carries its own \`width\`, \`height\`, \`advance\` and \`lineHeight\`, which is what the canvas measures
+ * text with.
  */
 
 /** The first character code the table covers. */
@@ -146,24 +167,22 @@ export const GLYPH_FIRST_CHAR = ${FIRST_CHAR};
 /** The last character code the table covers. */
 export const GLYPH_LAST_CHAR = ${LAST_CHAR};
 
-/** How many rows a glyph has. */
-export const GLYPH_ROWS = 5;
-
-/** How many columns a glyph has. */
-export const GLYPH_COLUMNS = 3;
-
-/** One line of a glyph: three bits, leftmost column in bit 2. */
+/** One line of a glyph: \`width\` bits, leftmost column in bit \`width - 1\`. */
 export interface GlyphMetrics {
     /** Pixels from one character's origin to the next. */
     advance: number;
     /** Pixels from one line's origin to the next. */
     lineHeight: number;
+    /** Columns in a glyph -- three for the 3x5 faces, six or eight for a rasterised one. */
+    width: number;
+    /** Rows in a glyph -- five for the 3x5 faces, ten or sixteen for a rasterised one. */
+    height: number;
     /** Which of \`TABLES\` holds this font's glyphs. */
     table: number;
 }
 
 /** The crate's default font, and what anything unrecognised falls back to. */
-const DEFAULT_FONT: GlyphMetrics = { advance: ${tiny.advance}, lineHeight: ${tiny.lineHeight}, table: ${tableOf(tiny.rows)} };
+const DEFAULT_FONT: GlyphMetrics = { advance: ${tiny.advance}, lineHeight: ${tiny.lineHeight}, width: ${tiny.width}, height: ${tiny.height}, table: ${tableOf(tiny.rows)} };
 
 /** The fonts the designer offers, by the name the design stores. */
 export const GLYPH_FONTS: Record<string, GlyphMetrics> = {
@@ -176,8 +195,18 @@ ${packed}
 /** Every distinct table, in the order the fonts above point at them. */
 const TABLES: readonly (readonly number[])[] = [${tables.map((_, index) => `TABLE_${index}`).join(', ')}];
 
+/** How many columns a glyph of this font has. */
+export function glyphColumns(font: string): number {
+    return glyphMetrics(font).width;
+}
+
+/** How many rows a glyph of this font has. */
+export function glyphRowCount(font: string): number {
+    return glyphMetrics(font).height;
+}
+
 /**
- * The five row bytes of one character in the crate's glyph table for a font.
+ * The row numbers of one character in the crate's glyph table for a font.
  *
  * A character outside the table answers with the crate's own fallback, \`?\` -- which is what \`glyph_rows\`
  * does, and the canvas has to agree with the board about what an unsupported character looks like.
@@ -187,8 +216,8 @@ export function glyphRows(font: string, ch: string): readonly number[] {
     const table = TABLES[metrics.table] ?? TABLE_0;
     const code = ch.codePointAt(0) ?? 0;
     const wanted = code >= GLYPH_FIRST_CHAR && code <= GLYPH_LAST_CHAR ? code : '?'.codePointAt(0) ?? 0;
-    const start = (wanted - GLYPH_FIRST_CHAR) * GLYPH_ROWS;
-    return table.slice(start, start + GLYPH_ROWS);
+    const start = (wanted - GLYPH_FIRST_CHAR) * metrics.height;
+    return table.slice(start, start + metrics.height);
 }
 
 /** The metrics of a font the design names, falling back to the crate's own default (\`Tiny3x5\`). */

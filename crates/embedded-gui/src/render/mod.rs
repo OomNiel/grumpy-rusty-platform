@@ -1987,6 +1987,14 @@ where
                     last_point = Some((draw_x, draw_y));
                 }
             }
+            // The rasterised faces are `BitmapFont`s, so they draw through the same arm: one glyph
+            // implementation, reached by two names.
+            FontId::Mono6x10 => {
+                self.draw_char_with_font(x, y, ch, color, opacity, FontId::Bitmap(&crate::font::ASCII_6X10_FONT))?
+            }
+            FontId::Mono8x16 => {
+                self.draw_char_with_font(x, y, ch, color, opacity, FontId::Bitmap(&crate::font::ASCII_8X16_FONT))?
+            }
             FontId::Bitmap(bitmap_font) => {
                 use crate::font::GlyphOp;
                 let mut draw_err = Ok(());
@@ -2754,6 +2762,36 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The rasterised faces draw through the renderer, at their own size.
+    ///
+    /// `FontId::Mono6x10` and `Mono8x16` are `BitmapFont`s reached by another name, so this holds the
+    /// dispatch to what it promises: text drawn in them is as tall as the face says, not as tall as
+    /// the 3x5 fallback would have been.
+    #[test]
+    fn the_rasterised_faces_draw_at_their_own_size() {
+        let ink = |font: crate::font::FontId| {
+            let mut buf = crate::test_buffer::TestBuffer::new(60, 30);
+            let mut ctx = RenderCtx::new(&mut buf, Rect::new(0, 0, 60, 30));
+            ctx.draw_text_with_font(2, 2, "Hg", Rgb565::WHITE, font).unwrap();
+            let mut top = i32::MAX;
+            let mut bottom = i32::MIN;
+            for y in 0..30i32 {
+                for x in 0..60i32 {
+                    if buf.pixel_at(x, y) == Some(Rgb565::WHITE) {
+                        top = top.min(y);
+                        bottom = bottom.max(y);
+                    }
+                }
+            }
+            assert!(top <= bottom, "{font:?} drew nothing");
+            bottom - top + 1
+        };
+        // A 3x5 capital is five rows; the rasterised ones leave that behind, which is the point.
+        assert_eq!(ink(crate::font::FontId::Tiny3x5), 5);
+        assert!(ink(crate::font::FontId::Mono6x10) >= 7, "the 6x10 face draws taller than 3x5");
+        assert!(ink(crate::font::FontId::Mono8x16) >= 12, "and the 8x16 face taller again");
+    }
 
     #[test]
     fn test_transform2d_is_identity() {

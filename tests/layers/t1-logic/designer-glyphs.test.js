@@ -24,47 +24,60 @@ test('the canvas draws with the crate\'s own glyphs, and says where they came fr
     contains(SOURCE, 'GENERATED, DO NOT EDIT', 'the file announces itself as generated');
     contains(SOURCE, 'tests/tools/glyph-table.js', 'and names the tool that writes it');
     contains(SOURCE, 'glyph_rows', 'and the crate API it was read from');
-    contains(SOURCE, '1 << (2 - col)', 'and how a row byte is laid out');
+    contains(SOURCE, '1 << (width - 1 - col)', 'and how a row is laid out');
 
-    // What the crate prints for each font (`FontId::advance`/`line_height`), so a regeneration that changes a
-    // font's metrics is a visible diff rather than a silent one.
+    // What the crate prints for each font (`FontId::advance`/`line_height`, and the glyph's own
+    // width/height), so a regeneration that changes a font's metrics is a visible diff rather than a
+    // silent one.
     const metrics = [
-        ['Tiny3x5', 4, 6],
-        ['Medium4x7', 5, 8],
-        ['Scaled6x10', 7, 11],
-        ['Vector(2)', 16, 24],
-        ['Vector(3)', 24, 36],
+        ['Tiny3x5', 4, 6, 3, 5],
+        ['Medium4x7', 5, 8, 3, 5],
+        ['Scaled6x10', 7, 11, 3, 5],
+        ['Mono6x10', 7, 12, 6, 10],
+        ['Mono8x16', 9, 19, 8, 16],
+        ['Vector(2)', 16, 24, 3, 5],
+        ['Vector(3)', 24, 36, 3, 5],
     ];
-    contains(SOURCE, 'const DEFAULT_FONT: GlyphMetrics = { advance: 4, lineHeight: 6, table: 0 };',
-        'the crate\'s default (Tiny3x5) is stated once, and is the fallback');
-    for (const [name, advance, lineHeight] of metrics.slice(1)) {
+    contains(
+        SOURCE,
+        'const DEFAULT_FONT: GlyphMetrics = { advance: 4, lineHeight: 6, width: 3, height: 5, table: 0 };',
+        'the crate\'s default (Tiny3x5) is stated once, and is the fallback',
+    );
+    for (const [name, advance, lineHeight, width, height] of metrics.slice(1)) {
         contains(
             SOURCE,
-            `"${name}": { advance: ${advance}, lineHeight: ${lineHeight}, table: `,
+            `"${name}": { advance: ${advance}, lineHeight: ${lineHeight}, width: ${width}, ` +
+                `height: ${height}, table: `,
             `${name} keeps the crate's metrics`,
         );
     }
+    // The two rasterised faces are the whole point of the exercise: bigger ink than 3x5, and their own
+    // tables because their glyphs are their own.
+    contains(SOURCE, '"Mono8x16": { advance: 9, lineHeight: 19, width: 8, height: 16, table: 2 }',
+        'the 8x16 face has its own table');
+    contains(SOURCE, '"Mono6x10": { advance: 7, lineHeight: 12, width: 6, height: 10, table: 1 }',
+        'and the 6x10 face its own');
 });
 
-test('the fonts share one table when they spell every glyph the same way', () => {
-    // The generator keeps a table per *distinct* font, so it never ships five copies of the same
-    // ninety-five glyphs. Since 0.8.0 there is only one: the 4x7 overrides (`? ! * @`) now spell
-    // those four exactly as the base face does, which is why `Medium4x7` no longer needs a table of
-    // its own. The rule is still the interesting part -- a font whose glyphs differ must get its own
-    // table rather than being folded into the first -- and `glyph-table.js` dedupes by content.
+test('each distinct face gets one table, and the fonts that agree share it', () => {
+    // The generator keeps a table per *distinct* face, so it never ships seven copies of the same
+    // glyphs. Three faces exist: the drawn 3x5 one (which `Medium4x7`, `Scaled6x10` and both vector
+    // scales all spell the same way), the 6x10 raster and the 8x16 raster. The rule is what matters --
+    // a face whose glyphs differ must get its own table rather than being folded into the first -- and
+    // `glyph-table.js` dedupes by content.
     const tables = (SOURCE.match(/^const TABLE_\d+: readonly number\[\] = \[$/gm) ?? []).length;
-    equal(tables, 1, 'one table, shared by all five fonts');
-    contains(SOURCE, '0, 5, 2, 5, 0', "the face's `*`");
-    notOk(SOURCE.includes('table: 1'), 'and nothing points at a second table');
+    equal(tables, 3, 'three tables: 3x5, 6x10 and 8x16');
+    contains(SOURCE, '0, 5, 2, 5, 0', "the 3x5 face's `*`");
 
-    // The fonts that share it (including both scales of the vector face) must not have been given
-    // copies.
-    contains(SOURCE, '"Tiny3x5": DEFAULT_FONT,', 'the default font points at the table');
-    for (const name of ['Scaled6x10', 'Vector(2)', 'Vector(3)']) {
+    // The fonts that share the first table must not have been given copies.
+    contains(SOURCE, '"Tiny3x5": DEFAULT_FONT,', 'the default font points at the first table');
+    for (const name of ['Medium4x7', 'Scaled6x10', 'Vector(2)', 'Vector(3)']) {
         contains(SOURCE, `"${name}": { advance: `, `${name} is listed`);
     }
     // Five mentions: the `DEFAULT_FONT` constant and the four fonts that point at the same table.
-    equal((SOURCE.match(/table: 0 \}/g) ?? []).length, 5, 'all five point at it');
+    equal((SOURCE.match(/table: 0 \}/g) ?? []).length, 5, 'five fonts point at the 3x5 table');
+    equal((SOURCE.match(/table: 1 \}/g) ?? []).length, 1, 'one at the 6x10 one');
+    equal((SOURCE.match(/table: 2 \}/g) ?? []).length, 1, 'one at the 8x16 one');
 });
 
 test('a character the crate has no glyph for falls back the way the crate does', () => {

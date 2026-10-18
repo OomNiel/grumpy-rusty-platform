@@ -33,7 +33,7 @@ import { resolveStyleValues, styleValuesOf, type ResolvedStyle } from '../../src
 import { widgetSpec } from '../../src/designer/catalog';
 import { isBuiltInFont } from '../../src/designer/fonts';
 import { type DesignerWidget } from '../../src/designer/model';
-import { glyphMetrics, glyphRows, GLYPH_COLUMNS, GLYPH_ROWS, vectorGlyph, VECTOR_PEN_UP } from './glyphs';
+import { glyphColumns, glyphMetrics, glyphRowCount, glyphRows, vectorGlyph, VECTOR_PEN_UP } from './glyphs';
 
 // ---------------------------------------------------------------------------
 // Colour
@@ -1029,10 +1029,11 @@ function drawGlyph(
     }
     const rows = glyphRows(font, ch);
     const block = glyphBlockSize(font);
-    for (let row = 0; row < GLYPH_ROWS; row += 1) {
+    const columns = glyphColumns(font);
+    for (let row = 0; row < glyphRowCount(font); row += 1) {
         const bits = rows[row] ?? 0;
-        for (let col = 0; col < GLYPH_COLUMNS; col += 1) {
-            if ((bits & (1 << (GLYPH_COLUMNS - 1 - col))) === 0) {
+        for (let col = 0; col < columns; col += 1) {
+            if ((bits & (1 << (columns - 1 - col))) === 0) {
                 continue;
             }
             const px = x + col * block;
@@ -2608,9 +2609,9 @@ function strokeClockLine(
  * five rows), not its cell: a packed digit's ink is three of the four pixels of its advance, so
  * centring the cell leaves the number visibly off to one side of the tick it belongs to.
  *
- * The bit test is the crate's: bits 2..0 of each row are the three columns, so the ink of a 3x5 face
- * occupies columns 0..2 of its cell. Reading those bits as columns 5..7 is what made every numeral sit
- * a few pixels to the right of its tick.
+ * The bit test is the crate's: bit `width - 1 - col` of a row is column `col`, so the ink of a 3x5
+ * face occupies columns 0..2 of its cell and a rasterised one all six or eight. Reading the low bits as
+ * high columns is what made every numeral sit a few pixels to the right of its tick.
  */
 function drawClockLabel(
     context: CanvasRenderingContext2D,
@@ -2624,17 +2625,18 @@ function drawClockLabel(
     const metrics = glyphMetrics(font);
     const block = glyphBlockSize(font) * scale;
     const advance = metrics.advance * scale;
-    const inkWidth = GLYPH_COLUMNS * block;
-    const inkHeight = GLYPH_ROWS * block;
+    const columns = glyphColumns(font);
+    const inkWidth = columns * block;
+    const inkHeight = glyphRowCount(font) * block;
     const width = inkWidth + Math.max(0, charCount(text) - 1) * advance;
     const top = centreY - Math.trunc(inkHeight / 2);
     let cursor = centreX - Math.trunc(width / 2);
     for (const ch of text) {
         const rows = glyphRows(font, ch);
-        for (let row = 0; row < GLYPH_ROWS; row += 1) {
+        for (let row = 0; row < glyphRowCount(font); row += 1) {
             const bits = rows[row] ?? 0;
-            for (let col = 0; col < GLYPH_COLUMNS; col += 1) {
-                if ((bits & (1 << (GLYPH_COLUMNS - 1 - col))) === 0) {
+            for (let col = 0; col < columns; col += 1) {
+                if ((bits & (1 << (columns - 1 - col))) === 0) {
                     continue;
                 }
                 context.fillStyle = css(colour);

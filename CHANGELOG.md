@@ -11,6 +11,41 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.9.0] - 2026-10-18
+
+*"Those fonts are really terrible. Can we import some fonts from the internet or adapt system fonts?"*
+
+They were: every built-in was a 3x5 bitmap, `Medium4x7` was that same drawing in a wider cell, and nothing in
+the crate had a curve. Two faces are now rasterised from a real outline font.
+
+### Added
+
+- **`FontId::Mono6x10` and `FontId::Mono8x16`**, offered as *Mono 6x10 (DejaVu)* and *Mono 8x16 (DejaVu)* in
+  the Font field. DejaVu Sans Mono, rasterised by FreeType's **monochrome** path (which grid-fits stems to whole
+  pixels -- the anti-aliased render was grey mush at every size tried) into a 6x10 or an 8x16 cell:
+  7-pixel advance and 12-pixel lines, or 9 and 19.
+- The tables live with the other font assets (`crates/embedded-gui/assets/fonts/dejavu_*.txt`), are read by
+  `build.rs` like the 3x5 overrides, and are reproducible from the TTF with
+  `crates/embedded-gui/assets/fonts/from_truetype.py`. The Bitstream Vera licence travels with them.
+- Flash cost: about **2.5 KB** for both faces, linked once.
+
+### Changed
+
+- **The clock's numerals follow the chosen face.** `label_ink_box` measured every face as three columns by five
+  rows, and `draw_scaled_text` drew from the packed 3x5 table, so a big face would have drawn 3x5 numerals in a
+  box measured for it. Both now ask the face (`font::glyph_ink_box`, `font::for_each_glyph_pixel`).
+- The designer's canvas carries all seven faces: `tests/tools/glyph-table.js` now emits per-font width and
+  height, and the canvas draws a glyph of any size from that rather than assuming 3x5.
+- `build.rs` declares `rerun-if-changed` on the font folder. It declared only `rerun-if-env-changed`, and once
+  any `rerun-if-*` is printed cargo stops scanning the package -- so editing a glyph table changed nothing until
+  something else rebuilt the script.
+
+### Not done, and why
+
+- **A 5x7 face was the plan and is not here.** Rasterised below a 9-pixel em, DejaVu's letterforms collapse --
+  `a`, `e` and `s` end up the same blob -- and the result was worse than the 3x5 it was meant to replace. A 5x7
+  works when the glyphs are *drawn* at 5x7, which is a hand-drawing job rather than a rasterisation one.
+
 ## [0.8.0] - 2026-10-17
 
 *"The shift key is not toggling uppercase/lowercase. Also, it seems that the the fonts does not
