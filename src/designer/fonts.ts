@@ -1,9 +1,9 @@
 /**
  * The fonts `embedded-gui` itself provides, and how a design can ask for one.
  *
- * The crate ships five drawn bitmap faces and a scalable vector one -- `FontId::Tiny3x5`, `Medium4x7` (the
- * default), `Scaled6x10`, `Mono6x10`, `Mono8x16` and `Vector(scale)` -- but the markup has **no attribute for
- * them**. A widget's `font="name"` refers to a font the *screen declares*, which means a BDF file in the project;
+ * The crate ships six drawn bitmap faces and a scalable vector one -- `FontId::Tiny3x5`, `Medium4x7` (the
+ * default), `Scaled6x10`, `Medium5x7`, `Mono6x10`, `Mono8x16` and `Vector(scale)` -- but the markup has **no
+ * attribute for them**. A widget's `font="name"` refers to a font the *screen declares*, which means a BDF file in the project;
  * the code generator drops a name it cannot resolve in silence, so a built-in name typed there would do nothing
  * at all.
  *
@@ -47,6 +47,7 @@ export const BUILT_IN_FONTS: readonly BuiltInFont[] = [
     { id: 'Tiny3x5', label: 'Tiny 3x5 (the default)' },
     { id: 'Medium4x7', label: 'Medium 4x7' },
     { id: 'Scaled6x10', label: 'Scaled 6x10' },
+    { id: 'Medium5x7', label: 'Medium 5x7 (drawn)' },
     { id: 'Mono6x10', label: 'Mono 6x10 (DejaVu)' },
     { id: 'Mono8x16', label: 'Mono 8x16 (DejaVu)' },
     { id: 'Vector(2)', label: 'Vector, scale 2' },

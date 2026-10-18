@@ -40,8 +40,9 @@ export const GLYPH_FONTS: Record<string, GlyphMetrics> = {
     "Tiny3x5": DEFAULT_FONT,
     "Medium4x7": { advance: 5, lineHeight: 8, width: 3, height: 5, table: 0 },
     "Scaled6x10": { advance: 7, lineHeight: 11, width: 3, height: 5, table: 0 },
-    "Mono6x10": { advance: 7, lineHeight: 12, width: 6, height: 10, table: 1 },
-    "Mono8x16": { advance: 9, lineHeight: 19, width: 8, height: 16, table: 2 },
+    "Medium5x7": { advance: 6, lineHeight: 9, width: 5, height: 7, table: 1 },
+    "Mono6x10": { advance: 7, lineHeight: 12, width: 6, height: 10, table: 2 },
+    "Mono8x16": { advance: 9, lineHeight: 19, width: 8, height: 16, table: 3 },
     "Vector(2)": { advance: 16, lineHeight: 24, width: 3, height: 5, table: 0 },
     "Vector(3)": { advance: 24, lineHeight: 36, width: 3, height: 5, table: 0 },
 };
@@ -146,6 +147,104 @@ const TABLE_0: readonly number[] = [
 ];
 
 const TABLE_1: readonly number[] = [
+    0, 0, 0, 0, 0, 0, 0,
+    4, 4, 4, 4, 4, 0, 4,
+    10, 10, 0, 0, 0, 0, 0,
+    14, 17, 1, 2, 4, 0, 4,
+    4, 15, 20, 14, 5, 30, 4,
+    24, 25, 2, 4, 8, 19, 3,
+    12, 18, 20, 8, 21, 18, 13,
+    4, 4, 0, 0, 0, 0, 0,
+    2, 4, 8, 8, 8, 4, 2,
+    8, 4, 2, 2, 2, 4, 8,
+    0, 4, 21, 14, 21, 4, 0,
+    0, 4, 4, 31, 4, 4, 0,
+    0, 0, 0, 0, 4, 4, 8,
+    0, 0, 0, 31, 0, 0, 0,
+    0, 0, 0, 0, 0, 12, 12,
+    1, 2, 2, 4, 8, 8, 16,
+    14, 17, 19, 21, 25, 17, 14,
+    4, 12, 4, 4, 4, 4, 14,
+    14, 17, 1, 2, 4, 8, 31,
+    31, 2, 4, 2, 1, 17, 14,
+    2, 6, 10, 18, 31, 2, 2,
+    31, 16, 30, 1, 1, 17, 14,
+    6, 8, 16, 30, 17, 17, 14,
+    31, 1, 2, 4, 8, 8, 8,
+    14, 17, 17, 14, 17, 17, 14,
+    14, 17, 17, 15, 1, 2, 12,
+    0, 12, 12, 0, 12, 12, 0,
+    0, 12, 12, 0, 12, 4, 8,
+    2, 4, 8, 16, 8, 4, 2,
+    0, 0, 31, 0, 31, 0, 0,
+    8, 4, 2, 1, 2, 4, 8,
+    14, 17, 1, 2, 4, 0, 4,
+    14, 17, 1, 13, 21, 21, 14,
+    14, 17, 17, 31, 17, 17, 17,
+    30, 17, 17, 30, 17, 17, 30,
+    14, 17, 16, 16, 16, 17, 14,
+    30, 17, 17, 17, 17, 17, 30,
+    31, 16, 16, 30, 16, 16, 31,
+    31, 16, 16, 30, 16, 16, 16,
+    14, 17, 16, 23, 17, 17, 15,
+    17, 17, 17, 31, 17, 17, 17,
+    14, 4, 4, 4, 4, 4, 14,
+    7, 2, 2, 2, 2, 18, 12,
+    17, 18, 20, 24, 20, 18, 17,
+    16, 16, 16, 16, 16, 16, 31,
+    17, 27, 21, 21, 17, 17, 17,
+    17, 17, 25, 21, 19, 17, 17,
+    14, 17, 17, 17, 17, 17, 14,
+    30, 17, 17, 30, 16, 16, 16,
+    14, 17, 17, 17, 21, 18, 13,
+    30, 17, 17, 30, 20, 18, 17,
+    15, 16, 16, 14, 1, 1, 30,
+    31, 4, 4, 4, 4, 4, 4,
+    17, 17, 17, 17, 17, 17, 14,
+    17, 17, 17, 17, 17, 10, 4,
+    17, 17, 17, 21, 21, 27, 17,
+    17, 17, 10, 4, 10, 17, 17,
+    17, 17, 10, 4, 4, 4, 4,
+    31, 1, 2, 4, 8, 16, 31,
+    14, 8, 8, 8, 8, 8, 14,
+    16, 8, 8, 4, 2, 2, 1,
+    14, 2, 2, 2, 2, 2, 14,
+    4, 10, 17, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 31,
+    8, 4, 0, 0, 0, 0, 0,
+    0, 0, 14, 1, 15, 17, 15,
+    16, 16, 30, 17, 17, 17, 30,
+    0, 0, 14, 16, 16, 17, 14,
+    1, 1, 15, 17, 17, 17, 15,
+    0, 0, 14, 17, 31, 16, 15,
+    6, 9, 8, 28, 8, 8, 8,
+    0, 0, 15, 17, 17, 15, 1,
+    16, 16, 30, 17, 17, 17, 17,
+    4, 0, 12, 4, 4, 4, 14,
+    2, 0, 6, 2, 2, 2, 12,
+    16, 16, 18, 20, 24, 20, 18,
+    12, 4, 4, 4, 4, 4, 6,
+    0, 0, 26, 21, 21, 21, 21,
+    0, 0, 30, 17, 17, 17, 17,
+    0, 0, 14, 17, 17, 17, 14,
+    0, 0, 30, 17, 30, 16, 16,
+    0, 0, 15, 17, 15, 1, 1,
+    0, 0, 22, 25, 16, 16, 16,
+    0, 0, 15, 16, 14, 1, 30,
+    4, 4, 31, 4, 4, 5, 2,
+    0, 0, 17, 17, 17, 19, 13,
+    0, 0, 17, 17, 17, 10, 4,
+    0, 0, 17, 17, 21, 21, 10,
+    0, 0, 17, 10, 4, 10, 17,
+    0, 0, 17, 17, 15, 1, 14,
+    0, 0, 31, 2, 4, 8, 31,
+    2, 4, 4, 8, 4, 4, 2,
+    4, 4, 4, 4, 4, 4, 4,
+    8, 4, 4, 2, 4, 4, 8,
+    0, 0, 8, 21, 2, 0, 0,
+];
+
+const TABLE_2: readonly number[] = [
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, 8, 8, 8, 8, 8, 0, 8, 0, 0,
     0, 20, 20, 0, 0, 0, 0, 0, 0, 0,
@@ -243,7 +342,7 @@ const TABLE_1: readonly number[] = [
     0, 0, 0, 0, 28, 3, 0, 0, 0, 0,
 ];
 
-const TABLE_2: readonly number[] = [
+const TABLE_3: readonly number[] = [
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, 0, 16, 16, 16, 16, 16, 16, 0, 16, 16, 0, 0, 0, 0, 0,
     0, 0, 40, 40, 40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -342,11 +441,23 @@ const TABLE_2: readonly number[] = [
 ];
 
 /** Every distinct table, in the order the fonts above point at them. */
-const TABLES: readonly (readonly number[])[] = [TABLE_0, TABLE_1, TABLE_2];
+const TABLES: readonly (readonly number[])[] = [TABLE_0, TABLE_1, TABLE_2, TABLE_3];
 
 /** How many columns a glyph of this font has. */
 export function glyphColumns(font: string): number {
     return glyphMetrics(font).width;
+}
+
+/** The row numbers of one character of a declared font, or `undefined` for any other. */
+function designRows(font: string, ch: string): readonly number[] | undefined {
+    const declared = DESIGN_FONTS.get(font);
+    if (declared === undefined) {
+        return undefined;
+    }
+    const code = ch.codePointAt(0) ?? 0;
+    const wanted = code >= declared.firstChar && code <= declared.lastChar ? code : '?'.codePointAt(0) ?? 0;
+    const start = (wanted - declared.firstChar) * declared.height;
+    return declared.rows.slice(start, start + declared.height);
 }
 
 /** How many rows a glyph of this font has. */
@@ -361,6 +472,10 @@ export function glyphRowCount(font: string): number {
  * does, and the canvas has to agree with the board about what an unsupported character looks like.
  */
 export function glyphRows(font: string, ch: string): readonly number[] {
+    const declared = designRows(font, ch);
+    if (declared !== undefined) {
+        return declared;
+    }
     const metrics = glyphMetrics(font);
     const table = TABLES[metrics.table] ?? TABLE_0;
     const code = ch.codePointAt(0) ?? 0;
@@ -371,7 +486,34 @@ export function glyphRows(font: string, ch: string): readonly number[] {
 
 /** The metrics of a font the design names, falling back to the crate's own default (`Tiny3x5`). */
 export function glyphMetrics(font: string): GlyphMetrics {
-    return GLYPH_FONTS[font] ?? DEFAULT_FONT;
+    return DESIGN_FONTS.get(font) ?? GLYPH_FONTS[font] ?? DEFAULT_FONT;
+}
+
+/**
+ * A font the *design* declares: a BDF file the extension parsed for the canvas.
+ *
+ * The crate compiles such a font into a `FontId::Bitmap`, and its glyphs are not in the design -- only the
+ * path to them -- so the extension reads the file and sends the pixels (`src/designer/bitmapFont.ts`, which
+ * mirrors the crate's own `parse_bdf`). This is where they land: after `registerDesignFont`, the functions
+ * above answer for that name exactly as they do for a built-in, which is what stops a widget with a real face
+ * from being previewed in an approximation of it.
+ */
+interface DesignFont extends GlyphMetrics {
+    firstChar: number;
+    lastChar: number;
+    rows: readonly number[];
+}
+
+const DESIGN_FONTS = new Map<string, DesignFont>();
+
+/** Adds, or replaces, one declared font. */
+export function registerDesignFont(name: string, font: DesignFont): void {
+    DESIGN_FONTS.set(name, font);
+}
+
+/** Whether a name is one the design declared, rather than one the crate ships. */
+export function isDesignFont(name: string): boolean {
+    return DESIGN_FONTS.has(name);
 }
 
 /**

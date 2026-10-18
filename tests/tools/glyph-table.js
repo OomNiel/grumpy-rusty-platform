@@ -200,6 +200,18 @@ export function glyphColumns(font: string): number {
     return glyphMetrics(font).width;
 }
 
+/** The row numbers of one character of a declared font, or \`undefined\` for any other. */
+function designRows(font: string, ch: string): readonly number[] | undefined {
+    const declared = DESIGN_FONTS.get(font);
+    if (declared === undefined) {
+        return undefined;
+    }
+    const code = ch.codePointAt(0) ?? 0;
+    const wanted = code >= declared.firstChar && code <= declared.lastChar ? code : '?'.codePointAt(0) ?? 0;
+    const start = (wanted - declared.firstChar) * declared.height;
+    return declared.rows.slice(start, start + declared.height);
+}
+
 /** How many rows a glyph of this font has. */
 export function glyphRowCount(font: string): number {
     return glyphMetrics(font).height;
@@ -212,6 +224,10 @@ export function glyphRowCount(font: string): number {
  * does, and the canvas has to agree with the board about what an unsupported character looks like.
  */
 export function glyphRows(font: string, ch: string): readonly number[] {
+    const declared = designRows(font, ch);
+    if (declared !== undefined) {
+        return declared;
+    }
     const metrics = glyphMetrics(font);
     const table = TABLES[metrics.table] ?? TABLE_0;
     const code = ch.codePointAt(0) ?? 0;
@@ -222,7 +238,34 @@ export function glyphRows(font: string, ch: string): readonly number[] {
 
 /** The metrics of a font the design names, falling back to the crate's own default (\`Tiny3x5\`). */
 export function glyphMetrics(font: string): GlyphMetrics {
-    return GLYPH_FONTS[font] ?? DEFAULT_FONT;
+    return DESIGN_FONTS.get(font) ?? GLYPH_FONTS[font] ?? DEFAULT_FONT;
+}
+
+/**
+ * A font the *design* declares: a BDF file the extension parsed for the canvas.
+ *
+ * The crate compiles such a font into a \`FontId::Bitmap\`, and its glyphs are not in the design -- only the
+ * path to them -- so the extension reads the file and sends the pixels (\`src/designer/bitmapFont.ts\`, which
+ * mirrors the crate's own \`parse_bdf\`). This is where they land: after \`registerDesignFont\`, the functions
+ * above answer for that name exactly as they do for a built-in, which is what stops a widget with a real face
+ * from being previewed in an approximation of it.
+ */
+interface DesignFont extends GlyphMetrics {
+    firstChar: number;
+    lastChar: number;
+    rows: readonly number[];
+}
+
+const DESIGN_FONTS = new Map<string, DesignFont>();
+
+/** Adds, or replaces, one declared font. */
+export function registerDesignFont(name: string, font: DesignFont): void {
+    DESIGN_FONTS.set(name, font);
+}
+
+/** Whether a name is one the design declared, rather than one the crate ships. */
+export function isDesignFont(name: string): boolean {
+    return DESIGN_FONTS.has(name);
 }
 
 /**

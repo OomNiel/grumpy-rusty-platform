@@ -1989,6 +1989,9 @@ where
             }
             // The rasterised faces are `BitmapFont`s, so they draw through the same arm: one glyph
             // implementation, reached by two names.
+            FontId::Medium5x7 => {
+                self.draw_char_with_font(x, y, ch, color, opacity, FontId::Bitmap(&crate::font::ASCII_5X7_FONT))?
+            }
             FontId::Mono6x10 => {
                 self.draw_char_with_font(x, y, ch, color, opacity, FontId::Bitmap(&crate::font::ASCII_6X10_FONT))?
             }

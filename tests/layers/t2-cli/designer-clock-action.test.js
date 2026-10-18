@@ -19,6 +19,9 @@ const BUNDLE = path.join(repoRoot(), 'out', 'webview', 'designer.js');
 
 test('dropping a clock offers Update Time, and pressing it asks the extension', () => {
     const { root, messages, window } = dom.install();
+    // Each file gets its own DOM, so the bundle has to be evaluated again for it: a cached module was
+    // already run against the previous test's window.
+    delete require.cache[require.resolve(BUNDLE)];
     require(BUNDLE);
 
     const document = starterDocument({

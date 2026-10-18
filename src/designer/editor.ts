@@ -37,6 +37,7 @@ import {
     type DesignerDocument,
 } from './model';
 import { loadDocument, missingAssets, planAssetImport, renderDesign } from './store';
+import { parseBdfFont, type DesignFontPixels } from './bitmapFont';
 import { emitUiRs, handlerName, syncHandlerStubs } from './generate';
 import { sdImagesNeedingCard } from './model';
 import {
@@ -72,6 +73,8 @@ class DesignerPanel {
     private disposables: vscode.Disposable[] = [];
     /** Set once the document has been written, so the first edit is a change and not a rewrite. */
     private lastWritten = '';
+    /** What the canvas was last sent as its declared fonts, so a report does not resend them. */
+    private fontSignature = '';
 
     private constructor(
         private readonly panel: vscode.WebviewPanel,
@@ -343,6 +346,8 @@ class DesignerPanel {
         // A keypad is pinned to the bottom strip, and a design saved under another rotation has the
         // old shape's box: re-solve it before the canvas sees it, or the first drag is what fixes it.
         this.document = pinKeypads(this.document, canvas);
+        const declared = this.declaredFonts();
+        this.fontSignature = declared.signature;
         await this.panel.webview.postMessage({
             type: 'init',
             document: this.document,
@@ -353,7 +358,52 @@ class DesignerPanel {
             loadError: this.loadError,
             loadNotes: this.loadNotes,
             loadProblems: this.loadProblems,
+            fonts: declared.fonts,
+            fontNotes: declared.fontNotes,
         });
+    }
+
+    /**
+     * The pixels of every BDF font the design declares, for the canvas to draw with.
+     *
+     * The panel cannot read a file, so a declared font is the one thing in a design whose appearance lives
+     * outside the design -- and the canvas used to approximate it with the packed default, which made a
+     * widget's preview a lie the moment a real face was involved. The conversion here is the crate's own
+     * (`parse_bdf`), mirrored in `./bitmapFont`, so what the canvas draws is what the board will.
+     *
+     * A font that cannot be read is a note rather than a problem: the design still builds if the file is
+     * there for the *code generator*, and this is only about the preview.
+     */
+    private declaredFonts(): Pick<DesignerReport, 'fonts' | 'fontNotes'> & { signature: string } {
+        const fonts: Record<string, DesignFontPixels> = {};
+        const notes: string[] = [];
+        const signature: string[] = [];
+        for (const font of this.document.fonts) {
+            signature.push(`${font.id}:${font.src}:${font.chars}`);
+            const relative = font.src.trim();
+            if (relative === '') {
+                notes.push(`"${font.id}" names no file, so the canvas draws it in the default face.`);
+                continue;
+            }
+            let source: string;
+            try {
+                source = fs.readFileSync(path.join(this.folder.fsPath, ...relative.split('/')), 'utf8');
+            } catch {
+                notes.push(`"${font.id}" cannot be read at ${relative}, so the canvas draws it in the default face.`);
+                continue;
+            }
+            const parsed = parseBdfFont(source, font.chars === '' ? undefined : font.chars);
+            if ('error' in parsed) {
+                notes.push(`"${font.id}" is not a font the canvas can read (${parsed.error}).`);
+                continue;
+            }
+            fonts[font.id] = parsed.font;
+        }
+        return {
+            fonts: Object.keys(fonts).length > 0 ? fonts : undefined,
+            fontNotes: notes.length > 0 ? notes : undefined,
+            signature: signature.join('|'),
+        };
     }
 
     /**
@@ -405,11 +455,17 @@ class DesignerPanel {
         await this.syncHandlers(document);
         await this.syncModule(document);
 
+        // A declared font's pixels are only resent when the declarations changed: a report follows every
+        // edit, and shipping a hundred glyph bitmaps per keystroke would be work done for nothing.
+        const declared = this.declaredFonts();
+        const fontsChanged = declared.signature !== this.fontSignature;
+        this.fontSignature = declared.signature;
         const report: DesignerReport = {
             type: 'report',
             problems,
             kdl: rendered.kdl,
             wroteDocument: true,
+            ...(fontsChanged ? { fonts: declared.fonts, fontNotes: declared.fontNotes } : {}),
         };
         await this.panel.webview.postMessage(report);
     }

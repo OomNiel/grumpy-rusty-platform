@@ -33,6 +33,7 @@ test('the canvas draws with the crate\'s own glyphs, and says where they came fr
         ['Tiny3x5', 4, 6, 3, 5],
         ['Medium4x7', 5, 8, 3, 5],
         ['Scaled6x10', 7, 11, 3, 5],
+        ['Medium5x7', 6, 9, 5, 7],
         ['Mono6x10', 7, 12, 6, 10],
         ['Mono8x16', 9, 19, 8, 16],
         ['Vector(2)', 16, 24, 3, 5],
@@ -51,11 +52,13 @@ test('the canvas draws with the crate\'s own glyphs, and says where they came fr
             `${name} keeps the crate's metrics`,
         );
     }
-    // The two rasterised faces are the whole point of the exercise: bigger ink than 3x5, and their own
-    // tables because their glyphs are their own.
-    contains(SOURCE, '"Mono8x16": { advance: 9, lineHeight: 19, width: 8, height: 16, table: 2 }',
-        'the 8x16 face has its own table');
-    contains(SOURCE, '"Mono6x10": { advance: 7, lineHeight: 12, width: 6, height: 10, table: 1 }',
+    // The three new faces are the whole point of the exercise: bigger ink than 3x5, and their own tables
+    // because their glyphs are their own.
+    contains(SOURCE, '"Medium5x7": { advance: 6, lineHeight: 9, width: 5, height: 7, table: 1 }',
+        'the drawn 5x7 has its own table');
+    contains(SOURCE, '"Mono8x16": { advance: 9, lineHeight: 19, width: 8, height: 16, table: 3 }',
+        'the 8x16 face has its own');
+    contains(SOURCE, '"Mono6x10": { advance: 7, lineHeight: 12, width: 6, height: 10, table: 2 }',
         'and the 6x10 face its own');
 });
 
@@ -66,7 +69,7 @@ test('each distinct face gets one table, and the fonts that agree share it', () 
     // a face whose glyphs differ must get its own table rather than being folded into the first -- and
     // `glyph-table.js` dedupes by content.
     const tables = (SOURCE.match(/^const TABLE_\d+: readonly number\[\] = \[$/gm) ?? []).length;
-    equal(tables, 3, 'three tables: 3x5, 6x10 and 8x16');
+    equal(tables, 4, 'four tables: the 3x5 face, the drawn 5x7, and the two rasters');
     contains(SOURCE, '0, 5, 2, 5, 0', "the 3x5 face's `*`");
 
     // The fonts that share the first table must not have been given copies.
@@ -76,8 +79,9 @@ test('each distinct face gets one table, and the fonts that agree share it', () 
     }
     // Five mentions: the `DEFAULT_FONT` constant and the four fonts that point at the same table.
     equal((SOURCE.match(/table: 0 \}/g) ?? []).length, 5, 'five fonts point at the 3x5 table');
-    equal((SOURCE.match(/table: 1 \}/g) ?? []).length, 1, 'one at the 6x10 one');
-    equal((SOURCE.match(/table: 2 \}/g) ?? []).length, 1, 'one at the 8x16 one');
+    equal((SOURCE.match(/table: 1 \}/g) ?? []).length, 1, 'one at the drawn 5x7');
+    equal((SOURCE.match(/table: 2 \}/g) ?? []).length, 1, 'one at the 6x10 raster');
+    equal((SOURCE.match(/table: 3 \}/g) ?? []).length, 1, 'one at the 8x16 raster');
 });
 
 test('a character the crate has no glyph for falls back the way the crate does', () => {

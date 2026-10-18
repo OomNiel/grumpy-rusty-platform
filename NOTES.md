@@ -7443,3 +7443,63 @@ crate **308** (up from 306): each rasterised face has its own shape, every print
 its cell, lower case differs from upper, and the renderer draws them taller than 3x5. Extension **971** — the
 generated-table checks moved to per-font width/height and three tables. The CYD demo and `retest` both build with
 `FontId::Mono8x16` in a design.
+
+## §149 — The 5x7 that was asked for, and a declared font the canvas can draw (0.10.0, 2026-10-18)
+
+The two font issues left over from §148.
+
+### The 5x7, drawn by hand
+
+§148 stopped at "rasterising an outline face below a nine-pixel em loses the letters". The answer is not a
+better rasteriser, it is *drawing* the glyphs -- which is what every small bitmap face has always been. So
+`assets/fonts/ascii_5x7.txt` is ninety-five glyphs of five columns by seven rows, hand-made in the classic LCD
+style: capitals on all seven rows, lower case from row two with the tails of `g j p q y` shared into the last
+row, and every printable character present.
+
+It reaches the board as a `BitmapFont` (`FontId::Medium5x7`, advance 6, line height 9) rather than a
+`PackedFont`, because `PackedFont` is fixed at five rows by its own type. That meant nothing new in the
+renderer: it is another name for the `Bitmap` arm, exactly like the two rasterised faces.
+
+### A declared BDF is drawn, not approximated
+
+The canvas used to paint a design's declared font as the packed 3x5 default — the preview was a lie for any
+widget with a real face. The fix is a pipeline, not a drawing hack:
+
+1. **`src/designer/bitmapFont.ts`** parses a BDF into the canvas's shape. It is a port of the crate's own
+   `parse_bdf` (`embedded-gui-codegen/src/assets.rs`), and deliberately so: the cell is cropped to the glyphs
+   being embedded rather than to `FONTBOUNDINGBOX`, each glyph is composited by its own offset from the
+   baseline, and a row is `width` bits with the leftmost column high. Two of the crate's own test fixtures are
+   asserted to the same numbers in t1, which is what keeps the two from drifting.
+2. **The editor** parses every declared font when the panel opens and sends the pixels with the document
+   (`DesignerInit.fonts`). They are resent only when the declarations change -- a report follows every edit, and
+   a hundred glyph bitmaps per keystroke would be work for nothing.
+3. **`glyphs.ts`** grew a registry (`registerDesignFont`) that `glyphMetrics`, `glyphRows`, `glyphColumns` and
+   `glyphRowCount` consult *before* the built-in table. Everything downstream -- text measurement, the char
+   drawer, the clock's numerals -- then works unchanged.
+4. **`preview.ts`** stops replacing the name with the default: a label whose `font=` resolves to a declared face
+   keeps that name, and the glyph table draws it.
+
+A row is read by division (`Math.floor(bits / 2 ** (columns - 1 - col)) % 2`) rather than a shift, because a
+declared BDF can be wider than 32 columns, where `1 << n` wraps without a word.
+
+### Tests
+
+- t1 `designer-bitmap-font.test.js`: the crate's two BDF fixtures asserted to its own numbers
+  (`(width, height, advance, first_char)` and every glyph row), a subset that matches nothing being an error
+  rather than an empty font, and the repository's own `tests/sim/assets/test.bdf` checked for a self-consistent
+  shape.
+- t2 `designer-declared-font.test.js`: the real bundle, a design whose label names a declared font, and an
+  assertion that the painted ink spans **seven** rows -- the 3x5 fallback cannot, so the test only passes if
+  the face's own pixels reached the canvas.
+- Both t2 bundle tests now clear the `require` cache first: a second file in the same process was reusing a
+  module evaluated against the *first* test's DOM, which showed up as "there is a canvas" failing in a full run
+  and passing on its own.
+
+crate **309**, extension **976**. A CYD project using `Medium5x7` for a label and `Mono8x16` for a button
+builds.
+
+### Still open
+
+A **TTF/OTF importer** ("adapt a system font"): the honest shape is the panel rasterising the face it already
+has a renderer for -- the webview can `fillText` a `@font-face` from a data URL -- and the extension writing
+the result out as a BDF, which the pipeline above then draws and the crate already consumes. Not built.

@@ -11,6 +11,35 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.10.0] - 2026-10-18
+
+The rest of the font issues from 0.9.0: the 5x7 that was asked for, and a declared font that the canvas can
+finally draw as itself.
+
+### Added
+
+- **`FontId::Medium5x7`** -- *Medium 5x7 (drawn)* in the Font field. A hand-drawn bitmap face, five columns by
+  seven rows with a six-pixel advance, in the classic LCD character set's style: 80 characters across the
+  480-pixel panel, a real lower case, and every printable character. Drawn and not rasterised because that is
+  exactly the size where an outline face loses its letters (`NOTES.md` §148 measured it).
+- About **0.7 KB** of flash, and no new type: it is a `BitmapFont`, the same route the rasterised faces take.
+
+### Changed
+
+- **The canvas draws a declared BDF font as itself.** It used to approximate one with the packed 3x5 default,
+  which made any widget with a real face a lie in the preview. The panel cannot read a file, so the extension
+  now parses each declared font (`src/designer/bitmapFont.ts`, a faithful port of the crate's `parse_bdf`
+  -- same cell cropping, same per-glyph placement against the baseline) and sends the pixels with the
+  document; `registerDesignFont` puts them beside the built-ins, where every measurement and every glyph
+  lookup already goes. The pixels are only resent when the declarations change.
+- Glyph rows are read by division rather than `1 << (columns - 1 - col)`, because a declared BDF may be wider
+  than 32 columns, where a shift silently wraps.
+
+### Tests
+
+- crate **309**; extension **976** -- including a t1 file that parses the *crate's own* BDF fixtures and asserts
+  the same numbers, and a t2 test that proves a declared font paints seven-row ink (the 3x5 fallback cannot).
+
 ## [0.9.0] - 2026-10-18
 
 *"Those fonts are really terrible. Can we import some fonts from the internet or adapt system fonts?"*

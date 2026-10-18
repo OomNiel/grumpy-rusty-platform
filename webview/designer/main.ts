@@ -13,6 +13,7 @@
  */
 
 import { widgetSpec } from '../../src/designer/catalog';
+import { registerDesignFont } from './glyphs';
 import { CanvasView } from './canvas';
 import { hideContextMenu, renderProperties, renderToolbox, showContextMenu, widgetMenu } from './panels';
 import {
@@ -167,6 +168,20 @@ window.addEventListener('message', (event: MessageEvent<DesignerInit | DesignerR
         canvasHeight = message.canvas.height;
         touchBoard = message.touchBoard;
         touchEnabled = message.touchEnabled;
+        // Before the first paint: a declared font's glyphs are not in the design, so they arrive with the
+        // document and the canvas has to know them before it draws a widget that uses one.
+        for (const [name, pixels] of Object.entries(message.fonts ?? {})) {
+            registerDesignFont(name, {
+                advance: pixels.advance,
+                lineHeight: pixels.lineHeight,
+                width: pixels.width,
+                height: pixels.height,
+                table: -1,
+                firstChar: pixels.firstChar,
+                lastChar: pixels.lastChar,
+                rows: pixels.rows,
+            });
+        }
         selectedId = undefined;
         state = initialState(message.document);
         view.select(undefined);
@@ -189,6 +204,24 @@ window.addEventListener('message', (event: MessageEvent<DesignerInit | DesignerR
         return;
     }
     if (message.type === 'report') {
+        // The declarations changed, so the pixels did: a font that was just named becomes drawable, and one
+        // that was renamed keeps its old entry only until the next paint.
+        if (message.fonts !== undefined) {
+            for (const [name, pixels] of Object.entries(message.fonts)) {
+                registerDesignFont(name, {
+                    advance: pixels.advance,
+                    lineHeight: pixels.lineHeight,
+                    width: pixels.width,
+                    height: pixels.height,
+                    table: -1,
+                    firstChar: pixels.firstChar,
+                    lastChar: pixels.lastChar,
+                    rows: pixels.rows,
+                });
+            }
+            view.setState(state);
+            refreshProperties();
+        }
         report(message);
     }
     if (message.type === 'assetPicked') {

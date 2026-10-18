@@ -44,8 +44,16 @@ fn main() {
     // not read as a real one: this used to be a hollow box, which is `0`'s own glyph.
     src.push_str("\npub static MISSING_GLYPH: [u8; 5] = [0b111, 0b111, 0b111, 0b111, 0b111];\n");
 
-    // The rasterised faces. `BitmapFont` reads one byte per row, the leftmost column in bit 7, so a
-    // glyph is `height` bytes and the table is the whole printable-ASCII range end to end.
+    // The bitmap faces -- the drawn 5x7 and the two rasterised ones. `BitmapFont` reads one byte per
+    // row, the leftmost column in bit 7, so a glyph is `height` bytes and the table is the whole
+    // printable-ASCII range end to end.
+    push_bitmap_table(
+        &mut src,
+        "ASCII_5X7_GLYPHS",
+        5,
+        7,
+        &font_dir.join("ascii_5x7.txt"),
+    );
     push_bitmap_table(
         &mut src,
         "ASCII_6X10_GLYPHS",

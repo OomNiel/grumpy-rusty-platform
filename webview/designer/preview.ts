@@ -1012,6 +1012,16 @@ function glyphBlockSize(font: string): number {
     return font === 'Scaled6x10' ? 2 : 1;
 }
 
+/**
+ * Whether column `col` of a glyph row is ink.
+ *
+ * Division rather than `1 << (columns - 1 - col)`: a declared BDF can be wider than 32 columns, where a shift
+ * silently wraps.
+ */
+function bitSet(bits: number, columns: number, col: number): boolean {
+    return Math.floor(bits / 2 ** (columns - 1 - col)) % 2 === 1;
+}
+
 /** `draw_char_with_font` for the bitmap fonts (spec 1.3-1.4, `render/mod.rs:1897-1928`). */
 function drawGlyph(
     context: CanvasRenderingContext2D,
@@ -1033,7 +1043,7 @@ function drawGlyph(
     for (let row = 0; row < glyphRowCount(font); row += 1) {
         const bits = rows[row] ?? 0;
         for (let col = 0; col < columns; col += 1) {
-            if ((bits & (1 << (columns - 1 - col))) === 0) {
+            if (!bitSet(bits, columns, col)) {
                 continue;
             }
             const px = x + col * block;
@@ -1317,7 +1327,10 @@ function tableRows(widget: DesignerWidget): string[][] {
 function labelOrCarouselStyle(widget: DesignerWidget, fallback: Style): Style {
     const fontProp = stringProp(widget.props, 'font');
     if (fontProp !== '' && !isBuiltInFont(fontProp)) {
-        return styleLabel();
+        // A declared font replaces the whole style expression with `Style::label()` carrying a
+        // `FontId::Bitmap`. The name is kept so the glyph table can draw *that* face: the extension sends
+        // its pixels (they are not in the design), and `glyph.ts` answers for it like any built-in.
+        return { ...styleLabel(), font: fontProp };
     }
     const styleName = stringProp(widget.props, 'style');
     let style = styleName === '' ? fallback : namedBase(styleName, fallback);
@@ -1353,8 +1366,9 @@ function buttonStyle(widget: DesignerWidget): Style {
     if (isBuiltInFont(fontProp)) {
         style = { ...style, font: fontProp };
     } else if (fontProp !== '') {
-        // A declared BDF becomes FontId::Bitmap (spec 5.1, external data); approximate with the packed default.
-        style = { ...style, font: 'Tiny3x5' };
+        // A declared BDF becomes FontId::Bitmap (spec 5.1). Its glyphs arrived from the extension, so the
+        // canvas draws the real face rather than the packed default it used to approximate with.
+        style = { ...style, font: fontProp };
     }
     const background = colourProp(widget.props, 'bg');
     if (background !== undefined) {
@@ -2636,7 +2650,7 @@ function drawClockLabel(
         for (let row = 0; row < glyphRowCount(font); row += 1) {
             const bits = rows[row] ?? 0;
             for (let col = 0; col < columns; col += 1) {
-                if ((bits & (1 << (columns - 1 - col))) === 0) {
+                if (!bitSet(bits, columns, col)) {
                     continue;
                 }
                 context.fillStyle = css(colour);

@@ -173,12 +173,14 @@ designer for the active project. Either way it works on a board that carries a p
 - **Properties** — position and size, every property the tag has, the events it can raise, its option list,
   table body or icon parts, and the layer order. Every field carries a **hover description**, and the Toolbox
   entries describe what each widget is.
-- **Fonts** — a Font field lists everything a widget can be given: **seven built-in fonts** from the crate
-  — Tiny 3x5 (the default), Medium 4x7, Scaled 6x10, **Mono 6x10**, **Mono 8x16** and two scales of the vector
-  face — *and* any BDF font declared on the Screen panel (name, file, and which characters to embed). The two
-  Mono faces are DejaVu Sans Mono rasterised into a 6x10 or an 8x16 cell, because a 3-pixel-wide bitmap is as
-  legible as hand-drawn glyphs get: 6x10 keeps 68 characters on a 480-pixel panel, 8x16 keeps 53, and both
-  carry a real lower case and the whole of printable ASCII. The `…` beside the field declares a new font
+- **Fonts** — a Font field lists everything a widget can be given: **eight built-in fonts** from the crate
+  — Tiny 3x5 (the default), Medium 4x7, Scaled 6x10, **Medium 5x7**, **Mono 6x10**, **Mono 8x16** and two
+  scales of the vector face — *and* any BDF font declared on the Screen panel (name, file, and which characters
+  to embed). Three of them are new because a 3-pixel-wide bitmap is as legible as hand-drawn glyphs get:
+  the drawn **5x7** keeps 80 characters on a 480-pixel panel, and the two **Mono** faces are DejaVu Sans Mono
+  rasterised into a 6x10 or an 8x16 cell (68 and 53 characters). All three carry a real lower case and the whole
+  of printable ASCII, and **a declared BDF is now drawn on the canvas as itself** — the extension parses the
+  file and sends the pixels, so a widget previews in the face the board will use. The `…` beside the field declares a new font
   from a file and selects it in one step, so a new face is one action rather than a trip to another list. The
   file is embedded into the firmware at build time, so the character set is worth narrowing: a title that only
   uses digits need not carry the alphabet. Assets are resolved from the project root, which is what the

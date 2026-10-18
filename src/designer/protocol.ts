@@ -10,6 +10,7 @@
  * cannot reach: it validates, writes the document, regenerates the markup, and reports problems back.
  */
 
+import type { DesignFontPixels } from './bitmapFont';
 import type { DesignerDocument } from './model';
 
 /** Everything the panel needs to draw itself, sent once when it is ready and again on every change. */
@@ -43,6 +44,17 @@ export interface DesignerInit {
      * to say.
      */
     loadProblems?: string[];
+    /**
+     * The pixels of every BDF font the design declares, by the name the design gives it.
+     *
+     * The panel cannot read a file, and a font's glyphs are not in the design -- only the path to them. So
+     * the extension parses each one (the same conversion the crate does, see `./bitmapFont`) and sends the
+     * result, which is what lets the canvas draw a declared font instead of approximating it. Absent when
+     * the design declares nothing, or when a font could not be read -- `fontNotes` says which.
+     */
+    fonts?: Record<string, DesignFontPixels>;
+    /** Why a declared font is not among the pixels above, in the panel's own words. */
+    fontNotes?: string[];
 }
 
 /** The panel's answer to every edit: it sends the whole document back rather than a diff. */
@@ -62,6 +74,15 @@ export interface DesignerReport {
     wroteDocument?: boolean;
     /** Something the panel should say that is not a problem, e.g. that a setting changed. */
     note?: string;
+    /**
+     * The declared fonts' pixels, sent again when the declarations change.
+     *
+     * Only on a change: a report follows every edit, and shipping a hundred glyph bitmaps per keystroke
+     * would be work done for nothing.
+     */
+    fonts?: Record<string, DesignFontPixels>;
+    /** Why a declared font is not among the pixels above. */
+    fontNotes?: string[];
 }
 
 /** The panel has finished loading and is ready for its document. */

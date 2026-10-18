@@ -66,6 +66,22 @@ pub static ASCII_4X7_FONT: PackedFont = PackedFont {
     glyphs: &ASCII_4X7_GLYPHS,
 };
 
+/// The hand-drawn 5x7 face: five columns, seven rows, a six-pixel advance.
+///
+/// Drawn rather than rasterised, and the size where that matters: an outline face below a nine-pixel em
+/// loses its letters, while five by seven is what hand-made bitmap faces have always used -- the classic
+/// LCD character set, which this is modelled on. It fits 80 characters across a 480-pixel panel and gives
+/// a label a real lower case without the height of the rasterised faces.
+pub static ASCII_5X7_FONT: BitmapFont = BitmapFont {
+    width: 5,
+    height: 7,
+    advance: 6,
+    line_height: 9,
+    first_char: 32,
+    bytes_per_row: 1,
+    glyphs: &ASCII_5X7_GLYPHS,
+};
+
 /// The first of the two rasterised faces: DejaVu Sans Mono at 9 px, a 6x10 cell.
 ///
 /// Generated, not drawn (`assets/fonts/from_truetype.py`), because 3x5 is as far as hand-drawn
@@ -308,6 +324,8 @@ pub enum FontId {
     Tiny3x5,
     Medium4x7,
     Scaled6x10,
+    /// The hand-drawn 5x7 face (advance 6, line height 9).
+    Medium5x7,
     /// DejaVu Sans Mono rasterised into a 6x10 cell (advance 7, line height 12).
     Mono6x10,
     /// DejaVu Sans Mono rasterised into an 8x16 cell (advance 9, line height 19).
@@ -326,6 +344,7 @@ impl core::fmt::Debug for FontId {
             Self::Tiny3x5 => write!(f, "Tiny3x5"),
             Self::Medium4x7 => write!(f, "Medium4x7"),
             Self::Scaled6x10 => write!(f, "Scaled6x10"),
+            Self::Medium5x7 => write!(f, "Medium5x7"),
             Self::Mono6x10 => write!(f, "Mono6x10"),
             Self::Mono8x16 => write!(f, "Mono8x16"),
             Self::Vector(scale) => f.debug_tuple("Vector").field(scale).finish(),
@@ -344,6 +363,7 @@ impl PartialEq for FontId {
             (Self::Tiny3x5, Self::Tiny3x5) => true,
             (Self::Medium4x7, Self::Medium4x7) => true,
             (Self::Scaled6x10, Self::Scaled6x10) => true,
+            (Self::Medium5x7, Self::Medium5x7) => true,
             (Self::Mono6x10, Self::Mono6x10) => true,
             (Self::Mono8x16, Self::Mono8x16) => true,
             (Self::Vector(a), Self::Vector(b)) => a == b,
@@ -368,6 +388,7 @@ impl FontId {
             Self::Tiny3x5 => 4,
             Self::Medium4x7 => 5,
             Self::Scaled6x10 => 7,
+            Self::Medium5x7 => ASCII_5X7_FONT.advance as u32,
             Self::Mono6x10 => ASCII_6X10_FONT.advance as u32,
             Self::Mono8x16 => ASCII_8X16_FONT.advance as u32,
             Self::Vector(scale) => (8 * scale) as u32,
@@ -384,6 +405,7 @@ impl FontId {
             Self::Tiny3x5 => 6,
             Self::Medium4x7 => 8,
             Self::Scaled6x10 => 11,
+            Self::Medium5x7 => ASCII_5X7_FONT.line_height as u32,
             Self::Mono6x10 => ASCII_6X10_FONT.line_height as u32,
             Self::Mono8x16 => ASCII_8X16_FONT.line_height as u32,
             Self::Vector(scale) => (12 * scale) as u32,
@@ -404,7 +426,7 @@ pub const fn packed_font(font: FontId) -> &'static PackedFont {
         // Not packed at all: `glyph_rows` is the 3x5 API, and these two are `BitmapFont`s. They draw
         // through `Bitmap`'s own path (see `for_each_glyph_pixel`), and this answer is only what a
         // caller that insists on the 3x5 shape gets.
-        FontId::Mono6x10 | FontId::Mono8x16 => &ASCII_3X5_FONT,
+        FontId::Medium5x7 | FontId::Mono6x10 | FontId::Mono8x16 => &ASCII_3X5_FONT,
         FontId::Vector(_) => &ASCII_3X5_FONT,
         FontId::Custom(font) => font,
         FontId::Bitmap(_) => &ASCII_3X5_FONT,
@@ -586,6 +608,7 @@ pub fn get_vector_glyph(ch: char) -> &'static [(u8, u8)] {
 /// an assumption, or a numeral is centred on the wrong box on a face it was not measured for.
 pub fn glyph_ink_box(font: FontId, _ch: char) -> (u8, u8) {
     match font {
+        FontId::Medium5x7 => (ASCII_5X7_FONT.width, ASCII_5X7_FONT.height),
         FontId::Mono6x10 => (ASCII_6X10_FONT.width, ASCII_6X10_FONT.height),
         FontId::Mono8x16 => (ASCII_8X16_FONT.width, ASCII_8X16_FONT.height),
         FontId::Bitmap(bitmap) => (bitmap.width, bitmap.height),
@@ -600,6 +623,7 @@ pub fn glyph_ink_box(font: FontId, _ch: char) -> (u8, u8) {
 /// numerals, scaled up by the design's `label_scale` -- uses this so it draws what the face really has.
 pub fn for_each_glyph_pixel(font: FontId, ch: char, draw: &mut dyn FnMut(i32, i32)) {
     match font {
+        FontId::Medium5x7 => ASCII_5X7_FONT.draw_glyph(ch, draw),
         FontId::Mono6x10 => ASCII_6X10_FONT.draw_glyph(ch, draw),
         FontId::Mono8x16 => ASCII_8X16_FONT.draw_glyph(ch, draw),
         FontId::Bitmap(bitmap) => bitmap.draw_glyph(ch, draw),
@@ -778,6 +802,9 @@ mod tests {
     /// compile -- so the shape is checked against what the design was told it would get.
     #[test]
     fn the_rasterised_faces_have_their_own_shape() {
+        assert_eq!(glyph_ink_box(FontId::Medium5x7, 'M'), (5, 7));
+        assert_eq!(FontId::Medium5x7.advance(), 6);
+        assert_eq!(FontId::Medium5x7.line_height(), 9);
         assert_eq!(glyph_ink_box(FontId::Mono6x10, 'M'), (6, 10));
         assert_eq!(glyph_ink_box(FontId::Mono8x16, 'M'), (8, 16));
         assert_eq!(FontId::Mono6x10.advance(), 7);
@@ -786,7 +813,7 @@ mod tests {
         assert_eq!(FontId::Mono8x16.line_height(), 19);
 
         // Every printable character is drawn, and drawn inside its cell.
-        for font in [FontId::Mono6x10, FontId::Mono8x16] {
+        for font in [FontId::Medium5x7, FontId::Mono6x10, FontId::Mono8x16] {
             let (width, height) = glyph_ink_box(font, 'M');
             for code in 33u8..=126u8 {
                 let ch = code as char;
@@ -821,7 +848,7 @@ mod tests {
     /// The two faces draw lower case differently from upper -- the same property the 3x5 table has.
     #[test]
     fn the_rasterised_faces_have_both_cases() {
-        for font in [FontId::Mono6x10, FontId::Mono8x16] {
+        for font in [FontId::Medium5x7, FontId::Mono6x10, FontId::Mono8x16] {
             for (lower, upper) in [('a', 'A'), ('e', 'E'), ('g', 'G'), ('q', 'Q')] {
                 let real = |ch: char| {
                     let mut pixels = Vec::new();

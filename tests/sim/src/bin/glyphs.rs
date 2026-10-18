@@ -13,15 +13,18 @@
 //! Each entry is `height` row numbers. In row `r`, bit `1 << (width - 1 - col)` is set when the pixel at
 //! column `col` (0 = left) is ink -- the 3x5 faces are three columns, the rasterised ones six or eight.
 
-use embedded_gui::font::{get_vector_glyph, glyph_rows, ASCII_6X10_FONT, ASCII_8X16_FONT};
+use embedded_gui::font::{
+    get_vector_glyph, glyph_rows, ASCII_5X7_FONT, ASCII_6X10_FONT, ASCII_8X16_FONT,
+};
 use embedded_gui::prelude::FontId;
 
 /// The fonts a design can ask for, in the order the picker offers them. `Vector` carries its scale in the
 /// variant, and the scale is part of what the advance is computed from, so each scale is its own section.
-const FONTS: [(&str, FontId); 7] = [
+const FONTS: [(&str, FontId); 8] = [
     ("Tiny3x5", FontId::Tiny3x5),
     ("Medium4x7", FontId::Medium4x7),
     ("Scaled6x10", FontId::Scaled6x10),
+    ("Medium5x7", FontId::Medium5x7),
     ("Mono6x10", FontId::Mono6x10),
     ("Mono8x16", FontId::Mono8x16),
     ("Vector(2)", FontId::Vector(2)),
@@ -45,6 +48,7 @@ fn rows_of(font: FontId, ch: char) -> (u8, u8, Vec<u8>) {
         (width, height, rows)
     };
     match font {
+        FontId::Medium5x7 => unpack(&ASCII_5X7_FONT),
         FontId::Mono6x10 => unpack(&ASCII_6X10_FONT),
         FontId::Mono8x16 => unpack(&ASCII_8X16_FONT),
         other => (3, 5, glyph_rows(other, ch).to_vec()),
