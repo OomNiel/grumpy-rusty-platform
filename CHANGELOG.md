@@ -11,6 +11,25 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.12.1] - 2026-10-19
+
+The canvas drew the default face for a font that was selected in the Font list.
+
+### Fixed
+
+- **A declared font now reaches the canvas on widgets that carry it in their style** -- the clock, a toggle, a
+  spinbox and the rest. `designStyle` only ever put a *built-in* font into the style, so the markup named the
+  imported face while the canvas went on painting the default one: the Font list showed the selection, and the
+  design drew something else. It now takes the same route the markup does, asking the glyph table whether it
+  has the face's pixels (they come from the extension, not from the design).
+- New test (`designer-font-style.test.js`) paints one clock twice with two fonts of different weight and
+  compares the ink with the default: a heavy face must paint more, a one-row face less. Before the fix both
+  painted exactly the default's 195 501 pixels.
+
+### Notes
+
+- Test suite: 996 hermetic (t1 920, t2 72, t3 4).
+
 ## [0.12.0] - 2026-10-19
 
 An imported system font is now reachable on **every** widget that offers a Font field, it says which face it

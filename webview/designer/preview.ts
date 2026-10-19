@@ -31,9 +31,17 @@
 
 import { resolveStyleValues, styleValuesOf, type ResolvedStyle } from '../../src/designer/appearance';
 import { widgetSpec } from '../../src/designer/catalog';
-import { isBuiltInFont } from '../../src/designer/fonts';
+import { isBuiltInFont, supportsFontAttribute } from '../../src/designer/fonts';
 import { type DesignerWidget } from '../../src/designer/model';
-import { glyphColumns, glyphMetrics, glyphRowCount, glyphRows, vectorGlyph, VECTOR_PEN_UP } from './glyphs';
+import {
+    glyphColumns,
+    glyphMetrics,
+    glyphRowCount,
+    glyphRows,
+    isDesignFont,
+    vectorGlyph,
+    VECTOR_PEN_UP,
+} from './glyphs';
 
 // ---------------------------------------------------------------------------
 // Colour
@@ -347,7 +355,19 @@ function applyResolved(base: Style, resolved: ResolvedStyle): Style {
 function designStyle(widget: DesignerWidget, fallback: Style): Style {
     const name = stringProp(widget.props, 'style');
     const base = name === '' ? fallback : namedBase(name, fallback);
-    return applyResolved(base, resolveStyleValues(styleValuesOf(widget, widgetSpec(widget.tag)?.props ?? [])));
+    const spec = widgetSpec(widget.tag);
+    const values = styleValuesOf(widget, spec?.props ?? []);
+    // A *declared* font is a `BitmapFont` static, and the markup carries it as `style.font` on every widget that
+    // does not read a `font` attribute. Its pixels arrive from the extension rather than from the design, so the
+    // canvas asks the glyph table whether it has them. Without this the markup named the imported face while
+    // the clock (and every other style-only widget) went on drawing the default one.
+    const chosen = stringProp(widget.props, 'font');
+    if (chosen !== '' && !isBuiltInFont(chosen) && isDesignFont(chosen)
+        && !supportsFontAttribute(spec?.fontSupport)) {
+        values.font = chosen;
+        values.declaredFont = true;
+    }
+    return applyResolved(base, resolveStyleValues(values));
 }
 
 // ---------------------------------------------------------------------------
