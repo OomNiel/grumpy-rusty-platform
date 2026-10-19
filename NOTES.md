@@ -7503,3 +7503,86 @@ builds.
 A **TTF/OTF importer** ("adapt a system font"): the honest shape is the panel rasterising the face it already
 has a renderer for -- the webview can `fillText` a `@font-face` from a data URL -- and the extension writing
 the result out as a BDF, which the pipeline above then draws and the crate already consumes. Not built.
+
+## §150 — A system font in the project, and the two places a font has to reach (0.11.0–0.12.2, 2026-10-19)
+
+§149 ended on "a TTF/OTF importer: not built". It is built, and the three bugs it took to make it *visible*
+are the interesting part.
+
+### Import a Font: draw it in the panel, write it in the extension
+
+The split is the whole design, and it is there because the extension has no renderer while the webview has a
+good one:
+
+1. **The extension** opens the file dialog (`.ttf`, `.otf`, `.ttc`, or a `.bdf` which skips the work), asks how
+   many pixels tall to draw the face, copies the face into `assets/`, and posts its bytes to the panel as
+   base64 (`DesignerRasteriseFont`).
+2. **The panel** builds a `FontFace` from the bytes, `fillText`s all 95 printable characters onto a canvas,
+   thresholds the alpha at 128, and posts the cell back (`DesignerFontRasterised`).
+3. **The extension** writes `assets/<name>-<size>.bdf` and tells the panel to declare it (`DesignerDeclareFont`).
+4. **The panel** declares it and points the selected widget at it, in one undo step.
+
+The arithmetic lives in `src/designer/fontRaster.ts` behind a `CellCanvasFactory`, so it is held to a
+measurement table in t1 (`designer-font-import.test.js`) instead of to whatever a browser happened to do --
+the cell is the union of every glyph's ink on one shared pen origin and baseline, which is what keeps a
+proportional face in proportion. The BDF writer (`fontImport.ts`) is round-tripped through `parseBdfFont`:
+what the canvas drew is what the file says, and what the crate will draw.
+
+The browser renderer was checked once, for real: a scratch page over the integrated browser, DejaVu Sans Mono
+at 24 px, gave a **21x26 cell** with a 6-row descent. Worth doing -- it is the sort of thing that looks fine in
+a stub and is off by a factor in Chromium.
+
+### Three bugs, one theme: a font has two routes and more than one reader
+
+The imported font kept "not showing up". Each report was true, and each had a different cause:
+
+- **"The picker only lists BDF."** The Font field's filter was `{ 'BDF fonts': ['bdf'] }`. One `FONT_FILTERS`
+  now feeds both dialogs, and `isBitmapFontFile()` is the single rule for "copy it in" versus "draw it into a
+  BDF first".
+- **"The font is not in the list and the box is empty / it defaults to Default."** The clock -- and a button, a
+  toggle, a spinbox -- is `fontSupport: 'style'`, so the list was built from the *built-ins only*: a declared
+  font was invisible there, and a value that matches no option draws a `<select>` blank. The crate reaches
+  those widgets through `style.font`, so the designer now writes
+  `style.font = FontId::Bitmap(&__FONT_<ID>)` -- the same bitmap static the codegen writes when a label's
+  `font=` attribute resolves. `fontConstName` moved to `fonts.ts` (a leaf) so the style emitter can use it
+  without importing the document model, and the validator no longer refuses a declared font on a style-only
+  widget. Verified through the crate's own generator, not by eye:
+  `cargo run --bin expand -- /tmp/clock.kdl` prints
+  `add_clock_styled(..., { let mut style = Style::label(); style.font = FontId::Bitmap(&__FONT_DEJAVU_24); style })?`;
+- **"It shows the selection but renders the default."** The *canvas* had its own copy of the routing rule, in
+  `preview.ts`'s `designStyle`, and only ever put a *built-in* font into the style. The markup named the
+  imported face; the canvas went on painting the default. **The lesson: a change to how a font reaches a style
+  has to touch both places.** The regression test paints one clock three ways -- a heavy face, a one-row face
+  and no face -- and demands more ink than the default for the first and less for the second. With the fix
+  stashed, all three painted exactly 195 501 pixels.
+
+### The size box, and its removal
+
+0.12.0 added a size box beside the Font list that redrew the kept face at a new size (`resizeFont` /
+`fontResized` / `state.setFontSize`). 0.12.2 removed it at the user's request -- the import's size prompt is
+the way in -- and the whole path went with it rather than being left unreachable. What stays is the
+bookkeeping: the declaration keeps `source` (the face, copied into `assets/`) and `size`, because they are
+what the UI names a font with -- `DejaVu_24 (24 px)` in the list, `Drawn from assets/… at 24 px` in the Fonts
+section.
+
+### Deleting a font
+
+Right-click a Font list: `fontMenu` offers `Delete the font "<id>"` for a *declared* font only, marked as
+destructive. It routes through `removeFont`, which has always cleared the reference from every widget that
+named it -- a widget pointing at a name that no longer exists is a validation error to hunt for. It removes
+the declaration, not the files: those are the user's, and the Fonts list's own Remove button has always
+behaved the same way.
+
+### Tests
+
+- t1 `designer-font-import.test.js` (12): the writer's text, a 9-column cell that straddles two bytes, the
+  round trip through `parseBdfFont`, the rasteriser against a measurement table (including a space that must
+  not widen the cell, and alpha 127 versus 128), and `fontIdFromFile`'s Rust-identifier rules.
+- t2 `designer-font-menu.test.js`: a declared font listed for a clock and named with its size; the right-click
+  menu; deleting it clears the widget's reference and leaves an unused font alone; no menu for `(default)` or
+  a built-in.
+- t2 `designer-font-style.test.js`: the canvas uses the face for a style-only widget (see above).
+- t2 `designer-webview.test.js` and t1 policy tests updated: a declared font is now offered *everywhere*, by
+  whichever route the tag reads.
+
+crate **309**, extension **995** (t1 920 · t2 71 · t3 4).

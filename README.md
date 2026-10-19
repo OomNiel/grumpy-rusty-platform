@@ -38,7 +38,7 @@ and, for the Espressif boards, `espflash`.
 | Chip check before a no-flash session (`probe-rs verify`) | ✅ RP only |
 | Flash / monitor over USB serial (`espflash`) | ✅ ESP — one-shot write, and a monitor that holds the port on purpose |
 | crates.io Library Manager | ✅ curated catalog + live sparse index |
-| Layered test suite | ✅ 931 hermetic (t1 872 · t2 55 · t3 4 — byte-for-byte snapshots of every board × template) + opt-in e2e (the Rust project builds, and the designer's canvas-to-glass simulator) + 1 hardware HIL |
+| Layered test suite | ✅ 995 hermetic (t1 920 · t2 71 · t3 4 — byte-for-byte snapshots of every board × template) + opt-in e2e (the Rust project builds, and the designer's canvas-to-glass simulator) + 1 hardware HIL |
 | Debug-config guard rails — **Check Debug Configuration** validates `.vscode/launch.json` against the schema the *installed* `probe-rs-debugger` publishes, and offers to regenerate when the file holds nothing but our own four configurations. **Debug** runs the same check first | ✅ RP (checked against `probe-rs-debugger` 0.32.0) |
 | Windows support — installer URLs, `rustup-init.exe`, zip extraction, UF2 drive letters, `PATHEXT`, `$env:DEFMT_LOG`, COM-port enumeration via `Win32_PnPEntity` (vendor id kept, so a Pico is still refused), PowerShell-safe flash+monitor chaining, and `export-esp.ps1` | 🟡 implemented and unit-tested for `win32`, but **not yet run on a Windows machine** |
 
@@ -179,18 +179,28 @@ designer for the active project. Either way it works on a board that carries a p
   to embed). Three of them are new because a 3-pixel-wide bitmap is as legible as hand-drawn glyphs get:
   the drawn **5x7** keeps 80 characters on a 480-pixel panel, and the two **Mono** faces are DejaVu Sans Mono
   rasterised into a 6x10 or an 8x16 cell (68 and 53 characters). All three carry a real lower case and the whole
-  of printable ASCII, and **a declared BDF is now drawn on the canvas as itself** — the extension parses the
-  file and sends the pixels, so a widget previews in the face the board will use. The `…` beside the field declares a new font
-  from a file and selects it in one step, so a new face is one action rather than a trip to another list. The
-  file is embedded into the firmware at build time, so the character set is worth narrowing: a title that only
-  uses digits need not carry the alphabet. Assets are resolved from the project root, which is what the
-  generated `project.kdl` anchors, and a file from outside the project is copied into `assets/`.
+  of printable ASCII, and **a declared BDF is drawn on the canvas as itself** — the extension parses the
+  file and sends the pixels, so a widget previews in the face the board will use. The `…` beside a Font field
+  declares a new font from a file and selects it in one step, so a new face is one action rather than a trip to
+  another list, and **right-click a Font list to delete the font it names**: the declaration goes, and so does
+  the reference from every widget that used it, in one undo step.
 
-  Which widgets offer a font is the crate's shape rather than a preference, and the catalogue follows it: the
-  built-ins travel as a `style` expression (the markup has no attribute for them) and so reach the widgets that
-  honour a style — Label, Button and Carousel — while a *declared* BDF is read for Label and Carousel only. A
-  Table is given no Font field at all, because the crate's table arm hard-codes its style and would drop one in
-  silence.
+  **Import a Font…** adapts a *system* face: pick a `.ttf`, `.otf` or `.bdf`, say how many pixels tall to draw
+  it, and the webview rasterises all 95 printable characters into `assets/<name>-<size>.bdf`. The panel already
+  has a text renderer, so nothing native rasterises anything; the extension writes the BDF, which is the format
+  the crate already reads. The face itself is copied in beside it, and the declaration remembers both, which is
+  what the Font list shows — `DejaVu_24 (24 px)`, with `Drawn from assets/… at 24 px` under it in the Fonts
+  list. One import is one undo step, and the new font is selected for the widget you had selected.
+
+  Which widgets offer a font is the crate's shape rather than a preference, and the catalogue follows it. A
+  *built-in* face is a `style` expression, and a *declared* one is read from a `font` attribute by Label and
+  Carousel — everywhere else it travels the way a built-in does, as `style.font = FontId::Bitmap(&__FONT_<ID>)`,
+  which is the same bitmap static the codegen writes for those two tags. So a system face reaches the **clock's
+  numerals**, a button's label, a toggle's label and every other widget that draws text in its style. A Table is
+  given no Font field at all, because the crate's table arm hard-codes its style and would drop one in silence.
+  The file is embedded into the firmware at build time, so the character set is worth narrowing: a title that
+  only uses digits need not carry the alphabet. Assets are resolved from the project root, which is what the
+  generated `project.kdl` anchors, and a file from outside the project is copied into `assets/`.
 - **Images from the microSD card** — an Image control reads a file in the project (embedded in the flash at
   build time) *or* a file on the card: name it `sd:PIC1.BMP` (the case of the prefix is not checked, so `SD:` is
   the same card) and the board reads it as it draws, a row at a time, so a full-screen picture costs a row of RAM
@@ -202,11 +212,13 @@ designer for the active project. Either way it works on a board that carries a p
   Projects on boards with a card socket (the ESP32-035) get a generated `src/sd.rs` that mounts
   it; the panel says so if the board has no socket, if the project predates the module, or if the name is not
   one the driver can look up (FAT short names, 8.3, from the root).
-- **Only buildable controls are offered** — the Toolbox lists the tags whose generated code compiles against
-  `embedded-gui` 0.2.7. Ten of the crate's own tags (`slider`, `arc`, `busy_wheel`, `chart`, `status_bar`,
-  `time_picker`, `number_picker`, `content_indicator`, `crumbs`, `path`) are parsed by its code generator but
-  emit calls its runtime does not accept, so they are documented and refused rather than handed out. A design
-  that already contains one says so, by name, with the reason, and the control can be selected and deleted.
+- **Every tag the generator accepts is offered** — 34 of them, all of which build against the vendored
+  `embedded-gui` 0.2.7. Ten used to be refused (`slider`, `arc`, `busy_wheel`, `chart`, `status_bar`,
+  `time_picker`, `number_picker`, `content_indicator`, `crumbs`, `path`) because the crate's own generator
+  emitted calls its runtime did not accept; the fork fixed them. One tag stays out of the Toolbox for a
+  different reason: `time_picker` is the Clock's ancestor — a small dial that shows a time and edits one — and
+  offering both invited the one that cannot run. A design that already contains one still loads, previews,
+  validates and builds.
 - **Every control's appearance is yours to set** — a Toggle, Checkbox, Roller, Progress bar, Spinbox and Gauge
   each carry a background, a border colour and width, a corner radius and their own accent and text colours; a
   Gauge also carries its tick and needle colours, its tick counts, where its sweep starts and ends, and whether
