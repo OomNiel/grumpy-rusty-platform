@@ -178,44 +178,18 @@ export interface DesignerDeclareFont {
     size?: number;
 }
 
-/**
- * The panel asking for a declared font to be redrawn at another size.
- *
- * A BDF is a bitmap, so this is not a scale: the face the font was drawn from is drawn again at the size the
- * user typed, and the written file replaces the one the declaration named. Only a font that kept its source
- * can do this, which is why the panel disables the size box for the rest.
- */
-export interface DesignerResizeFont {
-    type: 'resizeFont';
-    fontId: string;
-    /** The pixel height to draw the face at. */
-    pixelSize: number;
-}
-
-/** The answer to {@link DesignerResizeFont}: the file to use, and the size it is at. */
-export interface DesignerFontResized {
-    type: 'fontResized';
-    fontId: string;
-    /** Project-relative path of the BDF that now holds these pixels. */
-    src?: string;
-    size?: number;
-    error?: string;
-}
-
 export type DesignerToHost =
     | DesignerChanged
     | DesignerReady
     | DesignerPickAsset
     | DesignerSetTouch
-    | DesignerFontRasterised
-    | DesignerResizeFont;
+    | DesignerFontRasterised;
 export type HostToDesigner =
     | DesignerInit
     | DesignerReport
     | DesignerAssetPicked
     | DesignerRasteriseFont
-    | DesignerDeclareFont
-    | DesignerFontResized;
+    | DesignerDeclareFont;
 
 /**
  * The buttons the panel offers beyond editing.

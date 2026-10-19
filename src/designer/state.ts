@@ -423,20 +423,6 @@ export function addFontDeclaration(
 }
 
 /**
- * Records a new size for a font that was just redrawn.
- *
- * Both fields move together: the BDF a font is drawn at a size *is* a different file, so a size without its
- * file would name pixels that are not there. The undo key groups a run of sizes into one step -- nudging a
- * font from 16 to 17 to 18 is one decision, and undoing it three times would be a puzzle.
- */
-export function setFontSize(state: DesignerState, id: string, src: string, size: number): DesignerState {
-    return edit(state, `font:${id}:size`, (document) => ({
-        ...document,
-        fonts: (document.fonts ?? []).map((font) => (font.id === id ? { ...font, src, size } : font)),
-    }));
-}
-
-/**
  * Appends a declaration to a document, and says what it was called.
  *
  * The pure half of both entry points above, so a caller that has more to change in the same step -- pointing

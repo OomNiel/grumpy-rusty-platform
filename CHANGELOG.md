@@ -11,6 +11,33 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.12.2] - 2026-10-19
+
+The font size box is gone, and a font can be deleted from the list that chooses it.
+
+### Added
+
+- **Right-click a Font list to delete the font it names.** The menu appears only for a font the design
+  declares -- there is nothing to delete about `(default)` or a face built into the crate, so those keep the
+  browser's own menu. Deleting takes the declaration out *and* clears the reference from every widget that
+  used it, in one undo step, which is what deleting a font means: a widget left pointing at a name that no
+  longer exists is a validation error to hunt for.
+- The menu item is marked as destructive and names the font, so a wrong click is obvious before it happens.
+
+### Removed
+
+- **The font size box beside the Font list**, at your request. A size could only ever be a redraw of the kept
+  face, and the import's size prompt already covers the case; the machinery behind the box went with it (the
+  `resizeFont`/`fontResized` messages, `state.setFontSize`, and the editor's redraw handler).
+- What stays: the import still records the face and the size, because they are what the Font list shows
+  (`DejaVu_24 (24 px)`) and what the Fonts section states (`Drawn from assets/... at 24 px`).
+
+### Notes
+
+- Deleting a font removes it from the design, not from `assets/`: the files are yours, and the Fonts list's own
+  Remove button has always behaved that way.
+- Test suite: 995 hermetic (t1 920, t2 71, t3 4).
+
 ## [0.12.1] - 2026-10-19
 
 The canvas drew the default face for a font that was selected in the Font list.

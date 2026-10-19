@@ -70,12 +70,13 @@ export interface PanelCallbacks {
         apply: (path: string, font?: { source: string; size: number }) => void,
     ): void;
     /**
-     * A declared font is to be redrawn at another size.
+     * A font in a Font list was right-clicked.
      *
-     * The extension owns the face and the file, so the panel only asks; the answer comes back as a message
-     * that moves the declaration onto the new BDF.
+     * The menu itself is the panel's, but it has to be positioned against the page rather than the field, so the
+     * coordinates travel out to whoever owns the root element -- the same arrangement the canvas and the layers
+     * list use.
      */
-    onFontSize(fontId: string, pixelSize: number): void;
+    onFontMenu(fontId: string, x: number, y: number): void;
     /**
      * A widget's action button was pressed.
      *
@@ -170,18 +171,6 @@ function assetKindFor(tag: string): DesignerAssetKind {
 /** How a declared font is named in the Font list: its id, and the size it was drawn at when that is known. */
 function fontOptionLabel(font: { id: string; size?: number }): string {
     return font.size === undefined ? font.id : `${font.id} (${font.size} px)`;
-}
-
-/** Why the size box is enabled or not, said where the box is rather than in a manual. */
-function sizeHelp(declared: { source?: string } | undefined): string {
-    if (declared === undefined) {
-        return 'Only a font this project declares can be resized. Pick one from "In this project".';
-    }
-    if (declared.source === undefined) {
-        return 'This font was not drawn from a face in the project, so it has no size to change: a BDF is a '
-            + 'bitmap. Import a .ttf or .otf to get one that can be redrawn.';
-    }
-    return 'The pixel height this face was drawn at. The font is one drawing, so every widget using it changes.';
 }
 
 /** The `...` that opens the file picker, named for the widget that reads it. */
@@ -439,7 +428,7 @@ function propertyForm(
                             callbacks.onEdit(declareFontFromPath(state, widget.id, path, font)),
                         )
                     : undefined,
-            callbacks.onFontSize,
+            callbacks.onFontMenu,
         );
         const help = [
             propertyHelp(widget.tag, property.name),
@@ -466,7 +455,7 @@ function propertyControl(
     fonts: readonly DesignerFont[],
     support: FontSupport | undefined,
     onBrowse: (() => void) | undefined,
-    onFontSize: (fontId: string, pixelSize: number) => void,
+    onFontMenu: (fontId: string, x: number, y: number) => void,
 ): HTMLElement {
     switch (property.kind) {
         case 'asset':
@@ -514,28 +503,20 @@ function propertyControl(
             }
             select.value = current;
             select.addEventListener('change', () => onChange(select.value));
+            // A font is removed from where it is chosen. The list is the only place a declared font appears, so
+            // right-clicking it is the shortest path to "I do not want this one" -- and removing it clears the
+            // reference from every widget that named it, in one undo step.
+            select.addEventListener('contextmenu', (event) => {
+                const declared = fonts.some((font) => font.id === current);
+                if (current === '' || !declared) {
+                    return;
+                }
+                event.preventDefault();
+                onFontMenu(current, event.clientX, event.clientY);
+            });
 
             const rowNode = element('div', 'asset-field');
             rowNode.append(select);
-            // The size is the *font's*, not the widget's: a declared font is one drawing, so every widget using
-            // it changes together. It is only offered when there is a face to draw again -- a built-in face or a
-            // hand-made BDF has no size to change.
-            const declared = fonts.find((font) => font.id === current);
-            const sizeBox = element('input', 'field-input font-size');
-            sizeBox.type = 'number';
-            sizeBox.min = '6';
-            sizeBox.max = '64';
-            sizeBox.value = declared?.size === undefined ? '' : String(declared.size);
-            sizeBox.disabled = declared === undefined || declared.source === undefined;
-            sizeBox.title = sizeHelp(declared);
-            sizeBox.setAttribute('aria-label', 'Font size in pixels');
-            sizeBox.addEventListener('change', () => {
-                if (declared === undefined) {
-                    return;
-                }
-                onFontSize(declared.id, Number(sizeBox.value));
-            });
-            rowNode.append(sizeBox);
             if (onBrowse !== undefined) {
                 // The `...` declares a font from a file and selects it, so the common case -- "use this font, I
                 // have not added it yet" -- is one action rather than two lists to visit in the right order. A
@@ -880,6 +861,23 @@ export function hideContextMenu(host: HTMLElement): void {
         host.removeChild(openMenu);
         openMenu = undefined;
     }
+}
+
+/** The menu a declared font offers, opened from the Font list that names it. */
+export function fontMenu(
+    state: DesignerState,
+    id: string,
+    callbacks: PanelCallbacks,
+): ContextMenuItem[] {
+    // Removing a font clears the reference from every widget that named it (`removeFont`), because a widget
+    // left pointing at a font that no longer exists is a validation error the user would have to hunt for.
+    return [
+        {
+            label: `Delete the font "${id}"`,
+            danger: true,
+            action: () => callbacks.onEdit(removeFont(state, id)),
+        },
+    ];
 }
 
 /** The menu a placed control offers. */

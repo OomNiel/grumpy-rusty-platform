@@ -28,7 +28,6 @@ const {
     addFont,
     addFontDeclaration,
     declareFontFromPath,
-    setFontSize,
     duplicateWidget,
     removeFont,
     setChildren,
@@ -620,9 +619,9 @@ test('a design written before the points existed keeps the default triangle', ()
     equal(trianglePoints(widget)[1], 0, 'and the rest keep the crate\'s value');
 });
 
-test('an imported font remembers the face it came from, so it can be redrawn', () => {
-    // The size is not the widget's and not the BDF's: it is a property of the drawing, which is why the
-    // declaration keeps the face. Without that, "make it bigger" would have to scale pixels.
+test('an imported font remembers the face it came from and the size it was drawn at', () => {
+    // The list names a font with the size it was drawn at, and the Fonts section names the face: both come
+    // from these two fields, which is why the import records them even though nothing else reads them.
     const state1 = addWidget(state(), 'clock', 10, 10);
     const declared = addFontDeclaration(state1, 'assets/DejaVuSansMono-24.bdf', {
         source: 'assets/DejaVuSansMono.ttf',
@@ -634,18 +633,10 @@ test('an imported font remembers the face it came from, so it can be redrawn', (
     equal(font.size, 24, 'and the size it was drawn at');
     equal(validateDocument(declared.document).length, 0, 'which is a valid design');
 
-    // A redraw moves both fields together: a size without its file would name pixels that are not there.
-    const resized = setFontSize(declared, font.id, 'assets/DejaVuSansMono-30.bdf', 30);
-    const after = resized.document.fonts[0];
-    equal(after.src, 'assets/DejaVuSansMono-30.bdf', 'the file follows the size');
-    equal(after.size, 30, 'and the size the file');
-    equal(after.source, 'assets/DejaVuSansMono.ttf', 'the face is still there for the next change');
-
-    // One step: nudging 24 -> 30 -> 32 is one decision, and undo goes back to 24 rather than to 30.
-    const twice = setFontSize(resized, font.id, 'assets/DejaVuSansMono-32.bdf', 32);
-    const undone = undo(twice);
-    equal(undone.document.fonts[0].size, 24, 'undo returns to the size before the nudging began');
-    equal(undone.document.fonts[0].src, 'assets/DejaVuSansMono-24.bdf', 'and to its file');
+    // A font that arrived as a bare BDF has neither, and the panel says nothing rather than guessing.
+    const plain = addFontDeclaration(state1, 'assets/hero.bdf');
+    equal(plain.document.fonts[0].source, undefined, 'a plain BDF has no face to name');
+    equal(plain.document.fonts[0].size, undefined, 'and no size');
 });
 
 test('a declared font reaches a widget that reads only a style', () => {

@@ -16,7 +16,14 @@ import { widgetSpec } from '../../src/designer/catalog';
 import { registerDesignFont } from './glyphs';
 import { rasteriseFont } from './rasterise';
 import { CanvasView } from './canvas';
-import { hideContextMenu, renderProperties, renderToolbox, showContextMenu, widgetMenu } from './panels';
+import {
+    fontMenu,
+    hideContextMenu,
+    renderProperties,
+    renderToolbox,
+    showContextMenu,
+    widgetMenu,
+} from './panels';
 import {
     type DesignerState,
     addFontDeclaration,
@@ -29,7 +36,6 @@ import {
     moveWidget,
     redo,
     removeWidget,
-    setFontSize,
     setRotation,
     undo,
     widgetById,
@@ -39,7 +45,6 @@ import type {
     DesignerAssetKind,
     DesignerAssetPicked,
     DesignerDeclareFont,
-    DesignerFontResized,
     DesignerInbound,
     DesignerInit,
     DesignerRasteriseFont,
@@ -172,9 +177,10 @@ const panels = {
         // The extension owns the serial port and the terminal, so the panel only asks.
         host.postMessage({ type: 'action', action });
     },
-    onFontSize(fontId: string, pixelSize: number) {
-        // The face and the file are the extension's; the answer moves the declaration onto the new BDF.
-        host.postMessage({ type: 'resizeFont', fontId, pixelSize });
+    onFontMenu(fontId: string, x: number, y: number) {
+        // Positioned against the page, because the menu is an overlay and not part of the field's flow.
+        root.addEventListener('click', () => hideContextMenu(root), { once: true });
+        showContextMenu(root, x, y, fontMenu(state, fontId, panels));
     },
 };
 
@@ -184,7 +190,6 @@ window.addEventListener('message', (event: MessageEvent<
     | DesignerAssetPicked
     | DesignerRasteriseFont
     | DesignerDeclareFont
-    | DesignerFontResized
 >) => {
     const message = event.data;
     if (message.type === 'init') {
@@ -257,9 +262,6 @@ window.addEventListener('message', (event: MessageEvent<
     if (message.type === 'declareFont') {
         declareImportedFont(message);
     }
-    if (message.type === 'fontResized') {
-        applyFontSize(message);
-    }
 });
 
 /**
@@ -290,28 +292,6 @@ async function rasteriseAndAnswer(message: DesignerRasteriseFont): Promise<void>
  * A declaration is a document edit, so it goes through the same path every other edit does -- undo covers it,
  * the file is rewritten, and the pixels are measured and sent back to the canvas from the extension.
  */
-/**
- * Moves a declaration onto the BDF the extension just wrote.
- *
- * The font keeps its name -- only the file and the size change -- so every widget that chose it follows without
- * being touched, which is what a shared font means.
- */
-function applyFontSize(message: DesignerFontResized): void {
-    if (message.error !== undefined) {
-        status(`That font could not be resized: ${message.error}`, true);
-        return;
-    }
-    if (message.src === undefined || message.size === undefined) {
-        return;
-    }
-    const font = (state.document.fonts ?? []).find((declared) => declared.id === message.fontId);
-    if (font === undefined) {
-        return;
-    }
-    panels.onEdit(setFontSize(state, message.fontId, message.src, message.size));
-    status(`${font.id} is drawn at ${message.size} px.`, false);
-}
-
 function declareImportedFont(message: DesignerDeclareFont): void {
     // Importing a file the design already names would list one face twice under two names; picking the same
     // file from a widget's Font list is a different thing, and that is allowed to make a second declaration.

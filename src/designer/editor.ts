@@ -91,8 +91,6 @@ class DesignerPanel {
             source?: string;
             /** Set when a field asked, so the answer goes back to that field rather than as a declaration. */
             assetRequestId?: string;
-            /** Set when this is a redraw of an existing declaration. */
-            resizeFontId?: string;
         }
     >();
 
@@ -281,78 +279,6 @@ class DesignerPanel {
         if (message.type === 'fontRasterised') {
             await this.writeRasterisedFont(message);
         }
-        if (message.type === 'resizeFont') {
-            await this.resizeFont(message.fontId, message.pixelSize);
-        }
-    }
-
-    /**
-     * Redraws a declared font's source face at another size.
-     *
-     * A BDF is a bitmap, so a new size is a new drawing rather than a scale -- which is why an imported font
-     * keeps the face it came from in the project. A font without one cannot be redrawn, and says so: the panel
-     * disables the box in that case, so reaching here means a design predating the source being kept.
-     */
-    private async resizeFont(fontId: string, pixelSize: number): Promise<void> {
-        const font = (this.document.fonts ?? []).find((declared) => declared.id === fontId);
-        if (font === undefined) {
-            return;
-        }
-        const size = Math.round(pixelSize);
-        if (!Number.isFinite(size) || size < 6 || size > 64) {
-            await this.panel.webview.postMessage({
-                type: 'fontResized',
-                fontId,
-                error: 'a size between 6 and 64 pixels',
-            });
-            return;
-        }
-        if (font.source === undefined || font.source === '') {
-            await this.panel.webview.postMessage({
-                type: 'fontResized',
-                fontId,
-                error: 'this font has no face to redraw it from, so its size cannot change',
-            });
-            return;
-        }
-        if (font.size === size) {
-            // Already drawn at that size: answering keeps the box and the declaration in step without a write.
-            await this.panel.webview.postMessage({
-                type: 'fontResized',
-                fontId,
-                src: font.src,
-                size,
-            });
-            return;
-        }
-        try {
-            const source = font.source;
-            const uri = vscode.Uri.joinPath(this.folder, ...source.split('/'));
-            const bytes = await vscode.workspace.fs.readFile(uri);
-            const stem = path.basename(source).replace(/\.[^.]+$/, '');
-            const requestId = `resize-${fontId}-${size}`;
-            this.fontImports.set(requestId, { stem, pixelSize: size, source, resizeFontId: fontId });
-            await this.panel.webview.postMessage({
-                type: 'rasteriseFont',
-                requestId,
-                name: `rusty-resize-${fontId}-${size}`,
-                pixelSize: size,
-                bytes: Buffer.from(bytes).toString('base64'),
-            });
-        } catch (error) {
-            await this.fontFailed(fontId, error);
-        }
-    }
-
-    /** Answers a resize that could not be done: the reason goes beside the field, not into a modal. */
-    private async fontFailed(fontId: string, error: unknown): Promise<void> {
-        const text = error instanceof Error ? error.message : String(error);
-        this.output.appendLine(`[designer] font resize failed: ${text}`);
-        await this.panel.webview.postMessage({
-            type: 'fontResized',
-            fontId,
-            error: text.split('\n')[0],
-        });
     }
 
     /**
@@ -470,16 +396,6 @@ class DesignerPanel {
             const extras = request.source === undefined
                 ? {}
                 : { source: request.source, size: font.pixelSize };
-            if (request.resizeFontId !== undefined) {
-                // A redraw: the declaration keeps its name and takes the new file.
-                await this.panel.webview.postMessage({
-                    type: 'fontResized',
-                    fontId: request.resizeFontId,
-                    src: relative,
-                    size: font.pixelSize,
-                });
-                return;
-            }
             if (request.assetRequestId !== undefined) {
                 // A field asked, so the answer is the file: the panel declares it and points the widget at it.
                 await this.panel.webview.postMessage({
