@@ -38,6 +38,7 @@ import {
 } from './model';
 import { loadDocument, missingAssets, planAssetImport, renderDesign } from './store';
 import { parseBdfFont, type DesignFontPixels } from './bitmapFont';
+import { bdfFromRaster, fontIdFromFile, type RasterisedFont } from './fontImport';
 import { emitUiRs, handlerName, syncHandlerStubs } from './generate';
 import { sdImagesNeedingCard } from './model';
 import {
@@ -75,6 +76,8 @@ class DesignerPanel {
     private lastWritten = '';
     /** What the canvas was last sent as its declared fonts, so a report does not resend them. */
     private fontSignature = '';
+    /** Rasterisations in flight, keyed by request: the panel answers with the id it was given. */
+    private readonly fontImports = new Map<string, { stem: string; pixelSize: number }>();
 
     private constructor(
         private readonly panel: vscode.WebviewPanel,
@@ -258,6 +261,153 @@ class DesignerPanel {
         if (message.type === 'setTouch') {
             await this.setTouch(message.enabled);
         }
+        if (message.type === 'fontRasterised') {
+            await this.writeRasterisedFont(message);
+        }
+    }
+
+    /**
+     * Asks the panel to draw a font file, so it can be written out as a BDF.
+     *
+     * The round trip exists because the renderer does: the panel draws the face at the size asked for and
+     * measures it, and this side writes the answer to `assets/` as a plain BDF. A `.bdf` picked here skips
+     * the trip entirely -- it is already the format the pipeline wants, so it is copied in and declared.
+     *
+     * Refused politely rather than half-done: without an open panel there is no renderer, and without a
+     * project folder there is nowhere to put the result.
+     */
+    async importFont(): Promise<void> {
+        const chosen = await vscode.window.showOpenDialog({
+            canSelectFiles: true,
+            canSelectFolders: false,
+            canSelectMany: false,
+            openLabel: 'Import this font',
+            filters: { 'Font files': ['ttf', 'otf', 'ttc', 'bdf'] },
+        });
+        const file = chosen?.[0];
+        if (file === undefined) {
+            return;
+        }
+        const stem = path.basename(file.fsPath).replace(/\.[^.]+$/, '');
+
+        if (/\.bdf$/i.test(file.fsPath)) {
+            try {
+                const relative = await this.bringIn(file);
+                await this.panel.webview.postMessage({
+                    type: 'declareFont',
+                    path: relative,
+                    note: `${path.basename(relative)} is declared. Pick it in a widget's Font list.`,
+                });
+            } catch (error) {
+                await this.reportImport(error);
+            }
+            return;
+        }
+
+        const sizeText = await vscode.window.showInputBox({
+            title: `Draw ${stem} at how many pixels?`,
+            prompt: 'A LCD face is usually 10 to 20 pixels tall; the glyph cell grows with the size.',
+            value: '16',
+            validateInput: (value) => {
+                const size = Number(value);
+                return Number.isFinite(size) && size >= 6 && size <= 64
+                    ? undefined
+                    : 'A size between 6 and 64 pixels';
+            },
+        });
+        if (sizeText === undefined) {
+            return;
+        }
+        const pixelSize = Math.round(Number(sizeText));
+
+        try {
+            const bytes = await vscode.workspace.fs.readFile(file);
+            const requestId = `${stem}-${pixelSize}-${Date.now()}`;
+            this.fontImports.set(requestId, { stem, pixelSize });
+            await this.panel.webview.postMessage({
+                type: 'rasteriseFont',
+                requestId,
+                name: `rusty-import-${requestId}`,
+                pixelSize,
+                bytes: Buffer.from(bytes).toString('base64'),
+            });
+        } catch (error) {
+            await this.reportImport(error);
+        }
+    }
+
+    /** The panel's answer: write it as a BDF, then let the panel declare it. */
+    private async writeRasterisedFont(message: {
+        requestId: string;
+        font?: RasterisedFont;
+        error?: string;
+    }): Promise<void> {
+        const request = this.fontImports.get(message.requestId);
+        this.fontImports.delete(message.requestId);
+        if (request === undefined) {
+            return;
+        }
+        if (message.font === undefined) {
+            await this.reportImport(message.error ?? 'the font could not be drawn');
+            return;
+        }
+        try {
+            const font = message.font;
+            const text = bdfFromRaster(font, fontIdFromFile(request.stem));
+            let name = `${request.stem}-${font.pixelSize}`;
+            for (let n = 2; await this.assetExists(`assets/${name}.bdf`); n += 1) {
+                name = `${request.stem}-${font.pixelSize}_${n}`;
+            }
+            const relative = `assets/${name}.bdf`;
+            const destination = path.join(this.folder.fsPath, ...relative.split('/'));
+            await vscode.workspace.fs.createDirectory(vscode.Uri.file(path.dirname(destination)));
+            await vscode.workspace.fs.writeFile(vscode.Uri.file(destination), Buffer.from(text, 'utf8'));
+            this.output.appendLine(
+                `[designer] imported ${request.stem} at ${font.pixelSize}px as ${relative} `
+                + `(${font.width}x${font.height} cell, ${font.glyphs.length} glyphs)`,
+            );
+            await this.panel.webview.postMessage({
+                type: 'declareFont',
+                path: relative,
+                note: `${name}.bdf is declared: ${font.width}x${font.height} at ${font.pixelSize}px. `
+                    + 'Pick it in a widget\'s Font list.',
+            });
+        } catch (error) {
+            await this.reportImport(error);
+        }
+    }
+
+    /** Copies a file into the project if it lives outside it, and returns its project-relative path. */
+    private async bringIn(file: vscode.Uri): Promise<string> {
+        const plan = planAssetImport({
+            chosen: file.fsPath,
+            projectRoot: this.folder.fsPath,
+            taken: (relative) => this.assetExists(relative),
+            separator: '/',
+        });
+        if (plan.copyFrom !== undefined) {
+            const destination = path.join(this.folder.fsPath, ...plan.relativePath.split('/'));
+            await vscode.workspace.fs.createDirectory(vscode.Uri.file(path.dirname(destination)));
+            await vscode.workspace.fs.copy(
+                vscode.Uri.file(plan.copyFrom),
+                vscode.Uri.file(destination),
+                { overwrite: false },
+            );
+            this.output.appendLine(`[designer] copied ${plan.copyFrom} in as ${plan.relativePath}`);
+        }
+        return plan.relativePath;
+    }
+
+    /** One sentence in the panel, and a line in the output channel -- no modal, since nothing was lost. */
+    private async reportImport(error: unknown): Promise<void> {
+        const text = error instanceof Error ? error.message : String(error);
+        this.output.appendLine(`[designer] font import failed: ${text}`);
+        await this.panel.webview.postMessage({
+            type: 'report',
+            problems: [],
+            note: `Font import failed: ${text.split('\n')[0]}`,
+            kdl: undefined,
+        });
     }
 
     /**
@@ -684,6 +834,23 @@ export async function showDesigner(
     projectRoot?: vscode.Uri,
 ): Promise<void> {
     await DesignerPanel.show(context, output, projectRoot);
+}
+
+/**
+ * Imports a font into the open designer.
+ *
+ * A command rather than a panel button, because the file dialog is the extension's and a menu entry is where
+ * people look for it. Saying so plainly when no designer is open is the whole of the graceful handling: there
+ * is no panel to draw the face, and a font imported into nothing would be a file in a folder nobody declared.
+ */
+export async function importFontIntoDesigner(): Promise<void> {
+    if (current === undefined) {
+        void vscode.window.showWarningMessage(
+            'Open the designer first: an imported font is declared in a design, and needs its canvas to be drawn.',
+        );
+        return;
+    }
+    await current.importFont();
 }
 
 async function readText(uri: vscode.Uri): Promise<string | undefined> {

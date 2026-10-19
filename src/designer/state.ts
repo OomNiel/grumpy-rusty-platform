@@ -391,23 +391,47 @@ export function declareFontFromPath(
     path: string,
 ): DesignerState {
     return edit(state, undefined, (document) => {
-        const stem = path.split(/[\\/]/).pop() ?? path;
-        const cleaned = stem.replace(/\.bdf$/i, '').replace(/[^A-Za-z0-9_]/g, '_');
-        const base = isFontId(cleaned) ? cleaned : `font_${cleaned}`;
-        const taken = new Set((document.fonts ?? []).map((font) => font.id));
-        let id = isFontId(base) ? base : 'font';
-        for (let n = 2; taken.has(id); n += 1) {
-            id = `${base}_${n}`;
-        }
-        const font: DesignerFont = { id, src: path, chars: '' };
+        const { document: declared, id } = withFontDeclaration(document, path);
         return {
-            ...document,
-            fonts: [...(document.fonts ?? []), font],
-            widgets: document.widgets.map((widget) =>
+            ...declared,
+            widgets: declared.widgets.map((widget) =>
                 widget.id === widgetId ? { ...widget, props: { ...widget.props, font: id } } : widget,
             ),
         };
     });
+}
+
+/**
+ * Declares a font file on the screen, without pointing any widget at it.
+ *
+ * The importer's case: the file is new, and the panel should list it so the user can pick it. `chars` is
+ * empty, which the code generator reads as "every character" -- an imported face is not a shot counter.
+ */
+export function addFontDeclaration(state: DesignerState, path: string): DesignerState {
+    return edit(state, undefined, (document) => withFontDeclaration(document, path).document);
+}
+
+/**
+ * Appends a declaration to a document, and says what it was called.
+ *
+ * The pure half of both entry points above, so a caller that has more to change in the same step -- pointing
+ * a widget at the font, which is what choosing a file from the Font list means -- stays one undo away from
+ * where it started rather than two.
+ */
+function withFontDeclaration(
+    document: DesignerDocument,
+    path: string,
+): { document: DesignerDocument; id: string } {
+    const stem = path.split(/[\\/]/).pop() ?? path;
+    const cleaned = stem.replace(/\.(bdf|ttf|otf)$/i, '').replace(/[^A-Za-z0-9_]/g, '_');
+    const base = isFontId(cleaned) ? cleaned : `font_${cleaned}`;
+    const taken = new Set((document.fonts ?? []).map((font) => font.id));
+    let id = isFontId(base) ? base : 'font';
+    for (let n = 2; taken.has(id); n += 1) {
+        id = `${base}_${n}`;
+    }
+    const font: DesignerFont = { id, src: path, chars: '' };
+    return { document: { ...document, fonts: [...(document.fonts ?? []), font] }, id };
 }
 
 /** Removes a font, and clears the reference from any widget that named it. */

@@ -14,10 +14,12 @@
 
 import { widgetSpec } from '../../src/designer/catalog';
 import { registerDesignFont } from './glyphs';
+import { rasteriseFont } from './rasterise';
 import { CanvasView } from './canvas';
 import { hideContextMenu, renderProperties, renderToolbox, showContextMenu, widgetMenu } from './panels';
 import {
     type DesignerState,
+    addFontDeclaration,
     addWidget,
     canRedo,
     canUndo,
@@ -34,8 +36,10 @@ import type {
     DesignerActionId,
     DesignerAssetKind,
     DesignerAssetPicked,
+    DesignerDeclareFont,
     DesignerInbound,
     DesignerInit,
+    DesignerRasteriseFont,
     DesignerReport,
 } from '../../src/designer/protocol';
 import type { LcdRotation } from '../../src/display/rotation';
@@ -161,7 +165,9 @@ const panels = {
     },
 };
 
-window.addEventListener('message', (event: MessageEvent<DesignerInit | DesignerReport | DesignerAssetPicked>) => {
+window.addEventListener('message', (event: MessageEvent<
+    DesignerInit | DesignerReport | DesignerAssetPicked | DesignerRasteriseFont | DesignerDeclareFont
+>) => {
     const message = event.data;
     if (message.type === 'init') {
         canvasWidth = message.canvas.width;
@@ -227,7 +233,54 @@ window.addEventListener('message', (event: MessageEvent<DesignerInit | DesignerR
     if (message.type === 'assetPicked') {
         applyPickedAsset(message);
     }
+    if (message.type === 'rasteriseFont') {
+        void rasteriseAndAnswer(message);
+    }
+    if (message.type === 'declareFont') {
+        declareImportedFont(message);
+    }
 });
+
+/**
+ * Draws a face the extension handed over and answers with its pixels.
+ *
+ * This is the half of "adapt a system font" that needs a renderer, and the renderer is here -- so the drawing
+ * happens in the panel and the *file* is written by the extension, which is the side that knows where the
+ * project is. An answer, not an edit: nothing about the document changes until the file exists and comes back
+ * as a declaration.
+ */
+async function rasteriseAndAnswer(message: DesignerRasteriseFont): Promise<void> {
+    const binary = atob(message.bytes);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+        bytes[index] = binary.charCodeAt(index);
+    }
+    const result = await rasteriseFont(bytes, message.name, message.pixelSize);
+    if ('error' in result) {
+        host.postMessage({ type: 'fontRasterised', requestId: message.requestId, error: result.error });
+        return;
+    }
+    host.postMessage({ type: 'fontRasterised', requestId: message.requestId, font: result.font });
+}
+
+/**
+ * Declares a font file that is now part of the project.
+ *
+ * A declaration is a document edit, so it goes through the same path every other edit does -- undo covers it,
+ * the file is rewritten, and the pixels are measured and sent back to the canvas from the extension.
+ */
+function declareImportedFont(message: DesignerDeclareFont): void {
+    // Importing a file the design already names would list one face twice under two names; picking the same
+    // file from a widget's Font list is a different thing, and that is allowed to make a second declaration.
+    if ((state.document.fonts ?? []).some((font) => font.src === message.path)) {
+        status(`${message.path} is already declared.`, false);
+        return;
+    }
+    panels.onEdit(addFontDeclaration(state, message.path));
+    if (message.note !== undefined) {
+        status(message.note, false);
+    }
+}
 
 /** Tells the extension the panel is ready for its document. */
 host.postMessage({ type: 'ready' });

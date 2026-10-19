@@ -7,7 +7,7 @@
  */
 
 import * as vscode from 'vscode';
-import { showDesigner } from '../designer/editor';
+import { importFontIntoDesigner, showDesigner } from '../designer/editor';
 
 export function registerDesignerCommands(
     context: vscode.ExtensionContext,
@@ -16,6 +16,11 @@ export function registerDesignerCommands(
     return [
         vscode.commands.registerCommand('rustyPlatform.openDesigner', async () => {
             await showDesigner(context, output);
+        }),
+        // A system font has to be rasterised to be used on the glass, and that has to happen while a design
+        // is open -- so it is a rejection with a reason rather than a command that quietly does nothing.
+        vscode.commands.registerCommand('rustyPlatform.importFont', async () => {
+            await importFontIntoDesigner();
         }),
     ];
 }

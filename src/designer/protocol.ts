@@ -11,6 +11,7 @@
  */
 
 import type { DesignFontPixels } from './bitmapFont';
+import type { RasterisedFont } from './fontImport';
 import type { DesignerDocument } from './model';
 
 /** Everything the panel needs to draw itself, sent once when it is ready and again on every change. */
@@ -130,8 +131,53 @@ export interface DesignerSetTouch {
     enabled: boolean;
 }
 
-export type DesignerToHost = DesignerChanged | DesignerReady | DesignerPickAsset | DesignerSetTouch;
-export type HostToDesigner = DesignerInit | DesignerReport | DesignerAssetPicked;
+/**
+ * The extension asking the panel to rasterise a font file.
+ *
+ * Only the webview can draw a face -- it is the one renderer in this extension -- so adapting a system font
+ * is a round trip: the extension picks the file and reads it, the panel draws it at the size asked for, and
+ * the extension writes the result out as a BDF the crate already parses.
+ */
+export interface DesignerRasteriseFont {
+    type: 'rasteriseFont';
+    requestId: string;
+    /** The name to hand `FontFace`; the file's own name is fine, it is never shown. */
+    name: string;
+    /** The em size to draw at, in pixels. */
+    pixelSize: number;
+    /** The file itself, base64 -- a TTF is a few hundred kilobytes, and JSON numbers would treble that. */
+    bytes: string;
+}
+
+/** The panel's answer to {@link DesignerRasteriseFont}. */
+export interface DesignerFontRasterised {
+    type: 'fontRasterised';
+    requestId: string;
+    font?: RasterisedFont;
+    error?: string;
+}
+
+/** The font file is written; declare it in the design. A document edit, so it stays the panel's. */
+export interface DesignerDeclareFont {
+    type: 'declareFont';
+    /** Project-relative path of the file to declare. */
+    path: string;
+    /** Something to say in the panel, e.g. which face was imported. */
+    note?: string;
+}
+
+export type DesignerToHost =
+    | DesignerChanged
+    | DesignerReady
+    | DesignerPickAsset
+    | DesignerSetTouch
+    | DesignerFontRasterised;
+export type HostToDesigner =
+    | DesignerInit
+    | DesignerReport
+    | DesignerAssetPicked
+    | DesignerRasteriseFont
+    | DesignerDeclareFont;
 
 /**
  * The buttons the panel offers beyond editing.

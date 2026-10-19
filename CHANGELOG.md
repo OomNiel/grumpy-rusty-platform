@@ -11,6 +11,32 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.11.0] - 2026-10-18
+
+Adapt a system font: **Rusty Platform: Import a Font...** turns a TTF or OTF into a project BDF the designer
+and the crate both already understand.
+
+### Added
+
+- **Import a Font** (Command Palette). Picks a `.ttf`/`.otf`/`.ttc` or an existing `.bdf`, asks what pixel
+  size to draw it at, and writes `assets/<name>-<size>.bdf` into the project with all 95 printable
+  characters. The face is rasterised by the webview -- the only renderer this extension has -- and the file
+  is written by the extension, which is the side that knows where the project is.
+- The result is declared in the design straight away (one undo step), so it appears in every widget's Font
+  list and is drawn on the canvas at its real pixels.
+- A `.bdf` chosen in the same dialog skips the rasterising and is copied in as-is.
+- Refuses politely when no designer is open, since an imported font is declared in a design.
+
+### Notes
+
+- The cell is the union of every glyph's ink, measured from one shared pen origin and baseline, so a
+  proportional face keeps its relative placement. Ink is thresholded at half coverage: anti-aliased fringe
+  below that is not baked into the font.
+- The importer's arithmetic lives in `src/designer/fontRaster.ts` behind a canvas-shaped interface, so it is
+  held to a measurement table in the tests rather than to whatever the browser produced. The BDF writer
+  round-trips through the project's own reader: what the canvas drew is what the board draws.
+- Test suite: 988 hermetic (t1 917, t2 67, t3 4).
+
 ## [0.10.0] - 2026-10-18
 
 The rest of the font issues from 0.9.0: the 5x7 that was asked for, and a declared font that the canvas can
