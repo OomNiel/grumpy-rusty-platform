@@ -52,6 +52,16 @@ export function fontIdFromFile(file: string, taken: readonly string[] = []): str
     return id;
 }
 
+/**
+ * Whether a file is a bitmap font the crate can read as it is.
+ *
+ * Anything else -- a TTF, an OTF, a collection -- has to be drawn into a BDF first, so this is the test that
+ * decides between "copy it in" and "rasterise it".
+ */
+export function isBitmapFontFile(file: string): boolean {
+    return /\.bdf$/i.test(file);
+}
+
 /** A row's bits as hex, padded to whole bytes the way BDF states a row. */
 export function hexRow(bits: number, width: number): string {
     const bytes = Math.ceil(width / 8);

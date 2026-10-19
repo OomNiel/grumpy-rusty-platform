@@ -11,6 +11,26 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.11.1] - 2026-10-19
+
+The Font field's `...` button could only see `.bdf` files, so a system font had to be found through the palette
+command instead of where the font is actually chosen.
+
+### Fixed
+
+- The Font field's `...` picker now offers `.ttf`, `.otf` and `.ttc` as well as `.bdf`, and draws anything that
+  is not a BDF into one at a size you pick -- so choosing a system font from a widget behaves exactly like
+  **Import a Font**: the BDF is written to `assets/`, declared, and selected for that widget in one undo step.
+- Cancelling the size prompt dismisses the request instead of leaving the field waiting, and a face the
+  browser cannot read puts its reason beside the field.
+- Importing the same face at the same size twice reuses the existing `assets/<name>.bdf` rather than writing an
+  identical `_2` copy, so a project does not collect duplicate fonts every time a field is used.
+- The same filter list feeds both font dialogs, and the button's hint says what a non-BDF is about to become.
+
+### Notes
+
+- Test suite: 989 hermetic (t1 918, t2 67, t3 4).
+
 ## [0.11.0] - 2026-10-18
 
 Adapt a system font: **Rusty Platform: Import a Font...** turns a TTF or OTF into a project BDF the designer

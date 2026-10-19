@@ -158,21 +158,28 @@ function assetKindFor(tag: string): DesignerAssetKind {
  * but nobody should have to work out where an asset lives relative to the project root.
  */
 /** The `...` that opens the file picker, named for the widget that reads it. */
-function browseButton(onBrowse: () => void): HTMLElement {
+function browseButton(onBrowse: () => void, title = DEFAULT_BROWSE_TITLE): HTMLElement {
     const pick = button('\u2026', 'secondary-button', onBrowse);
-    pick.title = 'Choose a file. One from outside the project is copied into assets/.';
+    pick.title = title;
     return pick;
 }
+
+const DEFAULT_BROWSE_TITLE = 'Choose a file. One from outside the project is copied into assets/.';
+
+/** A font field takes a BDF as it is, and draws anything else into one -- so say so where it is offered. */
+const FONT_BROWSE_TITLE =
+    'Choose a font. A .bdf is used as it is; a .ttf or .otf is drawn into one at a size you pick.';
 
 function assetField(
     value: string,
     onChange: (value: string) => void,
     onBrowse: (() => void) | undefined,
+    title?: string,
 ): HTMLElement {
     const row = element('div', 'asset-field');
     row.append(textInput(value, onChange));
     if (onBrowse !== undefined) {
-        row.append(browseButton(onBrowse));
+        row.append(browseButton(onBrowse, title));
     }
     return row;
 }
@@ -469,11 +476,12 @@ function propertyControl(
             if (onBrowse === undefined) {
                 return select;
             }
-            // The `...` declares a font from a file and selects it, so the common case -- "use this BDF, I have
-            // not added it yet" -- is one action rather than two lists to visit in the right order.
+            // The `...` declares a font from a file and selects it, so the common case -- "use this font, I have
+            // not added it yet" -- is one action rather than two lists to visit in the right order. A system
+            // font is drawn into a BDF on the way, which is why the button says so.
             const rowNode = element('div', 'asset-field');
             rowNode.append(select);
-            rowNode.append(browseButton(onBrowse));
+            rowNode.append(browseButton(onBrowse, FONT_BROWSE_TITLE));
             return rowNode;
         }
         case 'bool': {

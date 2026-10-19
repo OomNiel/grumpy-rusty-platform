@@ -38,7 +38,7 @@ import {
 } from './model';
 import { loadDocument, missingAssets, planAssetImport, renderDesign } from './store';
 import { parseBdfFont, type DesignFontPixels } from './bitmapFont';
-import { bdfFromRaster, fontIdFromFile, type RasterisedFont } from './fontImport';
+import { bdfFromRaster, fontIdFromFile, isBitmapFontFile, type RasterisedFont } from './fontImport';
 import { emitUiRs, handlerName, syncHandlerStubs } from './generate';
 import { sdImagesNeedingCard } from './model';
 import {
@@ -57,9 +57,14 @@ import { designerStyles } from './styles';
  *
  * These are the formats the build actually reads: BDF for fonts, OBJ and STL for meshes (the crate's own error
  * message lists them), and for images whatever the `image` crate decodes, which is the common raster set.
+ *
+ * A font field offers the system formats too. It cannot use them as they are -- the crate reads BDF -- but a
+ * picker that refuses them only sends the user looking for a converter, and the importer is right here.
  */
+const FONT_FILTERS: Record<string, string[]> = { 'Font files': ['bdf', 'ttf', 'otf', 'ttc'] };
+
 const ASSET_FILTERS: Record<DesignerAssetKind, Record<string, string[]>> = {
-    font: { 'BDF fonts': ['bdf'] },
+    font: FONT_FILTERS,
     image: { Images: ['png', 'jpg', 'jpeg', 'bmp', 'gif', 'webp', 'tif', 'tiff'] },
     mesh: { '3D models': ['obj', 'stl'] },
     icon: { Images: ['png', 'jpg', 'jpeg', 'bmp', 'gif', 'webp', 'tif', 'tiff'] },
@@ -77,7 +82,10 @@ class DesignerPanel {
     /** What the canvas was last sent as its declared fonts, so a report does not resend them. */
     private fontSignature = '';
     /** Rasterisations in flight, keyed by request: the panel answers with the id it was given. */
-    private readonly fontImports = new Map<string, { stem: string; pixelSize: number }>();
+    private readonly fontImports = new Map<
+        string,
+        { stem: string; pixelSize: number; assetRequestId?: string }
+    >();
 
     private constructor(
         private readonly panel: vscode.WebviewPanel,
@@ -282,15 +290,14 @@ class DesignerPanel {
             canSelectFolders: false,
             canSelectMany: false,
             openLabel: 'Import this font',
-            filters: { 'Font files': ['ttf', 'otf', 'ttc', 'bdf'] },
+            filters: FONT_FILTERS,
         });
         const file = chosen?.[0];
         if (file === undefined) {
             return;
         }
-        const stem = path.basename(file.fsPath).replace(/\.[^.]+$/, '');
 
-        if (/\.bdf$/i.test(file.fsPath)) {
+        if (isBitmapFontFile(file.fsPath)) {
             try {
                 const relative = await this.bringIn(file);
                 await this.panel.webview.postMessage({
@@ -303,7 +310,19 @@ class DesignerPanel {
             }
             return;
         }
+        await this.rasterise(file);
+    }
 
+    /**
+     * Draws a system font at a size the user picks, and answers whoever asked.
+     *
+     * `assetRequestId` is set when the request came from a widget's Font field: the answer is then the BDF that
+     * was written, and the panel applies it as it does any other picked file -- which declares the font and
+     * points the widget at it in one undo step. Without it the request came from the command, so the font is
+     * declared and no widget is touched.
+     */
+    private async rasterise(file: vscode.Uri, assetRequestId?: string): Promise<void> {
+        const stem = path.basename(file.fsPath).replace(/\.[^.]+$/, '');
         const sizeText = await vscode.window.showInputBox({
             title: `Draw ${stem} at how many pixels?`,
             prompt: 'A LCD face is usually 10 to 20 pixels tall; the glyph cell grows with the size.',
@@ -316,6 +335,10 @@ class DesignerPanel {
             },
         });
         if (sizeText === undefined) {
+            if (assetRequestId !== undefined) {
+                // Cancelled. Answering with no path is what tells the panel to forget the request.
+                await this.panel.webview.postMessage({ type: 'assetPicked', requestId: assetRequestId });
+            }
             return;
         }
         const pixelSize = Math.round(Number(sizeText));
@@ -323,7 +346,7 @@ class DesignerPanel {
         try {
             const bytes = await vscode.workspace.fs.readFile(file);
             const requestId = `${stem}-${pixelSize}-${Date.now()}`;
-            this.fontImports.set(requestId, { stem, pixelSize });
+            this.fontImports.set(requestId, { stem, pixelSize, assetRequestId });
             await this.panel.webview.postMessage({
                 type: 'rasteriseFont',
                 requestId,
@@ -332,11 +355,11 @@ class DesignerPanel {
                 bytes: Buffer.from(bytes).toString('base64'),
             });
         } catch (error) {
-            await this.reportImport(error);
+            await this.reportImport(error, assetRequestId);
         }
     }
 
-    /** The panel's answer: write it as a BDF, then let the panel declare it. */
+    /** The panel's answer: write it as a BDF, then hand it back to whoever asked for it. */
     private async writeRasterisedFont(message: {
         requestId: string;
         font?: RasterisedFont;
@@ -348,24 +371,27 @@ class DesignerPanel {
             return;
         }
         if (message.font === undefined) {
-            await this.reportImport(message.error ?? 'the font could not be drawn');
+            await this.reportImport(message.error ?? 'the font could not be drawn', request.assetRequestId);
             return;
         }
         try {
             const font = message.font;
             const text = bdfFromRaster(font, fontIdFromFile(request.stem));
-            let name = `${request.stem}-${font.pixelSize}`;
-            for (let n = 2; await this.assetExists(`assets/${name}.bdf`); n += 1) {
-                name = `${request.stem}-${font.pixelSize}_${n}`;
-            }
-            const relative = `assets/${name}.bdf`;
-            const destination = path.join(this.folder.fsPath, ...relative.split('/'));
-            await vscode.workspace.fs.createDirectory(vscode.Uri.file(path.dirname(destination)));
-            await vscode.workspace.fs.writeFile(vscode.Uri.file(destination), Buffer.from(text, 'utf8'));
+            const relative = await this.writeBdf(`${request.stem}-${font.pixelSize}`, text);
+            const name = path.basename(relative, '.bdf');
             this.output.appendLine(
                 `[designer] imported ${request.stem} at ${font.pixelSize}px as ${relative} `
                 + `(${font.width}x${font.height} cell, ${font.glyphs.length} glyphs)`,
             );
+            if (request.assetRequestId !== undefined) {
+                // A field asked, so the answer is the file: the panel declares it and points the widget at it.
+                await this.panel.webview.postMessage({
+                    type: 'assetPicked',
+                    requestId: request.assetRequestId,
+                    path: relative,
+                });
+                return;
+            }
             await this.panel.webview.postMessage({
                 type: 'declareFont',
                 path: relative,
@@ -373,7 +399,33 @@ class DesignerPanel {
                     + 'Pick it in a widget\'s Font list.',
             });
         } catch (error) {
-            await this.reportImport(error);
+            await this.reportImport(error, request.assetRequestId);
+        }
+    }
+
+    /**
+     * Writes the BDF under `assets/<base>.bdf`, or reuses the file that already holds exactly these pixels.
+     *
+     * Picking the same face at the same size twice is easy to do -- the size prompt offers the same default
+     * both times -- and a second identical file under a `_2` name is clutter in a folder the user keeps.
+     */
+    private async writeBdf(base: string, text: string): Promise<string> {
+        let name = base;
+        for (let n = 2; ; n += 1) {
+            const relative = `assets/${name}.bdf`;
+            const uri = vscode.Uri.joinPath(this.folder, relative);
+            const existing = await readText(uri);
+            if (existing === undefined) {
+                const destination = path.join(this.folder.fsPath, ...relative.split('/'));
+                await vscode.workspace.fs.createDirectory(vscode.Uri.file(path.dirname(destination)));
+                await vscode.workspace.fs.writeFile(uri, Buffer.from(text, 'utf8'));
+                return relative;
+            }
+            if (existing === text) {
+                this.output.appendLine(`[designer] ${relative} already holds these pixels; reusing it`);
+                return relative;
+            }
+            name = `${base}_${n}`;
         }
     }
 
@@ -399,9 +451,19 @@ class DesignerPanel {
     }
 
     /** One sentence in the panel, and a line in the output channel -- no modal, since nothing was lost. */
-    private async reportImport(error: unknown): Promise<void> {
+    private async reportImport(error: unknown, assetRequestId?: string): Promise<void> {
         const text = error instanceof Error ? error.message : String(error);
         this.output.appendLine(`[designer] font import failed: ${text}`);
+        if (assetRequestId !== undefined) {
+            // A field is holding the request: answering it is what puts the reason beside the field and
+            // clears it, instead of leaving the Font list waiting.
+            await this.panel.webview.postMessage({
+                type: 'assetPicked',
+                requestId: assetRequestId,
+                error: text.split('\n')[0],
+            });
+            return;
+        }
         await this.panel.webview.postMessage({
             type: 'report',
             problems: [],
@@ -455,6 +517,12 @@ class DesignerPanel {
         if (file === undefined) {
             // Cancelled. Said explicitly rather than left hanging, so the panel forgets the request.
             await this.panel.webview.postMessage({ type: 'assetPicked', requestId });
+            return;
+        }
+        if (kind === 'font' && !isBitmapFontFile(file.fsPath)) {
+            // A system face cannot go in the project as it is: draw it, write the BDF, and answer the field
+            // with the written file as though that were what had been picked.
+            await this.rasterise(file, requestId);
             return;
         }
 

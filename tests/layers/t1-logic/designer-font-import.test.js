@@ -11,7 +11,7 @@
 
 const { test, ok, equal, contains, compiled } = require('../../lib/harness');
 
-const { bdfFromRaster, fontIdFromFile, hexRow } = compiled('designer/fontImport');
+const { bdfFromRaster, fontIdFromFile, hexRow, isBitmapFontFile } = compiled('designer/fontImport');
 const { measureCell, rasteriseCell, rowBits } = compiled('designer/fontRaster');
 const { parseBdfFont } = compiled('designer/bitmapFont');
 
@@ -194,8 +194,10 @@ test('the cell is the union of every glyph, measured from one baseline', () => {
 test('a space cannot widen the cell', () => {
     // A font reports a zero box for a blank, and if that were mixed in as ink it would drag the origin left.
     const cell = measureCell((text) => (text === ' '
-        ? { width: 7, actualBoundingBoxLeft: 0, actualBoundingBoxRight: 0,
-            actualBoundingBoxAscent: 0, actualBoundingBoxDescent: 0 }
+        ? {
+            width: 7, actualBoundingBoxLeft: 0, actualBoundingBoxRight: 0,
+            actualBoundingBoxAscent: 0, actualBoundingBoxDescent: 0
+        }
         : FACE.metrics(text.charCodeAt(0))));
     equal(cell.width, 7, 'the blank is skipped');
 });
@@ -244,4 +246,12 @@ test('a pixel counts as ink at half coverage and not below it', () => {
     const pixels = new Uint8ClampedArray([0, 0, 0, 127, 0, 0, 0, 128, 0, 0, 0, 255]);
     equal(rowBits(pixels, 3, 0), 0b011, 'a fringe at 127 is not ink, 128 and above is');
     equal(rowBits(pixels, 3, 0, 1), 0b111, 'and the threshold is a parameter');
+});
+
+test('only a BDF goes in as it is, and everything else is drawn first', () => {
+    // The rule that decides whether a picked file is copied or rasterised. Both font dialogs share it.
+    ok(isBitmapFontFile('assets/hero.BDF'), 'a BDF, whatever its case');
+    ok(!isBitmapFontFile('/usr/share/fonts/DejaVuSansMono.ttf'), 'a TrueType face is not');
+    ok(!isBitmapFontFile('face.otf'), 'nor an OpenType one');
+    ok(!isBitmapFontFile('collection.ttc'), 'nor a collection');
 });
