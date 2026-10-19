@@ -26,7 +26,7 @@
  * setting one colour would silently change a widget's whole surface.
  */
 
-import { isBuiltInFont } from './fonts';
+import { fontConstName, isBuiltInFont } from './fonts';
 import type { KdlProperty } from './catalog';
 
 /**
@@ -93,8 +93,10 @@ export type StyleField =
 
 /** The values a widget's `viaStyle` properties ask for, in the crate's own terms. */
 export interface StyleValues {
-    /** A built-in font, by id. */
+    /** A built-in font, by id, or a declared one when `declaredFont` says so. */
     font?: string;
+    /** True when `font` names a font the screen declares, whose pixels come from a BDF. */
+    declaredFont?: boolean;
     /** `#rrggbb` colours. */
     text?: string;
     foreground?: string;
@@ -232,8 +234,10 @@ export interface ResolvedStyle {
     borderWidth?: number;
     /** Pixels, always above zero. */
     radius?: number;
-    /** A built-in font, by id. */
+    /** A built-in font, by id, or a declared one when `declaredFont` says so. */
     font?: string;
+    /** Set when that font is one the screen declares: a bitmap static, not a `FontId` variant. */
+    declaredFont?: boolean;
 }
 
 export function resolveStyleValues(values: StyleValues): ResolvedStyle {
@@ -244,8 +248,11 @@ export function resolveStyleValues(values: StyleValues): ResolvedStyle {
         typeof value === 'number' && Number.isFinite(value) ? Math.round(value) : undefined;
 
     const font = values.font;
-    if (font !== undefined && isBuiltInFont(font)) {
+    if (font !== undefined && (isBuiltInFont(font) || values.declaredFont === true)) {
         resolved.font = font;
+        if (values.declaredFont === true) {
+            resolved.declaredFont = true;
+        }
     }
     const background = colour(values.background);
     if (background !== undefined) {
@@ -291,7 +298,14 @@ function assignments(style: ResolvedStyle): string[] {
     const literal = (colour: string): string => rgb565Expression(colour) ?? 'Rgb565::new(0, 0, 0)';
 
     if (style.font !== undefined) {
-        fills.push(`style.font = FontId::${style.font};`);
+        // A built-in is a `FontId` variant; a declared font is a `BitmapFont` static the asset pipeline emits
+        // from its BDF -- the same shape the codegen writes for a label's `font=` attribute. That is what makes
+        // a system face reachable on widgets that read only a style: the clock's numerals, a button's label.
+        fills.push(
+            style.declaredFont === true
+                ? `style.font = FontId::Bitmap(&${fontConstName(style.font)});`
+                : `style.font = FontId::${style.font};`,
+        );
     }
     if (style.background !== undefined) {
         fills.push(`style.background = Some(${literal(style.background)});`);

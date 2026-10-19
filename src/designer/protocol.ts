@@ -118,6 +118,14 @@ export interface DesignerAssetPicked {
     requestId: string;
     path?: string;
     error?: string;
+    /**
+     * What a font field's answer brings with it.
+     *
+     * A system font asked for from the Font field is drawn into a BDF first, and the declaration has to know
+     * both the file that was picked and the size it became -- otherwise the field could not offer to redraw it
+     * at another size later.
+     */
+    font?: { source: string; size: number };
 }
 
 /**
@@ -164,6 +172,34 @@ export interface DesignerDeclareFont {
     path: string;
     /** Something to say in the panel, e.g. which face was imported. */
     note?: string;
+    /** The face it was drawn from, when it is an imported system font. */
+    source?: string;
+    /** The pixel size it was drawn at. */
+    size?: number;
+}
+
+/**
+ * The panel asking for a declared font to be redrawn at another size.
+ *
+ * A BDF is a bitmap, so this is not a scale: the face the font was drawn from is drawn again at the size the
+ * user typed, and the written file replaces the one the declaration named. Only a font that kept its source
+ * can do this, which is why the panel disables the size box for the rest.
+ */
+export interface DesignerResizeFont {
+    type: 'resizeFont';
+    fontId: string;
+    /** The pixel height to draw the face at. */
+    pixelSize: number;
+}
+
+/** The answer to {@link DesignerResizeFont}: the file to use, and the size it is at. */
+export interface DesignerFontResized {
+    type: 'fontResized';
+    fontId: string;
+    /** Project-relative path of the BDF that now holds these pixels. */
+    src?: string;
+    size?: number;
+    error?: string;
 }
 
 export type DesignerToHost =
@@ -171,13 +207,15 @@ export type DesignerToHost =
     | DesignerReady
     | DesignerPickAsset
     | DesignerSetTouch
-    | DesignerFontRasterised;
+    | DesignerFontRasterised
+    | DesignerResizeFont;
 export type HostToDesigner =
     | DesignerInit
     | DesignerReport
     | DesignerAssetPicked
     | DesignerRasteriseFont
-    | DesignerDeclareFont;
+    | DesignerDeclareFont
+    | DesignerFontResized;
 
 /**
  * The buttons the panel offers beyond editing.

@@ -133,6 +133,15 @@ class Element {
         return { left: 0, top: 0, right: this.width, bottom: this.height, width: this.width, height: this.height };
     }
 
+    /** Attributes the panel sets for the sake of a screen reader or a test; nothing else reads them. */
+    setAttribute(name, value) {
+        this.attributes[String(name)] = String(value);
+    }
+
+    getAttribute(name) {
+        return this.attributes[String(name)] ?? null;
+    }
+
     getContext(kind) {
         if (this.context === undefined) {
             this.context = kind === '2d' ? context2d() : null;

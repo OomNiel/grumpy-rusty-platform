@@ -26,7 +26,7 @@ import { type DesignerDocument, type DesignerIconPart, type DesignerWidget, vali
 import { designCanvasSize } from './model';
 import { layoutToGrid, trackSpec, type GridLayout } from './grid';
 import { widgetSpec } from './catalog';
-import { isBuiltInFont } from './fonts';
+import { supportsFontAttribute } from './fonts';
 import { appearanceExpression, styleValuesOf } from './appearance';
 
 /** Escapes a value for a KDL quoted string. */
@@ -71,6 +71,7 @@ function widgetLine(
     widget: DesignerWidget,
     placement: { col: number; row: number; colSpan: number; rowSpan: number },
     indent: string,
+    declared: ReadonlySet<string> = new Set(),
 ): string {
     const spec = widgetSpec(widget.tag);
     const parts = [`${widget.tag} id=${quote(widget.id)}`];
@@ -79,10 +80,24 @@ function widgetLine(
     // *is* a style expression (the markup has no attribute for the crate's own fonts), and a colour the tag has
     // no field for has to ride in the same expression. So all of them are composed into one, and the properties
     // that travelled that way are skipped by the loop below. See `src/designer/appearance.ts`.
+    const values = styleValuesOf(widget, spec?.props ?? []);
+    // A declared font reaches a widget that does not read a `font` attribute the way the crate's own faces do:
+    // through `style.font`, naming the `BitmapFont` static the asset pipeline emits for it. Labels and carousels
+    // keep the attribute, which is the one the codegen rewrites for them.
+    const chosen = widget.props.font;
+    const viaStyleFont =
+        spec !== undefined
+        && !supportsFontAttribute(spec.fontSupport)
+        && typeof chosen === 'string'
+        && declared.has(chosen);
+    if (viaStyleFont) {
+        values.font = chosen as string;
+        values.declaredFont = true;
+    }
     const appearance = appearanceExpression({
         tag: widget.tag,
         style: typeof widget.props.style === 'string' ? widget.props.style : undefined,
-        values: styleValuesOf(widget, spec?.props ?? []),
+        values,
     });
 
     // A circle is not emitted with its catalogue property names: the codegen parser reads `stroke_width`,
@@ -117,7 +132,9 @@ function widgetLine(
         if (property.designerOnly === true) {
             continue;
         }
-        if (property.kind === 'font' && isBuiltInFont(value as string)) {
+        // A font that travelled in the style expression has no attribute of its own: a built-in never had
+        // one, and a declared one took that route above.
+        if (property.kind === 'font' && values.font !== undefined) {
             continue;
         }
         if (property.kind === 'style' || property.viaStyle !== undefined) {
@@ -222,6 +239,8 @@ export function emitKdl(document: DesignerDocument): string {
         `    grid cols=${quote(trackSpec(layout.cols))} rows=${quote(trackSpec(layout.rows))} gap=0 padding=0 {`,
     );
 
+    // Which fonts are the screen's own: a widget naming one of these may be routed through the style.
+    const declared = new Set((document.fonts ?? []).map((font) => font.id));
     for (let index = 0; index < emittable.length; index += 1) {
         const widget = emittable[index];
         const placement = layout.placements[index];
@@ -230,14 +249,14 @@ export function emitKdl(document: DesignerDocument): string {
         }
         const children = childLines(widget, '            ');
         if (children === undefined || children.length === 0) {
-            lines.push(widgetLine(widget, placement, '        '));
+            lines.push(widgetLine(widget, placement, '        ', declared));
             continue;
         }
         // Braces, not indentation. KDL has no indentation-based nesting: children written on deeper lines are
         // *siblings* of their widget, and codegen rejects them outright -- "Unknown widget or container node:
         // 'option'" -- so a dropdown or an icon produced markup that could not be parsed at all. The screen and
         // the grid were always braced, which is what made the omission here invisible.
-        lines.push(`${widgetLine(widget, placement, '        ')} {`);
+        lines.push(`${widgetLine(widget, placement, '        ', declared)} {`);
         lines.push(...children);
         lines.push('        }');
     }

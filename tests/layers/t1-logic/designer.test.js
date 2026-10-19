@@ -1287,18 +1287,19 @@ test('a font is only offered where the crate reads one', () => {
         );
         ok(widgetSpec(tag).fontSupport === undefined, `${tag} claims no font support`);
     }
-    // The attribute route is the narrower one, so a declared font on a button is refused rather than emitted
-    // into a dropped attribute.
+    // A declared font on a button goes in through the style, naming the bitmap static the asset pipeline
+    // emits for it -- the same shape the codegen writes for a label's `font=` attribute.
     const button = document(0, [
         widget('go', 'button', { x: 0, y: 0, width: 100, height: 32 }, {
             props: { ...defaultProps('button'), font: 'title' },
         }),
     ]);
     button.fonts = [{ id: 'title', src: 'assets/title.bdf', chars: 'AB' }];
+    equal(validateDocument(button).length, 0, 'a declared font on a button is a valid design');
     contains(
-        validateDocument(button).join('\n'),
-        'reads a declared font for labels and carousels only',
-        'a declared font on a button is reported',
+        emitKdl(button),
+        'style.font = FontId::Bitmap(&__FONT_TITLE)',
+        'and it is emitted as the bitmap static',
     );
 });
 

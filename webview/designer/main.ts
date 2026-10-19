@@ -21,6 +21,7 @@ import {
     type DesignerState,
     addFontDeclaration,
     addWidget,
+    declareFontFromPath,
     canRedo,
     canUndo,
     canvasOf,
@@ -28,6 +29,7 @@ import {
     moveWidget,
     redo,
     removeWidget,
+    setFontSize,
     setRotation,
     undo,
     widgetById,
@@ -37,6 +39,7 @@ import type {
     DesignerAssetKind,
     DesignerAssetPicked,
     DesignerDeclareFont,
+    DesignerFontResized,
     DesignerInbound,
     DesignerInit,
     DesignerRasteriseFont,
@@ -61,7 +64,10 @@ const host = acquireVsCodeApi();
  * relying on there being only one request in flight. Each entry is the *edit* to make, which is what keeps the
  * document and its undo history in this pane.
  */
-const pendingAssets = new Map<string, (path: string) => void>();
+const pendingAssets = new Map<
+    string,
+    (path: string, font?: { source: string; size: number }) => void
+>();
 let assetRequest = 0;
 
 /** How long edits are batched before being sent, in milliseconds. */
@@ -153,7 +159,10 @@ const panels = {
         view.select(id);
         refreshProperties();
     },
-    onBrowseAsset(kind: DesignerAssetKind, apply: (path: string) => void) {
+    onBrowseAsset(
+        kind: DesignerAssetKind,
+        apply: (path: string, font?: { source: string; size: number }) => void,
+    ) {
         assetRequest += 1;
         const requestId = `asset-${assetRequest}`;
         pendingAssets.set(requestId, apply);
@@ -163,10 +172,19 @@ const panels = {
         // The extension owns the serial port and the terminal, so the panel only asks.
         host.postMessage({ type: 'action', action });
     },
+    onFontSize(fontId: string, pixelSize: number) {
+        // The face and the file are the extension's; the answer moves the declaration onto the new BDF.
+        host.postMessage({ type: 'resizeFont', fontId, pixelSize });
+    },
 };
 
 window.addEventListener('message', (event: MessageEvent<
-    DesignerInit | DesignerReport | DesignerAssetPicked | DesignerRasteriseFont | DesignerDeclareFont
+    | DesignerInit
+    | DesignerReport
+    | DesignerAssetPicked
+    | DesignerRasteriseFont
+    | DesignerDeclareFont
+    | DesignerFontResized
 >) => {
     const message = event.data;
     if (message.type === 'init') {
@@ -239,6 +257,9 @@ window.addEventListener('message', (event: MessageEvent<
     if (message.type === 'declareFont') {
         declareImportedFont(message);
     }
+    if (message.type === 'fontResized') {
+        applyFontSize(message);
+    }
 });
 
 /**
@@ -269,6 +290,28 @@ async function rasteriseAndAnswer(message: DesignerRasteriseFont): Promise<void>
  * A declaration is a document edit, so it goes through the same path every other edit does -- undo covers it,
  * the file is rewritten, and the pixels are measured and sent back to the canvas from the extension.
  */
+/**
+ * Moves a declaration onto the BDF the extension just wrote.
+ *
+ * The font keeps its name -- only the file and the size change -- so every widget that chose it follows without
+ * being touched, which is what a shared font means.
+ */
+function applyFontSize(message: DesignerFontResized): void {
+    if (message.error !== undefined) {
+        status(`That font could not be resized: ${message.error}`, true);
+        return;
+    }
+    if (message.src === undefined || message.size === undefined) {
+        return;
+    }
+    const font = (state.document.fonts ?? []).find((declared) => declared.id === message.fontId);
+    if (font === undefined) {
+        return;
+    }
+    panels.onEdit(setFontSize(state, message.fontId, message.src, message.size));
+    status(`${font.id} is drawn at ${message.size} px.`, false);
+}
+
 function declareImportedFont(message: DesignerDeclareFont): void {
     // Importing a file the design already names would list one face twice under two names; picking the same
     // file from a widget's Font list is a different thing, and that is allowed to make a second declaration.
@@ -276,7 +319,19 @@ function declareImportedFont(message: DesignerDeclareFont): void {
         status(`${message.path} is already declared.`, false);
         return;
     }
-    panels.onEdit(addFontDeclaration(state, message.path));
+    const extras = { source: message.source, size: message.size };
+    // The command runs from the palette, where a widget is very often selected and the font was picked *for*
+    // it: point that widget at the new font, exactly as the Font field's `...` does. With nothing selected --
+    // or something that draws no text -- the font is declared alone and appears in every Font list.
+    const target = selectedId === undefined ? undefined : widgetById(state.document, selectedId);
+    const takesFont =
+        target !== undefined
+        && (widgetSpec(target.tag)?.props ?? []).some((property) => property.kind === 'font');
+    panels.onEdit(
+        takesFont && target !== undefined
+            ? declareFontFromPath(state, target.id, message.path, extras)
+            : addFontDeclaration(state, message.path, extras),
+    );
     if (message.note !== undefined) {
         status(message.note, false);
     }
@@ -490,7 +545,8 @@ function applyPickedAsset(message: DesignerAssetPicked): void {
     if (apply === undefined || message.path === undefined) {
         return;
     }
-    apply(message.path);
+    // A system font answers with the face it was drawn from as well, so the declaration can be redrawn later.
+    apply(message.path, message.font);
 }
 
 /**

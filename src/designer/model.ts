@@ -26,7 +26,11 @@ import {
     widgetRaises,
 } from './catalog';
 import { NAMED_STYLES, isNamedStyle } from './appearance';
-import { isBuiltInFont, supportsFontAttribute, supportsFontStyle } from './fonts';
+import { fontConstName, isBuiltInFont, supportsFontAttribute, supportsFontStyle } from './fonts';
+
+// The constant-name rule lives in `fonts.ts` so the style emitter can use it without importing this module;
+// it is re-exported here because the document model is where callers look for it.
+export { fontConstName };
 import { type LcdRotation } from '../display/rotation';
 
 /**
@@ -65,6 +69,16 @@ export interface DesignerFont {
     src: string;
     /** Which characters to embed; empty means all of them. */
     chars: string;
+    /**
+     * The face this font was drawn from, when it is an imported system font.
+     *
+     * A BDF is a bitmap: the only way to change its size is to draw the original face again, so the face is
+     * kept in the project beside the BDF. A font with no source -- one the design names directly, or a
+     * hand-drawn face -- cannot be resized, and the panel says so rather than offering a box that cannot work.
+     */
+    source?: string;
+    /** The pixel size the face was drawn at, when it came from a system font. */
+    size?: number;
 }
 
 /** One layer of a composite icon: an asset plus where it sits inside the icon's box. */
@@ -163,21 +177,6 @@ export function rustFieldName(id: string): string {
             out += c;
         }
         first = false;
-    }
-    return out;
-}
-
-/**
- * Mirrors `font_const_name` in `embedded-gui-codegen`, which is what a font name becomes in the generated Rust.
- *
- * Two names that differ only in punctuation -- `big-font` and `big font` -- both become `__FONT_BIG_FONT`, and
- * the second would silently use the first's data. Validation refuses that rather than letting the compiler
- * report a duplicate constant.
- */
-export function fontConstName(id: string): string {
-    let out = '__FONT_';
-    for (const c of id) {
-        out += /[A-Za-z0-9]/.test(c) ? c.toUpperCase() : '_';
     }
     return out;
 }
@@ -721,12 +720,13 @@ export function validateDocument(document: DesignerDocument): string[] {
                     // Worth an error rather than a shrug: the markup's parser ignores a font it cannot resolve
                     // without saying anything, so a typo here would look like "the font did nothing".
                     problems.push(`${where}: no font named "${font}" is declared on the screen`);
-                } else if (!supportsFontAttribute(spec.fontSupport)) {
-                    // The same silence, one step further out: the name resolves, but the crate only reads
-                    // `font` for labels and carousels, so a button or a table would drop it without a word.
+                } else if (!supportsFontAttribute(spec.fontSupport) && !supportsFontStyle(spec.fontSupport)) {
+                    // Both routes are closed, so the emissions would drop the name without a word. This is
+                    // unreachable for the current catalogue -- every widget with a Font field reads either the
+                    // attribute (labels, carousels) or a style -- and it stays as the guard that keeps it so.
                     problems.push(
-                        `${where}: the crate reads a declared font for labels and carousels only, so ` +
-                        `"${font}" would be ignored on a ${spec.label.toLowerCase()}`,
+                        `${where}: the crate reads a font through a style or a label's font attribute, and a ` +
+                        `${spec.label.toLowerCase()} has neither`,
                     );
                 }
             }

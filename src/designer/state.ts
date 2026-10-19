@@ -389,9 +389,10 @@ export function declareFontFromPath(
     state: DesignerState,
     widgetId: string,
     path: string,
+    extra: FontExtras = {},
 ): DesignerState {
     return edit(state, undefined, (document) => {
-        const { document: declared, id } = withFontDeclaration(document, path);
+        const { document: declared, id } = withFontDeclaration(document, path, extra);
         return {
             ...declared,
             widgets: declared.widgets.map((widget) =>
@@ -401,14 +402,38 @@ export function declareFontFromPath(
     });
 }
 
+/** What an imported font brings with it: the face it was drawn from, and the size it was drawn at. */
+export interface FontExtras {
+    source?: string;
+    size?: number;
+}
+
 /**
  * Declares a font file on the screen, without pointing any widget at it.
  *
  * The importer's case: the file is new, and the panel should list it so the user can pick it. `chars` is
  * empty, which the code generator reads as "every character" -- an imported face is not a shot counter.
  */
-export function addFontDeclaration(state: DesignerState, path: string): DesignerState {
-    return edit(state, undefined, (document) => withFontDeclaration(document, path).document);
+export function addFontDeclaration(
+    state: DesignerState,
+    path: string,
+    extra: FontExtras = {},
+): DesignerState {
+    return edit(state, undefined, (document) => withFontDeclaration(document, path, extra).document);
+}
+
+/**
+ * Records a new size for a font that was just redrawn.
+ *
+ * Both fields move together: the BDF a font is drawn at a size *is* a different file, so a size without its
+ * file would name pixels that are not there. The undo key groups a run of sizes into one step -- nudging a
+ * font from 16 to 17 to 18 is one decision, and undoing it three times would be a puzzle.
+ */
+export function setFontSize(state: DesignerState, id: string, src: string, size: number): DesignerState {
+    return edit(state, `font:${id}:size`, (document) => ({
+        ...document,
+        fonts: (document.fonts ?? []).map((font) => (font.id === id ? { ...font, src, size } : font)),
+    }));
 }
 
 /**
@@ -421,6 +446,7 @@ export function addFontDeclaration(state: DesignerState, path: string): Designer
 function withFontDeclaration(
     document: DesignerDocument,
     path: string,
+    extra: FontExtras = {},
 ): { document: DesignerDocument; id: string } {
     const stem = path.split(/[\\/]/).pop() ?? path;
     const cleaned = stem.replace(/\.(bdf|ttf|otf)$/i, '').replace(/[^A-Za-z0-9_]/g, '_');
@@ -430,7 +456,7 @@ function withFontDeclaration(
     for (let n = 2; taken.has(id); n += 1) {
         id = `${base}_${n}`;
     }
-    const font: DesignerFont = { id, src: path, chars: '' };
+    const font: DesignerFont = { id, src: path, chars: '', ...extra };
     return { document: { ...document, fonts: [...(document.fonts ?? []), font] }, id };
 }
 

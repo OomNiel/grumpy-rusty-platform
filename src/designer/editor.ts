@@ -84,7 +84,16 @@ class DesignerPanel {
     /** Rasterisations in flight, keyed by request: the panel answers with the id it was given. */
     private readonly fontImports = new Map<
         string,
-        { stem: string; pixelSize: number; assetRequestId?: string }
+        {
+            stem: string;
+            pixelSize: number;
+            /** The face the glyphs are drawn from, now in the project: what a later resize redraws. */
+            source?: string;
+            /** Set when a field asked, so the answer goes back to that field rather than as a declaration. */
+            assetRequestId?: string;
+            /** Set when this is a redraw of an existing declaration. */
+            resizeFontId?: string;
+        }
     >();
 
     private constructor(
@@ -272,6 +281,78 @@ class DesignerPanel {
         if (message.type === 'fontRasterised') {
             await this.writeRasterisedFont(message);
         }
+        if (message.type === 'resizeFont') {
+            await this.resizeFont(message.fontId, message.pixelSize);
+        }
+    }
+
+    /**
+     * Redraws a declared font's source face at another size.
+     *
+     * A BDF is a bitmap, so a new size is a new drawing rather than a scale -- which is why an imported font
+     * keeps the face it came from in the project. A font without one cannot be redrawn, and says so: the panel
+     * disables the box in that case, so reaching here means a design predating the source being kept.
+     */
+    private async resizeFont(fontId: string, pixelSize: number): Promise<void> {
+        const font = (this.document.fonts ?? []).find((declared) => declared.id === fontId);
+        if (font === undefined) {
+            return;
+        }
+        const size = Math.round(pixelSize);
+        if (!Number.isFinite(size) || size < 6 || size > 64) {
+            await this.panel.webview.postMessage({
+                type: 'fontResized',
+                fontId,
+                error: 'a size between 6 and 64 pixels',
+            });
+            return;
+        }
+        if (font.source === undefined || font.source === '') {
+            await this.panel.webview.postMessage({
+                type: 'fontResized',
+                fontId,
+                error: 'this font has no face to redraw it from, so its size cannot change',
+            });
+            return;
+        }
+        if (font.size === size) {
+            // Already drawn at that size: answering keeps the box and the declaration in step without a write.
+            await this.panel.webview.postMessage({
+                type: 'fontResized',
+                fontId,
+                src: font.src,
+                size,
+            });
+            return;
+        }
+        try {
+            const source = font.source;
+            const uri = vscode.Uri.joinPath(this.folder, ...source.split('/'));
+            const bytes = await vscode.workspace.fs.readFile(uri);
+            const stem = path.basename(source).replace(/\.[^.]+$/, '');
+            const requestId = `resize-${fontId}-${size}`;
+            this.fontImports.set(requestId, { stem, pixelSize: size, source, resizeFontId: fontId });
+            await this.panel.webview.postMessage({
+                type: 'rasteriseFont',
+                requestId,
+                name: `rusty-resize-${fontId}-${size}`,
+                pixelSize: size,
+                bytes: Buffer.from(bytes).toString('base64'),
+            });
+        } catch (error) {
+            await this.fontFailed(fontId, error);
+        }
+    }
+
+    /** Answers a resize that could not be done: the reason goes beside the field, not into a modal. */
+    private async fontFailed(fontId: string, error: unknown): Promise<void> {
+        const text = error instanceof Error ? error.message : String(error);
+        this.output.appendLine(`[designer] font resize failed: ${text}`);
+        await this.panel.webview.postMessage({
+            type: 'fontResized',
+            fontId,
+            error: text.split('\n')[0],
+        });
     }
 
     /**
@@ -344,9 +425,12 @@ class DesignerPanel {
         const pixelSize = Math.round(Number(sizeText));
 
         try {
+            // The face is brought in before it is drawn: the BDF is a bitmap, and a resize has to be able to
+            // draw the original again. A few hundred kilobytes is worth a size box that works.
+            const source = await this.bringInSource(file);
             const bytes = await vscode.workspace.fs.readFile(file);
             const requestId = `${stem}-${pixelSize}-${Date.now()}`;
-            this.fontImports.set(requestId, { stem, pixelSize, assetRequestId });
+            this.fontImports.set(requestId, { stem, pixelSize, source, assetRequestId });
             await this.panel.webview.postMessage({
                 type: 'rasteriseFont',
                 requestId,
@@ -383,20 +467,38 @@ class DesignerPanel {
                 `[designer] imported ${request.stem} at ${font.pixelSize}px as ${relative} `
                 + `(${font.width}x${font.height} cell, ${font.glyphs.length} glyphs)`,
             );
+            const extras = request.source === undefined
+                ? {}
+                : { source: request.source, size: font.pixelSize };
+            if (request.resizeFontId !== undefined) {
+                // A redraw: the declaration keeps its name and takes the new file.
+                await this.panel.webview.postMessage({
+                    type: 'fontResized',
+                    fontId: request.resizeFontId,
+                    src: relative,
+                    size: font.pixelSize,
+                });
+                return;
+            }
             if (request.assetRequestId !== undefined) {
                 // A field asked, so the answer is the file: the panel declares it and points the widget at it.
                 await this.panel.webview.postMessage({
                     type: 'assetPicked',
                     requestId: request.assetRequestId,
                     path: relative,
+                    ...(request.source === undefined
+                        ? {}
+                        : { font: { source: request.source, size: font.pixelSize } }),
                 });
                 return;
             }
             await this.panel.webview.postMessage({
                 type: 'declareFont',
                 path: relative,
-                note: `${name}.bdf is declared: ${font.width}x${font.height} at ${font.pixelSize}px. `
-                    + 'Pick it in a widget\'s Font list.',
+                // No "pick it in the Font list" here: the panel points the selected widget at the font as
+                // well, so naming the file and its cell is the whole of what the import did.
+                note: `${name}.bdf is declared: ${font.width}x${font.height} at ${font.pixelSize}px.`,
+                ...extras,
             });
         } catch (error) {
             await this.reportImport(error, request.assetRequestId);
@@ -427,6 +529,30 @@ class DesignerPanel {
             }
             name = `${base}_${n}`;
         }
+    }
+
+    /**
+     * Brings a font face into the project under its own name, reusing an identical copy.
+     *
+     * The name is kept rather than deduped so a resize has one obvious file to redraw, and an identical
+     * already-here face is reused instead of copied again -- importing the same face at two sizes would
+     * otherwise leave two copies of a few hundred kilobytes each.
+     */
+    private async bringInSource(file: vscode.Uri): Promise<string> {
+        const relative = `assets/${path.basename(file.fsPath)}`;
+        try {
+            const here = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(this.folder, relative));
+            const there = await vscode.workspace.fs.readFile(file);
+            if (
+                here.length === there.length
+                && Buffer.compare(Buffer.from(here), Buffer.from(there)) === 0
+            ) {
+                return relative;
+            }
+        } catch {
+            // Not in the project yet, which is the ordinary case.
+        }
+        return this.bringIn(file);
     }
 
     /** Copies a file into the project if it lives outside it, and returns its project-relative path. */

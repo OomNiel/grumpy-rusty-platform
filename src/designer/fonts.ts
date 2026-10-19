@@ -70,6 +70,26 @@ export function isBuiltInFont(value: string): boolean {
  */
 export type FontSupport = 'attribute' | 'style' | 'both';
 
+/**
+ * Rust-cases a font id into the identifier of its generated static.
+ *
+ * Mirrors `font_const_name` in `embedded-gui-codegen`, which is what a font name becomes in the generated
+ * Rust. Two names that differ only in punctuation -- `big-font` and `big font` -- both become
+ * `__FONT_BIG_FONT`, and the validator refuses that collision rather than letting the codegen produce two
+ * statics with one name. It lives here, in a leaf module, so the style emitter can name a declared font's
+ * `BitmapFont` static without importing the document model.
+ */
+export function fontConstName(id: string): string {
+    let out = '__FONT_';
+    for (const ch of id) {
+        out += /[A-Za-z0-9]/.test(ch) ? ch.toUpperCase() : '_';
+    }
+    return out;
+}
+
+// The second name in a collision would silently use the first's data, which is why validation refuses two
+// declarations whose constants match rather than letting the compiler report a duplicate static.
+
 /** True when the tag can name a declared font, whose pixels came from a BDF file in the project. */
 export function supportsFontAttribute(support: FontSupport | undefined): boolean {
     return support === 'attribute' || support === 'both';

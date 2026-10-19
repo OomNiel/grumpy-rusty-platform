@@ -11,6 +11,42 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.12.0] - 2026-10-19
+
+An imported system font is now reachable on **every** widget that offers a Font field, it says which face it
+came from and at what size, and that size can be changed afterwards.
+
+### Fixed
+
+- **A declared font is offered wherever a Font field is.** Widgets that read only a style -- the clock, a
+  button, a toggle, a spinbox -- listed the crate's own faces and nothing else, so an imported system font was
+  in the design but invisible in the list, and the field read `(default)`. The font now reaches those widgets
+  through `style.font = FontId::Bitmap(&__FONT_<ID>)`, the same bitmap static the codegen writes for a label's
+  `font=` attribute. Labels and carousels keep the attribute route.
+- **Import a Font** now points the selected widget at the new font, as the Font field's `...` always did --
+  which is the other half of "it defaults to Default".
+- A font name that is set but no longer declared is shown as `name (not in this project)` instead of drawing
+  an empty box.
+
+### Added
+
+- **A size box beside the Font list.** For a font drawn from a system face it shows the pixel size and
+  redraws the face when it changes, so a font imported at 24 px can be tried at 18 or 32 without starting
+  over. It is disabled -- with a tooltip saying why -- for the crate's own faces, for a plain BDF, and for
+  anything with no face behind it: a BDF is a bitmap, and a size that is not a redraw would be a scale.
+- The import keeps the face it drew from in `assets/`, and the declaration records both the face and the size,
+  so a later resize redraws the original rather than enlarging pixels. The Fonts list shows
+  `Drawn from assets/<face> at <n> px`.
+- Declared fonts are named with their size in the Font list: `DejaVu_24 (24 px)`.
+
+### Notes
+
+- Changing a font's size changes every widget that uses it, because a font is one drawing -- the tooltip says
+  so. The change is one undo step, however many sizes you try.
+- The emitted style was checked with the crate's own code generator (`tests/sim --bin expand`):
+  `add_clock_styled(..., { let mut style = Style::label(); style.font = FontId::Bitmap(&__FONT_X); style })`.
+- Test suite: 995 hermetic (t1 920, t2 71, t3 4).
+
 ## [0.11.1] - 2026-10-19
 
 The Font field's `...` button could only see `.bdf` files, so a system font had to be found through the palette

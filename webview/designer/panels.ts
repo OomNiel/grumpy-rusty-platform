@@ -65,7 +65,17 @@ export interface PanelCallbacks {
      * The extension owns the dialog; the panel owns the edit, and applies the path when the answer arrives --
      * which is why it hands over the *apply* rather than the field's name.
      */
-    onBrowseAsset(kind: DesignerAssetKind, apply: (path: string) => void): void;
+    onBrowseAsset(
+        kind: DesignerAssetKind,
+        apply: (path: string, font?: { source: string; size: number }) => void,
+    ): void;
+    /**
+     * A declared font is to be redrawn at another size.
+     *
+     * The extension owns the face and the file, so the panel only asks; the answer comes back as a message
+     * that moves the declaration onto the new BDF.
+     */
+    onFontSize(fontId: string, pixelSize: number): void;
     /**
      * A widget's action button was pressed.
      *
@@ -157,6 +167,23 @@ function assetKindFor(tag: string): DesignerAssetKind {
  * The path is still typed-able -- a file that is already in the project is often quicker to name than to find --
  * but nobody should have to work out where an asset lives relative to the project root.
  */
+/** How a declared font is named in the Font list: its id, and the size it was drawn at when that is known. */
+function fontOptionLabel(font: { id: string; size?: number }): string {
+    return font.size === undefined ? font.id : `${font.id} (${font.size} px)`;
+}
+
+/** Why the size box is enabled or not, said where the box is rather than in a manual. */
+function sizeHelp(declared: { source?: string } | undefined): string {
+    if (declared === undefined) {
+        return 'Only a font this project declares can be resized. Pick one from "In this project".';
+    }
+    if (declared.source === undefined) {
+        return 'This font was not drawn from a face in the project, so it has no size to change: a BDF is a '
+            + 'bitmap. Import a .ttf or .otf to get one that can be redrawn.';
+    }
+    return 'The pixel height this face was drawn at. The font is one drawing, so every widget using it changes.';
+}
+
 /** The `...` that opens the file picker, named for the widget that reads it. */
 function browseButton(onBrowse: () => void, title = DEFAULT_BROWSE_TITLE): HTMLElement {
     const pick = button('\u2026', 'secondary-button', onBrowse);
@@ -408,10 +435,11 @@ function propertyForm(
                     )
                 : property.kind === 'font'
                     ? () =>
-                        callbacks.onBrowseAsset('font', (path) =>
-                            callbacks.onEdit(declareFontFromPath(state, widget.id, path)),
+                        callbacks.onBrowseAsset('font', (path, font) =>
+                            callbacks.onEdit(declareFontFromPath(state, widget.id, path, font)),
                         )
                     : undefined,
+            callbacks.onFontSize,
         );
         const help = [
             propertyHelp(widget.tag, property.name),
@@ -437,7 +465,8 @@ function propertyControl(
     onChange: (value: string | number | boolean) => void,
     fonts: readonly DesignerFont[],
     support: FontSupport | undefined,
-    onBrowse?: () => void,
+    onBrowse: (() => void) | undefined,
+    onFontSize: (fontId: string, pixelSize: number) => void,
 ): HTMLElement {
     switch (property.kind) {
         case 'asset':
@@ -461,27 +490,58 @@ function propertyControl(
                 }
                 select.append(group);
             }
-            if (support !== 'style' && fonts.length > 0) {
+            // A declared font is offered to every widget with this field, not just the ones that read a `font`
+            // attribute: the ones that read only a style get `style.font = FontId::Bitmap(...)`, which is the
+            // same `BitmapFont` the markup declares. Hiding the list made a system font look like it had not
+            // been imported at all.
+            if (fonts.length > 0) {
                 const group = element('optgroup');
                 group.label = 'In this project';
                 for (const font of fonts) {
-                    const option = element('option', undefined, font.id);
+                    const option = element('option', undefined, fontOptionLabel(font));
                     option.value = font.id;
                     group.append(option);
                 }
                 select.append(group);
             }
-            select.value = typeof value === 'string' ? value : '';
-            select.addEventListener('change', () => onChange(select.value));
-            if (onBrowse === undefined) {
-                return select;
+            const current = typeof value === 'string' ? value : '';
+            // A name the design no longer declares still has to be *shown*: a select whose value matches no
+            // option draws itself blank, which reads as "nothing is set" when something is.
+            if (current !== '' && !select.querySelector(`option[value="${current}"]`)) {
+                const orphan = element('option', undefined, `${current} (not in this project)`);
+                orphan.value = current;
+                select.append(orphan);
             }
-            // The `...` declares a font from a file and selects it, so the common case -- "use this font, I have
-            // not added it yet" -- is one action rather than two lists to visit in the right order. A system
-            // font is drawn into a BDF on the way, which is why the button says so.
+            select.value = current;
+            select.addEventListener('change', () => onChange(select.value));
+
             const rowNode = element('div', 'asset-field');
             rowNode.append(select);
-            rowNode.append(browseButton(onBrowse, FONT_BROWSE_TITLE));
+            // The size is the *font's*, not the widget's: a declared font is one drawing, so every widget using
+            // it changes together. It is only offered when there is a face to draw again -- a built-in face or a
+            // hand-made BDF has no size to change.
+            const declared = fonts.find((font) => font.id === current);
+            const sizeBox = element('input', 'field-input font-size');
+            sizeBox.type = 'number';
+            sizeBox.min = '6';
+            sizeBox.max = '64';
+            sizeBox.value = declared?.size === undefined ? '' : String(declared.size);
+            sizeBox.disabled = declared === undefined || declared.source === undefined;
+            sizeBox.title = sizeHelp(declared);
+            sizeBox.setAttribute('aria-label', 'Font size in pixels');
+            sizeBox.addEventListener('change', () => {
+                if (declared === undefined) {
+                    return;
+                }
+                onFontSize(declared.id, Number(sizeBox.value));
+            });
+            rowNode.append(sizeBox);
+            if (onBrowse !== undefined) {
+                // The `...` declares a font from a file and selects it, so the common case -- "use this font, I
+                // have not added it yet" -- is one action rather than two lists to visit in the right order. A
+                // system font is drawn into a BDF on the way, which is why the button says so.
+                rowNode.append(browseButton(onBrowse, FONT_BROWSE_TITLE));
+            }
             return rowNode;
         }
         case 'bool': {
@@ -720,6 +780,22 @@ function fontList(state: DesignerState, callbacks: PanelCallbacks): HTMLElement 
                 'Which characters to embed. Empty embeds every glyph in the file; a title can use far fewer.',
             ),
         );
+        // An imported font is a drawing of a face, so say which one and at what size: the BDF's own name is
+        // about the file, and the face it came from is what the design actually chose.
+        if (font.source !== undefined) {
+            entry.append(
+                field(
+                    'Drawn from',
+                    element(
+                        'span',
+                        'field-static',
+                        `${font.source}${font.size === undefined ? '' : ` at ${font.size} px`}`,
+                    ),
+                    'field',
+                    'The face this font was drawn from, and the size. Change the size in a widget\'s Font row.',
+                ),
+            );
+        }
         const remove = button('Remove', 'secondary-button', () =>
             callbacks.onEdit(removeFont(state, font.id)),
         );

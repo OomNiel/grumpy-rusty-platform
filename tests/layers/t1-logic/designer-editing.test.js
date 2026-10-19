@@ -26,7 +26,9 @@ const {
     toggleEvent,
     reorderWidget,
     addFont,
+    addFontDeclaration,
     declareFontFromPath,
+    setFontSize,
     duplicateWidget,
     removeFont,
     setChildren,
@@ -616,4 +618,42 @@ test('a design written before the points existed keeps the default triangle', ()
     widget.props.p1x = 0;
     equal(trianglePoints(widget)[0], 0, 'the one it names is used');
     equal(trianglePoints(widget)[1], 0, 'and the rest keep the crate\'s value');
+});
+
+test('an imported font remembers the face it came from, so it can be redrawn', () => {
+    // The size is not the widget's and not the BDF's: it is a property of the drawing, which is why the
+    // declaration keeps the face. Without that, "make it bigger" would have to scale pixels.
+    const state1 = addWidget(state(), 'clock', 10, 10);
+    const declared = addFontDeclaration(state1, 'assets/DejaVuSansMono-24.bdf', {
+        source: 'assets/DejaVuSansMono.ttf',
+        size: 24,
+    });
+    const font = declared.document.fonts[0];
+    equal(font.id, 'DejaVuSansMono_24', 'named after the file it was written as');
+    equal(font.source, 'assets/DejaVuSansMono.ttf', 'and it knows the face');
+    equal(font.size, 24, 'and the size it was drawn at');
+    equal(validateDocument(declared.document).length, 0, 'which is a valid design');
+
+    // A redraw moves both fields together: a size without its file would name pixels that are not there.
+    const resized = setFontSize(declared, font.id, 'assets/DejaVuSansMono-30.bdf', 30);
+    const after = resized.document.fonts[0];
+    equal(after.src, 'assets/DejaVuSansMono-30.bdf', 'the file follows the size');
+    equal(after.size, 30, 'and the size the file');
+    equal(after.source, 'assets/DejaVuSansMono.ttf', 'the face is still there for the next change');
+
+    // One step: nudging 24 -> 30 -> 32 is one decision, and undo goes back to 24 rather than to 30.
+    const twice = setFontSize(resized, font.id, 'assets/DejaVuSansMono-32.bdf', 32);
+    const undone = undo(twice);
+    equal(undone.document.fonts[0].size, 24, 'undo returns to the size before the nudging began');
+    equal(undone.document.fonts[0].src, 'assets/DejaVuSansMono-24.bdf', 'and to its file');
+});
+
+test('a declared font reaches a widget that reads only a style', () => {
+    // The clock's numerals come from `style.font`, so it used to show an empty Font list: the font was in the
+    // design, invisible in the field, and the panel said "(default)". The emitter writes the bitmap static.
+    const state1 = addWidget(state(), 'clock', 10, 10);
+    const withFont = addFontDeclaration(state1, 'assets/face.bdf');
+    const clock = withFont.document.widgets.find((widget) => widget.tag === 'clock');
+    const chosen = setProperty(withFont, clock.id, 'font', 'face');
+    equal(validateDocument(chosen.document).length, 0, 'a declared font on a clock is a valid design');
 });

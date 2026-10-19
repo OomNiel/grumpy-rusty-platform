@@ -207,19 +207,25 @@ test('the three pickers keep their panel when a font is chosen', () => {
     }
 });
 
-test('a declared font is offered only where the crate reads it, and written as the attribute', () => {
-    // `font="name"` is a BDF declared on the screen; the crate reads it for labels and carousels only, so
-    // for the other tags the validator refuses it rather than letting the emitter drop it in silence.
+test('a declared font reaches every widget that offers one, by whichever route that widget reads', () => {
+    // Two routes carry a font, and which one depends on the tag: a label and a carousel read `font="name"`,
+    // while every other widget is reached through a style. A declared font is a `BitmapFont` static, so the
+    // style route names it exactly as the codegen would: `FontId::Bitmap(&__FONT_<ID>)`.
     for (const tag of FONT_TAGS) {
         const spec = widgetSpec(tag);
         const document = documentWithOne(tag, { font: 'my_bdf' });
         document.fonts = [{ id: 'my_bdf', src: 'fonts/my_bdf.bdf', chars: '' }];
+        equal(validateDocument(document).length, 0, `${tag} accepts a declared font`);
+        const kdl = emitKdl(document);
         if (spec.fontSupport === 'both' || spec.fontSupport === 'attribute') {
-            contains(emitKdl(document), 'font="my_bdf"', `${tag} reads a declared font, so it is written`);
-            continue;
+            contains(kdl, 'font="my_bdf"', `${tag} reads a declared font, so it is written as the attribute`);
+        } else {
+            contains(
+                kdl,
+                'style.font = FontId::Bitmap(&__FONT_MY_BDF)',
+                `${tag} takes it through the style, naming the bitmap static`,
+            );
+            notOk(kdl.includes('font="my_bdf"'), `${tag} must not also write an attribute it does not read`);
         }
-        const problems = validateDocument(document);
-        ok(problems.length > 0, `${tag} (${spec.fontSupport}) must refuse a declared font`);
-        contains(problems.join(' '), 'would be ignored', `${tag}: and say why`);
     }
 });

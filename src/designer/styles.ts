@@ -226,6 +226,8 @@ body {
 }
 
 .asset-field > .field-input { flex: 1 1 0; min-width: 0; }
+/* The Font row's size box: a small number beside the list, not a second list. */
+.asset-field > .font-size { flex: 0 0 58px; text-align: right; }
 .asset-field > button { flex: 0 0 auto; }
 
 /* Two columns that may each shrink to nothing. With the grid's default 'auto' minimum, the number inputs'
