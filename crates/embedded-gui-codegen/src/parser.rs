@@ -539,6 +539,11 @@ pub fn parse_widget(node: &KdlNode) -> Result<(GridPlacementDef, WidgetDef), Cod
             let label_scale = get_i64_prop(node, "label_scale")
                 .unwrap_or(1)
                 .clamp(1, 4) as u8;
+            // In character widths, in tenths: the Designer's Number inset steps by 0.1, and 0.5 is what
+            // a clock that says nothing gets (the shipping look since 2026-10-21).
+            let label_inset = get_f64_prop(node, "label_inset")
+                .unwrap_or(0.5)
+                .clamp(0.0, 2.0) as f32;
             let show_labels = get_bool_prop(node, "show_labels").unwrap_or(true);
             WidgetDef::Clock {
                 id,
@@ -552,6 +557,7 @@ pub fn parse_widget(node: &KdlNode) -> Result<(GridPlacementDef, WidgetDef), Cod
                 minute_tick_color: get_string_prop(node, "minute_tick_color").map(str::to_string),
                 label_color: get_string_prop(node, "label_color").map(str::to_string),
                 label_scale,
+                label_inset,
                 show_labels,
                 style,
             }

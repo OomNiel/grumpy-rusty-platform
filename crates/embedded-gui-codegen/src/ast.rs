@@ -187,6 +187,8 @@ pub enum WidgetDef {
         label_color: Option<String>,
         /// How many pixels each glyph pixel of the numerals covers; `1` is the font's own size.
         label_scale: u8,
+        /// How far the numerals sit inside the tick ring, in character widths (tenths are meaningful).
+        label_inset: f32,
         show_labels: bool,
         style: Option<String>,
     },

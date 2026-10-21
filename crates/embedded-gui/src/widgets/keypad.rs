@@ -15,8 +15,6 @@
 //! The keys stretch to fill the width, in five rows whatever the mode, so the same face works at
 //! 320x480 and 480x320 without a second layout table.
 
-use core::fmt::Write as _;
-
 use embedded_graphics_core::pixelcolor::{Rgb565, RgbColor, WebColors};
 use heapless::String;
 
@@ -82,7 +80,7 @@ pub enum KeypadKey {
     Char(char),
     /// One space.
     Space,
-    /// Removes the last item on the line.
+    /// Removes the character before the cursor.
     Backspace,
     /// Empties the line.
     Clear,
@@ -92,6 +90,10 @@ pub enum KeypadKey {
     Shift,
     /// Moves to the next mode.
     Mode,
+    /// Moves the cursor one character left, so the next key overwrites *that* character.
+    Left,
+    /// Moves the cursor one character right.
+    Right,
 }
 
 impl KeypadKey {
@@ -164,7 +166,12 @@ const TEXT_ROWS: &[&[KeySpec]] = &[
         (KeypadKey::Space, 4),
         (KeypadKey::Backspace, 2),
     ],
-    &[(KeypadKey::Clear, 4), (KeypadKey::Enter, 6)],
+    &[
+        (KeypadKey::Clear, 3),
+        (KeypadKey::Left, 1),
+        (KeypadKey::Right, 1),
+        (KeypadKey::Enter, 5),
+    ],
 ];
 
 /// Digits in a telephone arrangement -- the order a thumb expects on a keypad -- and the controls.
@@ -192,6 +199,8 @@ const NUMERIC_ROWS: &[&[KeySpec]] = &[
     &[
         (KeypadKey::Mode, 1),
         (KeypadKey::Clear, 1),
+        (KeypadKey::Left, 1),
+        (KeypadKey::Right, 1),
         (KeypadKey::Enter, 1),
     ],
 ];
@@ -246,7 +255,12 @@ const SYMBOL_ROWS: &[&[KeySpec]] = &[
         (KeypadKey::Space, 4),
         (KeypadKey::Backspace, 2),
     ],
-    &[(KeypadKey::Clear, 3), (KeypadKey::Enter, 5)],
+    &[
+        (KeypadKey::Clear, 2),
+        (KeypadKey::Left, 1),
+        (KeypadKey::Right, 1),
+        (KeypadKey::Enter, 4),
+    ],
 ];
 
 /// The most rows any mode has, which is the letters and the symbols: the digits-only page is shorter
@@ -284,6 +298,10 @@ pub struct KeypadWidget {
     /// The typed line.
     text_buf: [u8; KEYPAD_CAPACITY],
     text_len: u8,
+    /// Where the next character is written, as a byte offset into `text_buf` (always on a character
+    /// boundary). Typing overwrites the character under it rather than inserting, which is what makes
+    /// the two cursor keys worth having: move back, type, and that one character is replaced.
+    cursor: u8,
     /// The line the last Enter passed to the handler, which is what `keypad_submitted` reads.
     sent_buf: [u8; KEYPAD_CAPACITY],
     sent_len: u8,
@@ -306,6 +324,7 @@ impl KeypadWidget {
             shift: false,
             text_buf: [0; KEYPAD_CAPACITY],
             text_len: 0,
+            cursor: 0,
             sent_buf: [0; KEYPAD_CAPACITY],
             sent_len: 0,
             pressed: -1,
@@ -375,7 +394,23 @@ impl KeypadWidget {
         core::str::from_utf8(&self.sent_buf[..self.sent_len as usize]).unwrap_or("")
     }
 
-    /// Replaces the line, keeping as much of it as fits.
+    /// The byte length of the character that starts at `start` in the used part of the line.
+    ///
+    /// The line is UTF-8, so an overwrite has to know whether the character under the cursor is one,
+    /// two, three or four bytes: replacing `é` with `e` shortens the line, and the tail has to move.
+    fn char_len(text: &[u8], start: usize) -> usize {
+        let lead = text[start];
+        let len = match lead {
+            byte if byte < 0x80 => 1,
+            byte if byte >> 5 == 0b110 => 2,
+            byte if byte >> 4 == 0b1110 => 3,
+            _ => 4,
+        };
+        len.min(text.len() - start)
+    }
+
+    /// Replaces the line, keeping as much of it as fits. The cursor goes to its end, which is where a
+    /// field that was just filled in wants it.
     pub fn set_text(&mut self, text: &str) {
         let mut len = 0usize;
         for ch in text.chars() {
@@ -388,40 +423,90 @@ impl KeypadWidget {
             len += bytes.len();
         }
         self.text_len = len as u8;
+        self.cursor = len as u8;
     }
 
-    /// Types one character, unless the line is full.
+    /// Where the next character will be written, as a byte offset into the line.
+    pub fn cursor(&self) -> usize {
+        self.cursor as usize
+    }
+
+    /// Types one character at the cursor, replacing the character that is already there.
+    ///
+    /// Overflow rather than insertion: the cursor is *on* a character, so a key replaces it and steps
+    /// right. With no character under it (the end of the line) this is an append, which is the case
+    /// every user meets first. A line that would grow past [`KEYPAD_CAPACITY`] is refused key by key,
+    /// exactly as an append at the end always has been.
     pub fn push(&mut self, ch: char) {
         let mut buf = [0u8; 4];
-        let bytes = ch.encode_utf8(&mut buf).as_bytes();
+        let bytes = ch.encode_utf8(&mut buf).as_bytes().len();
+        let cursor = self.cursor as usize;
         let len = self.text_len as usize;
-        if len + bytes.len() > KEYPAD_CAPACITY {
+        let replaced = if cursor < len {
+            Self::char_len(&self.text_buf[..len], cursor)
+        } else {
+            0
+        };
+        if len - replaced + bytes > KEYPAD_CAPACITY {
             return;
         }
-        self.text_buf[len..len + bytes.len()].copy_from_slice(bytes);
-        self.text_len = (len + bytes.len()) as u8;
+        if bytes != replaced {
+            // The tail moves by the difference; `copy_within` handles both directions.
+            self.text_buf
+                .copy_within(cursor + replaced..len, cursor + bytes);
+        }
+        self.text_buf[cursor..cursor + bytes].copy_from_slice(&buf[..bytes]);
+        self.text_len = (len - replaced + bytes) as u8;
+        self.cursor = (cursor + bytes) as u8;
     }
 
-    /// Deletes the previous item -- a whole character, not a byte, so a line set from the app
-    /// survives a backspace intact.
+    /// Deletes the character *before* the cursor -- a whole character, not a byte, so a line set from
+    /// the app survives a backspace intact. At the start of the line there is nothing to delete.
     pub fn backspace(&mut self) {
-        let mut end = self.text_len as usize;
-        if end == 0 {
+        let at = self.cursor as usize;
+        if at == 0 {
             return;
         }
         // Walk back over the continuation bytes of the last character, then the lead byte: a
         // two-byte `é` is one item, not half of one.
-        while end > 1 && (self.text_buf[end - 1] & 0b1100_0000) == 0b1000_0000 {
-            end -= 1;
+        let mut start = at - 1;
+        while start > 0 && (self.text_buf[start] & 0b1100_0000) == 0b1000_0000 {
+            start -= 1;
         }
-        end -= 1;
-        self.text_len = end as u8;
+        let len = self.text_len as usize;
+        self.text_buf.copy_within(at..len, start);
+        self.text_len = (len - (at - start)) as u8;
+        self.cursor = start as u8;
     }
 
-    /// Empties the line.
+    /// Moves the cursor one character left; a no-op at the start of the line.
+    pub fn cursor_left(&mut self) {
+        let at = self.cursor as usize;
+        if at == 0 {
+            return;
+        }
+        let mut start = at - 1;
+        while start > 0 && (self.text_buf[start] & 0b1100_0000) == 0b1000_0000 {
+            start -= 1;
+        }
+        self.cursor = start as u8;
+    }
+
+    /// Moves the cursor one character right; a no-op at the end of the line.
+    pub fn cursor_right(&mut self) {
+        let at = self.cursor as usize;
+        let len = self.text_len as usize;
+        if at >= len {
+            return;
+        }
+        self.cursor = (at + Self::char_len(&self.text_buf[..len], at)) as u8;
+    }
+
+    /// Empties the line, and puts the cursor back at its start.
     pub fn clear(&mut self) {
         self.text_buf = [0; KEYPAD_CAPACITY];
         self.text_len = 0;
+        self.cursor = 0;
     }
 
     /// Hands the line to [`Self::submitted`] and empties it, which is what Enter does.
@@ -456,8 +541,13 @@ impl KeypadWidget {
             }
             KeypadKey::Char(c) => Some(c),
             KeypadKey::Space => Some(' '),
-            KeypadKey::Backspace => Some('<'),
-            KeypadKey::Clear | KeypadKey::Enter | KeypadKey::Shift | KeypadKey::Mode => None,
+            KeypadKey::Backspace
+            | KeypadKey::Clear
+            | KeypadKey::Enter
+            | KeypadKey::Shift
+            | KeypadKey::Mode
+            | KeypadKey::Left
+            | KeypadKey::Right => None,
         }
     }
 
@@ -465,15 +555,21 @@ impl KeypadWidget {
     ///
     /// The keys that act are labelled rather than abbreviated to one letter: `CLR` and `ENT` were
     /// `C` and `E`, which read as letters of the alphabet on a keypad that has them, and the Shift
-    /// key said `^`, which says nothing at all (asked for 2026-10-17). `Backspace` keeps its arrow
-    /// glyph, which is unambiguous and fits a narrow key.
+    /// key said `^`, which says nothing at all (asked for 2026-10-17). Backspace became `BKSP` when the
+    /// two cursor keys arrived (2026-10-21): a lone `<` for 'delete backwards' next to `<-` and `->`
+    /// would be three arrows meaning two different things.
     pub fn key_label(&self, key: KeypadKey) -> Option<&'static str> {
         match key {
             KeypadKey::Clear => Some("CLR"),
             KeypadKey::Enter => Some("ENT"),
             KeypadKey::Shift => Some("SHIFT"),
             KeypadKey::Mode => Some(self.mode.key_label()),
-            KeypadKey::Char(_) | KeypadKey::Space | KeypadKey::Backspace => None,
+            KeypadKey::Backspace => Some("BKSP"),
+            // Two characters, so the cursor keys cannot be mistaken for the symbol page's own `<`
+            // and `>`, which type those characters.
+            KeypadKey::Left => Some("<-"),
+            KeypadKey::Right => Some("->"),
+            KeypadKey::Char(_) | KeypadKey::Space => None,
         }
     }
 
@@ -667,7 +763,8 @@ impl KeypadWidget {
         )
     }
 
-    /// The typed line, scrolled to its end so the character just typed is always the one in view.
+    /// The typed line, scrolled so the caret stays in view, with the caret drawn under the character
+    /// the next key will overwrite.
     fn draw_entry<D, C>(
         &self,
         ctx: &mut RenderCtx<'_, D, C>,
@@ -688,26 +785,39 @@ impl KeypadWidget {
         let usable = entry.w.saturating_sub(6) as i32;
         let fits = (usable / advance).max(1) as usize;
         let line = self.text();
+        // The cursor is a byte offset and the box scrolls by characters, so the two are counted
+        // separately. The window follows the caret now rather than the end of the line: moving left
+        // in a full line has to bring the character under the cursor back into view.
+        let cursor = (self.cursor as usize).min(line.len());
+        let cursor_column = line[..cursor].chars().count();
+        let skip = (cursor_column + 1).saturating_sub(fits);
         let mut visible: String<KEYPAD_CAPACITY> = String::new();
-        let skip = line.chars().count().saturating_sub(fits);
         for ch in line.chars().skip(skip) {
             let _ = visible.push(ch);
         }
-        let _ = write!(&mut visible, "_");
         // The typed line is set in the face the keys are drawn in, not the library default, or the
         // box would hold a full-size line of keys over a line of text half their size.
         //
         // Left-justified, and centred between the box's top and bottom edges (2026-10-17: "The text
         // must be left-justified in the box (just centred between the top and bottom edges)"). A line
         // that grows from the left does not move the letters already typed, which is what a field
-        // wants; the caret, an underscore, is the character after the last one.
-        ctx.draw_text_with_font(
-            entry.x + 3,
-            entry.y + (entry.h as i32 - font.line_height() as i32) / 2,
-            visible.as_str(),
+        // wants.
+        let top = entry.y + (entry.h as i32 - font.line_height() as i32) / 2;
+        ctx.draw_text_with_font(entry.x + 3, top, visible.as_str(), self.text_color, font)?;
+
+        // The caret is an underline under the character the next key will overwrite -- and under the
+        // empty cell after the last character, where it used to be a drawn `_` glyph. It is painted
+        // rather than appended as a glyph so the line's own characters stay where they are: an
+        // underscore between two letters would push the tail a cell to the right.
+        let column = (cursor_column - skip) as i32;
+        let caret_x = entry.x + 3 + column * advance;
+        let caret_w = advance.min(entry.x + entry.w as i32 - 3 - caret_x).max(0) as u32;
+        let baseline = top + font.line_height() as i32;
+        ctx.fill_rect(
+            Rect::new(caret_x, baseline - 2, caret_w, 2),
             self.text_color,
-            font,
-        )
+        )?;
+        Ok(())
     }
 }
 
@@ -767,8 +877,8 @@ mod tests {
         assert_eq!(pad.mode, KeypadMode::Text);
         assert_eq!(
             pad.key_count(),
-            46,
-            "ten digits, thirty letters, four controls and the last row"
+            48,
+            "ten digits, thirty letters, four controls and the last row of four"
         );
         // The digits are part of the letters page now, above `qwerty` (asked for 2026-10-17).
         assert_eq!(pad.key_for_index(0), Some(KeypadKey::Char('1')));
@@ -780,8 +890,8 @@ mod tests {
         assert_eq!(pad.mode, KeypadMode::Symbol);
         assert_eq!(
             pad.key_count(),
-            36,
-            "thirty-one symbols and the five control keys"
+            38,
+            "thirty-one symbols and the seven control keys"
         );
         assert_eq!(pad.key_for_index(0), Some(KeypadKey::Char('~')));
         assert_eq!(pad.key_for_index(30), Some(KeypadKey::Char('?')));
@@ -795,7 +905,11 @@ mod tests {
         // that no longer exists through it.
         let mut digits = keypad();
         digits.mode = KeypadMode::Numeric;
-        assert_eq!(digits.key_count(), 15);
+        assert_eq!(
+            digits.key_count(),
+            17,
+            "the digits, the controls and the two cursor keys"
+        );
         digits.cycle_mode();
         assert_eq!(digits.mode, KeypadMode::Text);
     }
@@ -869,10 +983,15 @@ mod tests {
         // The mode key still says where it goes, and a key that types has no word.
         assert_eq!(pad.key_label(KeypadKey::Mode), Some("%%..."));
         assert_eq!(pad.key_label(KeypadKey::Char('q')), None);
+        // Backspace is a word now, not a `<`: the cursor keys beside it are arrows.
+        assert_eq!(pad.key_label(KeypadKey::Backspace), Some("BKSP"));
+        // Two-character arrows, so neither can be mistaken for the symbol page's own `<` and `>`.
+        assert_eq!(pad.key_label(KeypadKey::Left), Some("<-"));
+        assert_eq!(pad.key_label(KeypadKey::Right), Some("->"));
         assert_eq!(
-            pad.key_label(KeypadKey::Backspace),
+            pad.legend(KeypadKey::Left),
             None,
-            "the arrow is its own label"
+            "a cursor key types nothing"
         );
         pad.cycle_mode();
         assert_eq!(
@@ -1154,6 +1273,161 @@ mod tests {
         );
         pad.clear();
         assert_eq!(pad.text(), "");
+    }
+
+    /// Asked for 2026-10-21: "add buttons to steer the cursor (left or right) in the text input box.
+    /// The next key touch overwrite the character with the cursor under it."
+    #[test]
+    fn typing_overwrites_the_character_under_the_cursor_and_keeps_the_tail() {
+        let mut pad = keypad();
+        for ch in ['a', 'b', 'c'] {
+            pad.push(ch);
+        }
+        assert_eq!(pad.cursor(), 3, "typing leaves the cursor after the line");
+
+        pad.cursor_left();
+        assert_eq!(pad.cursor(), 2, "one character back, not one byte");
+        pad.push('X');
+        assert_eq!(
+            pad.text(),
+            "abX",
+            "the character under the cursor is replaced"
+        );
+        assert_eq!(pad.cursor(), 3, "and the cursor steps past what it wrote");
+
+        // Mid-line, the tail is untouched: only the character under the cursor changes.
+        pad.cursor_left();
+        pad.cursor_left();
+        pad.push('Y');
+        assert_eq!(pad.text(), "aYX");
+    }
+
+    #[test]
+    fn the_cursor_stops_at_both_ends() {
+        let mut pad = keypad();
+        pad.cursor_left();
+        assert_eq!(pad.cursor(), 0, "an empty line has nowhere to go");
+        pad.push('a');
+        pad.push('b');
+        for _ in 0..10 {
+            pad.cursor_left();
+        }
+        assert_eq!(pad.cursor(), 0, "the start of the line is the last stop");
+        for _ in 0..10 {
+            pad.cursor_right();
+        }
+        assert_eq!(pad.text().len(), pad.cursor(), "and so is its end");
+        pad.push('c');
+        assert_eq!(pad.text(), "abc", "past the end a key appends again");
+    }
+
+    #[test]
+    fn an_overwrite_keeps_a_multibyte_line_aligned() {
+        let mut pad = keypad();
+        pad.set_text("aécd");
+        assert_eq!(
+            pad.cursor(),
+            5,
+            "set_text leaves the cursor at the end, in bytes"
+        );
+        pad.cursor_left();
+        pad.cursor_left();
+        pad.cursor_left();
+        assert_eq!(
+            pad.cursor(),
+            1,
+            "one character back is one byte for a, two for é"
+        );
+        // A one-byte character over a two-byte one: the tail moves left with it.
+        pad.push('E');
+        assert_eq!(pad.text(), "aEcd");
+        assert_eq!(pad.cursor(), 2);
+        pad.push('X');
+        assert_eq!(pad.text(), "aEXd");
+        // And back the other way: a two-byte character over a one-byte one shifts the tail right.
+        pad.cursor_left();
+        pad.cursor_left();
+        assert_eq!(pad.cursor(), 1);
+        pad.push('é');
+        assert_eq!(pad.text(), "aéXd");
+        assert_eq!(pad.cursor(), 3);
+        pad.push('!');
+        assert_eq!(pad.text(), "aé!d");
+    }
+
+    #[test]
+    fn backspace_takes_the_character_before_the_cursor() {
+        let mut pad = keypad();
+        pad.set_text("abc");
+        pad.cursor_left();
+        pad.backspace();
+        assert_eq!(
+            pad.text(),
+            "ac",
+            "the character before the cursor goes, not the last one"
+        );
+        assert_eq!(pad.cursor(), 1);
+        pad.cursor_left();
+        pad.backspace();
+        assert_eq!(
+            pad.text(),
+            "ac",
+            "at the start of the line there is nothing to take"
+        );
+        assert_eq!(pad.cursor(), 0);
+    }
+
+    #[test]
+    fn clear_and_enter_put_the_cursor_back_at_the_start() {
+        let mut pad = keypad();
+        pad.set_text("42");
+        pad.cursor_left();
+        pad.clear();
+        assert_eq!(pad.cursor(), 0);
+        pad.set_text("7");
+        pad.submit();
+        assert_eq!(pad.submitted(), "7");
+        assert_eq!(pad.cursor(), 0, "the next line starts at its left edge");
+    }
+
+    /// The caret is painted where the cursor is, not always after the last character.
+    #[test]
+    fn the_caret_follows_the_cursor() {
+        use crate::context::GuiContext;
+        use crate::test_buffer::TestBuffer;
+
+        // A line of spaces, so the only ink in the box is the caret itself.
+        let caret_x = |pad: KeypadWidget| -> i32 {
+            let mut ctx: GuiContext<16, 8, 8> = GuiContext::new(Rect::new(0, 0, 320, 158));
+            let entry = pad.entry_rect(RECT, FontId::Scaled6x10);
+            ctx.add_keypad_styled(RECT, pad, Style::panel().with_font(FontId::Scaled6x10))
+                .unwrap();
+            let mut buffer = TestBuffer::new(320, 158);
+            ctx.render(&mut buffer).unwrap();
+            let mut min = i32::MAX;
+            for y in entry.y..entry.y + entry.h as i32 {
+                for x in entry.x..entry.x + entry.w as i32 {
+                    if buffer.pixel_at(x, y) == Some(Rgb565::WHITE) {
+                        min = min.min(x);
+                    }
+                }
+            }
+            assert!(min != i32::MAX, "the caret is drawn");
+            min
+        };
+
+        let mut pad = keypad();
+        pad.text_color = Rgb565::WHITE;
+        pad.set_text("   ");
+        let at_end = caret_x(pad);
+        pad.cursor_left();
+        pad.cursor_left();
+        let two_back = caret_x(pad);
+        assert_eq!(
+            two_back,
+            at_end - 2 * FontId::Scaled6x10.advance() as i32,
+            "the caret moved with the cursor, one character cell per press"
+        );
     }
 
     #[test]

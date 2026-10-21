@@ -632,11 +632,13 @@ screen id="Refused" width=320 height=240 {
         "busy_wheel becomes add_spinner with a phase: {generated}"
     );
     assert!(
-        generated.contains("gui.add_chart(cells[4], &[2.0, 5.0, 3.0, 8.0], 1.0, 9.0, Style::panel())"),
+        generated
+            .contains("gui.add_chart(cells[4], &[2.0, 5.0, 3.0, 8.0], 1.0, 9.0, Style::panel())"),
         "chart: its comma-separated series reaches add_chart: {generated}"
     );
     assert!(
-        generated.contains("gui.add_plotter(cells[5], &[2.0, 5.0, 3.0], 2, 1.0, 9.0, Style::panel())"),
+        generated
+            .contains("gui.add_plotter(cells[5], &[2.0, 5.0, 3.0], 2, 1.0, 9.0, Style::panel())"),
         "plotter: its space-separated series and head reach add_plotter: {generated}"
     );
     assert!(
@@ -648,9 +650,7 @@ screen id="Refused" width=320 height=240 {
         "time_picker takes a parsed style: {generated}"
     );
     assert!(
-        generated.contains(
-            "gui.add_number_picker(cells[8], 3, 17, 11, \"kPa\", Style::panel())"
-        ),
+        generated.contains("gui.add_number_picker(cells[8], 3, 17, 11, \"kPa\", Style::panel())"),
         "number_picker takes a parsed style: {generated}"
     );
     assert!(
@@ -674,9 +674,8 @@ screen id="Refused" width=320 height=240 {
         "path: struct-variant verbs and a non-optional colour reach the custom widget: {generated}"
     );
     assert!(
-        generated.contains(
-            "let pv = gui.add_custom_widget(cells[11], &__shape_pv, Style::default())?;"
-        ),
+        generated
+            .contains("let pv = gui.add_custom_widget(cells[11], &__shape_pv, Style::default())?;"),
         "path is a custom widget, not an inline VectorPath: {generated}"
     );
 
@@ -953,8 +952,14 @@ screen {
 "#;
     let screen = parse_kdl_screen(kdl).unwrap();
     let written = serialize_kdl_screen(&screen);
-    assert!(written.contains("keypad"), "the keypad is written back:\n{written}");
-    assert!(written.contains("mode=\"text\""), "with its mode:\n{written}");
+    assert!(
+        written.contains("keypad"),
+        "the keypad is written back:\n{written}"
+    );
+    assert!(
+        written.contains("mode=\"text\""),
+        "with its mode:\n{written}"
+    );
     let again = parse_kdl_screen(&written).unwrap();
     assert_eq!(
         format!("{:?}", screen.grid.children),
@@ -974,7 +979,7 @@ fn a_clock_reaches_the_builder_with_its_time_and_colours() {
         r##"
 screen id="ClockFace" width=200 height=200 {
     grid cols="200px" rows="200px" gap=0 padding=0 {
-        clock id="Clk" col=0 row=0 hour=7 minute=45 second=30 hour_color="#ff0000" second_color="#00ff00" label_scale=2 show_labels=false
+        clock id="Clk" col=0 row=0 hour=7 minute=45 second=30 hour_color="#ff0000" second_color="#00ff00" label_scale=2 label_inset=0.7 show_labels=false
     }
 }
 "##,
@@ -1000,6 +1005,10 @@ screen id="ClockFace" width=200 height=200 {
         rust_code.contains("label_scale: 2") && rust_code.contains("show_labels: false"),
         "and the numerals' size and switch:\n{rust_code}"
     );
+    assert!(
+        rust_code.contains("label_inset: 0.7"),
+        "and how far in the numerals sit, in character widths:\n{rust_code}"
+    );
     // A colour the design does not name keeps the widget's own.
     assert!(
         rust_code.contains("minute_color: Rgb565::WHITE"),
@@ -1010,7 +1019,7 @@ screen id="ClockFace" width=200 height=200 {
     let screen = parse_kdl_screen(
         r##"screen id="ClockFace" width=200 height=200 {
     grid cols="200px" rows="200px" gap=0 padding=0 {
-        clock id="Clk" col=0 row=0 hour=7 minute=45 second=30 label_scale=2 show_labels=false
+        clock id="Clk" col=0 row=0 hour=7 minute=45 second=30 label_scale=2 label_inset=0.7 show_labels=false
     }
 }"##,
     )
@@ -1019,4 +1028,24 @@ screen id="ClockFace" width=200 height=200 {
     assert!(kdl.contains("clock"), "the clock is written back:\n{kdl}");
     assert!(kdl.contains("hour=7"), "with its time:\n{kdl}");
     assert!(kdl.contains("label_scale=2"), "and its label size:\n{kdl}");
+    assert!(kdl.contains("label_inset=0.7"), "and its inset:\n{kdl}");
+}
+
+/// A design that says nothing about the inset gets the shipping look: half a character.
+#[test]
+fn a_clock_without_an_inset_keeps_the_half_character_default() {
+    let rust_code = compile_kdl_to_rust(
+        r##"
+screen id="ClockFace" width=200 height=200 {
+    grid cols="200px" rows="200px" gap=0 padding=0 {
+        clock id="Clk" col=0 row=0
+    }
+}
+"##,
+    )
+    .unwrap();
+    assert!(
+        rust_code.contains("label_inset: 0.5"),
+        "an omitted inset is the half-character one:\n{rust_code}"
+    );
 }

@@ -41,7 +41,7 @@ const MINUTE_STEP: f32 = 6.0;
 /// lengths, and the numerals. The numerals' face comes from the widget's style (`style.font`), their
 /// size from [`Self::label_scale`], which magnifies every glyph pixel -- the built-in faces are fixed
 /// bitmaps, so a scale is the only honest way to offer a size that is independent of the face.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ClockWidget {
     /// 0-23. Twelve-hour positions are derived; the value is stored as it is given.
     pub hour: u8,
@@ -60,6 +60,13 @@ pub struct ClockWidget {
     pub label_color: Rgb565,
     /// How many pixels each glyph pixel of the numerals covers: `1` is the font's own size.
     pub label_scale: u8,
+    /// How far the numerals sit *inside* the ring the hour ticks occupy, in character widths of the
+    /// numerals' own face.
+    ///
+    /// A design sets it in tenths of a character (`0.5` is half a character); the shift is applied to the
+    /// face on the glass, so a bigger `label_scale` moves the numerals proportionally. `0.0` puts them back
+    /// where they sat before 2026-10-21.
+    pub label_inset: f32,
     pub show_labels: bool,
 }
 
@@ -81,6 +88,7 @@ impl ClockWidget {
             minute_tick_color: Rgb565::new(10, 20, 10),
             label_color: Rgb565::WHITE,
             label_scale: 1,
+            label_inset: 0.5,
             show_labels: true,
         }
     }
@@ -261,7 +269,12 @@ impl ClockWidget {
             return Ok(());
         }
         let scale = self.label_scale.max(1) as u32;
-        let inset = radius.saturating_sub(16);
+        // How far in the numerals sit is the design's `label_inset`, in character widths of the face on the
+        // glass: `0.5` is half a character, `0` puts them back on the old ring. The advance is the label's
+        // own at its magnification, so a larger `Number size` moves proportionally.
+        let advance = style.font.advance() as f32 * scale as f32;
+        let inward = (advance * self.label_inset).max(0.0).round() as u32;
+        let inset = radius.saturating_sub(16 + inward);
         for hour in 1..=12u32 {
             // 12 is at the top, which is `hour 12`'s own angle: twelve steps of thirty from -90.
             let radians = (TWELVE_OCLOCK + hour as f32 * HOUR_STEP).to_radians();
@@ -648,6 +661,11 @@ mod tests {
     /// The complaint, on the glass: the hour numerals were hung off a corner of their text box
     /// instead of centred on their tick. This renders the face through the real engine and measures
     /// the ink, so it fails if either the drawing or the centring drifts.
+    ///
+    /// The anchor is the renderer's: sixteen pixels inside the rim, and then half a character width further
+    /// in (asked for 2026-10-21, revised from a whole advance the same day because it moved them too far).
+    /// The measured centre is compared against that expression, so dropping the half advance puts every
+    /// numeral outside the tolerance.
     #[test]
     fn the_numerals_are_centred_on_their_ticks_on_the_glass() {
         use crate::context::GuiContext;
@@ -669,9 +687,10 @@ mod tests {
         ctx.render(&mut buffer).unwrap();
 
         // The geometry the renderer uses: centre, then a radius trimmed by four, with the numerals
-        // sixteen pixels inside it.
+        // sixteen pixels inside it and half a character width further in again.
         let (cx, cy, radius) = (80, 80, 76);
-        let inset = radius - 16;
+        let inward = (crate::style::Style::new().font.advance() / 2).max(1);
+        let inset = radius - 16 - inward;
 
         let ink_around = |ax: i32, ay: i32| {
             let mut bounds: Option<(i32, i32, i32, i32)> = None;
@@ -709,6 +728,65 @@ mod tests {
                 centre_y2 as f32 / 2.0
             );
         }
+    }
+
+    /// The design sets how far the numerals sit inside the ring, in tenths of a character width
+    /// (asked for 2026-10-21: "make the displacement settable in the designer in steps of 0.1 of the
+    /// current font char width").
+    #[test]
+    fn a_design_sets_the_number_inset_in_tenths_of_a_character() {
+        use crate::context::GuiContext;
+        use crate::test_buffer::TestBuffer;
+
+        // The twelve o'clock numeral's ink, at an inset, measured on the glass: `(x0 + x1, y0 + y1)`.
+        let twelve = |inset: f32| -> (i32, i32) {
+            let mut ctx: GuiContext<16, 8, 8> = GuiContext::new(Rect::new(0, 0, 160, 160));
+            let mut clock = ClockWidget::new(10, 10, 30);
+            clock.hour_color = Rgb565::BLACK;
+            clock.minute_color = Rgb565::BLACK;
+            clock.second_color = Rgb565::BLACK;
+            clock.hour_tick_color = Rgb565::BLACK;
+            clock.minute_tick_color = Rgb565::BLACK;
+            clock.label_color = Rgb565::WHITE;
+            clock.label_inset = inset;
+            ctx.add_clock_styled(Rect::new(0, 0, 160, 160), clock, crate::style::Style::new())
+                .unwrap();
+            let mut buffer = TestBuffer::new(160, 160);
+            ctx.render(&mut buffer).unwrap();
+            let mut bounds: Option<(i32, i32, i32, i32)> = None;
+            for y in 0..70 {
+                for x in 70..=90 {
+                    if buffer.pixel_at(x, y) == Some(Rgb565::WHITE) {
+                        bounds = Some(match bounds {
+                            None => (x, y, x, y),
+                            Some((x0, y0, x1, y1)) => (x0.min(x), y0.min(y), x1.max(x), y1.max(y)),
+                        });
+                    }
+                }
+            }
+            let (x0, y0, x1, y1) = bounds.expect("the twelve o'clock numeral is drawn");
+            (x0 + x1, y0 + y1)
+        };
+
+        let advance = FontId::Tiny3x5.advance() as i32;
+        let (x_flat, y_flat) = twelve(0.0);
+        let (x_half, y_half) = twelve(0.5);
+        let (x_one, y_one) = twelve(1.0);
+        assert_eq!(
+            (x_flat, x_half, x_one),
+            (x_flat, x_flat, x_flat),
+            "the numerals move radially, never sideways"
+        );
+        assert_eq!(
+            y_one - y_flat,
+            2 * advance,
+            "one character width is one advance closer to the centre (higher y at twelve o'clock)"
+        );
+        assert_eq!(
+            (y_half - y_flat) * 2,
+            y_one - y_flat,
+            "and half a character is half as far, to the pixel"
+        );
     }
 
     /// A second on the clock is a few hundred pixels, not a whole face.

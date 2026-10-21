@@ -343,6 +343,7 @@ pub fn serialize_kdl_screen(screen: &ScreenDef) -> String {
                 minute_tick_color,
                 label_color,
                 label_scale,
+                label_inset,
                 show_labels,
                 style,
             } => {
@@ -362,7 +363,7 @@ pub fn serialize_kdl_screen(screen: &ScreenDef) -> String {
                 };
                 let _ = writeln!(
                     &mut out,
-                    "        clock{} hour={} minute={} second={}{}{}{}{}{}{} label_scale={} show_labels={}{} col={} row={}",
+                    "        clock{} hour={} minute={} second={}{}{}{}{}{}{} label_scale={} label_inset={:.1} show_labels={}{} col={} row={}",
                     id_attr,
                     hour,
                     minute,
@@ -374,6 +375,7 @@ pub fn serialize_kdl_screen(screen: &ScreenDef) -> String {
                     colour(minute_tick_color, "minute_tick_color"),
                     colour(label_color, "label_color"),
                     label_scale,
+                    label_inset,
                     show_labels,
                     style_attr,
                     p.col,

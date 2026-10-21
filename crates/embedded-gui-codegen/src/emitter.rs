@@ -404,6 +404,7 @@ pub fn generate_rust_code(screen: &ScreenDef) -> String {
                 minute_tick_color,
                 label_color,
                 label_scale,
+                label_inset,
                 show_labels,
                 style,
                 ..
@@ -421,9 +422,9 @@ pub fn generate_rust_code(screen: &ScreenDef) -> String {
                 let label = rgb565_or(label_color, "Rgb565::WHITE");
                 let _ = writeln!(
                     &mut out,
-                    "        let {} = gui.add_clock_styled(cells[{}], ClockWidget {{ hour: {}, minute: {}, second: {}, hour_color: {}, minute_color: {}, second_color: {}, hour_tick_color: {}, minute_tick_color: {}, label_color: {}, label_scale: {}, show_labels: {} }}, {})?;",
+                    "        let {} = gui.add_clock_styled(cells[{}], ClockWidget {{ hour: {}, minute: {}, second: {}, hour_color: {}, minute_color: {}, second_color: {}, hour_tick_color: {}, minute_tick_color: {}, label_color: {}, label_scale: {}, label_inset: {:.1}, show_labels: {} }}, {})?;",
                     var_name, idx, hour, minute, second, hour_c, minute_c, second_c, hour_tick,
-                    minute_tick, label, label_scale, show_labels, st
+                    minute_tick, label, label_scale, label_inset, show_labels, st
                 );
             }
             WidgetDef::Dropdown {

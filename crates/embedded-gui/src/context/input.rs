@@ -2263,6 +2263,14 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
                 pad.backspace();
                 false
             }
+            KeypadKey::Left => {
+                pad.cursor_left();
+                false
+            }
+            KeypadKey::Right => {
+                pad.cursor_right();
+                false
+            }
             KeypadKey::Clear => {
                 pad.clear();
                 false
@@ -2951,6 +2959,31 @@ mod keypad_touch_tests {
         assert_eq!(ctx.keypad_text(id), Some("ab"));
         tap(&mut ctx, &pad, KeypadKey::Clear);
         assert_eq!(ctx.keypad_text(id), Some(""));
+    }
+
+    /// The two cursor keys reach the line through the touch path, and the next key overwrites the
+    /// character under the cursor (asked for 2026-10-21).
+    #[test]
+    fn the_cursor_keys_move_and_the_next_key_overwrites() {
+        let (mut ctx, id, pad) = keypad();
+        for ch in ['a', 'b', 'c'] {
+            tap(&mut ctx, &pad, KeypadKey::Char(ch));
+        }
+        tap(&mut ctx, &pad, KeypadKey::Left);
+        tap(&mut ctx, &pad, KeypadKey::Left);
+        tap(&mut ctx, &pad, KeypadKey::Char('q'));
+        assert_eq!(
+            ctx.keypad_text(id),
+            Some("aqc"),
+            "the key replaces the character under the cursor"
+        );
+        tap(&mut ctx, &pad, KeypadKey::Right);
+        tap(&mut ctx, &pad, KeypadKey::Char('w'));
+        assert_eq!(
+            ctx.keypad_text(id),
+            Some("aqcw"),
+            "past the last character the next key appends again"
+        );
     }
 
     #[test]
