@@ -19,6 +19,12 @@ default = ["panel-gc9107"]
 panel-gc9107 = []
 panel-gc9a01 = []
 
+# The SMTP keep-alive client. `src/smtp.rs` is written by the SMTP wizard and left in the
+# project; this feature is what compiles it in and spawns its task (the wizard puts "smtp"
+# in `default`). Switching it off in the Designer toolbar drops the module and the task from
+# the build without deleting the file, which is what makes the toggle reversible.
+smtp = []
+
 [dependencies]
 esp-hal = { version = "~1.2.2", features = ["esp32s3", "log-04", "unstable"] }
 esp-rtos = { version = "0.4.0", features = ["embassy", "esp32s3", "esp-radio"] }

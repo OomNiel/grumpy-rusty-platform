@@ -72,6 +72,77 @@ body {
     padding: 2px 4px;
 }
 
+/* A switch for a two-state project setting (SD, SMTP). The checkbox is the control -- focusable and
+   toggled by its label -- and the track/thumb are the drawing. The label names its own colour for the
+   same reason every button does: a webview element does not inherit one, and the default would be
+   black on a dark toolbar. */
+.tool-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    color: var(--vscode-foreground);
+    cursor: pointer;
+    user-select: none;
+}
+
+/* Named again rather than inherited, so the label is legible even if it is ever moved out of the wrapper
+   -- the same rule every button class follows. */
+.tool-toggle-label {
+    color: var(--vscode-foreground);
+}
+
+/* Visually hidden but still the control: the keyboard reaches it and the label toggles it. */
+.tool-toggle-input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
+    margin: 0;
+}
+
+.tool-toggle-track {
+    position: relative;
+    width: 26px;
+    height: 14px;
+    box-sizing: border-box;
+    border-radius: 7px;
+    background: var(--vscode-input-background);
+    border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+    transition: background 80ms linear, border-color 80ms linear;
+}
+
+.tool-toggle-thumb {
+    position: absolute;
+    top: 1px;
+    left: 1px;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--vscode-foreground);
+    transition: left 80ms linear, background 80ms linear;
+}
+
+.tool-toggle-input:checked + .tool-toggle-track {
+    background: var(--vscode-button-background);
+    border-color: var(--vscode-button-background);
+}
+
+.tool-toggle-input:checked + .tool-toggle-track .tool-toggle-thumb {
+    left: 13px;
+    background: var(--vscode-button-foreground);
+}
+
+.tool-toggle-input:focus-visible + .tool-toggle-track {
+    outline: 1px solid var(--vscode-focusBorder);
+    outline-offset: 1px;
+}
+
+.tool-toggle-input:disabled + .tool-toggle-track,
+.tool-toggle-input:disabled ~ .tool-toggle-label {
+    opacity: 0.45;
+    cursor: default;
+}
+
 .toolbar-separator {
     width: 1px;
     height: 18px;

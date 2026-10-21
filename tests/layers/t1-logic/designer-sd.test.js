@@ -52,7 +52,7 @@ test('a Designer project without an SD socket omits all of it', () => {
 
     notContains(cargo, 'embedded-sdmmc');
     notContains(cargo, 'dep:embedded-sdmmc');
-    notContains(cargo, '#[features]');
+    notContains(cargo, 'sd = [');
     notContains(main, 'mod sd;');
     notContains(main, 'sd::init');
 });

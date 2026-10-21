@@ -34,6 +34,8 @@ import {
     declareSmtpModule,
     emitSmtpRs,
     enableEmbassyTcp,
+    ensureNetAllowDeadCode,
+    ensureSmtpFeature,
     formatSmtpRs,
     wireSmtpSpawn,
 } from './code';
@@ -94,6 +96,39 @@ export async function saveSmtpCredentials(
     setup: SmtpSetup,
 ): Promise<void> {
     await context.secrets.store(SECRET_KEY, JSON.stringify(setup));
+}
+
+/**
+ * Puts this project's stored SMTP connection info into the environment its cargo runs will get.
+ *
+ * `runSmtpWizard` sets it when it runs, but the environment lives in the extension host: after a reload
+ * it would be empty and the firmware would be built with the placeholder (an empty `SMTP_HOST`, which
+ * sends nothing) and say so only on the board's console. Called immediately after `ensureWifiEnv` in
+ * Flash and Debug, because both values are read at compile time and a prompt after the build is too late.
+ *
+ * A project without `src/smtp.rs` clears the environment, so a setup stored for another project cannot
+ * leak into this build.
+ */
+export async function ensureSmtpEnv(
+    context: vscode.ExtensionContext,
+    folder: vscode.Uri,
+    output: vscode.OutputChannel,
+): Promise<void> {
+    if (!fs.existsSync(path.join(folder.fsPath, 'src', 'smtp.rs'))) {
+        setActiveSmtpEnv({});
+        return;
+    }
+    const stored = await loadSmtpSetup(context);
+    if (stored === undefined) {
+        setActiveSmtpEnv({});
+        output.appendLine(
+            'smtp: this project has src/smtp.rs, but no SMTP setup is stored - the keep-alive posts stay ' +
+            'off; run "Rusty Platform: Set up SMTP over Wi-Fi".',
+        );
+        return;
+    }
+    setActiveSmtpEnv(buildSmtpEnv(stored.credentials));
+    output.appendLine(`smtp: using ${describeSmtpSetup(stored.credentials, stored.posts)}`);
 }
 
 export async function forgetSmtpCredentials(context: vscode.ExtensionContext): Promise<void> {
@@ -284,10 +319,10 @@ export async function runSmtpWizard(
         return;
     }
     const board = project.board;
-    if (board === undefined || board.kind !== 'esp' || board.displays.length === 0) {
+    if (board === undefined || board.kind !== 'esp' || board.displays.length === 0 || !project.designer) {
         void vscode.window.showWarningMessage(
-            'SMTP setup needs an ESP board with a display; the Designer is ESP-only, so this is offered ' +
-            'for a Designer project.',
+            'SMTP setup needs a Designer project on an ESP board with a display: the generated task is ' +
+            'wired into that project\'s main.rs and reuses the clock\'s radio bring-up.',
         );
         return;
     }
@@ -360,6 +395,16 @@ async function writeSmtpModule(folder: vscode.Uri, posts: SmtpPosts): Promise<vo
     }
     await writeText(folder, 'src/main.rs', spawned.text);
 
+    // net.rs's clock task is not spawned when this client owns the radio, so the module has to say that
+    // its items are kept on purpose (see `ensureNetAllowDeadCode`).
+    const net = await readText(folder, 'src/net.rs');
+    if (net !== undefined) {
+        const patched = ensureNetAllowDeadCode(net);
+        if (patched.note === 'added') {
+            await writeText(folder, 'src/net.rs', patched.text);
+        }
+    }
+
     const cargoToml = await readText(folder, 'Cargo.toml');
     if (cargoToml === undefined) {
         throw new Error('Cargo.toml was not found; is this a project folder?');
@@ -374,7 +419,10 @@ async function writeSmtpModule(folder: vscode.Uri, posts: SmtpPosts): Promise<vo
     if (withIoAsync.note === 'opaque') {
         throw new Error('Cargo.toml is written in a form the wizard cannot edit.');
     }
-    await writeText(folder, 'Cargo.toml', withIoAsync.text);
+    // The module is gated behind the `smtp` feature, so the Designer switch can take it out of the
+    // build without deleting it. Setting it up is what turns the switch on.
+    const withFeature = ensureSmtpFeature(withIoAsync.text);
+    await writeText(folder, 'Cargo.toml', withFeature.text);
 }
 
 /** Reads a project file as utf-8, or `undefined` when it does not exist. */

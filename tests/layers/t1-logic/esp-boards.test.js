@@ -15,7 +15,7 @@ const { compiled } = require('../../lib/harness');
 const { BOARDS, boardById, allTargets, rpTargets, espTargets } = compiled('boards/catalog');
 const { isEspBoard } = compiled('boards/types');
 const { displayFor, needsPanelChoice, panelChoices, defaultChoices } = compiled('boards/esp');
-const { templatesFor, generateProjectFiles, defaultTemplateFor } = compiled('generate/files');
+const { templatesFor, generateProjectFiles, defaultTemplateFor, templatesOfferedFor } = compiled('generate/files');
 const { espDiagnosticLayout } = compiled('generate/esp');
 
 const ESP_IDS = ['esp32-devkitc', 'lilygo-tqt', 'sunton-3248s035r'];
@@ -197,8 +197,32 @@ test('an ESP board offers only templates that are implemented', () => {
         ['blinky', 'designer', 'display', 'sdcard', 'board', 'peripherals', 'touch', 'wifi', 'bluetooth'],
         'the card sits with the panel templates, board is everything, and wireless comes after the hardware',
     );
-    for (const id of ['lilygo-tqt', 'sunton-3248s035r']) {
-        equal(defaultTemplateFor(espBoard(id)), 'display', 'a panel board is bought for its panel');
+    equal(defaultTemplateFor(espBoard('lilygo-tqt')), 'display', 'a panel board is bought for its panel');
+    equal(
+        defaultTemplateFor(espBoard('sunton-3248s035r')),
+        'designer',
+        'and the ESP32-035 is bought for its designer, the only template it offers',
+    );
+});
+
+test('the ESP32-035 board option offers the WYSIWYG designer alone', () => {
+    // Asked for 2026-10-21: "From the ESP32-035 board option, remove all templates except the WYSIWYG
+    // template." The board keeps the ability to generate the others -- the panel diagnostic is how the glass
+    // is brought up, and the golden and board tests build them -- but its wizard option is one template, so
+    // the wizard does not ask (a board with a single option is not a question).
+    const cyd = espBoard('sunton-3248s035r');
+    equal(templatesOfferedFor(cyd).map((info) => info.id), ['designer'], 'the option is the designer alone');
+    ok(
+        templatesFor(cyd).some((info) => info.id === 'display'),
+        'the diagnostic is still generatable for this board',
+    );
+    // The allowlist is that board's, not a global narrowing.
+    for (const id of ['esp32-devkitc', 'lilygo-tqt']) {
+        equal(
+            templatesOfferedFor(espBoard(id)).map((info) => info.id),
+            templatesFor(espBoard(id)).map((info) => info.id),
+            `${id}: every supported template is still offered`,
+        );
     }
 });
 
@@ -213,7 +237,11 @@ test('the touch template is only offered where a touch controller exists', () =>
     }
     const cyd = espBoard('sunton-3248s035r');
     equal(cyd.touch.controller, 'XPT2046');
-    equal(defaultTemplateFor(cyd), 'display', 'touch is a test, not the default for a new project');
+    equal(
+        defaultTemplateFor(cyd),
+        'designer',
+        'touch is a test, not the default: the board\'s one offered template is',
+    );
 });
 
 test('a template the board cannot run is refused, not generated', () => {
@@ -302,7 +330,9 @@ test('the chip feature follows the board', () => {
 test('.cargo/config.toml flashes over USB serial with espflash', () => {
     for (const id of ESP_IDS) {
         const board = espBoard(id);
-        const config = filesFor(board).get('.cargo/config.toml');
+        // Blinky on purpose: this is about the flashing route, which every ESP template shares, and the
+        // ESP32-035's default is now the designer (whose Wi-Fi project adds `build-std = ["alloc", "core"]`).
+        const config = filesFor(board, 'blinky').get('.cargo/config.toml');
         contains(config, `target = "${board.target}"`);
         contains(config, `runner = "espflash flash --monitor --chip ${board.espChip}"`);
         contains(config, 'include = ["esp-config.toml"]');

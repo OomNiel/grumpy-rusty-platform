@@ -133,3 +133,23 @@ test('setActiveSmtpEnv publishes the credentials and bumps the version on change
     ok(smtpEnvVersion() > afterFirst, 'a different host bumps the version again');
     equal(activeSmtpEnv(), second);
 });
+
+test('every compile-time entry point injects the stored SMTP setup', () => {
+    // The environment lives in the extension host, so a reload empties it: without these calls a
+    // flash after a restart bakes the placeholder (an empty SMTP_HOST) and the posts silently stop.
+    // Source-level, because the vscode imports keep these files out of a runnable test.
+    const fs = require('fs');
+    const path = require('path');
+    const { repoRoot } = require('../../lib/harness');
+    const projects = fs.readFileSync(path.join(repoRoot(), 'src', 'commands', 'projectCommands.ts'), 'utf8');
+    const debug = fs.readFileSync(path.join(repoRoot(), 'src', 'commands', 'debugProject.ts'), 'utf8');
+    const wizard = fs.readFileSync(path.join(repoRoot(), 'src', 'smtp', 'wizard.ts'), 'utf8');
+
+    contains(wizard, 'export async function ensureSmtpEnv', 'the wizard owns the re-injection');
+    ok(
+        projects.split('await ensureSmtpEnv(context, project.folder, output)').length - 1 >= 5,
+        'both flash routes and all three build commands inject it',
+    );
+    contains(projects, 'cargo build --release', 'the release build is among them');
+    contains(debug, 'await ensureSmtpEnv(context, project.folder, output)', 'and the debug session does too');
+});

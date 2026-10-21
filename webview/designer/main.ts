@@ -90,6 +90,10 @@ let touchEnabled = true;
 let sdBoard = false;
 /** Whether the project is built with the `sd` cargo feature, which the toolbar shows and writes. */
 let sdEnabled = true;
+/** Whether the SMTP wizard has written `src/smtp.rs` -- without it the SMTP switch has nothing to compile. */
+let smtpAvailable = false;
+/** Whether the project is built with the `smtp` cargo feature (the keep-alive client). */
+let smtpEnabled = false;
 let postTimer: number | undefined;
 
 const root = document.getElementById('designer');
@@ -203,6 +207,8 @@ window.addEventListener('message', (event: MessageEvent<
         touchEnabled = message.touchEnabled;
         sdBoard = message.sdBoard;
         sdEnabled = message.sdEnabled;
+        smtpAvailable = message.smtpAvailable;
+        smtpEnabled = message.smtpEnabled;
         // Before the first paint: a declared font's glyphs are not in the design, so they arrive with the
         // document and the canvas has to know them before it draws a widget that uses one.
         for (const [name, pixels] of Object.entries(message.fonts ?? {})) {
@@ -256,6 +262,18 @@ window.addEventListener('message', (event: MessageEvent<
             }
             view.setState(state);
             refreshProperties();
+        }
+        if (
+            (message.sdEnabled !== undefined && message.sdEnabled !== sdEnabled)
+            || (message.smtpEnabled !== undefined && message.smtpEnabled !== smtpEnabled)
+            || (message.smtpAvailable !== undefined && message.smtpAvailable !== smtpAvailable)
+        ) {
+            // The switches are reported as the manifest actually is, not as the click assumed: a project
+            // whose Cargo.toml cannot carry the feature refuses it, and the toolbar goes back to the truth.
+            sdEnabled = message.sdEnabled ?? sdEnabled;
+            smtpEnabled = message.smtpEnabled ?? smtpEnabled;
+            smtpAvailable = message.smtpAvailable ?? smtpAvailable;
+            refreshToolbar();
         }
         report(message);
     }
@@ -379,6 +397,23 @@ function setSd(enabled: boolean, why?: string): void {
     status(why ?? (enabled ? 'SD enabled. Rebuild for it to take effect.' : 'SD disabled. Rebuild for it to take effect.'), false);
 }
 
+/**
+ * Switches the SMTP keep-alive client on or off for the project.
+ *
+ * It is the `smtp` cargo feature: switching it off takes `src/smtp.rs` and its radio work out of the build
+ * without deleting the file, and switching it back on returns them. Like touch and SD, the firmware reads it
+ * at compile time, so a rebuild is what makes it real.
+ */
+function setSmtp(enabled: boolean, why?: string): void {
+    if (enabled === smtpEnabled) {
+        return;
+    }
+    smtpEnabled = enabled;
+    host.postMessage({ type: 'setSmtp', enabled });
+    refreshToolbar();
+    status(why ?? (enabled ? 'SMTP enabled. Rebuild for it to take effect.' : 'SMTP disabled. Rebuild for it to take effect.'), false);
+}
+
 /** A tag dropped or clicked in the Toolbox: put it in the middle of the canvas. */
 function drop(tag: string): void {
     // A control that raises events is a control that needs touch, so dropping one turns it on rather than
@@ -490,26 +525,29 @@ function refreshToolbar(): void {
         : 'This board has no touch controller, so there is nothing to drive.';
     touch.addEventListener('change', () => setTouch(touch.value === 'true'));
 
-    // SD, beside touch: both are project settings the firmware reads at compile time, and both are asked
-    // about in the wizard -- so this is where a later change of mind goes. SD is a cargo feature rather than
-    // an env key, because enabling it is what adds the FAT filesystem (embedded-sdmmc) to the build.
-    const sd = document.createElement('select');
-    sd.className = 'tool-select';
-    for (const [label, value] of [
-        ['SD: on', 'true'],
-        ['SD: off', 'false'],
-    ] as const) {
-        const option = document.createElement('option');
-        option.value = value;
-        option.textContent = label;
-        sd.append(option);
-    }
-    sd.value = String(sdEnabled);
-    sd.disabled = !sdBoard;
-    sd.title = sdBoard
-        ? 'Whether the firmware mounts the SD card and compiles its FAT filesystem (embedded-sdmmc) in. Changing it needs a rebuild.'
-        : 'This board has no SD card socket, so there is nothing to switch.';
-    sd.addEventListener('change', () => setSd(sd.value === 'true'));
+    // SD and SMTP, beside touch: all are project settings the firmware reads at compile time. Both are
+    // cargo features rather than env keys, because enabling them is what adds code -- the FAT filesystem
+    // (embedded-sdmmc) and the keep-alive client -- so they are switches: on and off are both real states,
+    // not a menu of values like the rotation.
+    const sd = toggleSwitch({
+        label: 'SD',
+        checked: sdEnabled,
+        disabled: !sdBoard,
+        title: sdBoard
+            ? 'Mount the SD card and compile its FAT filesystem (embedded-sdmmc) in. Changing it needs a rebuild.'
+            : 'This board has no SD card socket, so there is nothing to switch.',
+        onChange: (on) => setSd(on),
+    });
+
+    const smtpSwitch = toggleSwitch({
+        label: 'SMTP',
+        checked: smtpEnabled,
+        disabled: !smtpAvailable,
+        title: smtpAvailable
+            ? 'Compile the SMTP keep-alive client (src/smtp.rs) in and send its posts. Changing it needs a rebuild.'
+            : 'Run SMTP… first: the switch compiles the client the wizard writes, and there is none yet.',
+        onChange: (on) => setSmtp(on),
+    });
 
     const revealKdl = toolButton('Markup', () => host.postMessage({ type: 'action', action: 'revealKdl' }));
     const revealDocument = toolButton('Design file', () => host.postMessage({ type: 'action', action: 'revealDocument' }));
@@ -534,6 +572,7 @@ function refreshToolbar(): void {
         rotation,
         touch,
         sd,
+        smtpSwitch,
         separator(),
         revealDocument,
         revealKdl,
@@ -551,6 +590,46 @@ function toolButton(label: string, onClick: () => void): HTMLButtonElement {
     node.textContent = label;
     node.addEventListener('click', onClick);
     return node;
+}
+
+/**
+ * A labelled switch for a two-state project setting.
+ *
+ * The `<input type="checkbox">` is the control -- keyboard reachable, toggled by clicking the label -- and the
+track and thumb are its drawing, so the state reads the same in a light and a dark window. A `<select>` was
+wrong for this: "SD: on / SD: off" reads as a choice between two values, and these are one setting that is
+on or off.
+ */
+function toggleSwitch(options: {
+    label: string;
+    checked: boolean;
+    disabled: boolean;
+    title: string;
+    onChange: (checked: boolean) => void;
+}): HTMLLabelElement {
+    const wrap = document.createElement('label');
+    wrap.className = 'tool-toggle';
+    wrap.title = options.title;
+
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.className = 'tool-toggle-input';
+    input.checked = options.checked;
+    input.disabled = options.disabled;
+    input.addEventListener('change', () => options.onChange(input.checked));
+
+    const track = document.createElement('span');
+    track.className = 'tool-toggle-track';
+    const thumb = document.createElement('span');
+    thumb.className = 'tool-toggle-thumb';
+    track.append(thumb);
+
+    const text = document.createElement('span');
+    text.className = 'tool-toggle-label';
+    text.textContent = options.label;
+
+    wrap.append(input, track, text);
+    return wrap;
 }
 
 function separator(): HTMLElement {

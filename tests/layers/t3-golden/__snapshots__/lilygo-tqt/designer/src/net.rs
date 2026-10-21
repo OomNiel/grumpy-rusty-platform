@@ -6,6 +6,13 @@
 // covers a board plugged into a charger: join the network the build was given, ask an NTP server,
 // and publish the local time of day. main.rs puts it in the RTC exactly as it does a console line.
 
+// The radio can only be moved once per boot. With the SMTP client compiled in (the smtp cargo
+// feature) its task is the one that owns the peripheral -- and it does this file's time query itself,
+// publishing through SYNCED_TIME -- so this module's task is not spawned in that build. The items are
+// not dead code; they are the other half of the switch, which has to bring the clock back when SMTP
+// is turned off without regenerating a project file.
+#![allow(dead_code)]
+
 use embassy_executor::Spawner;
 use embassy_net::dns::DnsQueryType;
 use embassy_net::udp::{PacketMetadata, UdpSocket};

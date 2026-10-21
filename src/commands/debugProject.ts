@@ -32,6 +32,7 @@ import {
 import { activeProbeRsSession } from '../project/debugSessions';
 import { activeWifiEnv } from '../wifi/credentials';
 import { ensureWifiEnv } from '../wifi/wifiPrompt';
+import { ensureSmtpEnv } from '../smtp/wizard';
 import { defmtEnv, espEnv } from './terminal';
 import { makeWithProject } from './withProject';
 
@@ -437,6 +438,8 @@ export function registerDebugCommand(
                 // A wireless build without credentials produces a board that cannot join; ask here,
                 // before the compiler runs, rather than after the flash.
                 await ensureWifiEnv(context, project.folder, output);
+                // The SMTP credentials are compile-time too, and only the keyring holds them.
+                await ensureSmtpEnv(context, project.folder, output);
 
                 if (!(await buildDebugProfile(project, folder, output))) {
                     void vscode.window.showErrorMessage(

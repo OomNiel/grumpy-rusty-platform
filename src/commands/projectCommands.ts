@@ -28,6 +28,7 @@ import { UsbFlashConfirmation, buildElf, flashProjectOverUsb } from '../flash/us
 import { BuildProfile, LAST_FLASHED_KEY } from '../project/launchConfig';
 import { activeWifiEnv } from '../wifi/credentials';
 import { ensureWifiEnv } from '../wifi/wifiPrompt';
+import { ensureSmtpEnv } from '../smtp/wizard';
 import { activeSmtpEnv } from '../smtp/credentials';
 import { closeTerminal, defmtEnv, defmtPrefix, espEnv, openTerminalNames, runInTerminal } from './terminal';
 import { ensureEspToolchain } from './espToolchainCommands';
@@ -363,6 +364,9 @@ export function registerProjectCommands(
         // Ask for the network before anything is compiled: the wireless templates bake the credentials
         // in at compile time, so a prompt after the build would arrive too late.
         await ensureWifiEnv(context, project.folder, output);
+        // The SMTP connection info is baked in the same way, and lives in the keyring only -- without
+        // this a reload would silently build the placeholder (an empty relay).
+        await ensureSmtpEnv(context, project.folder, output);
         output.appendLine(
             `flash: profile ${profile}` +
             `${options.choice === 'auto' ? ' (auto, from the board)' : ' (chosen)'}` +
@@ -414,16 +418,19 @@ export function registerProjectCommands(
         // with it in a keybinding; the controls run these two.
         vscode.commands.registerCommand('rustyPlatform.build', () =>
             withProject(async (project) => {
+                await ensureSmtpEnv(context, project.folder, output);
                 runInTerminal('Rusty: build', `${defmtPrefix()}cargo build`, project.folder);
             }),
         ),
         vscode.commands.registerCommand('rustyPlatform.buildDebug', () =>
             withProject(async (project) => {
+                await ensureSmtpEnv(context, project.folder, output);
                 runInTerminal('Rusty: build', `${defmtPrefix()}cargo build`, project.folder);
             }),
         ),
         vscode.commands.registerCommand('rustyPlatform.buildRelease', () =>
             withProject(async (project) => {
+                await ensureSmtpEnv(context, project.folder, output);
                 runInTerminal('Rusty: build', `${defmtPrefix()}cargo build --release`, project.folder);
             }),
         ),
@@ -455,6 +462,7 @@ export function registerProjectCommands(
                 // On this route "USB" is not a choice to make on an ESP32: its upload *is* USB serial, and
                 // the board profile says which route this board takes, so Upload is the answer either way.
                 await ensureWifiEnv(context, project.folder, output);
+                await ensureSmtpEnv(context, project.folder, output);
                 const profile = flashProfileFor(project.board, configuredProfileChoice());
                 if (usesSerialFlash(project.board)) {
                     // The explicit "USB" route: for an ESP that is espflash over serial, not a UF2 copy.

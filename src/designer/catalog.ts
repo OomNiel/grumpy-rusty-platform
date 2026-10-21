@@ -821,6 +821,9 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
             // because the built-in faces are fixed bitmaps.
             { name: 'font', kind: 'font', label: 'Number font', defaultValue: '' },
             { name: 'label_scale', kind: 'int', label: 'Number size', defaultValue: 1, min: 1, max: 4 },
+            // How far the hour numbers sit inside the tick ring, in character widths of the number face.
+            // A float property, so the panel steps it by 0.1; 0.5 is the shipping look.
+            { name: 'label_inset', kind: 'float', label: 'Number inset', defaultValue: 0.5, min: 0, max: 2 },
             { name: 'show_labels', kind: 'bool', label: 'Hour numbers', defaultValue: true },
             // The code-behind: the generated `ui.rs` attaches a one-second movement to the widget and
             // pushes the time into it, so the hands move on their own. Nothing in the markup changes --
@@ -1413,6 +1416,9 @@ const PROPERTY_HELP: Record<string, string> = {
     minute_tick_color: 'Colour of the forty-eight short ticks between them',
     label_color: 'Colour the hour numbers are drawn in',
     label_scale: 'How many pixels each pixel of the hour numbers covers: 1 is the font\'s own size',
+    label_inset:
+        'How far the hour numbers sit inside the tick ring, in character widths of the number face: 0 is ' +
+        'where they used to sit, 0.5 is half a character further in',
     movement: 'Whether the generated code-behind runs the clock: attached, its hands move once a second',
 
     head: 'Which value is the newest one; the older ones wrap around behind it',
@@ -1498,7 +1504,7 @@ const PROPERTY_HELP: Record<string, string> = {
 /** The properties whose meaning depends on the widget they belong to. */
 const TAG_PROPERTY_HELP: Record<string, string> = {
     // The keypad's six surfaces, named for what they are on the glass rather than for their field.
-    'keypad.text_color': 'The line being typed, and the caret at its end',
+    'keypad.text_color': 'The line being typed, and the cursor under the character it will overwrite',
     'keypad.key_color': 'The face of a key that types a character',
     'keypad.legend_color': 'The character drawn on a key',
     'keypad.pressed_key_color': 'The face of the key under a finger',

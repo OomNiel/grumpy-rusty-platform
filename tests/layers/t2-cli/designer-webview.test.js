@@ -979,3 +979,60 @@ test('naming a font changes nothing for the widgets whose base already uses it',
         equal(paintOf(tag, 'Tiny3x5'), paintOf(tag, ''), `${tag} draws the same with its default font named`);
     }
 });
+
+test('the toolbar offers SD and SMTP as switches, and posts what was flipped', () => {
+    // Two project settings are cargo features -- the card's FAT filesystem and the SMTP keep-alive client --
+    // so they are on/off switches, not a menu of values. The bundle is driven for real: the switch's
+    // `<input>` is the control, and the message it posts is the contract with the extension.
+    const env = dom.install();
+    delete require.cache[require.resolve(BUNDLE)];
+    require(BUNDLE);
+    env.window.emit('message', {
+        data: {
+            type: 'init',
+            document: starterDocument({ boardId: 'sunton-3248s035r', panelWidth: 320, panelHeight: 480, rotation: 3 }),
+            canvas: { width: 480, height: 320 },
+            paths: { document: 'designer/panel.ui.json', kdl: 'src/ui.kdl' },
+            touchBoard: true,
+            touchEnabled: false,
+            sdBoard: true,
+            sdEnabled: true,
+            smtpAvailable: true,
+            smtpEnabled: false,
+        },
+    });
+
+    const labelFor = (name) => env.root
+        .descendants()
+        .find((element) => element.className.split(' ').includes('tool-toggle')
+            && element.descendants().some((child) => child.textContent === name && child.className.includes('tool-toggle-label')));
+    const inputOf = (label) => label.descendants().find((element) => element.tagName === 'INPUT');
+
+    const sd = labelFor('SD');
+    const smtp = labelFor('SMTP');
+    ok(sd !== undefined, 'the SD setting is a switch');
+    ok(smtp !== undefined, 'and so is SMTP');
+    ok(sd.descendants().some((element) => element.className.includes('tool-toggle-track')),
+        'the switch is drawn as a track and thumb, not a checkbox glyph');
+    equal(inputOf(sd).checked, true, 'SD starts from the manifest: on');
+    equal(inputOf(smtp).checked, false, 'SMTP starts from the manifest: off');
+    equal(inputOf(smtp).disabled, false, 'and is usable because src/smtp.rs exists');
+
+    env.messages.length = 0;
+    const smtpInput = inputOf(smtp);
+    smtpInput.checked = true;
+    smtpInput.emit('change');
+    equal(env.messages.at(-1).type, 'setSmtp', 'flipping SMTP asks the extension to write the feature');
+    equal(env.messages.at(-1).enabled, true);
+
+    const sdInput = inputOf(labelFor('SD'));
+    sdInput.checked = false;
+    sdInput.emit('change');
+    equal(env.messages.at(-1).type, 'setSd');
+    equal(env.messages.at(-1).enabled, false);
+
+    // Without src/smtp.rs there is nothing for the feature to compile in, so the switch is refused by the
+    // extension and comes back disabled -- the report is what the toolbar follows.
+    env.window.emit('message', { data: { type: 'report', problems: [], smtpAvailable: false, smtpEnabled: false } });
+    equal(inputOf(labelFor('SMTP')).disabled, true, 'no module means no switch to flip');
+});

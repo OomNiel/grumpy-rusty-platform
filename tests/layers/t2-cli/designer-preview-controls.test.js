@@ -848,8 +848,9 @@ test('every hour number is centred on its own tick, not hung off one corner', ()
     // currently alligned with the left and bottom edges of the text."* Two things were wrong: the canvas read
     // the glyph's low three bits as columns 5..7, pushing every numeral a few pixels to the right, and both
     // the canvas and the crate centred the glyph *cell* rather than its ink. The anchor of each numeral is
-    // derived here from the tick that belongs to it -- eight pixels inside the tick's inner end -- so the
-    // assertion does not share the drawing code's own idea of where that is.
+    // derived here from the tick that belongs to it -- eight pixels inside the tick's inner end, then one
+    // character width further in (asked for 2026-10-21) -- so the assertion does not share the drawing code's
+    // own idea of where that is.
     const { calls } = boot(
         documentWith(
             widgetOf('clock', {
@@ -863,6 +864,7 @@ test('every hour number is centred on its own tick, not hung off one corner', ()
                 minute_tick_color: '#00ffff',
                 label_color: '#ffffff',
                 label_scale: 1,
+                font: 'Tiny3x5',
             }),
         ),
     );
@@ -887,15 +889,20 @@ test('every hour number is centred on its own tick, not hung off one corner', ()
 
     const cx = 40 + 48;
     const cy = 60 + 48;
+    // The label's own advance at its magnification (scale 1): Tiny3x5 is three columns of ink and a
+    // four-pixel advance, which the crate's own `label_ink_box` test records as `3 + 4`. Half of it is the
+    // inward shift (2026-10-21, reduced from a whole advance because it moved the numerals too far).
+    const inward = Math.max(1, Math.trunc((4 * 1) / 2));
     const mismatched = [];
     for (const tick of hourTicks) {
         const [ix, iy] = tick.start;
         const length = Math.hypot(ix - cx, iy - cy) || 1;
         const ux = (ix - cx) / length;
         const uy = (iy - cy) / length;
-        // The numerals sit on a circle eight pixels inside the tick's inner end (`radius - 16`).
-        const anchorX = ix - 8 * ux;
-        const anchorY = iy - 8 * uy;
+        // The numerals sit eight pixels inside the tick's inner end and half a character width further in
+        // (`radius - 16 - advance / 2`), which is what the renderer's `inset` is.
+        const anchorX = ix - (8 + inward) * ux;
+        const anchorY = iy - (8 + inward) * uy;
         const near = numerals.filter(
             (call) => Math.hypot(call.args[0] + 0.5 - anchorX, call.args[1] + 0.5 - anchorY) <= 6,
         );
@@ -914,6 +921,38 @@ test('every hour number is centred on its own tick, not hung off one corner', ()
         }
     }
     equal(mismatched, [], 'each hour number is centred on its tick, on both axes');
+});
+
+test('the Number inset moves the numerals by tenths of the face\'s character width', () => {
+    // Asked for 2026-10-21: *"make the displacement settable in the designer in steps of 0.1 of the current
+    // font char width."* The canvas has to agree with the crate: Tiny3x5's advance is four pixels, so the
+    // twelve o'clock numeral drops two pixels towards the centre at 0.5 and four at 1.0.
+    const topOfNumerals = (inset) => {
+        const { calls } = boot(
+            documentWith(
+                widgetOf('clock', {
+                    hour: 10,
+                    minute: 10,
+                    second: 0,
+                    label_color: '#ffffff',
+                    hour_color: '#000000',
+                    minute_color: '#000000',
+                    second_color: '#000000',
+                    hour_tick_color: '#000000',
+                    minute_tick_color: '#000000',
+                    label_inset: inset,
+                    font: 'Tiny3x5',
+                }),
+            ),
+        );
+        const numerals = fillsWithColour(calls, css565('#ffffff'));
+        ok(numerals.length > 0, 'the numerals were drawn');
+        return Math.min(...numerals.map((call) => call.args[1]));
+    };
+
+    const flat = topOfNumerals(0);
+    equal(topOfNumerals(0.5) - flat, 2, 'half a character of Tiny3x5 is two pixels inwards');
+    equal(topOfNumerals(1) - flat, 4, 'and a whole one is four');
 });
 
 test('a clock draws its numbers in the block size the face really uses', () => {

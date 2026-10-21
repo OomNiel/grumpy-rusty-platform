@@ -8,7 +8,7 @@
 
 import * as vscode from 'vscode';
 import { readActiveProject } from '../project/activeProject';
-import { importFontIntoDesigner, showDesigner } from '../designer/editor';
+import { importFontIntoDesigner, refreshDesignerSmtp, showDesigner } from '../designer/editor';
 import { runSmtpWizard } from '../smtp/wizard';
 
 export function registerDesignerCommands(
@@ -34,13 +34,15 @@ export function registerDesignerCommands(
                 return;
             }
             const board = project.board;
-            if (board === undefined || board.kind !== 'esp' || board.displays.length === 0) {
+            if (board === undefined || board.kind !== 'esp' || board.displays.length === 0 || !project.designer) {
                 void vscode.window.showWarningMessage(
-                    'SMTP setup needs an ESP board with a display.',
+                    'SMTP setup needs a Designer project on an ESP board with a display.',
                 );
                 return;
             }
             await runSmtpWizard(project.folder, context, output);
+            // The panel, if one is open, has to learn that the module and the feature now exist.
+            await refreshDesignerSmtp();
         }),
     ];
 }

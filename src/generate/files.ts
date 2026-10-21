@@ -17,7 +17,7 @@ import {
     splitAtLoop,
     stateStruct,
 } from './sketch';
-import { defaultTemplateForEsp, generateEspProjectFiles, templatesForEsp } from './esp';
+import { defaultTemplateForEsp, generateEspProjectFiles, offeredTemplateIds, templatesForEsp } from './esp';
 
 // Re-exported so every existing caller and test can keep importing these from here.
 export { binaryNameFrom, crateNameFrom, isAcceptableProjectName } from './naming';
@@ -117,6 +117,25 @@ export function templatesFor(board: BoardProfile): AppTemplateInfo[] {
 
 export function isTemplateValidFor(board: BoardProfile, template: AppTemplate): boolean {
     return templatesFor(board).some((info) => info.id === template);
+}
+
+/**
+ * What the New Project wizard offers when a board is picked.
+ *
+ * `templatesFor` answers what the board can generate; this answers what its option presents. They differ
+ * only where a board's own list is narrower (the ESP32-035 offers the WYSIWYG designer alone), which keeps
+ * a board bought for its panel from opening with a menu of diagnostics nobody chose it for.
+ */
+export function templatesOfferedFor(board: BoardProfile): AppTemplateInfo[] {
+    const all = templatesFor(board);
+    if (!isEspBoard(board)) {
+        return all;
+    }
+    const only = offeredTemplateIds(board);
+    if (only === undefined) {
+        return all;
+    }
+    return all.filter((info) => only.includes(info.id));
 }
 
 export function defaultTemplateFor(board: BoardProfile): AppTemplate {

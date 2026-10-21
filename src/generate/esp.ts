@@ -118,6 +118,30 @@ export interface EspGenerateOptions {
 }
 
 /**
+ * The templates a board's option in the New Project wizard offers, when that is narrower than what the
+ * board can generate.
+ *
+ * The ESP32-035 is a design-first panel; asked for 2026-10-21, its board option offers the WYSIWYG designer
+ * and nothing else, so a new project from that board is always the one the board is for. The other templates
+ * stay generatable: the panel diagnostic is still how a glass is brought up and what the board is verified
+ * with, so it remains reachable from code and from the golden and board tests -- it is simply not offered
+ * when the board is picked in the wizard.
+ */
+const OFFERED_TEMPLATES: Record<string, readonly AppTemplate[]> = {
+    'sunton-3248s035r': ['designer'],
+};
+
+/**
+ * The ids a board offers in the wizard, or `undefined` when it offers everything it can generate.
+ *
+ * Kept apart from [`templatesForEsp`] on purpose: "what can this board generate" and "what does the wizard
+ * suggest for this board" are different questions, and only the second one was narrowed here.
+ */
+export function offeredTemplateIds(board: EspBoardProfile): readonly AppTemplate[] | undefined {
+    return OFFERED_TEMPLATES[board.id];
+}
+
+/**
  * Templates an ESP board can generate.
  *
  * Only what is really implemented is listed. A template that generates a project which
@@ -222,7 +246,12 @@ export function templatesForEsp(board: EspBoardProfile): AppTemplateInfo[] {
 }
 
 export function defaultTemplateForEsp(board: EspBoardProfile): AppTemplate {
-    // A board with a panel was bought for its panel, so that is the interesting default.
+    // A board with a panel was bought for its panel, so that is the interesting default -- unless the
+    // board's option is narrowed to one template, which is then the only sensible default.
+    const only = offeredTemplateIds(board);
+    if (only !== undefined && only.length > 0) {
+        return only[0] as AppTemplate;
+    }
     return board.displays.length > 0 ? 'display' : 'blinky';
 }
 
@@ -314,8 +343,8 @@ export function generateEspProjectFiles(options: EspGenerateOptions): GeneratedF
  * flips it later. Keeping the feature in `default` is what lets the setting be changed without regenerating
  * `src/main.rs`, in the same way the panel-revision switch already does.
  */
-function espFeaturesSection(panelChoice: string | undefined, sdFeature: boolean): string {
-    if (panelChoice === undefined && !sdFeature) {
+function espFeaturesSection(panelChoice: string | undefined, sdFeature: boolean, smtpFeature: boolean): string {
+    if (panelChoice === undefined && !sdFeature && !smtpFeature) {
         return '';
     }
     const defaultItems: string[] = [];
@@ -347,6 +376,16 @@ function espFeaturesSection(panelChoice: string | undefined, sdFeature: boolean)
             'sd = ["dep:embedded-sdmmc", "dep:critical-section"]',
         );
     }
+    if (smtpFeature) {
+        lines.push(
+            '',
+            '# The SMTP keep-alive client. `src/smtp.rs` is written by the SMTP wizard and left in the',
+            '# project; this feature is what compiles it in and spawns its task (the wizard puts "smtp"',
+            '# in `default`). Switching it off in the Designer toolbar drops the module and the task from',
+            '# the build without deleting the file, which is what makes the toggle reversible.',
+            'smtp = []',
+        );
+    }
     return `${lines.join('\n')}\n`;
 }
 
@@ -360,7 +399,11 @@ function espCargoToml(
     const display = templateUsesPanel(template) ? displayFor(board, choices) : undefined;
     const panelChoice = display?.panelChoice;
     const sdFeature = template === 'designer' && board.sd !== undefined;
-    const features = espFeaturesSection(panelChoice, sdFeature);
+    // Every Designer project carries the SMTP feature, off by default: the wizard writes `src/smtp.rs` and
+    // switches it on, and a project that never sets SMTP up still needs the definition for the toggle to
+    // have something to move.
+    const smtpFeature = template === 'designer';
+    const features = espFeaturesSection(panelChoice, sdFeature, smtpFeature);
     const espRtosFeatures = ['embassy', board.espChip];
 
     // The radio templates: Wi-Fi on `wifi`, the Bluetooth LE controller on `bluetooth`. A Designer
@@ -1333,9 +1376,15 @@ function espClockSetupDecls(board: EspBoardProfile): string {
     // is built on the first calibrated frame, so the value is kept here until there is one to tell.
     let mut wall_clock: Option<(u8, u8, u8)> = rtc_time;
     let mut wall_clock_applied = false;
-    // A board on a charger has no host to answer TIME?, so the network is asked instead. The task is
-    // started only when the design has a clock and the RTC has never been set: a design without one
-    // never brings the radio up, and a board that came back with a time does not need the network.
+    // One task owns the radio. With the SMTP client compiled in that task also does the clock's time
+    // query -- peripherals.WIFI can be moved once per boot, so the two jobs share one task instead of
+    // competing for the peripheral (the previous shape spawned SMTP only when the clock did not need it).
+    #[cfg(feature = "smtp")]
+    spawner.spawn(
+        crate::smtp::smtp_task(peripherals.WIFI, ui::HAS_CLOCK && needs_time)
+            .expect("the SMTP task is spawned exactly once"),
+    );
+    #[cfg(not(feature = "smtp"))]
     if ui::HAS_CLOCK && needs_time {
         spawner.spawn(
             crate::net::time_task(peripherals.WIFI).expect("the network time task is spawned exactly once"),
@@ -1838,6 +1887,13 @@ function emitNetRs(): string {
 // The console hand-over (TIME HH:MM:SS) covers a board with a PC listening on its serial port. This
 // covers a board plugged into a charger: join the network the build was given, ask an NTP server,
 // and publish the local time of day. main.rs puts it in the RTC exactly as it does a console line.
+
+// The radio can only be moved once per boot. With the SMTP client compiled in (the smtp cargo
+// feature) its task is the one that owns the peripheral -- and it does this file's time query itself,
+// publishing through SYNCED_TIME -- so this module's task is not spawned in that build. The items are
+// not dead code; they are the other half of the switch, which has to bring the clock back when SMTP
+// is turned off without regenerating a project file.
+#![allow(dead_code)]
 
 use embassy_executor::Spawner;
 use embassy_net::dns::DnsQueryType;

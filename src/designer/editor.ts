@@ -44,7 +44,7 @@ import { parseBdfFont, type DesignFontPixels } from './bitmapFont';
 import { bdfFromRaster, fontIdFromFile, isBitmapFontFile, type RasterisedFont } from './fontImport';
 import { emitUiRs, handlerName, syncHandlerStubs, designHasClock } from './generate';
 import { sdImagesNeedingCard } from './model';
-import { isSdEnabled, setSdEnabled } from './sdFeature';
+import { isFeatureInDefault, setFeatureInDefault } from './features';
 import {
     copyVendoredCrates,
     hasVendoredCrates,
@@ -116,6 +116,8 @@ class DesignerPanel {
         document: DesignerDocument,
         private touchEnabled: boolean,
         private sdEnabled: boolean,
+        private smtpAvailable: boolean,
+        private smtpEnabled: boolean,
         private readonly loadError: string | undefined,
         private readonly loadNotes: string[],
         private readonly loadProblems: string[],
@@ -174,7 +176,11 @@ class DesignerPanel {
         // SD is a cargo feature rather than an env key, so it is read out of `Cargo.toml`'s `default` rather
         // than out of `.cargo/esp-config.toml`.
         const cargoToml = (await readText(vscode.Uri.joinPath(project.folder, 'Cargo.toml'))) ?? '';
-        const sdEnabled = isSdEnabled(cargoToml);
+        const sdEnabled = isFeatureInDefault(cargoToml, 'sd');
+        // SMTP is a feature too, and the wizard is what creates the module: without `src/smtp.rs` there is
+        // nothing for the switch to compile in, so it is shown disabled rather than lying about being off.
+        const smtpAvailable = fs.existsSync(path.join(project.folder.fsPath, 'src', 'smtp.rs'));
+        const smtpEnabled = isFeatureInDefault(cargoToml, 'smtp');
         const stored = await readText(vscode.Uri.joinPath(project.folder, DESIGNER_DOCUMENT_PATH));
         const loaded = loadDocument(stored ?? '');
         const folderName = project.folder.path.split('/').pop() ?? 'Panel';
@@ -240,6 +246,8 @@ class DesignerPanel {
             document,
             touchEnabled,
             sdEnabled,
+            smtpAvailable,
+            smtpEnabled,
             loaded.error,
             loaded.notes ?? [],
             rendered.problems,
@@ -300,6 +308,9 @@ class DesignerPanel {
         }
         if (message.type === 'setSd') {
             await this.setSd(message.enabled);
+        }
+        if (message.type === 'setSmtp') {
+            await this.setSmtp(message.enabled);
         }
         if (message.type === 'fontRasterised') {
             await this.writeRasterisedFont(message);
@@ -575,7 +586,18 @@ class DesignerPanel {
     private async setSd(enabled: boolean): Promise<void> {
         const cargoTomlUri = vscode.Uri.joinPath(this.folder, 'Cargo.toml');
         const existing = (await readText(cargoTomlUri)) ?? '';
-        const { text, note } = setSdEnabled(existing, enabled);
+        const { text, note } = setFeatureInDefault(existing, 'sd', enabled);
+        // `none` means the manifest is already where it was asked to be -- or that it has no `[features]`
+        // table to edit at all, which is every project generated before the card became a feature. Saying
+        // "enabled" while nothing was written would be a lie the next build would expose.
+        if (note === 'none' && isFeatureInDefault(existing, 'sd') !== enabled) {
+            await this.refuseFeature(
+                'sd',
+                'This Cargo.toml has no `[features]` table, so the SD card cannot be switched here -- ' +
+                'recreate the project with this version of the extension, or add the `sd` feature by hand.',
+            );
+            return;
+        }
         if (note !== 'none') {
             await writeProjectFile(this.folder, 'Cargo.toml', text);
             this.output.appendLine(`[designer] SD ${enabled ? 'enabled' : 'disabled'} for this project`);
@@ -590,9 +612,95 @@ class DesignerPanel {
         await this.panel.webview.postMessage({
             type: 'report',
             problems,
+            sdEnabled: this.sdEnabled,
+            smtpEnabled: this.smtpEnabled,
+            smtpAvailable: this.smtpAvailable,
             note: enabled
                 ? 'SD card enabled. The FAT filesystem (embedded-sdmmc) is now compiled in; rebuild for it to take effect.'
                 : 'SD card disabled. The FAT filesystem (embedded-sdmmc) is no longer compiled in; rebuild for it to take effect.',
+            kdl: undefined,
+        });
+    }
+
+    /**
+     * Switches the SMTP keep-alive client on or off for the project.
+     *
+     * The client is the `smtp` cargo feature, which gates both `mod smtp;` and its task -- so switching it
+     * off drops the module and the radio work from the build while leaving `src/smtp.rs` in the project,
+     * and switching it back on is enough to return. The module itself is the wizard's: without one there is
+     * nothing to compile in, which is why the switch is offered disabled until it has run.
+     */
+    private async setSmtp(enabled: boolean): Promise<void> {
+        if (enabled && !fs.existsSync(path.join(this.folder.fsPath, 'src', 'smtp.rs'))) {
+            await this.refuseFeature(
+                'smtp',
+                'There is no `src/smtp.rs` yet -- run the SMTP… button first; it writes the client and turns ' +
+                'this switch on.',
+            );
+            return;
+        }
+        const cargoTomlUri = vscode.Uri.joinPath(this.folder, 'Cargo.toml');
+        const existing = (await readText(cargoTomlUri)) ?? '';
+        const { text, note } = setFeatureInDefault(existing, 'smtp', enabled);
+        if (note === 'none' && isFeatureInDefault(existing, 'smtp') !== enabled) {
+            await this.refuseFeature(
+                'smtp',
+                'This Cargo.toml has no `smtp` feature to switch -- run the SMTP… button again, which writes ' +
+                'the definition, or add `smtp = []` to `[features]` by hand.',
+            );
+            return;
+        }
+        if (note !== 'none') {
+            await writeProjectFile(this.folder, 'Cargo.toml', text);
+            this.output.appendLine(`[designer] SMTP ${enabled ? 'enabled' : 'disabled'} for this project`);
+        }
+        this.smtpEnabled = enabled;
+        await this.panel.webview.postMessage({
+            type: 'report',
+            problems: [],
+            sdEnabled: this.sdEnabled,
+            smtpEnabled: this.smtpEnabled,
+            smtpAvailable: this.smtpAvailable,
+            note: enabled
+                ? 'SMTP keep-alive posts enabled. The radio task now sends them; rebuild for it to take effect.'
+                : 'SMTP keep-alive posts disabled. The client is no longer compiled in; rebuild for it to take effect.',
+            kdl: undefined,
+        });
+    }
+
+    /** Re-reads what the SMTP wizard may have changed, and tells the panel. */
+    async refreshSmtp(): Promise<void> {
+        const cargoToml = (await readText(vscode.Uri.joinPath(this.folder, 'Cargo.toml'))) ?? '';
+        this.smtpAvailable = fs.existsSync(path.join(this.folder.fsPath, 'src', 'smtp.rs'));
+        this.smtpEnabled = isFeatureInDefault(cargoToml, 'smtp');
+        await this.panel.webview.postMessage({
+            type: 'report',
+            problems: [],
+            sdEnabled: this.sdEnabled,
+            smtpEnabled: this.smtpEnabled,
+            smtpAvailable: this.smtpAvailable,
+            note: this.smtpAvailable
+                ? 'SMTP client written. Rebuild to compile its task in; the switch turns it on and off.'
+                : undefined,
+            kdl: undefined,
+        });
+    }
+
+    /**
+     * Refuses a switch that the manifest cannot carry, and hands the panel the manifest's own state.
+     *
+     * A project generated before a feature existed has no `[features]` table, and `default = [...]` naming an
+     * undefined feature is a cargo error -- so the toggle is refused out loud instead of pretending to have
+     * written something.
+     */
+    private async refuseFeature(_name: 'sd' | 'smtp', reason: string): Promise<void> {
+        this.output.appendLine(`[designer] ${this.folder.fsPath}: ${reason}`);
+        await this.panel.webview.postMessage({
+            type: 'report',
+            problems: [reason],
+            sdEnabled: this.sdEnabled,
+            smtpEnabled: this.smtpEnabled,
+            smtpAvailable: this.smtpAvailable,
             kdl: undefined,
         });
     }
@@ -675,6 +783,8 @@ class DesignerPanel {
             touchEnabled: this.touchEnabled,
             sdBoard: (this.board?.kind === 'esp' && this.board.sd !== undefined) || false,
             sdEnabled: this.sdEnabled,
+            smtpAvailable: this.smtpAvailable,
+            smtpEnabled: this.smtpEnabled,
             loadError: this.loadError,
             loadNotes: this.loadNotes,
             loadProblems: this.loadProblems,
@@ -874,6 +984,9 @@ class DesignerPanel {
             await this.serveClockTime();
         } else if (action === 'setupSmtp') {
             await runSmtpWizard(this.folder, this.context, this.output);
+            // The wizard may have just written `src/smtp.rs` and switched the feature on: the panel's
+            // toggle has to learn both before the user reaches for it.
+            await this.refreshSmtp();
         } else {
             await vscode.commands.executeCommand('revealInExplorer', this.folder);
         }
@@ -1120,6 +1233,17 @@ export async function importFontIntoDesigner(): Promise<void> {
         return;
     }
     await current.importFont();
+}
+
+/**
+ * Tells an open designer panel what the SMTP wizard just changed.
+ *
+ * The wizard runs from the palette as well as from the panel's own button. Only the panel that asked knows
+ * to refresh, so the palette route calls this -- otherwise the switch would stay disabled (there was no
+ * `src/smtp.rs` when the panel opened) until the design was closed and reopened.
+ */
+export async function refreshDesignerSmtp(): Promise<void> {
+    await current?.refreshSmtp();
 }
 
 async function readText(uri: vscode.Uri): Promise<string | undefined> {

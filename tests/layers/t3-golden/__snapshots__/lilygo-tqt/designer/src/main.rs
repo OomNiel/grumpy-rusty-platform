@@ -214,9 +214,15 @@ pub async fn setup(spawner: Spawner) -> State {
     // is built on the first calibrated frame, so the value is kept here until there is one to tell.
     let wall_clock: Option<(u8, u8, u8)> = rtc_time;
     let wall_clock_applied = false;
-    // A board on a charger has no host to answer TIME?, so the network is asked instead. The task is
-    // started only when the design has a clock and the RTC has never been set: a design without one
-    // never brings the radio up, and a board that came back with a time does not need the network.
+    // One task owns the radio. With the SMTP client compiled in that task also does the clock's time
+    // query -- peripherals.WIFI can be moved once per boot, so the two jobs share one task instead of
+    // competing for the peripheral (the previous shape spawned SMTP only when the clock did not need it).
+    #[cfg(feature = "smtp")]
+    spawner.spawn(
+        crate::smtp::smtp_task(peripherals.WIFI, ui::HAS_CLOCK && needs_time)
+            .expect("the SMTP task is spawned exactly once"),
+    );
+    #[cfg(not(feature = "smtp"))]
     if ui::HAS_CLOCK && needs_time {
         spawner.spawn(
             crate::net::time_task(peripherals.WIFI).expect("the network time task is spawned exactly once"),

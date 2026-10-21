@@ -8,7 +8,7 @@ import {
     generateProjectFiles,
     isAcceptableProjectName,
     requiredFirmware,
-    templatesFor,
+    templatesOfferedFor,
 } from '../generate/files';
 import { showDesigner } from '../designer/editor';
 import { copyVendoredCrates } from '../designer/vendored';
@@ -77,7 +77,9 @@ async function pickBoard(preferredId: string | undefined): Promise<BoardProfile 
  * Wired boards have a single option and are not asked about at all.
  */
 async function pickTemplate(board: BoardProfile): Promise<AppTemplate | undefined> {
-    const options = templatesFor(board);
+    // What the board's option *offers*, which is narrower for the ESP32-035: its menu is the WYSIWYG
+    // designer alone, and a board with one option is not asked about at all.
+    const options = templatesOfferedFor(board);
     if (options.length === 1) {
         return options[0]?.id ?? defaultTemplateFor(board);
     }

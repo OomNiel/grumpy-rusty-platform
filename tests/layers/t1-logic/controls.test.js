@@ -298,7 +298,7 @@ test('New Project is a control, and it opens the board list the wizard already h
     const source = fs.readFileSync(path.join(repoRoot(), 'src/commands/newProject.ts'), 'utf8');
     contains(source, 'BOARDS', 'the wizard reads the board catalog');
     contains(source, 'showQuickPick', 'and asks with a quick pick');
-    contains(source, 'templatesFor', 'then offers the templates that board actually has');
+    contains(source, 'templatesOfferedFor', 'then offers the templates that board\'s option actually has');
 });
 
 // Asked for on 2026-10-09: the designer's command had one button in the interface, a title-bar icon on the

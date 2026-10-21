@@ -2573,7 +2573,11 @@ function previewClock(context: CanvasRenderingContext2D, widget: DesignerWidget,
     if (boolProp(widget.props, 'show_labels', true) && radius > 24) {
         const labelColour = colourProp(widget.props, 'label_color') ?? rgb(31, 63, 31);
         const scale = Math.max(1, Math.trunc(numberProp(widget.props, 'label_scale', 1)));
-        const inset = Math.max(0, radius - 16);
+        // Sixteen pixels in from the rim, then the design's own inset in character widths (`Number inset`,
+        // stepped by 0.1; 0.5 is the shipping look). The advance is the label's own at its magnification.
+        const labelAdvance = glyphMetrics(style.font).advance * scale;
+        const insetChars = Math.max(0, Math.min(2, numberProp(widget.props, 'label_inset', 0.5)));
+        const inset = Math.max(0, radius - 16 - Math.round(labelAdvance * insetChars));
         for (let hour = 1; hour <= 12; hour += 1) {
             const radians = ((twelve + hour * 30) * Math.PI) / 180;
             drawClockLabel(
@@ -2924,6 +2928,16 @@ type KeypadKeySpec = readonly [string, number];
 /** The mode key's label is the mode it moves to, so the action is a placeholder until it is drawn. */
 const KEYPAD_MODE_KEY = 'mode';
 
+/**
+ * The two cursor keys, as sentinels rather than characters.
+ *
+ * The symbol page types its own `<` and `>`, so a row that named the cursor keys by their legend would
+ * make those two symbol keys wear the accent face of a control. The widget distinguishes them by variant
+ * (`KeypadKey::Left`/`Right`); the preview distinguishes them by this name and draws `<-` / `->`.
+ */
+const KEYPAD_CURSOR_LEFT = 'cursor_left';
+const KEYPAD_CURSOR_RIGHT = 'cursor_right';
+
 function letterRow(text: string): readonly KeypadKeySpec[] {
     return Array.from(text).map((ch): KeypadKeySpec => [ch, 1]);
 }
@@ -2936,16 +2950,17 @@ const KEYPAD_TEXT_ROWS: readonly (readonly KeypadKeySpec[])[] = [
     letterRow('zxcvbnm,./'),
     // Shift and the mode key are wide enough to hit with a thumb; the space bar takes the middle.
     // The keys that act are labelled with words, not single letters that read as alphabet keys.
-    [['SHIFT', 2], [KEYPAD_MODE_KEY, 2], [' ', 4], ['<', 2]],
-    [['CLR', 4], ['ENT', 6]],
+    [['SHIFT', 2], [KEYPAD_MODE_KEY, 2], [' ', 4], ['BKSP', 2]],
+    // The cursor keys sit left of Enter in every mode (2026-10-21).
+    [['CLR', 3], [KEYPAD_CURSOR_LEFT, 1], [KEYPAD_CURSOR_RIGHT, 1], ['ENT', 5]],
 ];
 
 const KEYPAD_NUMERIC_ROWS: readonly (readonly KeypadKeySpec[])[] = [
     letterRow('123'),
     letterRow('456'),
     letterRow('789'),
-    [['.', 1], ['0', 1], ['<', 1]],
-    [[KEYPAD_MODE_KEY, 1], ['CLR', 1], ['ENT', 1]],
+    [['.', 1], ['0', 1], ['BKSP', 1]],
+    [[KEYPAD_MODE_KEY, 1], ['CLR', 1], [KEYPAD_CURSOR_LEFT, 1], [KEYPAD_CURSOR_RIGHT, 1], ['ENT', 1]],
 ];
 
 // The set asked for on 2026-10-17: `~!@#$%^&*()-=_+[]\{}|;':",./<>?`, in that order, broken at eight.
@@ -2954,8 +2969,8 @@ const KEYPAD_SYMBOL_ROWS: readonly (readonly KeypadKeySpec[])[] = [
     letterRow('*()-_=+['),
     letterRow("]\\{}|;':"),
     letterRow('",./<>?'),
-    [[KEYPAD_MODE_KEY, 2], [' ', 4], ['<', 2]],
-    [['CLR', 3], ['ENT', 5]],
+    [[KEYPAD_MODE_KEY, 2], [' ', 4], ['BKSP', 2]],
+    [['CLR', 2], [KEYPAD_CURSOR_LEFT, 1], [KEYPAD_CURSOR_RIGHT, 1], ['ENT', 4]],
 ];
 
 /** The mode key says where it goes, so the key is a promise rather than a label. */
@@ -3020,11 +3035,22 @@ function previewKeypad(
     fillSolid(context, { x: entry.x, y: entry.y, w: 1, h: entry.h }, 0, entryBorder, 255);
     fillSolid(context, { x: entry.x + entry.w - 1, y: entry.y, w: 1, h: entry.h }, 0, entryBorder, 255);
     // The line is left-justified three pixels in and centred between the box's edges, as the widget
-    // draws it; the caret is an underscore after the last character.
-    drawTextIn(context, { x: entry.x + 3, y: entry.y, w: Math.max(0, entry.w - 6), h: entry.h }, '_', style.font, textColour, {
-        align: 'left',
-        verticalAlign: 'middle',
-    });
+    // draws it. The preview draws an empty line, so the caret -- the underline under the character the
+    // next key will overwrite -- sits in the first cell.
+    const metrics = glyphMetrics(style.font);
+    const lineTop = entry.y + Math.trunc((entry.h - metrics.lineHeight) / 2);
+    fillSolid(
+        context,
+        {
+            x: entry.x + 3,
+            y: lineTop + metrics.lineHeight - 2,
+            w: Math.max(0, Math.min(metrics.advance, entry.w - 6)),
+            h: 2,
+        },
+        0,
+        textColour,
+        255,
+    );
 
     const rowHeight = Math.trunc(area.h / rows.length);
     rows.forEach((keys, row) => {
@@ -3041,8 +3067,15 @@ function previewKeypad(
                 return;
             }
             // The keys that act instead of typing wear the accent colour, as the widget draws them.
+            // The cursor keys are sentinels: the symbol page types its own `<` and `>`.
             const control =
-                legend === 'SHIFT' || legend === KEYPAD_MODE_KEY || legend === '<' || legend === 'CLR' || legend === 'ENT';
+                legend === 'SHIFT'
+                || legend === KEYPAD_MODE_KEY
+                || legend === 'BKSP'
+                || legend === 'CLR'
+                || legend === 'ENT'
+                || legend === KEYPAD_CURSOR_LEFT
+                || legend === KEYPAD_CURSOR_RIGHT;
             const lit = control && legend === 'SHIFT' && shift;
             const face = lit ? pressedColour : control ? accentColour : keyColour;
             const inner: Rect = { x: cell.x + 1, y: cell.y + 1, w: cell.w - 2, h: cell.h - 2 };
@@ -3053,9 +3086,13 @@ function previewKeypad(
             const label =
                 legend === KEYPAD_MODE_KEY
                     ? keypadModeLabel(mode)
-                    : shifted
-                        ? legend.toUpperCase()
-                        : legend;
+                    : legend === KEYPAD_CURSOR_LEFT
+                        ? '<-'
+                        : legend === KEYPAD_CURSOR_RIGHT
+                            ? '->'
+                            : shifted
+                                ? legend.toUpperCase()
+                                : legend;
             if (label !== ' ') {
                 const colour = control ? textColour : legendColour;
                 drawTextIn(context, inner, label, style.font, colour, {

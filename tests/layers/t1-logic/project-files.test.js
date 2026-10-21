@@ -39,7 +39,13 @@ const ESP_EXPECTED_PATHS = [
 ];
 
 function filesFor(boardId, projectName = 'Test Project') {
-    const files = generateProjectFiles({ board: boardById(boardId), projectName });
+    // `blinky` explicitly: this is the base file list, and a board whose default template is narrowed
+    // (the ESP32-035 defaults to the designer) must not change what a minimal project contains.
+    const files = generateProjectFiles({
+        board: boardById(boardId),
+        projectName,
+        template: boardById(boardId).kind === 'esp' ? 'blinky' : undefined,
+    });
     const map = new Map(files.map((f) => [f.path, f.content]));
     // The whole sketch under `src/main.rs`: which of the two files a fact lands in is the generator's
     // business, and these tests are about what a generated project contains (see `sketchSource`).

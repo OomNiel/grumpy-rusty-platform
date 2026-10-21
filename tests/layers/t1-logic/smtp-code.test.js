@@ -95,29 +95,25 @@ test('emitSmtpRs emits const-correct Rust that the no_std ESP toolchain accepts'
     notContains(rs, 'embedded_io_async::Read', 'the Read import is not emitted');
 });
 
-test('emitSmtpRs emits const-correct Rust that the no_std ESP toolchain accepts', () => {
+test('emitSmtpRs sends each header field on one line', () => {
     const rs = emitSmtpRs(POSTS);
-    // option_env! is const, but str::parse / str == / Option::map_or and two-input lifetime elision
-    // are not, so those values use hand-rolled const fns and explicit lifetimes.
-    contains(rs, 'const fn parse_port', 'the port is parsed by a const fn at compile time');
-    contains(rs, 'match option_env!("SMTP_PORT")', 'SMTP_PORT is built with a const match');
-    notContains(rs, 'value.parse()', 'str::parse is not used in the const port');
-    contains(rs, 'const fn bytes_eq', 'the STARTTLS flag is compared by a const fn');
-    contains(rs, 'match option_env!("SMTP_USE_STARTTLS")', 'SMTP_USE_STARTTLS is built with a const match');
-    notContains(rs, 'map_or(false, |value| value ==', 'Option::map_or and str == are not used in the const');
-    // embassy_net::TcpSocket<'a> carries the stack lifetime: the borrow must be spelled out.
-    contains(rs, '&mut TcpSocket<\'_>', 'the socket lifetime is spelled out');
-    notContains(rs, '&mut TcpSocket,', 'a bare TcpSocket (no lifetime) is not emitted');
-    // dns_query returns Result<_, TimeoutError<Result<_,_, DnsError>>>: both layers must be flattened.
-    contains(rs, '.and_then(|result| result.ok())', 'the inner DNS Result is flattened into an Option');
-    contains(rs, 'Result<core::net::Ipv4Addr, SmtpError>', 'the resolve return type matches the dns result');
-    notContains(rs, 'embassy_net::Ipv4Addr', 'the non-existent embassy_net::Ipv4Addr type is not used');
-    // base64_encode borrows its output buffer: one explicit lifetime ties the inputs and the return.
-    contains(rs, "fn base64_encode<'a>(input: &'a str, out: &'a mut [u8]) -> &'a str", 'the encode lifetime is explicit');
-    notContains(rs, 'fn base64_encode(input: &str, out: &mut [u8]) -> &str', 'the un-tied signature is not emitted');
-    // Read is unused here: TcpSocket.read resolves without it, and an unused import is a denied warning.
-    contains(rs, 'use embedded_io_async::Write;', 'only the Write trait is imported');
-    notContains(rs, 'embedded_io_async::Read', 'the Read import is not emitted');
+    // A "Subject: " line of its own would end the header at the colon and leave the subject text as
+    // a malformed header of its own; the keyword and the value must be written together.
+    notContains(rs, 'smtp_send_line(&mut socket, b"Subject: ")', 'the subject is not split over two lines');
+    contains(rs, 'smtp_send_parts(&mut socket, &[b"Subject: ", SMTP_KEEPALIVE_SUBJECT.as_bytes()])');
+    contains(rs, 'smtp_send_parts(&mut socket, &[b"From: <", SMTP_FROM.as_bytes(), b">"])');
+    contains(rs, 'smtp_send_parts(&mut socket, &[b"To: <", recipient.as_bytes(), b">"])');
+    contains(rs, "if SMTP_KEEPALIVE_BODY.starts_with('.')", 'a body starting with . is dot-stuffed');
+});
+
+test('emitSmtpRs reads a multiline reply to its end', () => {
+    const rs = emitSmtpRs(POSTS);
+    // EHLO answers with 250-... lines and one final "250 ...". Testing the whole buffer's fourth
+    // byte kept finding the first line's '-' and never finished, so the current line is tracked.
+    contains(rs, 'let mut head = [0u8; 4];');
+    contains(rs, "let more = at >= 4 && head[3] == b'-';");
+    notContains(rs, 'buf[3] == 32', 'the stale whole-buffer check is gone');
+    contains(rs, 'at = 0;', 'the line head restarts after each line');
 });
 
 // A minimal Designer main.rs that has both anchors the wizard edits.
@@ -134,16 +130,27 @@ const MAIN_RS = [
     '    }',
 ].join('\n');
 
-test('declareSmtpModule inserts `mod smtp;` after `mod net;`', () => {
+test('declareSmtpModule inserts the gated module after `mod net;`', () => {
     const { text, note } = declareSmtpModule(MAIN_RS);
     equal(note, 'added');
     contains(
         text,
-        'mod net;\n\n// SMTP client set up by the Rusty Platform SMTP wizard.\nmod smtp;',
+        'mod net;\n\n// SMTP client written by the Rusty Platform SMTP wizard.',
         'smtp is declared as a peer of net',
     );
+    contains(text, '#[cfg(feature = "smtp")]\nmod smtp;', 'the feature is what compiles it in');
     // The original body is untouched.
     contains(text, 'crate::net::time_task(peripherals.WIFI)');
+});
+
+test('declareSmtpModule gates a module an older wizard declared unconditionally', () => {
+    // 0.13.3 wrote a bare `mod smtp;`. Left that way the Designer's switch could never take the client
+    // out of the build, so the declaration is migrated rather than reported as present.
+    const legacy = MAIN_RS.replace('mod net;', 'mod net;\n\n// SMTP client set up by the Rusty Platform SMTP wizard.\nmod smtp;');
+    const { text, note } = declareSmtpModule(legacy);
+    equal(note, 'added');
+    contains(text, '#[cfg(feature = "smtp")]\nmod smtp;');
+    notContains(text, 'wizard.\nmod smtp;', 'the ungated declaration is gone');
 });
 
 test('declareSmtpModule is idempotent when smtp is already declared', () => {
@@ -169,13 +176,31 @@ test('declareSmtpModule falls back to the design modules and to manual insertion
     contains(manual.text, 'mod smtp;');
 });
 
-test('wireSmtpSpawn adds the SMTP task as the else-branch of the clock spawn', () => {
+test('wireSmtpSpawn merges the clock and SMTP into one radio task', () => {
     const { text, note } = wireSmtpSpawn(MAIN_RS);
     equal(note, 'added');
-    contains(text, 'crate::smtp::smtp_task(peripherals.WIFI)', 'the SMTP task is spawned');
-    matches(text, /else \{\n\s*\/\/ Added by the Rusty Platform SMTP wizard/);
-    // The original clock spawn is preserved.
+    // The one task that owns peripherals.WIFI also takes the clock's answer, so both jobs run in one boot.
+    contains(text, 'crate::smtp::smtp_task(peripherals.WIFI, ui::HAS_CLOCK && needs_time)');
+    contains(text, '#[cfg(feature = "smtp")]', 'compiled in only with the feature');
+    contains(text, '#[cfg(not(feature = "smtp"))]', 'and the clock task is the other option');
     contains(text, 'crate::net::time_task(peripherals.WIFI)');
+    notContains(text, '} else {', 'the two tasks no longer take turns');
+});
+
+test('wireSmtpSpawn lifts a 0.13.3 else-branch into the merged task', () => {
+    // The previous shape put SMTP in the `else` of the clock spawn, so a clocked design never ran it on a
+    // cold boot. Re-running the wizard on such a project has to migrate it, not leave it alone.
+    const legacy = `${MAIN_RS} else {
+        // Added by the Rusty Platform SMTP wizard: keep-alive posts over Wi-Fi.
+        spawner
+            .spawn(crate::smtp::smtp_task(peripherals.WIFI).expect("the SMTP task is spawned exactly once"));
+    }`;
+    ok(legacy.includes('} else {'), 'the fixture is the old shape');
+
+    const migrated = wireSmtpSpawn(legacy);
+    equal(migrated.note, 'added', 'the old pair is rewritten');
+    contains(migrated.text, 'smtp_task(peripherals.WIFI, ui::HAS_CLOCK && needs_time)');
+    notContains(migrated.text, '} else {', 'the else-branch is gone');
 });
 
 test('wireSmtpSpawn is idempotent and refuses to double-spawn', () => {
@@ -189,6 +214,19 @@ test('wireSmtpSpawn is idempotent and refuses to double-spawn', () => {
 test('wireSmtpSpawn reports manual when the clock spawn is absent', () => {
     const { note } = wireSmtpSpawn('fn main() {}');
     equal(note, 'manual');
+});
+
+test('wireSmtpSpawn does not unwrap the spawn result', () => {
+    const { text } = wireSmtpSpawn(MAIN_RS);
+    // embassy-executor 0.10's `Spawner::spawn` returns `()`; an `.unwrap()` on it is a hard compile
+    // error ("no method named `unwrap` found for unit type `()`"), and every generated spawn call
+    // omits it for that reason.
+    contains(
+        text,
+        'crate::smtp::smtp_task(peripherals.WIFI, ui::HAS_CLOCK && needs_time)\n            .expect("the SMTP task is spawned exactly once"),',
+        'the token is passed straight to spawn',
+    );
+    notContains(text, '.unwrap()', 'spawn returns (), so there is no Result to unwrap');
 });
 
 const CARGO_TOML = [

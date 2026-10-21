@@ -33,6 +33,14 @@ export interface DesignerInit {
      * filesystem (embedded-sdmmc) are compiled in. The toolbar shows and writes it (see `../designer/editor`).
      */
     sdEnabled: boolean;
+    /**
+     * Whether the project has an `src/smtp.rs`, i.e. whether the SMTP wizard has been run.
+     *
+     * The switch is offered disabled until it does: there is no module for the feature to compile in.
+     */
+    smtpAvailable: boolean;
+    /** Whether the project is built with the `smtp` cargo feature -- the keep-alive client is complied in. */
+    smtpEnabled: boolean;
     /** The document as it was read, when it could not be parsed -- shown instead of a blank canvas. */
     loadError?: string;
     /**
@@ -91,6 +99,18 @@ export interface DesignerReport {
     fonts?: Record<string, DesignFontPixels>;
     /** Why a declared font is not among the pixels above. */
     fontNotes?: string[];
+    /**
+     * The project's authoritative `sd` feature state after this report.
+     *
+     * Sent with a switch result so the toolbar follows the *manifest* rather than its own optimistic click:
+     * a project generated before the card became a feature has no `[features]` table to edit, and the switch
+     * there is refused instead of pretending to have written it.
+     */
+    sdEnabled?: boolean;
+    /** The project's authoritative `smtp` feature state after this report, for the same reason as above. */
+    smtpEnabled?: boolean;
+    /** Whether `src/smtp.rs` exists -- the switch is enabled by it as soon as the wizard has run. */
+    smtpAvailable?: boolean;
 }
 
 /** The panel has finished loading and is ready for its document. */
@@ -160,6 +180,17 @@ export interface DesignerSetSd {
 }
 
 /**
+ * The panel asking the extension to switch the SMTP keep-alive client on or off.
+ *
+ * It is the `smtp` cargo feature, which gates both `mod smtp;` and its task, so switching it off takes the
+ * client out of the build without deleting `src/smtp.rs` -- and the switch can turn it back on later.
+ */
+export interface DesignerSetSmtp {
+    type: 'setSmtp';
+    enabled: boolean;
+}
+
+/**
  * The extension asking the panel to rasterise a font file.
  *
  * Only the webview can draw a face -- it is the one renderer in this extension -- so adapting a system font
@@ -204,6 +235,7 @@ export type DesignerToHost =
     | DesignerPickAsset
     | DesignerSetTouch
     | DesignerSetSd
+    | DesignerSetSmtp
     | DesignerFontRasterised;
 export type HostToDesigner =
     | DesignerInit
