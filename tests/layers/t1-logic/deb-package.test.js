@@ -77,19 +77,30 @@ test('the flash helper is a script that checks its tools before doing anything',
     notOk(/sudo/.test(script), 'flashing does not require root, and asking for it would be a surprise in /usr/bin');
 });
 
-test('the two controls are declared, and Linux-only is said rather than assumed', () => {
+test('the section offers publishing; installing stays in the palette', () => {
     const controls = require('../../../out/ui/controls');
     // In the Controls *section* (which is what was asked for) — not in `CONTROLS`, which also lays out the
     // status bar and has to stay short.
     const commands = controls.visibleControls(false).map((c) => c.command);
     ok(commands.includes('rustyPlatform.publishDeb'), 'the publish control is in the section');
-    ok(commands.includes('rustyPlatform.installDeb'), 'the install control is in the section');
+    // Asked 2026-10-21: "Remove the 'Install .deb' row from the extension side bar." The row is gone; the
+    // command stays in the manifest, so the palette can still install a published package.
+    notOk(commands.includes('rustyPlatform.installDeb'), 'the install row is not in the section any more');
     notOk(controls.CONTROLS.some((c) => c.command === 'rustyPlatform.publishDeb'),
         'and the status bar is left as it was');
     for (const control of controls.PACKAGE_CONTROLS) {
         ok(control.label && control.detail && control.tooltip, `${control.command} is fully described`);
         ok(control.icon, `${control.command} has an icon`);
     }
+    // The command itself is still declared, which is what keeps the palette entry alive.
+    const fs = require('fs');
+    const path = require('path');
+    const { repoRoot } = require('../../lib/harness');
+    const manifest = JSON.parse(fs.readFileSync(path.join(repoRoot(), 'package.json'), 'utf8'));
+    ok(
+        manifest.contributes.commands.some((entry) => entry.command === 'rustyPlatform.installDeb'),
+        'the install command is still in the palette',
+    );
     equal(deb.debUnsupportedReason('linux'), undefined);
     contains(deb.debUnsupportedReason('win32'), 'Linux-only');
     contains(deb.debUnsupportedReason('darwin'), 'Linux-only');

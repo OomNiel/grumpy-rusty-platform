@@ -143,8 +143,13 @@ export const ACTION_CONTROLS: readonly ControlDescriptor[] = [
     },
 ];
 
-/** The health control first, then the actions. */
-/** The packaging pair (asked 2026-10-05): publish the project as a `.deb`, then install it here. */
+/**
+ * The packaging rows (asked 2026-10-05): publish the project as a `.deb`, and copy the project aside.
+ *
+ * The *Install .deb* row was removed from this section on 2026-10-21. The command stays in the palette
+ * (`rustyPlatform.installDeb`), because installing a package into `/usr` with sudo is a deliberate act rather
+ * than something to keep one click away in a sidebar that is mostly about building and flashing.
+ */
 export const PACKAGE_CONTROLS: readonly ControlDescriptor[] = [
     {
         command: 'rustyPlatform.publishDeb',
@@ -162,14 +167,6 @@ export const PACKAGE_CONTROLS: readonly ControlDescriptor[] = [
         tooltip: 'Copies this project folder next to itself as "<folder>-<date>_<time>", leaving out target/ and '
             + 'other build output so the copy is the project rather than the compiler\'s leftovers. Nothing is '
             + 'overwritten: a second backup in the same second gets a "-2".'
-    },
-    {
-        command: 'rustyPlatform.installDeb',
-        icon: 'desktop-download',
-        label: 'Install .deb',
-        detail: 'dpkg -i on this machine (sudo)',
-        tooltip: 'Shows what is inside the .deb this project published, then runs sudo dpkg -i in a terminal so '
-            + 'you can type your password. Linux only.'
     }
 ];
 

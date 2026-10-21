@@ -11,6 +11,19 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.13.10] - 2026-10-21
+
+### Removed
+
+- **The *Install .deb* row in the Controls section of the sidebar.** Asked for directly. The
+  `rustyPlatform.installDeb` command remains in the Command Palette: installing a package into `/usr` with sudo
+  is a deliberate act, not something to keep one click away beside Build and Flash. *Publish .deb* and
+  *Back Up Project* stay in the section.
+
+### Notes
+
+- Test suite: **1050 hermetic** (t1 973, t2 73, t3 4).
+
 ## [0.13.9] - 2026-10-21
 
 Intermediate local builds 0.13.5–0.13.8 were packaged and installed while this work was in progress; this
