@@ -9,6 +9,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.13.4] - 2026-10-21
+
 ### Added
 
 - **SD card toggle in the Designer control bar.** The Sunton CYD (the only board with an SD slot) now has an
