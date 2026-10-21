@@ -11,6 +11,68 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.13.9] - 2026-10-21
+
+Intermediate local builds 0.13.5–0.13.8 were packaged and installed while this work was in progress; this
+entry covers the batch and is the version in `package.json`.
+
+### Added
+
+- **Keypad cursor keys and overwrite typing.** The touch keypad's bottom row is now `CLR | <- | -> | ENT` on
+  all three pages (`0.13.5`). The two keys move the cursor one character, and the next key **overwrites the
+  character under it** rather than only appending; Backspace deletes the character before the cursor. The
+  caret is painted as a 2-px underline under the character that will be replaced (it used to be a `_` glyph
+  after the line), and the entry box scrolls to keep it in view. Backspace is labelled **BKSP** now — a lone
+  `<` beside two arrows would read as a third one.
+- **SD and SMTP are toggle switches in the Designer control bar** (`0.13.6`, `0.13.9`). Both were/are
+  *cargo features* — `sd` pulls in the FAT filesystem, `smtp` compiles `src/smtp.rs` and spawns its task — so
+  they are on/off switches rather than a menu of values. The SMTP switch is offered disabled until the wizard
+  has written the client, and both write only the `default = [...]` line of the generated manifest.
+- **A settable Clock *Number inset*.** The hour numbers' displacement is now a Designer property in
+  **character widths, stepped by 0.1** (default `0.5`; `0` restores the pre-2026-10-21 position), carried
+  through the crate, the markup (`label_inset=0.5`), the code generator and the canvas.
+- **The ESP32-035's board option offers the WYSIWYG designer alone** (`0.13.6`). The board still *generates*
+  every template it supports (the panel diagnostic remains the way its glass is brought up, and the board and
+  golden tests build it), but picking the board in the New Project wizard no longer asks: its one offered
+  template — and its default — is the Designer.
+
+### Changed
+
+- **One radio task for the clock and SMTP.** `peripherals.WIFI` can be moved once per boot, so `smtp_task`
+  now owns it and also performs the clock's SNTP query when the design needs one, publishing through
+  `crate::net::SYNCED_TIME`. `main.rs` emits two `#[cfg(feature = "smtp")]`-gated spawn statements, so exactly
+  one task exists per build. Previously SMTP was spawned only on boots where the clock did *not* need the
+  time, which meant a clocked design never sent a post on a cold boot.
+- **The Designer's SD control is a switch, not an `SD: on / SD: off` select**, mirroring Touch's neighbour.
+- **The clock's hour numbers sit half a character inside the tick ring** by default (asked for, then
+  softened from a whole character the same day).
+
+### Fixed
+
+- **The SMTP wizard's `main.rs` wiring did not compile.** `Spawner::spawn` returns `()` in embassy-executor
+  0.10, and the emitted else-branch called `.unwrap()` on it.
+- **A multi-line SMTP reply hung the keep-alive task.** The reply parser tested the *first* line's separator,
+  so a normal `EHLO` response (`250-PIPELINING`, `250-AUTH`, …) never finished; it now tracks the current
+  line's code and separator.
+- **Malformed mail headers.** `Subject: ` was written as a line of its own, leaving the subject text as a
+  malformed header; headers are now whole, `From:`/`To:` are included, and a body starting with `.` is
+  dot-stuffed.
+- **A window reload silently dropped the stored SMTP setup.** The build environment lives in the extension
+  host, so a Flash/Build after a restart baked an empty `SMTP_HOST`; `ensureSmtpEnv` now re-injects it on
+  Build, both Flash routes and Debug.
+- **An SD/SMTP switch could lie on an older project.** A manifest without a `[features]` table is refused out
+  loud, and the panel's report carries the manifest's own state back so the switch resets.
+- **Dead-code warnings on a merged build.** `net.rs`'s clock task is compiled but unspawned when SMTP owns the
+  radio, so it carries `#![allow(dead_code)]` with the reason (the wizard adds it to older projects).
+
+### Notes
+
+- Test suite: **1050 hermetic** (t1 973, t2 73, t3 4), plus the crate suites: `embedded-gui` **317**,
+  `embedded-gui-codegen` **30**. `cargo check` with a Designer project's feature set
+  (`--no-default-features --features "rich-widgets,embedded-graphics,macros,micromath"`) is warning-free.
+- Verified by `cargo check` on the ESP toolchain for a freshly generated CYD Designer project in all four
+  `smtp`/`sd` combinations, and by corrupting `smtp.rs` with the feature off (ignored) and on (compiled).
+
 ## [0.13.4] - 2026-10-21
 
 ### Added

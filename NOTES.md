@@ -7614,3 +7614,73 @@ cargo `feature`.
   bytes are locked by the regenerated t3-golden snapshots.
 - Rust correctness is by construction + golden snapshots only: the host has `rustc 1.99.0` and no
   `xtensa-esp32*` / `espup` toolchain, so the generated SD code is not cross-compiled here.
+
+---
+
+## §151 — SMTP that compiles, one radio owner, two switches, a cursor, and a settable inset (0.13.3–0.13.9, 2026-10-21)
+
+The session that started as "verify the SMTP feature and the SD button" turned into six changes, because
+each one exposed the next. In order:
+
+**The SMTP client the wizard wrote did not compile.** Three defects, each found by compiling rather than
+by reading:
+
+- `Spawner::spawn` returns `()` in embassy-executor **0.10** (0.9 returned `Result<(), SpawnError>`), and the
+  emitted wiring called `.unwrap()` on it. Every other generated spawn already ignored the value; the SMTP
+  one did not. `retest/src/main.rs` had been hand-fixed, which is the evidence that the emitted text never
+  built.
+- `smtp_expect` tested `buf[3]` — the **first** line's separator — so a multi-line `EHLO` reply
+  (`250-PIPELINING`, `250-AUTH`, …) never finished: the loop kept re-reading the first line's `-`. It now
+  tracks the current line's first four bytes and resets per LF.
+- `Subject: ` went out as a line of its own, so the subject text became a malformed header. Headers are now
+  written whole (`smtp_send_parts`), `From:`/`To:` are included, and a body starting with `.` is dot-stuffed.
+- Also: the setup lives in the extension host's memory. After a reload, Flash baked an empty `SMTP_HOST`
+  with no warning; `ensureSmtpEnv` re-injects it on Build, both Flash routes and Debug, beside
+  `ensureWifiEnv`.
+
+**One radio owner.** `peripherals.WIFI` can be moved once per boot, so the old shape (SMTP in the `else` of
+the clock's spawn) meant a clocked design never sent a post on a cold boot — its RTC is never set, so the
+clock task always won. `smtp_task(wifi, wants_time)` now owns the radio and performs net.rs's SNTP query
+itself when asked, publishing `crate::net::SYNCED_TIME` (main's loop still gates the RTC write on
+`needs_time`, so "no resync" survives). `main.rs` emits two `#[cfg(...)]`-gated **statements** — cfg on
+statements is stable, and both branches may move the peripheral because only one exists per build. With the
+feature on, net.rs's `time_task` is compiled but unspawned, which is six dead-code warnings; the module
+carries `#![allow(dead_code)]` and the reason, and `ensureNetAllowDeadCode` adds it to older projects.
+`wireSmtpSpawn` migrates a 0.13.3 `else`-pair into the merged shape.
+
+**Two real switches.** SD became a switch (was a select), and SMTP got one. Both are cargo features, so
+`src/designer/features.ts` holds the shared line editor (`isFeatureInDefault`, `setFeatureInDefault`,
+`ensureFeatureDefinition`); `sdFeature.ts` is now a thin wrapper. The control is a checkbox drawn as a
+track/thumb (`.tool-toggle`), and `.tool-toggle-label` names its own theme colour — a webview element does
+not inherit one (the `.context-item` lesson again). The preview's keypad needed **sentinels** for the cursor
+keys, because the symbol page types its own `<` and `>`.
+
+**The ESP32-035 board option.** Asked: "remove all templates except the WYSIWYG template." Two notions are
+now separate on purpose: `templatesFor` (what a board can generate — unchanged, so the panel diagnostic and
+the board/golden tests still build it) and `templatesOfferedFor` (what the wizard's board option presents,
+narrowed by `OFFERED_TEMPLATES`). One offered template means the wizard does not ask. `defaultTemplateFor`
+follows the same list.
+
+**Keypad cursor keys.** `KeypadKey::Left`/`Right`, a **byte** cursor on `KeypadWidget`, and `push()` that
+overwrites the character under it (shifting the tail by the UTF-8 length difference). Backspace deletes
+*before* the cursor. The caret is painted as a 2-px underline rather than appended as a `_` glyph — a glyph
+would push the tail a cell to the right and cannot sit *under* a character. Labels `<->` are two characters
+so they cannot be confused with the symbol page's single `<`/`>`; Backspace became `BKSP` for the same
+reason. Bottom row of every page: `CLR | <- | -> | ENT`.
+
+**Clock number inset.** The hour numbers' distance is a design property now, in character widths stepped by
+0.1 (`label_inset`, default 0.5). This is the full checklist for a widget property, and it is worth keeping:
+crate field + default (`ClockWidget` derives **PartialEq only** — `f32` is not `Eq`, like `ScaleWidget`) →
+`embedded-gui-codegen` AST/parser (`get_f64_prop`, default 0.5, clamp 0..=2)/emitter (`{:.1}`, so `1.0` is a
+valid Rust float literal)/serializer → catalogue (`kind: 'float'`; the panel already steps floats by 0.1) +
+`PROPERTY_HELP` → canvas. **Sign trap:** "inwards" at twelve o'clock means a *larger* y; my first assertion
+had it backwards and the measured diff was `-8` instead of `+8`.
+
+**Verification as it stands.** Suite **1050** (t1 973 · t2 73 · t3 4); `embedded-gui` **317** and
+`embedded-gui-codegen` **30** crate tests; `cargo check --no-default-features --features
+"rich-widgets,embedded-graphics,macros,micromath"` (a project's feature set) warning-free; a freshly
+generated CYD Designer project cross-checked on the ESP toolchain in all four `smtp`/`sd` combinations, and
+the `smtp` feature proved to gate the module by corrupting `smtp.rs` with the feature off (ignored) and on
+(compiled). Version 0.13.9 is what `package.json` says; the crate changes mean an existing project needs
+**Update now** for its vendored copy.
+
