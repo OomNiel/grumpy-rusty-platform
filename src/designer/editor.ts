@@ -44,6 +44,7 @@ import { parseBdfFont, type DesignFontPixels } from './bitmapFont';
 import { bdfFromRaster, fontIdFromFile, isBitmapFontFile, type RasterisedFont } from './fontImport';
 import { emitUiRs, handlerName, syncHandlerStubs, designHasClock } from './generate';
 import { sdImagesNeedingCard } from './model';
+import { isSdEnabled, setSdEnabled } from './sdFeature';
 import {
     copyVendoredCrates,
     hasVendoredCrates,
@@ -114,6 +115,7 @@ class DesignerPanel {
         private readonly board: BoardProfile | undefined,
         document: DesignerDocument,
         private touchEnabled: boolean,
+        private sdEnabled: boolean,
         private readonly loadError: string | undefined,
         private readonly loadNotes: string[],
         private readonly loadProblems: string[],
@@ -169,6 +171,10 @@ class DesignerPanel {
         const rotation = lcdRotationFromConfig(config);
 
         const touchEnabled = touchFromConfig(config);
+        // SD is a cargo feature rather than an env key, so it is read out of `Cargo.toml`'s `default` rather
+        // than out of `.cargo/esp-config.toml`.
+        const cargoToml = (await readText(vscode.Uri.joinPath(project.folder, 'Cargo.toml'))) ?? '';
+        const sdEnabled = isSdEnabled(cargoToml);
         const stored = await readText(vscode.Uri.joinPath(project.folder, DESIGNER_DOCUMENT_PATH));
         const loaded = loadDocument(stored ?? '');
         const folderName = project.folder.path.split('/').pop() ?? 'Panel';
@@ -233,6 +239,7 @@ class DesignerPanel {
             board,
             document,
             touchEnabled,
+            sdEnabled,
             loaded.error,
             loaded.notes ?? [],
             rendered.problems,
@@ -290,6 +297,9 @@ class DesignerPanel {
         }
         if (message.type === 'setTouch') {
             await this.setTouch(message.enabled);
+        }
+        if (message.type === 'setSd') {
+            await this.setSd(message.enabled);
         }
         if (message.type === 'fontRasterised') {
             await this.writeRasterisedFont(message);
@@ -555,6 +565,39 @@ class DesignerPanel {
     }
 
     /**
+     * Switches the SD card on or off for the project.
+     *
+     * The card is a cargo feature (see `../generate/esp` and `./sdFeature`), so this is the cargo-toggle analogue
+     * of `setTouch`: a project setting that changes the firmware, not the markup, written here because only the
+     * extension can edit `Cargo.toml`. Enabling brings `embedded-sdmmc` (FAT) and `critical-section` back into
+     * the build; disabling drops them again. Either way the board needs a rebuild before the change shows up.
+     */
+    private async setSd(enabled: boolean): Promise<void> {
+        const cargoTomlUri = vscode.Uri.joinPath(this.folder, 'Cargo.toml');
+        const existing = (await readText(cargoTomlUri)) ?? '';
+        const { text, note } = setSdEnabled(existing, enabled);
+        if (note !== 'none') {
+            await writeProjectFile(this.folder, 'Cargo.toml', text);
+            this.output.appendLine(`[designer] SD ${enabled ? 'enabled' : 'disabled'} for this project`);
+        }
+        this.sdEnabled = enabled;
+        const problems =
+            !enabled && (this.board?.kind === 'esp' && this.board.sd !== undefined)
+                ? sdImagesNeedingCard(this.document.widgets).map((id) =>
+                    `"${id}": this image comes from the SD card, and SD is switched off -- turn it on in the toolbar and rebuild.`,
+                )
+                : [];
+        await this.panel.webview.postMessage({
+            type: 'report',
+            problems,
+            note: enabled
+                ? 'SD card enabled. The FAT filesystem (embedded-sdmmc) is now compiled in; rebuild for it to take effect.'
+                : 'SD card disabled. The FAT filesystem (embedded-sdmmc) is no longer compiled in; rebuild for it to take effect.',
+            kdl: undefined,
+        });
+    }
+
+    /**
      * Chooses a file for an asset field and brings it into the project if it came from outside.
      *
      * The dialog is the extension's job (only it can open a native one, and only it knows the project folder);
@@ -630,6 +673,8 @@ class DesignerPanel {
             paths: { document: DESIGNER_DOCUMENT_PATH, kdl: DESIGNER_KDL_PATH },
             touchBoard: (this.board?.kind === 'esp' && this.board.touch !== undefined) || false,
             touchEnabled: this.touchEnabled,
+            sdBoard: (this.board?.kind === 'esp' && this.board.sd !== undefined) || false,
+            sdEnabled: this.sdEnabled,
             loadError: this.loadError,
             loadNotes: this.loadNotes,
             loadProblems: this.loadProblems,
@@ -706,6 +751,11 @@ class DesignerPanel {
                 return [
                     `"${id}": this image comes from the SD card, and ${this.board?.name ?? 'this board'
                     } has no card socket`,
+                ];
+            }
+            if (!this.sdEnabled) {
+                return [
+                    `"${id}": this image comes from the SD card, but the \`sd\` cargo feature is switched off -- turn it on in the toolbar and rebuild.`,
                 ];
             }
             const module = path.join(this.folder.fsPath, 'src', 'sd.rs');

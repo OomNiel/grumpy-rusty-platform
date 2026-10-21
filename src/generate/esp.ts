@@ -302,6 +302,54 @@ export function generateEspProjectFiles(options: EspGenerateOptions): GeneratedF
 
 // ---------------------------------------------------------------------- Cargo
 
+/**
+ * The `[features]` block of a Designer Cargo.toml, or `''` when the project carries none.
+ *
+ * The block exists in two cases: a board whose catalog entry offers more than one panel revision (the LilyGo
+ * T-QT exposes both a GC9107 and a GC9A01), and a Designer project that can switch its SD card off. The card is
+ * gated behind cargo's `sd` feature -- optional `embedded-sdmmc` and `critical-section` dependencies plus a
+ * `#[cfg(feature = "sd")]` on `mod sd;` and the `sd::init` call -- so that *enabling* the card adds the FAT
+ * filesystem to the build and *disabling* it drops the crate again. `default` starts out carrying `"sd"` on a
+ * board that has a socket, which is every Designer project as it is generated; the Designer toolbar is what
+ * flips it later. Keeping the feature in `default` is what lets the setting be changed without regenerating
+ * `src/main.rs`, in the same way the panel-revision switch already does.
+ */
+function espFeaturesSection(panelChoice: string | undefined, sdFeature: boolean): string {
+    if (panelChoice === undefined && !sdFeature) {
+        return '';
+    }
+    const defaultItems: string[] = [];
+    if (panelChoice !== undefined) {
+        defaultItems.push(`"panel-${panelChoice}"`);
+    }
+    if (sdFeature) {
+        defaultItems.push('"sd"');
+    }
+    const lines: string[] = [''];
+    lines.push('[features]');
+    if (panelChoice !== undefined) {
+        lines.push('# LilyGo shipped two panels under one name; this feature picks which init table the');
+        lines.push('# firmware uses. Flip it and rebuild to try the other revision.');
+    }
+    lines.push(`default = [${defaultItems.join(', ')}]`);
+    if (panelChoice !== undefined) {
+        lines.push('panel-gc9107 = []');
+        lines.push('panel-gc9a01 = []');
+    }
+    if (sdFeature) {
+        lines.push(
+            '',
+            '# A TF-card socket is wired to this board. The `sd` feature pulls in the FAT filesystem',
+            '# (embedded-sdmmc) and the critical-section mutex it is kept behind, and gates the `sd::init`',
+            '# call in main.rs. It is on by default; switch it off in the Designer toolbar to drop the',
+            '# card and its filesystem from the build. It is a cargo feature rather than a config key so',
+            '# that enabling it is what adds the filesystem, not merely what reads a flag.',
+            'sd = ["dep:embedded-sdmmc", "dep:critical-section"]',
+        );
+    }
+    return `${lines.join('\n')}\n`;
+}
+
 function espCargoToml(
     board: EspBoardProfile,
     crateName: string,
@@ -311,17 +359,8 @@ function espCargoToml(
     // The touch template drives the same panel, so everything the panel needs is needed there too.
     const display = templateUsesPanel(template) ? displayFor(board, choices) : undefined;
     const panelChoice = display?.panelChoice;
-    const features =
-        panelChoice === undefined
-            ? ''
-            : `
-[features]
-# LilyGo shipped two panels under one name; this feature picks which init table the
-# firmware uses. Flip it and rebuild to try the other revision.
-default = ["panel-${panelChoice}"]
-panel-gc9107 = []
-panel-gc9a01 = []
-`;
+    const sdFeature = template === 'designer' && board.sd !== undefined;
+    const features = espFeaturesSection(panelChoice, sdFeature);
     const espRtosFeatures = ['embassy', board.espChip];
 
     // The radio templates: Wi-Fi on `wifi`, the Bluetooth LE controller on `bluetooth`. A Designer
@@ -376,17 +415,28 @@ panel-gc9a01 = []
         // The board template already declares this for its panel; declaring it twice is a duplicate key.
         dependencies.push(`embedded-hal-bus = "${ESP_CRATE_VERSIONS.embeddedHalBus}"`);
     }
-    if (template === 'sdcard' || template === 'board' || (template === 'designer' && board.sd !== undefined)) {
+    const designerSd = template === 'designer' && board.sd !== undefined;
+    if (template === 'sdcard' || template === 'board' || designerSd) {
         // The correct way to talk to a card: the ecosystem's own SD/SPI plus FAT implementation rather than
         // a hand-rolled CMD0/CMD8/ACMD41 sequence. It is the maintained crate that filesystems are tested
         // against, and getting the SD init handshake subtly wrong is a classic way to lose a day.
-        dependencies.push(`embedded-sdmmc = "${ESP_CRATE_VERSIONS.embeddedSdmmc}"`);
+        //
+        // A Designer project keeps it behind the `sd` cargo feature (see `espFeaturesSection`) so the toolbar
+        // can turn the card off and the crate never reaches the build; the `sdcard` and `board` templates are
+        // the whole point of the card, so theirs stay mandatory and feature-free. `optional` is what lets
+        // `dep:embedded-sdmmc` in the feature switch the crate in and out without a second version line.
+        dependencies.push(
+            designerSd
+                ? `embedded-sdmmc = { version = "${ESP_CRATE_VERSIONS.embeddedSdmmc}", optional = true }`
+                : `embedded-sdmmc = "${ESP_CRATE_VERSIONS.embeddedSdmmc}"`,
+        );
     }
-    if (template === 'designer' && board.sd !== undefined) {
+    if (designerSd) {
         // The mounted card has to survive between calls, so it lives in a critical-section Mutex. The crate
         // itself is already in the tree (esp-hal implements it), but a transitive dependency is not nameable,
-        // so it is declared here too -- the same version line, so there is only ever one of it.
-        dependencies.push(`critical-section = "${ESP_CRATE_VERSIONS.criticalSection}"`);
+        // so it is declared here too -- the same version line, so there is only ever one of it. Optional,
+        // because a Designer project built without the `sd` feature names neither the Mutex nor the card.
+        dependencies.push(`critical-section = { version = "${ESP_CRATE_VERSIONS.criticalSection}", optional = true }`);
     }
     if (template === 'touch' || template === 'board' || (template === 'designer' && board.touch !== undefined)) {
         // The calibration is kept in flash, so the project needs the NOR-flash crate. Its chip feature is
@@ -2011,7 +2061,7 @@ function espModules(board: EspBoardProfile, template: AppTemplate): string {
         "\n// Where the time comes from when no PC is listening on the cable.\nmod net;\n" +
         (board.sd === undefined
             ? ''
-            : "\n// The card a design's `sd:/NAME.BMP` images are read from.\nmod sd;\n") +
+            : "\n// The card a design's `sd:/NAME.BMP` images are read from.\n#[cfg(feature = \"sd\")]\nmod sd;\n") +
         (board.touch === undefined
             ? ''
             : "\n/// This project draws the design, so the diagnostic screen the touch template can paint is folded\n/// away at compile time. Kept rather than deleted: it is what to fall back on when a panel comes up wrong.\nconst DESIGNER: bool = true;\n\n/// Whether touch is wanted, read at compile time so the driver, the calibration and the sampling fold\n/// away when it is off: no SPI traffic to a controller nobody asked for. Only \"0\" is off, so a project\n/// generated before the setting existed keeps the touchscreen it had.\nconst TOUCH: bool = match option_env!(\"TOUCH_ENABLED\") {\n    Some(value) => !(value.len() == 1 && value.as_bytes()[0] == b'0'),\n    None => true,\n};\n")
@@ -2035,6 +2085,7 @@ function espDesignerSdInit(board: EspBoardProfile, template: AppTemplate): strin
     // Mount the card before the panel and the design: a design can name \`sd:/...\` images, and the first
     // frame should already have somewhere to read them from. A missing card is logged and leaves those
     // images to draw nothing rather than stopping the firmware.
+    #[cfg(feature = "sd")]
     sd::init(
         peripherals.${DESIGNER_SD_PERIPHERAL},
         peripherals.GPIO${sd.cs}, // card chip select

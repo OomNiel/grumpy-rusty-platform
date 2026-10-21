@@ -12,6 +12,16 @@ rust-version = "1.95"
 license = "MIT OR Apache-2.0"
 publish = false
 
+[features]
+default = ["sd"]
+
+# A TF-card socket is wired to this board. The `sd` feature pulls in the FAT filesystem
+# (embedded-sdmmc) and the critical-section mutex it is kept behind, and gates the `sd::init`
+# call in main.rs. It is on by default; switch it off in the Designer toolbar to drop the
+# card and its filesystem from the build. It is a cargo feature rather than a config key so
+# that enabling it is what adds the filesystem, not merely what reads a flag.
+sd = ["dep:embedded-sdmmc", "dep:critical-section"]
+
 [dependencies]
 esp-hal = { version = "~1.2.2", features = ["esp32", "log-04", "unstable"] }
 esp-rtos = { version = "0.4.0", features = ["embassy", "esp32", "esp-radio"] }
@@ -25,8 +35,8 @@ mipidsi = "0.10.0"
 embedded-graphics = "0.8"
 embedded-hal-bus = "0.3.0"
 static_cell = "2.1.1"
-embedded-sdmmc = "0.8.2"
-critical-section = "1.2.0"
+embedded-sdmmc = { version = "0.8.2", optional = true }
+critical-section = { version = "1.2.0", optional = true }
 esp-storage = { version = "0.10.0", features = ["esp32"] }
 embedded-gui = { version = "0.2.7", default-features = false, features = ["rich-widgets", "embedded-graphics", "macros", "micromath"] }
 rusty-gui-widgets = { path = "codegen/rusty-gui-widgets", default-features = false }

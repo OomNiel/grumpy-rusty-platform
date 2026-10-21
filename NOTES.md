@@ -7587,3 +7587,30 @@ behaved the same way.
   whichever route the tag reads.
 
 crate **309**, extension **995** (t1 920 · t2 71 · t3 4).
+
+---
+
+## 146. SD card toggle in the Designer (2026-10-21, unreleased)
+
+The SD card, unlike touch or rotation, cannot be a `.cargo/esp-config.toml` key: an env var (or a config
+`const`) can gate *whether the firmware talks to the card*, but it cannot add or drop the `embedded-sdmmc`
+dependency from the build, which is the literal requirement ("enabling adds a file system"). SD is therefore a
+cargo `feature`.
+
+- The only board with an SD slot is the Sunton `sunton-3248s035r` (CS=GPIO5, SPI3 = SCLK 18 / MOSI 23 / MISO 19
+  per `src/boards/catalog.ts`). RP boards expose no slot, so there is nothing to toggle for them.
+- Generation (`src/generate/esp.ts`): `designerSd = template === 'designer' && board.sd !== undefined`. The
+  deps become `optional = true`; `espFeaturesSection` emits
+  `[features]\ndefault = [..., "sd"]\nsd = ["dep:embedded-sdmmc", "dep:critical-section"]`; `espModules` writes
+  `#[cfg(feature = "sd")]\nmod sd;` and `espDesignerSdInit` writes `#[cfg(feature = "sd")]` before `sd::init`.
+  The Sunton Designer's `default = ["sd"]` keeps the default-on path byte-identical to the pre-toggle output, so
+  behaviour does not change until the user flips it off.
+- The `sdcard`/`board` templates keep `embedded-sdmmc = "0.8.2"` (non-optional) and never emit the `#[cfg]`, so
+  the toggle's gating never reaches them.
+- The Designer toolbar toggle (`webview/designer/main.ts` `setSd`, `src/designer/editor.ts` `setSd`,
+  `src/designer/sdFeature.ts`) rewrites only the `default = [...]` line of `[features]` and posts a rebuild note;
+  `Editor.save()` flags `sd:` images when the feature is off. The round trip is t1-pins in
+  `tests/layers/t1-logic/sd-feature.test.js` (helper) and `designer-sd.test.js` (gating); the Sunton Designer
+  bytes are locked by the regenerated t3-golden snapshots.
+- Rust correctness is by construction + golden snapshots only: the host has `rustc 1.99.0` and no
+  `xtensa-esp32*` / `espup` toolchain, so the generated SD code is not cross-compiled here.

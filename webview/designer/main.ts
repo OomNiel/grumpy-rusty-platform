@@ -86,6 +86,10 @@ let canvasHeight = 0;
 let touchBoard = false;
 /** Whether this project is built with touch, which the toolbar shows and writes. */
 let touchEnabled = true;
+/** Whether the board has an SD-card socket, which is what makes an SD switch a choice. */
+let sdBoard = false;
+/** Whether the project is built with the `sd` cargo feature, which the toolbar shows and writes. */
+let sdEnabled = true;
 let postTimer: number | undefined;
 
 const root = document.getElementById('designer');
@@ -197,6 +201,8 @@ window.addEventListener('message', (event: MessageEvent<
         canvasHeight = message.canvas.height;
         touchBoard = message.touchBoard;
         touchEnabled = message.touchEnabled;
+        sdBoard = message.sdBoard;
+        sdEnabled = message.sdEnabled;
         // Before the first paint: a declared font's glyphs are not in the design, so they arrive with the
         // document and the canvas has to know them before it draws a widget that uses one.
         for (const [name, pixels] of Object.entries(message.fonts ?? {})) {
@@ -355,6 +361,24 @@ function setTouch(enabled: boolean, why?: string): void {
     status(why ?? (enabled ? 'Touch enabled. Rebuild for it to take effect.' : 'Touch disabled. Rebuild for it to take effect.'), false);
 }
 
+/**
+ * Switches the SD card on or off for the project.
+ *
+ * The firmware reads the setting at compile time, so this writes the `sd` cargo feature in `Cargo.toml` and
+ * says as much: the board keeps doing whatever it was built with until it is built again. It is the cargo-toggle
+ * sibling of `setTouch` -- which writes an `.cargo/esp-config.toml` key -- because enabling the card is what
+ * adds the FAT filesystem (embedded-sdmmc), and only a feature can add or drop a dependency.
+ */
+function setSd(enabled: boolean, why?: string): void {
+    if (enabled === sdEnabled) {
+        return;
+    }
+    sdEnabled = enabled;
+    host.postMessage({ type: 'setSd', enabled });
+    refreshToolbar();
+    status(why ?? (enabled ? 'SD enabled. Rebuild for it to take effect.' : 'SD disabled. Rebuild for it to take effect.'), false);
+}
+
 /** A tag dropped or clicked in the Toolbox: put it in the middle of the canvas. */
 function drop(tag: string): void {
     // A control that raises events is a control that needs touch, so dropping one turns it on rather than
@@ -466,6 +490,27 @@ function refreshToolbar(): void {
         : 'This board has no touch controller, so there is nothing to drive.';
     touch.addEventListener('change', () => setTouch(touch.value === 'true'));
 
+    // SD, beside touch: both are project settings the firmware reads at compile time, and both are asked
+    // about in the wizard -- so this is where a later change of mind goes. SD is a cargo feature rather than
+    // an env key, because enabling it is what adds the FAT filesystem (embedded-sdmmc) to the build.
+    const sd = document.createElement('select');
+    sd.className = 'tool-select';
+    for (const [label, value] of [
+        ['SD: on', 'true'],
+        ['SD: off', 'false'],
+    ] as const) {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = label;
+        sd.append(option);
+    }
+    sd.value = String(sdEnabled);
+    sd.disabled = !sdBoard;
+    sd.title = sdBoard
+        ? 'Whether the firmware mounts the SD card and compiles its FAT filesystem (embedded-sdmmc) in. Changing it needs a rebuild.'
+        : 'This board has no SD card socket, so there is nothing to switch.';
+    sd.addEventListener('change', () => setSd(sd.value === 'true'));
+
     const revealKdl = toolButton('Markup', () => host.postMessage({ type: 'action', action: 'revealKdl' }));
     const revealDocument = toolButton('Design file', () => host.postMessage({ type: 'action', action: 'revealDocument' }));
     const build = toolButton('Build', () => host.postMessage({ type: 'action', action: 'build' }));
@@ -488,6 +533,7 @@ function refreshToolbar(): void {
         zoom,
         rotation,
         touch,
+        sd,
         separator(),
         revealDocument,
         revealKdl,

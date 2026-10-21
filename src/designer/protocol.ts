@@ -26,6 +26,13 @@ export interface DesignerInit {
     touchBoard: boolean;
     /** True when this project is built with touch enabled -- the setting the toolbar shows and writes. */
     touchEnabled: boolean;
+    /** True when the board has an SD-card socket, which is what makes an SD switch a choice. */
+    sdBoard: boolean;
+    /**
+     * Whether this project is built with the `sd` cargo feature -- i.e. whether the SD card and its FAT
+     * filesystem (embedded-sdmmc) are compiled in. The toolbar shows and writes it (see `../designer/editor`).
+     */
+    sdEnabled: boolean;
     /** The document as it was read, when it could not be parsed -- shown instead of a blank canvas. */
     loadError?: string;
     /**
@@ -140,6 +147,19 @@ export interface DesignerSetTouch {
 }
 
 /**
+ * The panel asking the extension to switch the SD card on or off for the project.
+ *
+ * Like touch it is a *project* setting rather than part of the design -- flipping it changes the firmware, not
+ * the markup -- but where touch is a `.cargo/esp-config.toml` key, the card is a cargo `feature`: enabling it
+ * is what adds the FAT filesystem (`embedded-sdmmc`) to the build, so the extension edits `Cargo.toml`'s
+ * `default = [...]` list and says as much.
+ */
+export interface DesignerSetSd {
+    type: 'setSd';
+    enabled: boolean;
+}
+
+/**
  * The extension asking the panel to rasterise a font file.
  *
  * Only the webview can draw a face -- it is the one renderer in this extension -- so adapting a system font
@@ -183,6 +203,7 @@ export type DesignerToHost =
     | DesignerReady
     | DesignerPickAsset
     | DesignerSetTouch
+    | DesignerSetSd
     | DesignerFontRasterised;
 export type HostToDesigner =
     | DesignerInit

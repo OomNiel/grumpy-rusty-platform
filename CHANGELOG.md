@@ -9,7 +9,20 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+
+- **SD card toggle in the Designer control bar.** The Sunton CYD (the only board with an SD slot) now has an
+  *SD: on/off* switch in the Designer toolbar, mirroring the existing Touch toggle. SD is a *cargo feature*
+  rather than a `.cargo/esp-config.toml` key, because enabling it is what adds the file system to the build: the
+  generator declares `embedded-sdmmc` (FAT) and `critical-section` as `optional` dependencies behind an `sd`
+  feature that ships `default`-on, and gates `#[cfg(feature = "sd")]` around `mod sd;` and the `sd::init(...)` call.
+  The toggle rewrites that `default` line in `Cargo.toml` from the extension and posts a rebuild note; designs
+  that name `sd:/NAME.BMP` images are flagged on save while the card is off. The dedicated `sdcard`/`board`
+  templates keep SD mandatory and ungated, since those projects exist to mount a card.
+
+### Notes
+
+- Test suite: 1038 hermetic (t1 963, t2 71, t3 4).
 
 ## [0.13.3] - 2026-10-21
 

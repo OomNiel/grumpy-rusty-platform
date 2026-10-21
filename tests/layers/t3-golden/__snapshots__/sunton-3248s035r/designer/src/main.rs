@@ -24,6 +24,7 @@ mod ui_handlers;
 mod net;
 
 // The card a design's `sd:/NAME.BMP` images are read from.
+#[cfg(feature = "sd")]
 mod sd;
 
 /// This project draws the design, so the diagnostic screen the touch template can paint is folded
@@ -226,6 +227,7 @@ pub async fn setup(spawner: Spawner) -> State {
     // Mount the card before the panel and the design: a design can name `sd:/...` images, and the first
     // frame should already have somewhere to read them from. A missing card is logged and leaves those
     // images to draw nothing rather than stopping the firmware.
+    #[cfg(feature = "sd")]
     sd::init(
         peripherals.SPI3,
         peripherals.GPIO5, // card chip select
