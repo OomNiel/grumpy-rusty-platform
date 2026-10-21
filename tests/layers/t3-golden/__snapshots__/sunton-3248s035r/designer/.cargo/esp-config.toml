@@ -12,3 +12,8 @@ LCD_ROTATION = "0"
 # Whether the firmware drives the touch controller, read at compile time by src/main.rs. Only "0" turns it
 # off. The designer's toolbar writes this line; flip it and rebuild for the change to take effect.
 TOUCH_ENABLED = "1"
+
+# Your UTC offset in minutes, read at compile time by src/net.rs: 120 is UTC+2, -300 is UTC-5.
+# The Wi-Fi time server answers in UTC; this is what turns it into the time on the glass. Add an
+# hour here when the clocks go forward, and take it back when they go back.
+TZ_OFFSET_MINUTES = "0"

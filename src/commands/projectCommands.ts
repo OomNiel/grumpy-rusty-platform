@@ -28,10 +28,39 @@ import { UsbFlashConfirmation, buildElf, flashProjectOverUsb } from '../flash/us
 import { BuildProfile, LAST_FLASHED_KEY } from '../project/launchConfig';
 import { activeWifiEnv } from '../wifi/credentials';
 import { ensureWifiEnv } from '../wifi/wifiPrompt';
+import { activeSmtpEnv } from '../smtp/credentials';
 import { closeTerminal, defmtEnv, defmtPrefix, espEnv, openTerminalNames, runInTerminal } from './terminal';
 import { ensureEspToolchain } from './espToolchainCommands';
+import { rearmClockListener } from '../designer/editor';
 
 const PROBE_CHECK_NOTICE_DELAY_MS = 500;
+
+/**
+ * Runs `after` once the flash command in its terminal has ended.
+ *
+ * The clock listener is closed before a flash so `espflash` can own the serial port, and it has to
+ * come back afterwards -- a board that is powered off later asks for the time, and nobody would be
+ * listening. Shell integration is what says the command ended; where it is unavailable nothing
+ * happens, which is safe: the flash's own TIME line has already set the RTC, so only a later cold
+ * boot would go without a listener.
+ */
+function whenFlashCommandEnds(after: () => void): void {
+    const events = vscode.window as unknown as {
+        onDidEndTerminalShellExecution?: (
+            listener: (event: { execution?: { commandLine?: { value?: string } } }) => void,
+        ) => vscode.Disposable;
+    };
+    if (events.onDidEndTerminalShellExecution === undefined) {
+        return;
+    }
+    const disposable = events.onDidEndTerminalShellExecution((event) => {
+        const line = event.execution?.commandLine?.value ?? '';
+        if (line.includes('espflash')) {
+            disposable.dispose();
+            after();
+        }
+    });
+}
 
 /**
  * Refreshes the toolchain status, naming the work only once it has taken long enough to be
@@ -165,7 +194,7 @@ export function registerProjectCommands(
     function buildEnv(): NodeJS.ProcessEnv {
         // espEnv() is empty unless espup has run: for an ESP project it is what puts the Xtensa
         // linker on PATH, for an RP project it changes nothing.
-        return augmentedEnv({ ...activeWifiEnv(), ...defmtEnv(), ...espEnv() });
+        return augmentedEnv({ ...activeWifiEnv(), ...activeSmtpEnv(), ...defmtEnv(), ...espEnv() });
     }
 
     /**
@@ -270,7 +299,12 @@ export function registerProjectCommands(
             return;
         }
 
-        // A monitor terminal holds the port; flashing beside it would fail to open the device.
+        // A monitor terminal holds the port; flashing beside it would fail to open the device. The
+        // clock listener holds it too, for as long as it is waiting for the board to ask -- a flash
+        // is a reason not to wait any longer, and closing it releases the handle.
+        if (closeTerminal('Rusty: clock')) {
+            output.appendLine('clock: closed the time listener so the flash can have the serial port.');
+        }
         if (!(await releaseMonitorHoldingPort())) {
             return;
         }
@@ -296,6 +330,9 @@ export function registerProjectCommands(
                 ? espFlashAndMonitorCommand(espflashCommand(), chip, elf, port, process.platform, handover)
                 : espFlashCommand(espflashCommand(), chip, elf, port, handover);
             runInTerminal('Rusty: flash', command, project.folder);
+            // The flash borrowed the port from the clock listener; the listener comes back when the
+            // command ends, so a board powered off later still finds a host that can answer it.
+            whenFlashCommandEnds(() => rearmClockListener());
             // Remember what the chip now holds, the same way the RP routes do.
             await context.workspaceState.update(LAST_FLASHED_KEY, profile);
         } catch (error) {
@@ -433,7 +470,11 @@ export function registerProjectCommands(
                 const board = project.board;
                 if (board?.kind === 'esp') {
                     // `espflash monitor` holds the serial port until this terminal is closed, which is
-                    // the whole point of a monitor - and why no flash can run beside it.
+                    // the whole point of a monitor - and why no flash can run beside it. The clock
+                    // listener is the other holder, so it is closed rather than left to time out.
+                    if (closeTerminal('Rusty: clock')) {
+                        output.appendLine('clock: closed the time listener so Monitor can have the serial port.');
+                    }
                     runInTerminal(
                         'Rusty: monitor',
                         espMonitorCommand(espflashCommand(), project.chip ?? board.espChip, espPort()),

@@ -20,6 +20,9 @@ use main_header::*;
 mod ui;
 mod ui_handlers;
 
+// Where the time comes from when no PC is listening on the cable.
+mod net;
+
 // The card a design's `sd:/NAME.BMP` images are read from.
 mod sd;
 
@@ -178,15 +181,32 @@ pub struct State {
 
     /// The design, built on the first calibrated frame and driven by touch from then on.
     screen: Option<ui::Designer>,
+
+    /// The chip’s RTC: the only thing on the board that still knows the time after a reset.
+    rtc: Rtc<'static>,
+
+    /// Whether the RTC was never set. Until it has been, the design asks a host for the time.
+    needs_time: bool,
+
+    /// Whether anything has arrived from a host. The CYD’s USB socket goes through a bridge, so a byte is the only evidence that a PC is on the other end.
+    host_seen: bool,
+
+    /// When the time was last asked for, so the request is once a second and not once a pass.
+    last_time_ask: Option<Instant>,
 }
 
 /// One-time initialisation -- the Arduino setup().
 ///
 /// Brings up the design and the panel it is drawn on and hands it back as a State for main() to run. Everything that
 /// must happen once, and only once, belongs here.
-pub async fn setup() -> State {
+pub async fn setup(spawner: Spawner) -> State {
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
+
+    // Wi-Fi is not static-buffer-only, so it needs a heap. The first block is memory the second-stage
+    // bootloader used and is done with by now; the second is reserved from SRAM.
+    esp_alloc::heap_allocator!(#[ram(reclaimed)] size: 64 * 1024);
+    esp_alloc::heap_allocator!(size: 36 * 1024);
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     esp_rtos::start(timg0.timer0, peripherals.FROM_CPU_INTR0);
@@ -418,27 +438,49 @@ pub async fn setup() -> State {
     let hold_samples: u32 = 0;
     let hold_a: i32 = 0;
     let hold_b: i32 = 0;
-    // The console the toolchain talks over. It is the same UART0 the logger writes to, and only
-    // its receiver is taken: the log keeps working, and a quiet console costs one register read
-    // per pass.
+    // The console the host talks over: UART0 on the CH340's side of the CYD's USB socket. Only its
+    // receiver is taken, so the log keeps working and a quiet console costs one register read a pass.
     //
-    // Optional, and never an expect: a console that cannot be opened costs the wall clock and
-    // nothing else -- the one-second timer still steps the design's own time, which is the fallback
-    // a board with no RTC gets anyway. Found the hard way: an expect here took the whole panel down
-    // on a board that had been flashing happily until the reader was added.
+    // Optional, and never an expect: a console that cannot be opened costs the hand-over and nothing
+    // else. Found the hard way -- an expect here took the whole panel down on a board that had been
+    // flashing happily until the reader was added.
     let console = match Uart::new(peripherals.UART0, UartConfig::default().with_baudrate(115_200)) {
         Ok(uart) => Some(uart.with_rx(peripherals.GPIO3)),
         Err(error) => {
-            log::warn!("clock: the console UART did not open ({:?}); the timer will step the clock", error);
+            log::warn!("clock: the console UART did not open ({:?}); no host can hand the time over", error);
             None
         }
     };
     let console_line = [0u8; 32];
     let console_len: usize = 0;
-    // The local time the toolchain handed over, and whether the design has been told. The design
-    // does not exist until the first calibrated frame, and the line arrives long before that.
-    let wall_clock: Option<(u8, u8, u8)> = None;
+    // The chip's RTC: the one thing on the board that still knows the time after a reset. It is
+    // asked before the design exists, so a board that was only reset starts with the right hands.
+    let rtc = Rtc::new(peripherals.RTC_TIMER);
+    let rtc_time = rtc_time_of_day(&rtc);
+    match rtc_time {
+        Some((hour, minute, second)) => log::info!(
+            "clock: the RTC kept {:02}:{:02}:{:02} across the reset",
+            hour,
+            minute,
+            second
+        ),
+        None => log::info!("clock: the RTC is not set; a host can hand the time over"),
+    }
+    let needs_time = rtc_time.is_none();
+    let host_seen = false;
+    let last_time_ask: Option<Instant> = None;
+    // What the design is showing: the RTC's time, or whatever the host last said. The design itself
+    // is built on the first calibrated frame, so the value is kept here until there is one to tell.
+    let wall_clock: Option<(u8, u8, u8)> = rtc_time;
     let wall_clock_applied = false;
+    // A board on a charger has no host to answer TIME?, so the network is asked instead. The task is
+    // started only when the design has a clock and the RTC has never been set: a design without one
+    // never brings the radio up, and a board that came back with a time does not need the network.
+    if ui::HAS_CLOCK && needs_time {
+        spawner.spawn(
+            crate::net::time_task(peripherals.WIFI).expect("the network time task is spawned exactly once"),
+        );
+    }
     // Whether the four corners have been measured -- by this run or by a previous one, which is what the
     // flash sector is for. Until they have, the panel shows the calibration screen.
     let calibrated = stored.is_some();
@@ -489,6 +531,10 @@ pub async fn setup() -> State {
         wall_clock,
         wall_clock_applied,
         screen,
+        rtc,
+        needs_time,
+        host_seen,
+        last_time_ask,
     }
 }
 
@@ -497,8 +543,8 @@ pub async fn setup() -> State {
 /// setup() runs once, then the implementation below repeats for as long as the board is powered. This is the
 /// function to edit: everything it needs from setup() is in state.
 #[esp_rtos::main]
-async fn main(_spawner: Spawner) -> ! {
-    let mut state = setup().await;
+async fn main(spawner: Spawner) -> ! {
+    let mut state = setup(spawner).await;
 
     loop {
         if state.redraw_screen {
@@ -674,28 +720,28 @@ async fn main(_spawner: Spawner) -> ! {
             state.redraw_box = false;
         }
 
-        // Whatever the toolchain sent over the console. Non-blocking: an empty FIFO reads zero
-        // bytes, so a quiet console costs one register read a pass.
+        // Whatever the host has said over the console. Non-blocking: an empty FIFO reads zero
+        // bytes, so a quiet console costs one register read a pass. A byte is also the CYD's only
+        // evidence that a PC is on the other end of the cable: its USB socket goes through a bridge,
+        // and the firmware cannot see the cable itself.
         if let Some(uart) = state.console.as_mut() {
             let mut byte = [0u8; 1];
-            // A plain read *waits* for a byte that may never come: that stopped the whole panel at
-            // the first frame, found on the board (2026-10-17). read_ready costs one register read
-            // and answers at once, so a quiet console costs one test a pass and nothing else.
             while uart.read_ready() {
                 if !matches!(uart.read(&mut byte), Ok(1)) {
                     break;
                 }
+                state.host_seen = true;
                 match byte[0] {
                     b'\r' => {}
                     b'\n' => {
                         // A local, because a range ending in console_len reads as a field access
                         // to the code that rewrites the loop's names onto state.
                         let filled = state.console_len;
-                        if let Some((hour, minute, second)) =
-                            parse_clock_time(&state.console_line[..filled])
-                        {
+                        if let Some((hour, minute, second)) = parse_clock_time(&state.console_line[..filled]) {
                             state.wall_clock = Some((hour, minute, second));
                             state.wall_clock_applied = false;
+                            set_rtc_time_of_day(&state.rtc, hour, minute, second);
+                            state.needs_time = false;
                             log::info!(
                                 "clock: the console says {:02}:{:02}:{:02}",
                                 hour,
@@ -715,12 +761,39 @@ async fn main(_spawner: Spawner) -> ! {
                 }
             }
         }
-        // The design exists only from the first calibrated frame, and the time line arrives long
-        // before that: the hand-over is remembered until there is a design to tell.
+        // The network's answer, when the Wi-Fi task got one. Same effect as a console line: the RTC
+        // is set and the hands follow. A time that arrives after another source already set the RTC
+        // is taken and dropped, so the two never fight over the clock.
+        if let Some((hour, minute, second)) = net::SYNCED_TIME.try_take() {
+            if state.needs_time {
+                state.wall_clock = Some((hour, minute, second));
+                state.wall_clock_applied = false;
+                set_rtc_time_of_day(&state.rtc, hour, minute, second);
+                state.needs_time = false;
+                log::info!("clock: the network says {:02}:{:02}:{:02}", hour, minute, second);
+            }
+        }
+        // The design exists only from the first frame, and the time can arrive before it: the value
+        // is remembered until there is a design to tell.
         if !state.wall_clock_applied {
             if let (Some(design), Some((hour, minute, second))) = (state.screen.as_mut(), state.wall_clock) {
                 design.set_wall_clock(hour, minute, second);
                 state.wall_clock_applied = true;
+            }
+        }
+        // A design with a clock and an RTC that has never been set: ask for the time once a second
+        // until one arrives. Asking a cable that is not there costs nothing, and a host that appears
+        // later -- after the board was powered on, or after a flash -- answers on its next try.
+        if ui::HAS_CLOCK && state.needs_time {
+            let due = match state.last_time_ask {
+                None => true,
+                Some(last) => last.elapsed().as_secs() >= 1,
+            };
+            if due {
+                // esp-println's plain println, not the logger: a log line carries its level and
+                // colour codes, and the host has to be able to recognise this line exactly.
+                esp_println::println!("TIME?");
+                state.last_time_ask = Some(Instant::now());
             }
         }
 

@@ -24,6 +24,8 @@ pub use design::RustyPanelWidgets;
 
 /// Node budget: the markup's own widget count plus headroom, so the designer cannot outgrow a constant.
 pub const NODES: usize = design::RustyPanelApp::NODE_COUNT + 8;
+/// Whether the design draws a clock -- what decides whether the firmware keeps a time at all.
+pub const HAS_CLOCK: bool = false;
 /// Queued events and damage rectangles: what a finger produces between two frames.
 pub const EVENTS: usize = 16;
 pub const DIRTY: usize = 8;

@@ -5,6 +5,7 @@ import * as vscode from 'vscode';
 import { EXPORT_ESP_FILES, parseExportEspFile } from '../toolchain/espToolchain';
 import { augmentedEnv } from '../util/exec';
 import { activeWifiEnv, wifiEnvVersion } from '../wifi/credentials';
+import { activeSmtpEnv, smtpEnvVersion } from '../smtp/credentials';
 
 /**
  * Terminal helper.
@@ -31,8 +32,9 @@ const terminals = new Map<string, TerminalEntry>();
 
 export function runInTerminal(name: string, command: string, cwd?: vscode.Uri): vscode.Terminal {
     // The Wi-Fi credentials are part of the identity: a terminal created before the prompt must not
-    // be reused for a build after it, or the image would silently carry the placeholder SSID.
-    const key = `${name}::${cwd?.toString() ?? ''}::${wifiEnvVersion()}::${espEnvVersion()}`;
+    // be reused for a build after it, or the image would silently carry the placeholder SSID. The
+    // SMTP password is in the same identity class: it is part of the build environment too.
+    const key = `${name}::${cwd?.toString() ?? ''}::${wifiEnvVersion()}::${smtpEnvVersion()}::${espEnvVersion()}`;
     const existing = terminals.get(key);
     let terminal = existing && existing.terminal.exitStatus === undefined ? existing.terminal : undefined;
 
@@ -40,7 +42,7 @@ export function runInTerminal(name: string, command: string, cwd?: vscode.Uri): 
         terminal = vscode.window.createTerminal({
             name,
             cwd,
-            env: augmentedEnv({ ...activeWifiEnv(), ...espEnv() }),
+            env: augmentedEnv({ ...activeWifiEnv(), ...activeSmtpEnv(), ...espEnv() }),
         });
         terminals.set(key, { terminal, name, cwd: cwd?.toString() });
         terminal.sendText(command);

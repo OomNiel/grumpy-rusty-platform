@@ -469,6 +469,8 @@ function refreshToolbar(): void {
     const revealKdl = toolButton('Markup', () => host.postMessage({ type: 'action', action: 'revealKdl' }));
     const revealDocument = toolButton('Design file', () => host.postMessage({ type: 'action', action: 'revealDocument' }));
     const build = toolButton('Build', () => host.postMessage({ type: 'action', action: 'build' }));
+    const smtp = toolButton('SMTP…', () => host.postMessage({ type: 'action', action: 'setupSmtp' }));
+    smtp.title = 'Set up an SMTP client over Wi-Fi (keep-alive posts)';
 
     const spacer = document.createElement('span');
     spacer.className = 'toolbar-spacer';
@@ -490,6 +492,7 @@ function refreshToolbar(): void {
         revealDocument,
         revealKdl,
         build,
+        smtp,
         spacer,
         size,
     );

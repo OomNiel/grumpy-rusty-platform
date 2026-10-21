@@ -8,3 +8,8 @@ ESP_LOG = "info"
 # clockwise. The rustyPlatform.lcdRotation setting writes this line; editing it here works just as well
 # (the compiler reads this file), and neither ever touches src/main.rs.
 LCD_ROTATION = "0"
+
+# Your UTC offset in minutes, read at compile time by src/net.rs: 120 is UTC+2, -300 is UTC-5.
+# The Wi-Fi time server answers in UTC; this is what turns it into the time on the glass. Add an
+# hour here when the clocks go forward, and take it back when they go back.
+TZ_OFFSET_MINUTES = "0"

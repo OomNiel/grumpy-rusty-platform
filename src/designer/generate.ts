@@ -293,6 +293,17 @@ function handlerCall(widget: DesignerWidget, event: DesignerEvent): string {
 }
 
 /**
+ * Whether the design draws a clock.
+ *
+ * The main loop asks this before doing anything with time at all: a project whose design has no clock
+ * has no face to set, so it should not spend a console receiver and an RTC on one. The answer travels
+ * into the generated `ui.rs` as `HAS_CLOCK`, which is a `const` and therefore folded away at build time.
+ */
+export function designHasClock(document: DesignerDocument): boolean {
+    return document.widgets.some((widget) => widget.tag === 'clock');
+}
+
+/**
  * The generated Rust side: the markup's `include_gui!`, the budgets, and the plumbing `main.rs` drives.
  *
  * Two details are load-bearing. The node budget is the markup's own `NODE_COUNT` plus headroom, so adding
@@ -337,15 +348,15 @@ export function emitUiRs(document: DesignerDocument, touch = true): string {
     const wallInit = '            wall_base: None,\n';
     const movementField = movement
         ? '    /// When the clocks were last advanced. `None` until the first frame sets it.\n' +
-          '    last_tick: Option<Instant>,\n'
+        '    last_tick: Option<Instant>,\n'
         : '';
     const movementInit = movement ? '            last_tick: None,\n' : '';
     // The extra sentence on `is_dirty` is there only in a design that has a movement: a project with
     // no clock generates exactly the file it generated before this existed.
     const isDirtyDoc = movement
         ? '    ///\n' +
-          '    /// A clock whose movement is attached is due once a second has passed, which is what\n' +
-          '    /// makes the hands move on a panel nobody is touching.\n'
+        '    /// A clock whose movement is attached is due once a second has passed, which is what\n' +
+        '    /// makes the hands move on a panel nobody is touching.\n'
         : '';
     const movementTick = movement ? '        self.tick_clocks();\n' : '';
     const isDirty = movement
@@ -387,6 +398,8 @@ pub use design::${PINNED_SCREEN_ID}Widgets;
 
 /// Node budget: the markup's own widget count plus headroom, so the designer cannot outgrow a constant.
 pub const NODES: usize = design::${PINNED_SCREEN_ID}App::NODE_COUNT + 8;
+/// Whether the design draws a clock -- what decides whether the firmware keeps a time at all.
+pub const HAS_CLOCK: bool = ${designHasClock(document)};
 /// Queued events and damage rectangles: what a finger produces between two frames.
 pub const EVENTS: usize = 16;
 pub const DIRTY: usize = 8;

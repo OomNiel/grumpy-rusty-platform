@@ -20,6 +20,9 @@ use main_header::*;
 mod ui;
 mod ui_handlers;
 
+// Where the time comes from when no PC is listening on the cable.
+mod net;
+
 /// The batching buffer mipidsi's interface borrows, for the same reason: the interface is part of the
 /// State, so the buffer has to outlive setup().
 static BUFFER_CELL: static_cell::StaticCell<[u8; 512]> = static_cell::StaticCell::new();
@@ -38,6 +41,33 @@ pub struct State {
     /// The design. On a panel with no touchscreen this loop is the only thing that asks it whether anything changed.
     screen: ui::Designer,
 
+    /// The console the host hands the time over on. This board’s USB socket is wired to the chip, so its console is the USB-Serial-JTAG controller itself.
+    console: UsbSerialJtag<'static, esp_hal::Blocking>,
+
+    /// One line of it, in the making.
+    console_line: [u8; 32],
+
+    /// How much of that line is filled.
+    console_len: usize,
+
+    /// The local time the host sent, and whether the design has
+    wall_clock: Option<(u8, u8, u8)>,
+
+    /// been told yet.
+    wall_clock_applied: bool,
+
+    /// The chip’s RTC: the only thing on the board that still knows the time after a reset.
+    rtc: Rtc<'static>,
+
+    /// Whether the RTC was never set. Until it has been, the design asks a host for the time.
+    needs_time: bool,
+
+    /// Whether anything has arrived from a host. The CYD’s USB socket goes through a bridge, so a byte is the only evidence that a PC is on the other end.
+    host_seen: bool,
+
+    /// When the time was last asked for, so the request is once a second and not once a pass.
+    last_time_ask: Option<Instant>,
+
     /// Poll counter. The heartbeat is one line every hundred passes, not one per poll.
     alive: u32,
 }
@@ -46,9 +76,14 @@ pub struct State {
 ///
 /// Brings up the design and the panel it is drawn on and hands it back as a State for main() to run. Everything that
 /// must happen once, and only once, belongs here.
-pub async fn setup() -> State {
+pub async fn setup(spawner: Spawner) -> State {
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
+
+    // Wi-Fi is not static-buffer-only, so it needs a heap. The first block is memory the second-stage
+    // bootloader used and is done with by now; the second is reserved from SRAM.
+    esp_alloc::heap_allocator!(#[ram(reclaimed)] size: 64 * 1024);
+    esp_alloc::heap_allocator!(size: 36 * 1024);
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     esp_rtos::start(timg0.timer0, peripherals.FROM_CPU_INTR0);
@@ -138,7 +173,7 @@ pub async fn setup() -> State {
     } else {
         (width as u32, height as u32)
     };
-    let screen = ui::Designer::new(width_i, height_i);
+    let mut screen = ui::Designer::new(width_i, height_i);
     display.clear(Rgb565::BLACK).expect("panel write failed");
     // Timed, like the diagnostics screen and for the same reason: the number is what turns "the panel is
     // slow" into something a change can be compared against. The shapes draw in rows -- one canvas call
@@ -154,10 +189,52 @@ pub async fn setup() -> State {
 
     // Counts passes, so the heartbeat below is one line every ten seconds rather than one per poll.
     let alive: u32 = 0;
+    // The console is the chip's own USB-Serial-JTAG controller: the T-QT's USB socket is wired to
+    // the ESP32-S3 directly, so there is no bridge to configure and no UART pin to take.
+    let console = UsbSerialJtag::new(peripherals.USB_DEVICE);
+    let console_line = [0u8; 32];
+    let console_len: usize = 0;
+    // The chip's RTC: the one thing on the board that still knows the time after a reset. It is
+    // asked before the design exists, so a board that was only reset starts with the right hands.
+    let rtc = Rtc::new(peripherals.RTC_TIMER);
+    let rtc_time = rtc_time_of_day(&rtc);
+    match rtc_time {
+        Some((hour, minute, second)) => log::info!(
+            "clock: the RTC kept {:02}:{:02}:{:02} across the reset",
+            hour,
+            minute,
+            second
+        ),
+        None => log::info!("clock: the RTC is not set; a host can hand the time over"),
+    }
+    let needs_time = rtc_time.is_none();
+    let host_seen = false;
+    let last_time_ask: Option<Instant> = None;
+    // What the design is showing: the RTC's time, or whatever the host last said. The design itself
+    // is built on the first calibrated frame, so the value is kept here until there is one to tell.
+    let wall_clock: Option<(u8, u8, u8)> = rtc_time;
+    let wall_clock_applied = false;
+    // A board on a charger has no host to answer TIME?, so the network is asked instead. The task is
+    // started only when the design has a clock and the RTC has never been set: a design without one
+    // never brings the radio up, and a board that came back with a time does not need the network.
+    if ui::HAS_CLOCK && needs_time {
+        spawner.spawn(
+            crate::net::time_task(peripherals.WIFI).expect("the network time task is spawned exactly once"),
+        );
+    }
     State {
         display,
         backlight,
         screen,
+        console,
+        console_line,
+        console_len,
+        wall_clock,
+        wall_clock_applied,
+        rtc,
+        needs_time,
+        host_seen,
+        last_time_ask,
         alive,
     }
 }
@@ -167,10 +244,86 @@ pub async fn setup() -> State {
 /// setup() runs once, then the implementation below repeats for as long as the board is powered. This is the
 /// function to edit: everything it needs from setup() is in state.
 #[esp_rtos::main]
-async fn main(_spawner: Spawner) -> ! {
-    let mut state = setup().await;
+async fn main(spawner: Spawner) -> ! {
+    let mut state = setup(spawner).await;
 
     loop {
+        // The clock comes first: a wall clock handed over (or kept by the RTC) has to be in the
+        // design before it is asked whether it is dirty, or the first frame shows the drawn time.
+        // A host on the cable is visible in the USB-Serial-JTAG controller itself; anything it says
+        // arrives on the same peripheral. Both are the "is a PC there?" answer this board can give.
+        if usb_host_attached() {
+            state.host_seen = true;
+        }
+        loop {
+            match state.console.read_byte() {
+                Ok(byte) => {
+                    state.host_seen = true;
+                    match byte {
+                        b'\r' => {}
+                        b'\n' => {
+                            // A local, because a range ending in console_len reads as a field access
+                            // to the code that rewrites the loop's names onto state.
+                            let filled = state.console_len;
+                            if let Some((hour, minute, second)) = parse_clock_time(&state.console_line[..filled]) {
+                                state.wall_clock = Some((hour, minute, second));
+                                state.wall_clock_applied = false;
+                                set_rtc_time_of_day(&state.rtc, hour, minute, second);
+                                state.needs_time = false;
+                                log::info!(
+                                    "clock: the console says {:02}:{:02}:{:02}",
+                                    hour,
+                                    minute,
+                                    second
+                                );
+                            }
+                            state.console_len = 0;
+                        }
+                        _ if state.console_len < state.console_line.len() => {
+                            state.console_line[state.console_len] = byte;
+                            state.console_len += 1;
+                        }
+                        // A line longer than the buffer is not a time line: start again rather than
+                        // keeping half of it.
+                        _ => state.console_len = 0,
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        // The network's answer, when the Wi-Fi task got one. Same effect as a console line: the RTC
+        // is set and the hands follow. A time that arrives after another source already set the RTC
+        // is taken and dropped, so the two never fight over the clock.
+        if let Some((hour, minute, second)) = net::SYNCED_TIME.try_take() {
+            if state.needs_time {
+                state.wall_clock = Some((hour, minute, second));
+                state.wall_clock_applied = false;
+                set_rtc_time_of_day(&state.rtc, hour, minute, second);
+                state.needs_time = false;
+                log::info!("clock: the network says {:02}:{:02}:{:02}", hour, minute, second);
+            }
+        }
+        // The design exists only from the first frame, and the time can arrive before it: the value
+        // is remembered until there is a design to tell.
+        if !state.wall_clock_applied {
+            if let (Some(design), Some((hour, minute, second))) = (Some(&mut state.screen), state.wall_clock) {
+                design.set_wall_clock(hour, minute, second);
+                state.wall_clock_applied = true;
+            }
+        }
+        // A design with a clock and an RTC that has never been set: ask for the time once a second
+        // until one arrives. Asking a cable that is not there costs nothing, and a host that appears
+        // later -- after the board was powered on, or after a flash -- answers on its next try.
+        if ui::HAS_CLOCK && state.needs_time && state.host_seen {
+            let due = match state.last_time_ask {
+                None => true,
+                Some(last) => last.elapsed().as_secs() >= 1,
+            };
+            if due {
+                let _ = state.console.write(b"TIME?\n");
+                state.last_time_ask = Some(Instant::now());
+            }
+        }
         // Asked every pass, for the same reason as the touch body: a design that changes on its own --
         // a clock with its movement attached -- has no finger to make it repaint.
         if state.screen.is_dirty() {

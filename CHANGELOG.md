@@ -11,6 +11,49 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.13.3] - 2026-10-21
+
+### Added
+
+- **SMTP over Wi-Fi wizard.** A new *Set up SMTP over Wi-Fi…* command (palette entry and Designer
+  control-bar button) guides the user through the relay host/port/credentials, STARTTLS, and a
+  keep-alive post (sender, comma-separated recipients, cadence, subject, body). The credentials live
+  in the editor keyring only — never in the project tree — and are injected into builds as
+  `option_env!("SMTP_*")` variables, the same contract the Wi-Fi templates already use. The wizard
+  writes a self-contained ESP32 `smtp_task` into `src/smtp.rs`, declares `mod smtp;` and spawns the
+  task beside the clock in `src/main.rs`, and adds the `tcp` feature to `embassy-net` plus a direct
+  `embedded-io-async` dependency to `Cargo.toml`. Re-running it overwrites the project files in
+  place and refreshes the build environment.
+- **Clock time over serial and Wi-Fi.** A design's clock follows the host PC's time: when the chip's
+  RTC has never been set the firmware asks once a second (`TIME?`), and the Designer answers from the
+  PC's clock, keeping the port open across cold boots. The listener is closed while Flash or Monitor
+  hold the port and restarted when the flash command ends. A board with no PC on the cable falls
+  back to Wi-Fi SNTP via a generated `src/net.rs`, and new ESP projects bake in the host's UTC offset.
+- `HAS_CLOCK` is emitted as a `const` in `ui.rs`, and the clock-movement code (the tick bookkeeping
+  and the `tick_clocks` call) is only generated when the design has a clock — a design without one is
+  unchanged.
+
+### Fixed
+
+- **The generated `src/smtp.rs` now compiles.** `option_env!` is const, but `str::parse`, `str ==`,
+  `Option::map_or` and lifetime elision across two inputs are not, so the port and STARTTLS flag are
+  parsed and compared with hand-rolled `const fn`s; the DNS `Result` is flattened before `.first()` is
+  called on it; the resolve return type is `core::net::Ipv4Addr`; `TcpSocket` borrows are spelled as
+  `TcpSocket<'_>`; and `base64_encode` ties its input and output buffer with one explicit lifetime.
+  The fix is pinned byte-for-byte against the compiling `retest` project, and a new t1 case locks each
+  of them in.
+
+### Notes
+
+- TLS is recognised but not wired: with STARTTLS set the generated module logs a warning and sends in
+  the clear on the LAN (a `no_std` TLS stack is the only missing piece; the firmware already has an
+  allocator to back one).
+- The SMTP password is the same identity class as the Wi-Fi credentials: both are merged into the
+  environment of every `cargo` invocation the extension starts (terminal, Build, Debug, Flash), and
+  the terminal cache key now folds in the SMTP env version so a terminal opened before the prompt is
+  not reused after it.
+- Test suite: 1029 hermetic (t1 954, t2 71, t3 4).
+
 ## [0.12.2] - 2026-10-19
 
 The font size box is gone, and a font can be deleted from the list that chooses it.

@@ -41,7 +41,7 @@ const {
     trianglePoints,
 } = compiled('designer/model');
 const { emitKdl, layoutDocument } = compiled('designer/kdl');
-const { emitUiRs, emitHandlersRs } = compiled('designer/generate');
+const { emitUiRs, emitHandlersRs, designHasClock } = compiled('designer/generate');
 const { fontConstName } = compiled('designer/model');
 const {
     rgb565Expression,
@@ -1854,4 +1854,24 @@ test('two clocks, one running: only the attached one is advanced', () => {
     const ui = emitUiRs(document(0, [running, stopped]));
     contains(ui, 'self.gui.advance_clock(self.widgets.clk);');
     notOk(ui.includes('self.gui.advance_clock(self.widgets.stopped);'), 'the stopped clock is left alone');
+});
+
+test('the design says whether it draws a clock, so the firmware can decide whether a time matters', () => {
+    // The firmware keeps a time in the chip's RTC and asks a host for one when it has never been set.
+    // A design with no clock has no face to set, so the const is what switches that work off -- and
+    // because it is a const, the branch is folded away at build time rather than tested at runtime.
+    const clock = widget('clk', 'clock', { x: 0, y: 0, width: 96, height: 96 });
+    equal(
+        designHasClock(document(0, [clock])),
+        true,
+        'a clock in the design asks the firmware for a time',
+    );
+    contains(emitUiRs(document(0, [clock])), 'pub const HAS_CLOCK: bool = true', 'and the generated side says so');
+    equal(designHasClock(document(0, [])), false, 'an empty design does not');
+    contains(emitUiRs(document(0, [])), 'pub const HAS_CLOCK: bool = false', 'and says so too');
+    // A clock whose Run is off still has a face, so the time still matters: the hands show it even
+    // though nothing advances them.
+    const stopped = widget('stopped', 'clock', { x: 0, y: 0, width: 96, height: 96 });
+    stopped.props.movement = false;
+    equal(designHasClock(document(0, [stopped])), true, 'a stopped clock still shows a time');
 });

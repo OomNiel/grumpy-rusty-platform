@@ -202,6 +202,7 @@ export type DesignerActionId =
     | 'revealDocument'
     | 'build'
     | 'revealProject'
+    | 'setupSmtp'
     /**
      * Set the module's RTC to this PC's time, over the console.
      *
@@ -209,7 +210,15 @@ export type DesignerActionId =
      * when the design holds no clock or no board is on a port (see `../flash/clockSync`). Only the
      * extension can write to a serial port, so the panel asks and does not wait on the answer.
      */
-    | 'updateClockTime';
+    | 'updateClockTime'
+    /**
+     * Keep the serial port open and answer the board's own `TIME?` requests.
+     *
+     * The firmware asks for the time when its RTC has never been set and a host is visible; this is
+     * the host's half (see `../flash/clockHost`). It holds the port, so Monitor cannot run beside it,
+     * and it is offered from the clock's pane because that is the widget the answer is for.
+     */
+    | 'serveClockTime';
 
 export type DesignerAction =
     | { type: 'action'; action: DesignerActionId }

@@ -72,6 +72,13 @@ export const ESP_CRATE_VERSIONS = {
     /** The Bluetooth host stack on top of esp-radio's HCI controller (advertising + GATT). */
     troubleHost: '0.7.0',
     staticCell: '2.1.1',
+    /**
+     * The ESP32-S3's peripheral access crate, named directly by a Designer project only: the USB
+     * controller's Start-of-Frame status is the one "is a host attached?" signal esp-hal does not
+     * expose, and the register block lives here. Same line esp-hal 1.2.2 itself resolves to, so
+     * there is only ever one of it in the tree.
+     */
+    esp32s3Pac: '0.36',
 } as const;
 
 /** The Xtensa toolchain espup installs under this rustup channel name. */
@@ -100,6 +107,14 @@ export interface EspGenerateOptions {
      * setting existed had.
      */
     touch?: boolean;
+    /**
+     * The UTC offset, in minutes, a Designer project's Wi-Fi time should be shown at.
+     *
+     * The time server answers in UTC and a no_std image has no timezone database, so the offset is a
+     * build-time number written into `.cargo/esp-config.toml` (and editable there). Omitted means 0,
+     * which is UTC -- the tests' stable default; the wizard passes the machine's own offset.
+     */
+    clockOffsetMinutes?: number;
 }
 
 /**
@@ -242,7 +257,7 @@ export function generateEspProjectFiles(options: EspGenerateOptions): GeneratedF
     const files: GeneratedFile[] = [
         { path: 'Cargo.toml', content: espCargoToml(board, crateName, template, choices) },
         { path: '.cargo/config.toml', content: espCargoConfigToml(board, template) },
-        { path: '.cargo/esp-config.toml', content: espConfigToml(rotation, usesPanel, touchSetting) },
+        { path: '.cargo/esp-config.toml', content: espConfigToml(rotation, usesPanel, touchSetting, template === 'designer' ? options.clockOffsetMinutes ?? 0 : undefined) },
         { path: 'rust-toolchain.toml', content: espRustToolchainToml() },
         { path: 'build.rs', content: espBuildRs() },
         ...espMainFiles(board, template, choices),
@@ -277,6 +292,11 @@ export function generateEspProjectFiles(options: EspGenerateOptions): GeneratedF
         // call in `main`, so nothing about its project changes.
         files.push({ path: 'src/sd.rs', content: emitSdRs(board) });
     }
+    if (template === 'designer') {
+        // The clock's second source: Wi-Fi and SNTP, for a board with no PC on the cable. Net-free
+        // at runtime unless the design has a clock and the RTC has never been set (see main.rs).
+        files.push({ path: 'src/net.rs', content: emitNetRs() });
+    }
     return files;
 }
 
@@ -304,8 +324,9 @@ panel-gc9a01 = []
 `;
     const espRtosFeatures = ['embassy', board.espChip];
 
-    // The radio templates: Wi-Fi on `wifi`, the Bluetooth LE controller on `bluetooth`.
-    const radio = template === 'wifi' || template === 'bluetooth';
+    // The radio templates: Wi-Fi on `wifi`, the Bluetooth LE controller on `bluetooth`. A Designer
+    // project needs Wi-Fi too -- it is where the time comes from when no host is on the cable.
+    const radio = template === 'wifi' || template === 'bluetooth' || template === 'designer';
 
     // The ADC and DAC live behind esp-hal's `unstable` feature (confirmed in its source: the analog modules
     // are cfg-gated), so a project that reads the LDR or drives the speaker has to ask for it. The radio API
@@ -373,6 +394,12 @@ panel-gc9a01 = []
         dependencies.push(`esp-storage = { version = "${ESP_CRATE_VERSIONS.espStorage}", features = ["${board.espChip}"] }`);
     }
     if (template === 'designer') {
+        // The chip's own PAC, on the one board whose USB socket is wired to it: the connection to
+        // the host is the USB-Serial-JTAG controller's Start-of-Frame status, and esp-hal does not
+        // expose it. Declared for the T-QT only, so the CYD's manifest is unchanged.
+        if (board.espChip === 'esp32s3') {
+            dependencies.push(`esp32s3 = "${ESP_CRATE_VERSIONS.esp32s3Pac}"`);
+        }
         // The widget toolkit the design is compiled into. Three things about this line were found by building
         // a generated project rather than by reading documentation (2026-10-08):
         //  - `default-features = false` is required, because the default set includes `std`;
@@ -399,7 +426,7 @@ panel-gc9a01 = []
         // crate by default, which is why the dependency is left on its default features.
         const radioFeatures = [
             `"${board.espChip}"`,
-            template === 'wifi' ? '"wifi"' : '"ble"',
+            template === 'bluetooth' ? '"ble"' : '"wifi"',
             '"log-04"',
             '"unstable"',
         ];
@@ -407,13 +434,22 @@ panel-gc9a01 = []
             `esp-radio = { version = "${ESP_CRATE_VERSIONS.espRadio}", features = [${radioFeatures.join(', ')}] }`,
             `esp-alloc = { version = "${ESP_CRATE_VERSIONS.espAlloc}", features = ["${board.espChip}"] }`,
         );
-        if (template === 'wifi') {
+        if (template === 'wifi' || template === 'designer') {
             // The addressing lives here, not in the radio driver: DHCP, a fixed address, and the stack that
-            // makes the interface usable at all.
+            // makes the interface usable at all. A Designer project needs DNS and UDP for its time
+            // request and nothing else, so it does not carry the TCP socket layer.
             dependencies.push(
-                `embassy-net = { version = "${ESP_CRATE_VERSIONS.embassyNet}", features = ["dhcpv4", "medium-ethernet", "tcp", "dns"] }`,
-                `static_cell = "${ESP_CRATE_VERSIONS.staticCell}"`,
+                template === 'designer'
+                    ? `embassy-net = { version = "${ESP_CRATE_VERSIONS.embassyNet}", features = ["dhcpv4", "medium-ethernet", "dns", "udp"] }`
+                    : `embassy-net = { version = "${ESP_CRATE_VERSIONS.embassyNet}", features = ["dhcpv4", "medium-ethernet", "tcp", "dns"] }`,
+                // static_cell is already declared by the display block for a Designer project.
+                ...(template === 'designer' ? [] : [`static_cell = "${ESP_CRATE_VERSIONS.staticCell}"`]),
             );
+        }
+        if (template === 'designer') {
+            // The NTP answer reaches the loop through an embassy Signal; the version is the one
+            // embassy-net 0.9.1 itself resolves to, so there is only ever one of it in the tree.
+            dependencies.push('embassy-sync = "0.8.0"');
         }
         if (template === 'bluetooth') {
             // A Bluetooth controller is only an HCI transport: advertising, connections and the GATT
@@ -472,7 +508,8 @@ debug = true
 function espCargoConfigToml(board: EspBoardProfile, template: AppTemplate): string {
     // Both radio templates allocate: the Wi-Fi and Bluetooth stacks are not static-buffer-only, so the
     // generated manifest rebuilds core *and* alloc from source (the espup toolchain ships rust-src for this).
-    const needsAlloc = template === 'wifi' || template === 'bluetooth';
+    // A Designer project carries Wi-Fi for its clock, so it allocates too.
+    const needsAlloc = template === 'wifi' || template === 'bluetooth' || template === 'designer';
     // Bluetooth on the classic ESP32 cannot link against the published crates as they stand, and the
     // three symbols below are the whole of the problem. crates.io's esp-rom-sys 0.1.5 -- which esp-radio
     // 1.0.0-beta.1 pins with `=0.1.5` -- is missing three ROM `PROVIDE` lines that the upstream repository
@@ -516,7 +553,7 @@ build-std = [${needsAlloc ? '"alloc", ' : ''}"core"]
 `;
 }
 
-function espConfigToml(rotation: LcdRotation, usesPanel: boolean, touch?: boolean): string {
+function espConfigToml(rotation: LcdRotation, usesPanel: boolean, touch?: boolean, clockOffsetMinutes?: number): string {
     // An environment table is what makes the rotation reachable at compile time: cargo applies `[env]` to
     // the rustc invocations, so `option_env!` in main.rs sees it without the extension having to inject
     // anything at build time -- which is also why `cargo run` in a plain terminal honours it.
@@ -539,12 +576,24 @@ LCD_ROTATION = "${rotation}"
 # off. The designer's toolbar writes this line; flip it and rebuild for the change to take effect.
 TOUCH_ENABLED = "${touch ? '1' : '0'}"
 `;
+    // The time server answers in UTC; the glass should show local time. This is the offset the build
+    // was given (the machine's own when the project was made), and it is a plain edit here -- there is
+    // no timezone database in a no_std image, and DST is not followed automatically.
+    const clockEntry =
+        clockOffsetMinutes === undefined
+            ? ''
+            : `
+# Your UTC offset in minutes, read at compile time by src/net.rs: 120 is UTC+2, -300 is UTC-5.
+# The Wi-Fi time server answers in UTC; this is what turns it into the time on the glass. Add an
+# hour here when the clocks go forward, and take it back when they go back.
+TZ_OFFSET_MINUTES = "${clockOffsetMinutes}"
+`;
     return `# Runtime configuration for the ESP logging stack.
 [env]
 # log level for esp-println, read by esp_println::logger::init_logger_from_env() in main;
 # change to "debug" or "trace" when something is silent.
 ESP_LOG = "info"
-${rotationEntry}${touchEntry}`;
+${rotationEntry}${touchEntry}${clockEntry}`;
 }
 
 function espRustToolchainToml(): string {
@@ -649,7 +698,7 @@ function espBootBlock(board: EspBoardProfile, template: AppTemplate): string {
     // Wi-Fi takes two blocks (the first is memory the second-stage bootloader is finished with, the second
     // is reserved from SRAM), Bluetooth takes one. On the classic ESP32 the heap lands in .bss, so it is
     // counted against the 128 KiB the DRAM linker segment allows -- the two figures are not interchangeable.
-    const heap = template === 'wifi'
+    const heap = template === 'wifi' || template === 'designer'
         ? `
     // Wi-Fi is not static-buffer-only, so it needs a heap. The first block is memory the second-stage
     // bootloader used and is done with by now; the second is reserved from SRAM.
@@ -755,8 +804,11 @@ function espImports(board: EspBoardProfile, template: AppTemplate): string {
         // The paint timing below is Designer-only, and an unused import is a warning in a generated project.
         const clockImports = template === 'designer' ? ['use embassy_time::Instant;'] : [];
         // The console's receiver: the toolchain hands the board the PC's local time over it once
-        // the firmware is running, which is what a design's clock follows.
-        const consoleImports = ['use esp_hal::uart::{Config as UartConfig, Uart};'];
+        // the firmware is running, which is what a design's clock follows. A Designer project also
+        // keeps that time in the chip's RTC, so it names the driver for it here.
+        const consoleImports = template === 'designer'
+            ? ['use esp_hal::rtc_cntl::Rtc;', 'use esp_hal::uart::{Config as UartConfig, Uart};']
+            : ['use esp_hal::uart::{Config as UartConfig, Uart};'];
         const hardwareImports = template === 'board'
             ? [
                 'use esp_hal::analog::adc::{Adc, AdcConfig, AdcPin, Attenuation};',
@@ -786,6 +838,8 @@ function espImports(board: EspBoardProfile, template: AppTemplate): string {
             'use embedded_hal_bus::spi::RefCellDevice;',
             'use esp_hal::clock::CpuClock;',
             'use esp_hal::delay::Delay;',
+            // The radio's heap lives in a reclaimed RAM region, named by this attribute macro.
+            'use esp_hal::ram;',
             // `Input`/`Pull` are the touch controller's PENIRQ line: low means pressed.
             'use esp_hal::gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull};',
             // Flash access, for keeping the calibration across a power cycle.
@@ -815,9 +869,16 @@ function espImports(board: EspBoardProfile, template: AppTemplate): string {
             'use esp_hal::clock::CpuClock;',
             'use esp_hal::delay::Delay;',
             'use esp_hal::gpio::{Level, Output, OutputConfig};',
+            // The heap's reclaimed region is declared with this attribute macro, and an attribute
+            // macro has to be in scope to be named: #[ram(reclaimed)] alone is unresolved.
+            'use esp_hal::ram;',
+            // The chip's RTC keeps the design's time across a reset; the USB-Serial-JTAG controller
+            // is this board's console, because its socket is wired to the chip and not to a bridge.
+            'use esp_hal::rtc_cntl::Rtc;',
             'use esp_hal::spi::master::{Config as SpiConfig, Spi};',
             'use esp_hal::time::Rate;',
             'use esp_hal::timer::timg::TimerGroup;',
+            'use esp_hal::usb::usb_serial_jtag::UsbSerialJtag;',
             'use esp_println as _;',
             'use mipidsi::options::{ColorOrder, Orientation, Rotation};',
             'use mipidsi::{models, Builder};',
@@ -913,7 +974,7 @@ function espSketch(board: EspBoardProfile, template: AppTemplate, choices: Board
                     : template === 'designer' && display !== undefined && touch !== undefined
                         ? espTouchBody(display, board, touch, false, true)
                         : template === 'designer' && display !== undefined
-                            ? espDesignerDisplayBody(display)
+                            ? espDesignerDisplayBody(display, board)
                             : display !== undefined && touch !== undefined
                                 ? espTouchBody(display, board, touch, withHardware)
                                 : display !== undefined
@@ -938,6 +999,10 @@ function espSketch(board: EspBoardProfile, template: AppTemplate, choices: Board
         display === undefined ? '' : espPanelMaterial(display, touch),
         support,
         stretched.material,
+        // A Designer project keeps the time in the chip's RTC, so it carries the helpers that read
+        // and write it, the line parser, and -- on a board whose USB is the chip's own -- the
+        // connection check. Other templates have no design to draw a clock in.
+        template === 'designer' ? espClockMaterial(board) : '',
         headerGuidance(),
     ].filter((text) => text !== '').join('\n\n');
 
@@ -957,15 +1022,15 @@ esp_bootloader_esp_idf::esp_app_desc!();`,
         state: stateStruct(espStateDoc(template), fields),
         setup: setupFn({
             doc: espSetupDoc(template),
-            params: template === 'wifi' ? 'spawner: Spawner' : '',
+            params: template === 'wifi' || template === 'designer' ? 'spawner: Spawner' : '',
             body: `${espBootBlock(board, template)}${espDesignerSdInit(board, template)}${stretched.init}`,
             fields,
         }),
         main: mainFn({
             doc: espMainDoc(),
             attribute: '#[esp_rtos::main]',
-            signature: `async fn main(${template === 'wifi' ? 'spawner' : '_spawner'}: Spawner)`,
-            setupCall: template === 'wifi' ? 'setup(spawner).await' : 'setup().await',
+            signature: `async fn main(${template === 'wifi' || template === 'designer' ? 'spawner' : '_spawner'}: Spawner)`,
+            setupCall: template === 'wifi' || template === 'designer' ? 'setup(spawner).await' : 'setup().await',
             prelude: template === 'bluetooth' ? espBluetoothHandover() : '',
             loop: stretched.loop,
             // The no-touch designer loop asks the design whether it is dirty on every pass, so it
@@ -1098,6 +1163,273 @@ function to edit: everything it needs from setup() is in state.
 `;
 }
 
+/**
+ * The clock's durable half: a time kept in the chip's RTC, the line a host sends, and -- on the
+ * ESP32-S3 -- the USB controller's own answer to "is a PC on the cable?".
+ *
+ * An ESP's RTC counts across an ordinary reset (a flash, a panic, the reset button) and only loses its
+ * offset when the power goes. That makes it the right place for a design's clock: without it, every
+ * flash made the hands jump back to the time the design was drawn with. What the RTC cannot do is learn
+ * the time -- only a PC knows what a PC's clock says -- so the firmware asks, once a second, until a
+ * host answers with the same `TIME HH:MM:SS` line a flash writes.
+ */
+function espClockMaterial(board: EspBoardProfile): string {
+    const usbHost = board.espChip === 'esp32s3'
+        ? `
+/// Whether a USB host is attached, asked of the chip's own USB-Serial-JTAG controller.
+///
+/// The controller reports a Start-of-Frame packet every millisecond while a host is on the cable and
+/// nothing at all when it is not, so its raw interrupt register is the connection check the hardware
+/// offers. The T-QT's USB socket is wired to the chip directly, which is why this board can see the
+/// cable and the CYD -- whose socket goes through a CH340 bridge -- cannot.
+pub fn usb_host_attached() -> bool {
+    // SAFETY: reading INT_RAW is read-only status, and clearing the one SOF bit with a
+    // write-one-to-clear is the documented way to consume it. Nothing else in this firmware touches
+    // the JTAG side of the controller.
+    let usb = unsafe { &*esp32s3::USB_DEVICE::ptr() };
+    if usb.int_raw().read().sof().bit_is_set() {
+        // The PAC types the clear field as write-one-to-clear, whose writer spells the write
+        // bit(true) rather than set_bit().
+        usb.int_clr().write(|w| w.sof().bit(true));
+        true
+    } else {
+        false
+    }
+}
+`
+        : '';
+    return `
+/// The line a host sends: TIME HH:MM:SS, local time, no date and no zone. Anything else on the
+/// console is ignored rather than half-parsed: a line the user typed must not set the clock.
+pub fn parse_clock_time(line: &[u8]) -> Option<(u8, u8, u8)> {
+    let text = core::str::from_utf8(line).ok()?;
+    let mut words = text.split_whitespace();
+    if !words.next()?.eq_ignore_ascii_case("TIME") {
+        return None;
+    }
+    let mut fields = words.next()?.split(':');
+    let hour: u8 = fields.next()?.parse().ok()?;
+    let minute: u8 = fields.next()?.parse().ok()?;
+    let second: u8 = fields.next()?.parse().ok()?;
+    if fields.next().is_some() || hour > 23 || minute > 59 || second > 59 {
+        return None;
+    }
+    Some((hour, minute, second))
+}
+
+/// The RTC counts from the last set (or from power-on), so a value this large can only have been
+/// written by us: it is the RTC's "has been set" mark as well as its base. 2000-01-01T00:00:00 is a
+/// whole number of days, which makes the time of day a plain remainder.
+const CLOCK_RTC_BASE_SECONDS: u64 = 946_684_800;
+
+/// The time of day the RTC holds, or None when it has never been set.
+pub fn rtc_time_of_day(rtc: &Rtc<'_>) -> Option<(u8, u8, u8)> {
+    let seconds = rtc.current_time_us() / 1_000_000;
+    if seconds < CLOCK_RTC_BASE_SECONDS {
+        return None;
+    }
+    let day = (seconds - CLOCK_RTC_BASE_SECONDS) % 86_400;
+    Some(((day / 3600) as u8, ((day / 60) % 60) as u8, (day % 60) as u8))
+}
+
+/// Writes the time of day into the RTC, base included. esp-hal keeps the offset in the RTC domain, so
+/// this survives a reset -- which is exactly why the mark above works.
+pub fn set_rtc_time_of_day(rtc: &Rtc<'_>, hour: u8, minute: u8, second: u8) {
+    let day = hour.min(23) as u64 * 3600 + minute.min(59) as u64 * 60 + second.min(59) as u64;
+    rtc.set_current_time_us((CLOCK_RTC_BASE_SECONDS + day) * 1_000_000);
+}
+${usbHost}`;
+}
+
+/** The setup-side declarations the clock machinery needs, per console chip. */
+function espClockSetupDecls(board: EspBoardProfile): string {
+    const console = board.espChip === 'esp32s3'
+        ? `    // The console is the chip's own USB-Serial-JTAG controller: the T-QT's USB socket is wired to
+    // the ESP32-S3 directly, so there is no bridge to configure and no UART pin to take.
+    let mut console = UsbSerialJtag::new(peripherals.USB_DEVICE);`
+        : `    // The console the host talks over: UART0 on the CH340's side of the CYD's USB socket. Only its
+    // receiver is taken, so the log keeps working and a quiet console costs one register read a pass.
+    //
+    // Optional, and never an expect: a console that cannot be opened costs the hand-over and nothing
+    // else. Found the hard way -- an expect here took the whole panel down on a board that had been
+    // flashing happily until the reader was added.
+    let mut console = match Uart::new(peripherals.UART0, UartConfig::default().with_baudrate(115_200)) {
+        Ok(uart) => Some(uart.with_rx(peripherals.GPIO3)),
+        Err(error) => {
+            log::warn!("clock: the console UART did not open ({:?}); no host can hand the time over", error);
+            None
+        }
+    };`;
+    return `${console}
+    let mut console_line = [0u8; 32];
+    let mut console_len: usize = 0;
+    // The chip's RTC: the one thing on the board that still knows the time after a reset. It is
+    // asked before the design exists, so a board that was only reset starts with the right hands.
+    let rtc = Rtc::new(peripherals.RTC_TIMER);
+    let rtc_time = rtc_time_of_day(&rtc);
+    match rtc_time {
+        Some((hour, minute, second)) => log::info!(
+            "clock: the RTC kept {:02}:{:02}:{:02} across the reset",
+            hour,
+            minute,
+            second
+        ),
+        None => log::info!("clock: the RTC is not set; a host can hand the time over"),
+    }
+    let mut needs_time = rtc_time.is_none();
+    let mut host_seen = false;
+    let mut last_time_ask: Option<Instant> = None;
+    // What the design is showing: the RTC's time, or whatever the host last said. The design itself
+    // is built on the first calibrated frame, so the value is kept here until there is one to tell.
+    let mut wall_clock: Option<(u8, u8, u8)> = rtc_time;
+    let mut wall_clock_applied = false;
+    // A board on a charger has no host to answer TIME?, so the network is asked instead. The task is
+    // started only when the design has a clock and the RTC has never been set: a design without one
+    // never brings the radio up, and a board that came back with a time does not need the network.
+    if ui::HAS_CLOCK && needs_time {
+        spawner.spawn(
+            crate::net::time_task(peripherals.WIFI).expect("the network time task is spawned exactly once"),
+        );
+    }`;
+}
+
+/**
+ * The loop-side half: read what the host said, and ask for the time when the RTC has never been set.
+ *
+ * The request is one plain line (TIME?) rather than a log line, so whatever is on the other end of the
+ * cable can recognise it. The CYD can only learn that a host exists from a byte arriving -- its bridge
+ * hides the cable -- so the host-side listener says hello first.
+ */
+function espClockLoop(board: EspBoardProfile, screenAccess: string): string {
+    const read = board.espChip === 'esp32s3'
+        ? `        // A host on the cable is visible in the USB-Serial-JTAG controller itself; anything it says
+        // arrives on the same peripheral. Both are the "is a PC there?" answer this board can give.
+        if usb_host_attached() {
+            host_seen = true;
+        }
+        loop {
+            match console.read_byte() {
+                Ok(byte) => {
+                    host_seen = true;
+                    match byte {
+                        b'\\r' => {}
+                        b'\\n' => {
+                            // A local, because a range ending in console_len reads as a field access
+                            // to the code that rewrites the loop's names onto state.
+                            let filled = console_len;
+                            if let Some((hour, minute, second)) = parse_clock_time(&console_line[..filled]) {
+                                wall_clock = Some((hour, minute, second));
+                                wall_clock_applied = false;
+                                set_rtc_time_of_day(&rtc, hour, minute, second);
+                                needs_time = false;
+                                log::info!(
+                                    "clock: the console says {:02}:{:02}:{:02}",
+                                    hour,
+                                    minute,
+                                    second
+                                );
+                            }
+                            console_len = 0;
+                        }
+                        _ if console_len < console_line.len() => {
+                            console_line[console_len] = byte;
+                            console_len += 1;
+                        }
+                        // A line longer than the buffer is not a time line: start again rather than
+                        // keeping half of it.
+                        _ => console_len = 0,
+                    }
+                }
+                Err(_) => break,
+            }
+        }`
+        : `        // Whatever the host has said over the console. Non-blocking: an empty FIFO reads zero
+        // bytes, so a quiet console costs one register read a pass. A byte is also the CYD's only
+        // evidence that a PC is on the other end of the cable: its USB socket goes through a bridge,
+        // and the firmware cannot see the cable itself.
+        if let Some(uart) = console.as_mut() {
+            let mut byte = [0u8; 1];
+            while uart.read_ready() {
+                if !matches!(uart.read(&mut byte), Ok(1)) {
+                    break;
+                }
+                host_seen = true;
+                match byte[0] {
+                    b'\\r' => {}
+                    b'\\n' => {
+                        // A local, because a range ending in console_len reads as a field access
+                        // to the code that rewrites the loop's names onto state.
+                        let filled = console_len;
+                        if let Some((hour, minute, second)) = parse_clock_time(&console_line[..filled]) {
+                            wall_clock = Some((hour, minute, second));
+                            wall_clock_applied = false;
+                            set_rtc_time_of_day(&rtc, hour, minute, second);
+                            needs_time = false;
+                            log::info!(
+                                "clock: the console says {:02}:{:02}:{:02}",
+                                hour,
+                                minute,
+                                second
+                            );
+                        }
+                        console_len = 0;
+                    }
+                    _ if console_len < console_line.len() => {
+                        console_line[console_len] = byte[0];
+                        console_len += 1;
+                    }
+                    // A line longer than the buffer is not a time line: start again rather than
+                    // keeping half of it.
+                    _ => console_len = 0,
+                }
+            }
+        }`;
+    const ask = board.espChip === 'esp32s3'
+        ? '                let _ = console.write(b"TIME?\\n");'
+        : `                // esp-println's plain println, not the logger: a log line carries its level and
+                // colour codes, and the host has to be able to recognise this line exactly.
+                esp_println::println!("TIME?");`;
+    // A bridge hides the cable: the CYD's only evidence that a host exists is data, and a board that
+    // has just been powered on has received none -- so it asks anyway, and a TIME? written into a
+    // port nobody is reading costs one UART write. The T-QT can see the cable (Start-of-Frame), so
+    // it waits for a host that is really attached.
+    const hostGate = board.espChip === 'esp32s3' ? ' && host_seen' : '';
+    return `${read}
+        // The network's answer, when the Wi-Fi task got one. Same effect as a console line: the RTC
+        // is set and the hands follow. A time that arrives after another source already set the RTC
+        // is taken and dropped, so the two never fight over the clock.
+        if let Some((hour, minute, second)) = net::SYNCED_TIME.try_take() {
+            if needs_time {
+                wall_clock = Some((hour, minute, second));
+                wall_clock_applied = false;
+                set_rtc_time_of_day(&rtc, hour, minute, second);
+                needs_time = false;
+                log::info!("clock: the network says {:02}:{:02}:{:02}", hour, minute, second);
+            }
+        }
+        // The design exists only from the first frame, and the time can arrive before it: the value
+        // is remembered until there is a design to tell.
+        if !wall_clock_applied {
+            if let (Some(design), Some((hour, minute, second))) = (${screenAccess}, wall_clock) {
+                design.set_wall_clock(hour, minute, second);
+                wall_clock_applied = true;
+            }
+        }
+        // A design with a clock and an RTC that has never been set: ask for the time once a second
+        // until one arrives. Asking a cable that is not there costs nothing, and a host that appears
+        // later -- after the board was powered on, or after a flash -- answers on its next try.
+        if ui::HAS_CLOCK && needs_time${hostGate} {
+            let due = match last_time_ask {
+                None => true,
+                Some(last) => last.elapsed().as_secs() >= 1,
+            };
+            if due {
+${ask}
+                last_time_ask = Some(Instant::now());
+            }
+        }`;
+}
+
 /** The fields of `State`: one per peripheral, plus the values the loop keeps between frames. */
 function espStateFields(
     board: EspBoardProfile,
@@ -1226,8 +1558,51 @@ function espStateFields(
                 : {
                     name: 'screen',
                     type: 'ui::Designer',
+                    // Built and painted in setup() on this board: there is no touch, so nothing in
+                    // the loop creates it -- it only asks whether it changed.
+                    mutableInSetup: true,
                     doc: 'The design. On a panel with no touchscreen this loop is the only thing that asks it whether anything changed.',
                 },
+        );
+        // The clock's own state: the RTC that survives a reset, and the hand-over that fills it.
+        // A board with a touch controller already declares the console and wall-clock fields in the
+        // touch block above; a board without one gets them here.
+        if (touch === undefined) {
+            fields.push(
+                {
+                    name: 'console',
+                    type: "UsbSerialJtag<'static, esp_hal::Blocking>",
+                    doc: 'The console the host hands the time over on. This board\u2019s USB socket is wired to'
+                        + ' the chip, so its console is the USB-Serial-JTAG controller itself.',
+                },
+                { name: 'console_line', type: '[u8; 32]', doc: 'One line of it, in the making.' },
+                { name: 'console_len', type: 'usize', doc: 'How much of that line is filled.' },
+                { name: 'wall_clock', type: 'Option<(u8, u8, u8)>', doc: 'The local time the host sent, and whether the design has' },
+                { name: 'wall_clock_applied', type: 'bool', doc: 'been told yet.' },
+            );
+        }
+        fields.push(
+            {
+                name: 'rtc',
+                type: "Rtc<'static>",
+                doc: 'The chip\u2019s RTC: the only thing on the board that still knows the time after a reset.',
+            },
+            {
+                name: 'needs_time',
+                type: 'bool',
+                doc: 'Whether the RTC was never set. Until it has been, the design asks a host for the time.',
+            },
+            {
+                name: 'host_seen',
+                type: 'bool',
+                doc: 'Whether anything has arrived from a host. The CYD\u2019s USB socket goes through a bridge, so'
+                    + ' a byte is the only evidence that a PC is on the other end.',
+            },
+            {
+                name: 'last_time_ask',
+                type: 'Option<Instant>',
+                doc: 'When the time was last asked for, so the request is once a second and not once a pass.',
+            },
         );
     }
     if (template === 'designer' && touch === undefined) {
@@ -1393,6 +1768,238 @@ function espBluetoothHandover(): string {
  * the socket's pins and their labels: a project generated before the card existed can be fixed by hand from
  * what is printed here, and the designer tells its user what to add.
  */
+/**
+ * `src/net.rs`: the time from the network, for a Designer project with no host on the cable.
+ *
+ * A board plugged into a charger has no PC to answer its TIME? request, so a design with a clock
+ * would keep the time it was drawn with. This module joins the network the build was given, asks an
+ * NTP server, and publishes the local time of day through a Signal; `main.rs` puts it in the RTC the
+ * same way it does a console line. It is started only when the design has a clock and the RTC has
+ * never been set, so a design without one never brings the radio up.
+ *
+ * Failure is quiet and final: no network, no DHCP lease, no NTP answer after three tries, and the
+ * board carries on with the design's own time. The console hand-over still works in that case.
+ */
+function emitNetRs(): string {
+    return `// Generated by Grumpy's Rusty Platform for VS Code.
+//
+// The time without a host: Wi-Fi and SNTP.
+//
+// The console hand-over (TIME HH:MM:SS) covers a board with a PC listening on its serial port. This
+// covers a board plugged into a charger: join the network the build was given, ask an NTP server,
+// and publish the local time of day. main.rs puts it in the RTC exactly as it does a console line.
+
+use embassy_executor::Spawner;
+use embassy_net::dns::DnsQueryType;
+use embassy_net::udp::{PacketMetadata, UdpSocket};
+use embassy_net::{Config as NetConfig, Runner, StackResources};
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::signal::Signal;
+use embassy_time::{with_timeout, Duration, Timer};
+use esp_hal::peripherals::WIFI;
+use esp_hal::rng::Rng;
+use esp_radio::wifi::sta::StationConfig;
+use esp_radio::wifi::{
+    AuthenticationMethodConfig, Config as WifiConfig, ControllerConfig, Interface, WifiController,
+};
+
+/// The local time an NTP server gave, waiting for the main loop to put it in the RTC.
+pub static SYNCED_TIME: Signal<CriticalSectionRawMutex, (u8, u8, u8)> = Signal::new();
+
+/// The network the build was given. The same contract as the Wi-Fi template: read at compile time,
+//  never in the source tree.
+const WIFI_SSID: &str = match option_env!("WIFI_SSID") {
+    Some(value) => value,
+    None => "YOUR_WIFI_SSID",
+};
+const WIFI_PASSWORD: &str = match option_env!("WIFI_PASSWORD") {
+    Some(value) => value,
+    None => "YOUR_WIFI_PASSWORD",
+};
+
+/// The time server. pool.ntp.org resolves to a nearby server and is the usual choice.
+const NTP_SERVER: &str = "pool.ntp.org";
+
+/// Minutes to add to UTC to get the time on the glass. Written into .cargo/esp-config.toml.
+fn tz_offset_minutes() -> i64 {
+    match option_env!("TZ_OFFSET_MINUTES") {
+        Some(value) => value.trim().parse().unwrap_or(0),
+        None => 0,
+    }
+}
+
+/// The stack's buffer pool has to outlive the task, so it is a static. It is written once: the task
+/// is spawned at most once per boot.
+static STACK_RESOURCES: static_cell::StaticCell<StackResources<3>> = static_cell::StaticCell::new();
+
+/// Joins the network and asks an NTP server for the time, then ends. A board with no network keeps
+/// the design's own time, and the console hand-over is still there.
+#[embassy_executor::task]
+pub async fn time_task(wifi: WIFI<'static>) {
+    // Open and protected networks are configured differently: WPA2 with an empty key never
+    // associates, and an open network rejects a key that was supplied.
+    let authentication = if WIFI_PASSWORD.is_empty() {
+        AuthenticationMethodConfig::Open
+    } else {
+        AuthenticationMethodConfig::WpaWpa2Personal(
+            WIFI_PASSWORD
+                .try_into()
+                .expect("the password is longer than 64 bytes"),
+        )
+    };
+    let station_config = WifiConfig::Station(
+        StationConfig::default()
+            .with_ssid(WIFI_SSID.try_into().expect("the network name is longer than 32 bytes"))
+            .with_authentication(authentication),
+    );
+    // The interface is the stack's driver and is a singleton, so it is taken before the controller.
+    // The controller has to stay alive until the time is in: dropping it deinitialises Wi-Fi.
+    let interface = Interface::station();
+    let mut controller = match WifiController::new(
+        wifi,
+        ControllerConfig::default().with_initial_config(station_config),
+    ) {
+        Ok(controller) => controller,
+        Err(error) => {
+            log::warn!("clock: Wi-Fi refuses to start ({:?})", error);
+            return;
+        }
+    };
+
+    let mut joined = false;
+    for attempt in 1..=5u32 {
+        log::info!("clock: joining {} (attempt {})", WIFI_SSID, attempt);
+        match controller.connect_async().await {
+            Ok(_) => {
+                joined = true;
+                break;
+            }
+            Err(error) => {
+                log::warn!("clock: association failed: {:?}", error);
+                Timer::after(Duration::from_secs(5)).await;
+            }
+        }
+    }
+    if !joined {
+        log::warn!("clock: no network; the design keeps its own time");
+        return;
+    }
+
+    let rng = Rng::new();
+    let seed = (rng.random() as u64) << 32 | rng.random() as u64;
+    let (stack, runner) = embassy_net::new(
+        interface,
+        NetConfig::dhcpv4(Default::default()),
+        STACK_RESOURCES.uninit().write(StackResources::<3>::new()),
+        seed,
+    );
+    // Without this task running, not one packet is processed and every wait below never resolves.
+    // for_current_executor is unsafe because it must be called from inside a task (it reads the
+    // executor out of the current waker); this module is only ever entered from time_task.
+    let spawner = unsafe { Spawner::for_current_executor().await };
+    spawner.spawn(net_task(runner).expect("the network stack task is spawned exactly once"));
+
+    // A router that has the address leased already is quick; one that does not is a board with no
+    // network, and waiting on it for ever is not what a clock should do.
+    if with_timeout(Duration::from_secs(30), stack.wait_config_up())
+        .await
+        .is_err()
+    {
+        log::warn!("clock: no address from DHCP; the design keeps its own time");
+        return;
+    }
+    match stack.config_v4() {
+        Some(config) => log::info!("clock: network up at {}", config.address),
+        None => return,
+    }
+
+    for attempt in 1..=3u32 {
+        if let Some((hour, minute, second)) = ntp_time(stack).await {
+            log::info!(
+                "clock: the network says {:02}:{:02}:{:02} (attempt {})",
+                hour,
+                minute,
+                second,
+                attempt
+            );
+            SYNCED_TIME.signal((hour, minute, second));
+            return;
+        }
+        log::warn!("clock: no answer from the time server (attempt {})", attempt);
+        Timer::after(Duration::from_secs(2)).await;
+    }
+    log::warn!("clock: giving up on the network time; the design keeps its own");
+}
+
+/// One SNTP request, and the local time of day from its answer.
+async fn ntp_time(stack: embassy_net::Stack<'static>) -> Option<(u8, u8, u8)> {
+    // The server is a name, so the stack's resolver is used first. A literal address would skip
+    // this, but a hard-coded one is a server that can move.
+    let addresses = with_timeout(
+        Duration::from_secs(10),
+        stack.dns_query(NTP_SERVER, DnsQueryType::A),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    let server = match addresses.first()? {
+        embassy_net::IpAddress::Ipv4(address) => *address,
+        #[allow(unreachable_patterns)]
+        _ => return None,
+    };
+
+    let mut rx_meta = [PacketMetadata::EMPTY; 2];
+    let mut rx_buffer = [0u8; 64];
+    let mut tx_meta = [PacketMetadata::EMPTY; 1];
+    let mut tx_buffer = [0u8; 64];
+    let mut socket = UdpSocket::new(
+        stack,
+        &mut rx_meta,
+        &mut rx_buffer,
+        &mut tx_meta,
+        &mut tx_buffer,
+    );
+    if socket.bind(0).is_err() {
+        return None;
+    }
+
+    // LI 0, version 4, mode 3 (client); everything else zero is a valid SNTP request.
+    let mut request = [0u8; 48];
+    request[0] = 0x23;
+    socket.send_to(&request, (server, 123)).await.ok()?;
+
+    let mut response = [0u8; 48];
+    let (length, _) = with_timeout(
+        Duration::from_secs(5),
+        socket.recv_from(&mut response),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    if length < 48 {
+        return None;
+    }
+    // The transmit timestamp is the last eight bytes: seconds since 1900, big endian, then the
+    // fraction -- which a clock that shows whole seconds has no use for.
+    let seconds =
+        u32::from_be_bytes([response[40], response[41], response[42], response[43]]) as i64;
+    if seconds == 0 {
+        return None;
+    }
+    let unix = seconds - 2_208_988_800;
+    let local = unix + tz_offset_minutes() * 60;
+    let day = local.rem_euclid(86_400);
+    Some(((day / 3600) as u8, ((day / 60) % 60) as u8, (day % 60) as u8))
+}
+
+/// Drives the network stack; no packet moves while it is not being polled.
+#[embassy_executor::task]
+async fn net_task(mut runner: Runner<'static, Interface>) {
+    runner.run().await
+}
+`;
+}
+
 /** The extra modules a Designer project is made of, and the two constants that describe it. */
 function espModules(board: EspBoardProfile, template: AppTemplate): string {
     if (template !== 'designer') {
@@ -1400,6 +2007,8 @@ function espModules(board: EspBoardProfile, template: AppTemplate): string {
     }
     return (
         "// The design's own module, and the code-behind it calls.\nmod ui;\nmod ui_handlers;\n" +
+        // The time without a host: Wi-Fi and SNTP, for a board plugged into a charger.
+        "\n// Where the time comes from when no PC is listening on the cable.\nmod net;\n" +
         (board.sd === undefined
             ? ''
             : "\n// The card a design's `sd:/NAME.BMP` images are read from.\nmod sd;\n") +
@@ -2494,7 +3103,7 @@ ${hardwareLog.length > 0 ? `    log::info!("board hardware: ${hardwareLog.join('
     // changing the rotation moves the whole interface rather than only the image inside it.
     //@header
     const MARGIN: i32 = 24;
-
+${designer ? '' : `
     // The line the toolchain sends over the console once the board is running: TIME HH:MM:SS,
     // local time, no date and no zone -- an ESP32's internal RTC has no battery, so a board that
     // has been powered off has no idea of the time until it is told, and the toolchain is the only
@@ -2516,7 +3125,7 @@ ${hardwareLog.length > 0 ? `    log::info!("board hardware: ${hardwareLog.join('
             return None;
         }
         Some((hour, minute, second))
-    }
+    }`}
 
     // Where a raw reading lands on the display, in content pixels.
     //
@@ -2590,7 +3199,7 @@ ${hardwareLog.length > 0 ? `    log::info!("board hardware: ${hardwareLog.join('
     let mut hold_samples: u32 = 0;
     let mut hold_a: i32 = 0;
     let mut hold_b: i32 = 0;
-    // The console the toolchain talks over. It is the same UART0 the logger writes to, and only
+${designer ? espClockSetupDecls(board) : `    // The console the toolchain talks over. It is the same UART0 the logger writes to, and only
     // its receiver is taken: the log keeps working, and a quiet console costs one register read
     // per pass.
     //
@@ -2610,7 +3219,7 @@ ${hardwareLog.length > 0 ? `    log::info!("board hardware: ${hardwareLog.join('
     // The local time the toolchain handed over, and whether the design has been told. The design
     // does not exist until the first calibrated frame, and the line arrives long before that.
     let mut wall_clock: Option<(u8, u8, u8)> = None;
-    let mut wall_clock_applied = false;
+    let mut wall_clock_applied = false;`}
     // Whether the four corners have been measured -- by this run or by a previous one, which is what the
     // flash sector is for. Until they have, the panel shows the calibration screen.
     let mut calibrated = stored.is_some();${designer ? `
@@ -2791,7 +3400,7 @@ ${designer ? `                // The design, painted instead of the diagnostic s
             redraw_box = false;
         }
 
-        // Whatever the toolchain sent over the console. Non-blocking: an empty FIFO reads zero
+${designer ? espClockLoop(board, 'screen.as_mut()') : `        // Whatever the toolchain sent over the console. Non-blocking: an empty FIFO reads zero
         // bytes, so a quiet console costs one register read a pass.
         if let Some(uart) = console.as_mut() {
             let mut byte = [0u8; 1];
@@ -2839,7 +3448,7 @@ ${designer ? `                // The design, painted instead of the diagnostic s
                 design.set_wall_clock(hour, minute, second);
                 wall_clock_applied = true;
             }
-        }
+        }`}
 
         // Every third tick is about 60 ms; a burst is a few bytes at 2 MHz, so the panel's clock is only
         // away for microseconds.
@@ -3393,7 +4002,7 @@ ${constant('LANDSCAPE_DIAGNOSTICS', landscape)}
  * but it is the same markup, the same budgets and the same `ui::Designer`, so a design moved between this
  * board and the touch one behaves the same as far as the layout goes.
  */
-function espDesignerDisplayBody(display: EspDisplay): string {
+function espDesignerDisplayBody(display: EspDisplay, board: EspBoardProfile): string {
     return `${espPanelSetup(display, false)}
 
     let (width_i, height_i) = if rotated {
@@ -3417,8 +4026,12 @@ function espDesignerDisplayBody(display: EspDisplay): string {
 
     // Counts passes, so the heartbeat below is one line every ten seconds rather than one per poll.
     let mut alive: u32 = 0;
+${espClockSetupDecls(board)}
 
     //@loop
+        // The clock comes first: a wall clock handed over (or kept by the RTC) has to be in the
+        // design before it is asked whether it is dirty, or the first frame shows the drawn time.
+${espClockLoop(board, 'Some(&mut screen)')}
         // Asked every pass, for the same reason as the touch body: a design that changes on its own --
         // a clock with its movement attached -- has no finger to make it repaint.
         if screen.is_dirty() {

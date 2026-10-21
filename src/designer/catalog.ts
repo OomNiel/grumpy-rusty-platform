@@ -841,6 +841,15 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
                     'Sets the module\'s clock to this computer\'s time, over its serial port. Needs the board ' +
                     'connected and running, and Monitor closed -- Monitor holds the port.',
             },
+            {
+                id: 'serveClockTime',
+                label: 'Answer Time Requests',
+                help:
+                    'Keeps the serial port open and answers the board when it asks for the time -- what a ' +
+                    'board whose RTC has never been set does, once a USB host is visible. The board may ' +
+                    'restart once while the port is opened. It closes itself as soon as the board has the ' +
+                    'time, so the port is free again; Monitor cannot share it meanwhile.',
+            },
         ],
     },
     {

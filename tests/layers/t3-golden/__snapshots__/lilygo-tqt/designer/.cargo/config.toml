@@ -19,4 +19,4 @@ rustflags = [
 [unstable]
 # The Xtensa targets are not in a released rustc, so core is rebuilt from source --
 # which is why the espup toolchain ships rust-src.
-build-std = ["core"]
+build-std = ["alloc", "core"]

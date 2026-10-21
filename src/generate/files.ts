@@ -178,6 +178,11 @@ export interface GenerateOptions {
      * switch, and the explicit templates are what their names say.
      */
     touch?: boolean;
+    /**
+     * The UTC offset, in minutes, a Designer project's Wi-Fi time is shown at. Defaults to 0 (UTC);
+     * the wizard passes the machine's own offset so a new clock is right without an edit.
+     */
+    clockOffsetMinutes?: number;
 }
 
 // The naming helpers (crateNameFrom, binaryNameFrom, isAcceptableProjectName) now live in
@@ -198,6 +203,7 @@ export function generateProjectFiles(options: GenerateOptions): GeneratedFile[] 
             choices: options.choices,
             rotation: options.rotation,
             touch: options.touch,
+            clockOffsetMinutes: options.clockOffsetMinutes,
         });
     }
 

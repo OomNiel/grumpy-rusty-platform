@@ -13,8 +13,8 @@ license = "MIT OR Apache-2.0"
 publish = false
 
 [dependencies]
-esp-hal = { version = "~1.2.2", features = ["esp32", "log-04"] }
-esp-rtos = { version = "0.4.0", features = ["embassy", "esp32"] }
+esp-hal = { version = "~1.2.2", features = ["esp32", "log-04", "unstable"] }
+esp-rtos = { version = "0.4.0", features = ["embassy", "esp32", "esp-radio"] }
 esp-bootloader-esp-idf = { version = "0.6.0", features = ["esp32", "log-04"] }
 esp-println = { version = "0.18.0", features = ["esp32", "log-04"] }
 esp-backtrace = { version = "0.20.0", features = ["esp32", "panic-handler", "println"] }
@@ -31,6 +31,10 @@ esp-storage = { version = "0.10.0", features = ["esp32"] }
 embedded-gui = { version = "0.2.7", default-features = false, features = ["rich-widgets", "embedded-graphics", "macros", "micromath"] }
 rusty-gui-widgets = { path = "codegen/rusty-gui-widgets", default-features = false }
 embedded-hal = "1.0.0"
+esp-radio = { version = "1.0.0-beta.1", features = ["esp32", "wifi", "log-04", "unstable"] }
+esp-alloc = { version = "0.11.0", features = ["esp32"] }
+embassy-net = { version = "0.9.1", features = ["dhcpv4", "medium-ethernet", "dns", "udp"] }
+embassy-sync = "0.8.0"
 
 # Vendored alongside every Designer project (see crates/ in this extension): the shapes widget crate, the
 # codegen fork that emits add_custom_widget calls for shapes instead of add_panel/add_spacer stubs, and the

@@ -22,6 +22,7 @@ pub use embedded_hal::spi::{Operation, SpiDevice};
 pub use embedded_hal_bus::spi::RefCellDevice;
 pub use esp_hal::clock::CpuClock;
 pub use esp_hal::delay::Delay;
+pub use esp_hal::ram;
 pub use esp_hal::gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull};
 pub use esp_storage::FlashStorage;
 pub use esp_hal::analog::adc::{Adc, AdcConfig, AdcPin, Attenuation};

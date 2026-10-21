@@ -23,6 +23,8 @@ import type { BoardProfile } from '../boards/types';
 import { readActiveProject, readProjectAt } from '../project/activeProject';
 import { pickSerialPort, serialPortCandidates, serialPortEntriesForPlatform } from '../flash/espFlash';
 import { runShellCommand, updateClock } from '../flash/clockSync';
+import { clockHostPlan } from '../flash/clockHost';
+import { closeTerminal, openTerminalNames, runInTerminal } from '../commands/terminal';
 import { lcdRotationFromConfig, setLcdRotationInConfig, type LcdRotation } from '../display/rotation';
 import { setTouchInConfig, touchFromConfig, touchNeededBy } from '../display/touchSetting';
 import {
@@ -36,10 +38,11 @@ import {
     screenIdFrom,
     type DesignerDocument,
 } from './model';
+import { runSmtpWizard } from '../smtp/wizard';
 import { loadDocument, missingAssets, planAssetImport, renderDesign } from './store';
 import { parseBdfFont, type DesignFontPixels } from './bitmapFont';
 import { bdfFromRaster, fontIdFromFile, isBitmapFontFile, type RasterisedFont } from './fontImport';
-import { emitUiRs, handlerName, syncHandlerStubs } from './generate';
+import { emitUiRs, handlerName, syncHandlerStubs, designHasClock } from './generate';
 import { sdImagesNeedingCard } from './model';
 import {
     copyVendoredCrates,
@@ -93,6 +96,15 @@ class DesignerPanel {
             assetRequestId?: string;
         }
     >();
+
+    /**
+     * Whether the clock listener has already been started for this panel.
+     *
+     * One attempt per open: a design with a clock starts the listener as soon as it is on screen, and
+     * the button in the pane is the way to try again. Repeated starts would stack commands in the same
+     * terminal, and the listener owns the port while it runs.
+     */
+    private clockServed = false;
 
     private constructor(
         private readonly panel: vscode.WebviewPanel,
@@ -231,6 +243,9 @@ class DesignerPanel {
             `[designer] ${folderName}: canvas ${designCanvasSize(document.panelWidth, document.panelHeight, document.rotation).width}x` +
             `${designCanvasSize(document.panelWidth, document.panelHeight, document.rotation).height} at rotation ${document.rotation}`,
         );
+        // Automatic time setup: a design with a clock needs a host listening, and opening the design is
+        // the first moment there is one to ask. It is one attempt, and the pane's button repeats it.
+        current.autoServeClock();
     }
 
     /** The webview document: a shell with the bundle and the styles, and a strict policy. */
@@ -714,6 +729,9 @@ class DesignerPanel {
         await this.syncRotation(document.rotation);
         await this.syncHandlers(document);
         await this.syncModule(document);
+        // A clock dropped into a design that is already open is the other moment the automatic
+        // hand-over becomes relevant; the flag makes this a no-op after the first attempt.
+        this.autoServeClock();
 
         // A declared font's pixels are only resent when the declarations changed: a report follows every
         // edit, and shipping a hundred glyph bitmaps per keystroke would be work done for nothing.
@@ -802,6 +820,10 @@ class DesignerPanel {
             await vscode.commands.executeCommand('rustyPlatform.build');
         } else if (action === 'updateClockTime') {
             await this.updateClockTime();
+        } else if (action === 'serveClockTime') {
+            await this.serveClockTime();
+        } else if (action === 'setupSmtp') {
+            await runSmtpWizard(this.folder, this.context, this.output);
         } else {
             await vscode.commands.executeCommand('revealInExplorer', this.folder);
         }
@@ -816,11 +838,8 @@ class DesignerPanel {
      * port is the same one Flash would use, so a configured `rustyPlatform.serialPort` is honoured.
      */
     private async updateClockTime(): Promise<void> {
-        const hasClock = this.document.widgets.some((widget) => widget.tag === 'clock');
-        const configured = vscode.workspace.getConfiguration('rustyPlatform').get<string>('serialPort');
-        const port = hasClock
-            ? pickSerialPort(serialPortCandidates(serialPortEntriesForPlatform()), configured)
-            : undefined;
+        const hasClock = designHasClock(this.document);
+        const port = hasClock ? this.clockPort() : undefined;
         const result = updateClock({
             hasClock,
             port,
@@ -834,6 +853,83 @@ class DesignerPanel {
         }
         // Said in the panel too: the developer's eye is on the canvas, not the notification corner.
         await this.panel.webview.postMessage({ type: 'report', problems: [], note: result.message });
+    }
+
+    /**
+     * Keeps the port open and answers the board when its firmware asks for the time.
+     *
+     * The firmware asks once a second while its RTC has never been set (`TIME?`), because a board
+     * cannot know what a PC's clock says. The rules live in `../flash/clockHost`; this opens the
+     * terminal the loop runs in, the same way Monitor owns its port. The terminal is deliberate: the
+     * developer can watch the answers and close it to stop.
+     */
+    private async serveClockTime(): Promise<void> {
+        const hasClock = designHasClock(this.document);
+        const port = hasClock ? this.clockPort() : undefined;
+        const plan = clockHostPlan({ hasClock, port });
+        if (plan.kind === 'refuse') {
+            this.output.appendLine(`[designer] answer time requests: ${plan.message}`);
+            void vscode.window.showWarningMessage(plan.message);
+            await this.panel.webview.postMessage({ type: 'report', problems: [], note: plan.message });
+            return;
+        }
+        this.output.appendLine(`[designer] answering time requests on ${plan.port}`);
+        runInTerminal('Rusty: clock', plan.command, this.folder);
+        const note =
+            `Answering time requests on ${plan.port}. The listener stays open while this design is, so a ` +
+            'cold-booted board gets its time back too; closing the designer, a flash or Monitor takes the port.';
+        void vscode.window.showInformationMessage(note);
+        await this.panel.webview.postMessage({ type: 'report', problems: [], note });
+    }
+
+    /** The port a clock hand-over would use: the setting first, otherwise the only serial port there is. */
+    private clockPort(): string | undefined {
+        const configured = vscode.workspace.getConfiguration('rustyPlatform').get<string>('serialPort');
+        return pickSerialPort(serialPortCandidates(serialPortEntriesForPlatform()), configured);
+    }
+
+    /**
+     * Starts the clock listener as soon as a design with a clock is opened.
+     *
+     * The board cannot learn the time on its own, so "automatic" means something on this PC has to be
+     * listening when it asks -- and it asks again after every cold boot, because the RTC loses the
+     * time with the power. The listener therefore stays open for the life of the panel; the panel's
+     * dispose, a flash and Monitor each close it to take the port. One attempt per open, and the
+     * pane's button is the way to try again.
+     */
+    private autoServeClock(): void {
+        if (this.clockServed || !designHasClock(this.document)) {
+            return;
+        }
+        this.clockServed = true;
+        const port = this.clockPort();
+        if (port === undefined) {
+            this.output.appendLine(
+                '[designer] the design has a clock, but no board is on a serial port: the time cannot be handed over yet',
+            );
+            return;
+        }
+        const plan = clockHostPlan({ hasClock: true, port });
+        if (plan.kind !== 'serve') {
+            this.output.appendLine(`[designer] clock listener: ${plan.message}`);
+            return;
+        }
+        this.output.appendLine(`[designer] listening for the board's time request on ${plan.port}`);
+        runInTerminal('Rusty: clock', plan.command, this.folder);
+    }
+
+    /**
+     * Starts the listener again after something took the port for a while -- a flash closes it, and
+     * the board's next cold boot needs it back. Called from `rearmClockListener` when the flash
+     * command in its terminal ends.
+     */
+    restartClockListener(): void {
+        // A listener that is already open is the one we want: two would fight for the port.
+        if (openTerminalNames().includes('Rusty: clock')) {
+            return;
+        }
+        this.clockServed = false;
+        this.autoServeClock();
     }
 
     private async reveal(relative: string): Promise<void> {
@@ -888,6 +984,9 @@ class DesignerPanel {
 
     private dispose(): void {
         current = undefined;
+        // The clock listener owns the serial port while the design is open (it is how a cold-booted
+        // board gets its time back), so closing the panel is what hands the port over.
+        closeTerminal('Rusty: clock');
         for (const disposable of this.disposables) {
             disposable.dispose();
         }
@@ -896,6 +995,16 @@ class DesignerPanel {
 }
 
 /** Opens (or reveals) the designer, for the active project or for a named folder. */
+/**
+ * Puts the clock listener back after something else had to borrow the serial port.
+ *
+ * A flash closes the listener so `espflash` can own the port; the board's later cold boot needs a
+ * listener again, and the flash command's end is the moment the port is free. A no-op when no
+ * designer with a clock is open.
+ */
+export function rearmClockListener(): void {
+    current?.restartClockListener();
+}
 /**
  * Offers to refresh a project's vendored crates when they are not this extension's.
  *

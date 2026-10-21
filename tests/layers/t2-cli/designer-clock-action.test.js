@@ -77,4 +77,23 @@ test('dropping a clock offers Update Time, and pressing it asks the extension', 
         0,
         'and it is an action, not an edit: the design is untouched',
     );
+
+    // The other half of the clock's host support: a listener for a board that asks, rather than one
+    // push. It is offered from the same pane because it is the same clock the time is for.
+    const serve = all().find(
+        (element) => element.tagName === 'BUTTON' && element.textContent === 'Answer Time Requests',
+    );
+    ok(serve !== undefined, 'the clock\'s pane offers the listener too');
+    ok((serve.title ?? '').includes('Monitor'), 'and its tooltip names the terminal holding the port');
+
+    messages.length = 0;
+    serve.emit('click');
+    const listening = messages.find((message) => message.type === 'action');
+    ok(listening !== undefined, 'pressing it asks the extension');
+    equal(listening.action, 'serveClockTime', 'with the id for the listener');
+    equal(
+        messages.filter((message) => message.type === 'changed').length,
+        0,
+        'and it is an action, not an edit either',
+    );
 });

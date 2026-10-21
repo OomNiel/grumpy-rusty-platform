@@ -200,5 +200,7 @@ async function readFirmwareSource(folder: vscode.Uri): Promise<string | undefine
         // No src/main.rs means no firmware to hand a network name to.
         return undefined;
     }
-    return `${main}\n${await read('src/MainHeader.rs')}`;
+    // A Designer project keeps its Wi-Fi constants in src/net.rs (the clock's network time), which
+    // is as much a part of the firmware as the other two files.
+    return `${main}\n${await read('src/MainHeader.rs')}\n${await read('src/net.rs')}`;
 }

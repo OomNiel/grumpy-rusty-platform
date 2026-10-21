@@ -109,15 +109,21 @@ test('the shell runner hands back an error instead of throwing', () => {
     ok(worked.ok, 'and a succeeding one is a success');
 });
 
-test('the clock is the only widget that offers the button', () => {
+test('the clock is the only widget that offers the buttons', () => {
     const clock = widgetSpec('clock');
     ok(clock !== undefined, 'the clock is in the catalogue');
-    equal(clock.actions?.length, 1, 'one action');
+    equal(clock.actions?.length, 2, 'two actions: one push, one listener');
     equal(clock.actions[0].id, 'updateClockTime', 'which the extension knows how to do');
     equal(clock.actions[0].label, 'Update Time', 'under the label that was asked for');
     ok(
         (clock.actions[0].help ?? '').includes('Monitor'),
         'and a tooltip that says the port has to be free',
+    );
+    equal(clock.actions[1].id, 'serveClockTime', 'the listener a board can ask, rather than a push');
+    equal(clock.actions[1].label, 'Answer Time Requests', 'under its own label');
+    ok(
+        (clock.actions[1].help ?? '').includes('Monitor'),
+        'and the same caveat: Monitor holds the port',
     );
     // Not a general facility: nothing else in the catalogue has a button.
     const others = compiled('designer/catalog')

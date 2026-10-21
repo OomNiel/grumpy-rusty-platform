@@ -20,8 +20,8 @@ panel-gc9107 = []
 panel-gc9a01 = []
 
 [dependencies]
-esp-hal = { version = "~1.2.2", features = ["esp32s3", "log-04"] }
-esp-rtos = { version = "0.4.0", features = ["embassy", "esp32s3"] }
+esp-hal = { version = "~1.2.2", features = ["esp32s3", "log-04", "unstable"] }
+esp-rtos = { version = "0.4.0", features = ["embassy", "esp32s3", "esp-radio"] }
 esp-bootloader-esp-idf = { version = "0.6.0", features = ["esp32s3", "log-04"] }
 esp-println = { version = "0.18.0", features = ["esp32s3", "log-04"] }
 esp-backtrace = { version = "0.20.0", features = ["esp32s3", "panic-handler", "println"] }
@@ -32,8 +32,13 @@ mipidsi = "0.10.0"
 embedded-graphics = "0.8"
 embedded-hal-bus = "0.3.0"
 static_cell = "2.1.1"
+esp32s3 = "0.36"
 embedded-gui = { version = "0.2.7", default-features = false, features = ["rich-widgets", "embedded-graphics", "macros", "micromath"] }
 rusty-gui-widgets = { path = "codegen/rusty-gui-widgets", default-features = false }
+esp-radio = { version = "1.0.0-beta.1", features = ["esp32s3", "wifi", "log-04", "unstable"] }
+esp-alloc = { version = "0.11.0", features = ["esp32s3"] }
+embassy-net = { version = "0.9.1", features = ["dhcpv4", "medium-ethernet", "dns", "udp"] }
+embassy-sync = "0.8.0"
 
 # Vendored alongside every Designer project (see crates/ in this extension): the shapes widget crate, the
 # codegen fork that emits add_custom_widget calls for shapes instead of add_panel/add_spacer stubs, and the

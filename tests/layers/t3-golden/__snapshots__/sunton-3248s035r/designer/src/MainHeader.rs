@@ -23,8 +23,10 @@ pub use embedded_hal::spi::{Operation, SpiDevice};
 pub use embedded_hal_bus::spi::RefCellDevice;
 pub use esp_hal::clock::CpuClock;
 pub use esp_hal::delay::Delay;
+pub use esp_hal::ram;
 pub use esp_hal::gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull};
 pub use esp_storage::FlashStorage;
+pub use esp_hal::rtc_cntl::Rtc;
 pub use esp_hal::uart::{Config as UartConfig, Uart};
 pub use esp_hal::spi::master::{Config as SpiConfig, Spi};
 pub use esp_hal::time::Rate;
@@ -235,29 +237,6 @@ pub fn calibration_load(flash: &mut FlashStorage<'_>) -> Option<(u8, usize, i32,
 
 pub const MARGIN: i32 = 24;
 
-// The line the toolchain sends over the console once the board is running: TIME HH:MM:SS,
-// local time, no date and no zone -- an ESP32's internal RTC has no battery, so a board that
-// has been powered off has no idea of the time until it is told, and the toolchain is the only
-// thing that knows what the PC's clock says.
-//
-// Anything else on the console is ignored rather than half-parsed: a line the user typed must
-// not be able to set the clock by accident.
-pub fn parse_clock_time(line: &[u8]) -> Option<(u8, u8, u8)> {
-    let text = core::str::from_utf8(line).ok()?;
-    let mut words = text.split_whitespace();
-    if !words.next()?.eq_ignore_ascii_case("TIME") {
-        return None;
-    }
-    let mut fields = words.next()?.split(':');
-    let hour: u8 = fields.next()?.parse().ok()?;
-    let minute: u8 = fields.next()?.parse().ok()?;
-    let second: u8 = fields.next()?.parse().ok()?;
-    if fields.next().is_some() || hour > 23 || minute > 59 || second > 59 {
-        return None;
-    }
-    Some((hour, minute, second))
-}
-
 // Where a raw reading lands on the display, in content pixels.
 //
 // The touch readout, the design and the corner gesture that throws a calibration away all use
@@ -286,6 +265,46 @@ pub fn touch_pixel(
     }
     .clamp(0, height_i - 1);
     (px, py)
+}
+
+/// The line a host sends: TIME HH:MM:SS, local time, no date and no zone. Anything else on the
+/// console is ignored rather than half-parsed: a line the user typed must not set the clock.
+pub fn parse_clock_time(line: &[u8]) -> Option<(u8, u8, u8)> {
+    let text = core::str::from_utf8(line).ok()?;
+    let mut words = text.split_whitespace();
+    if !words.next()?.eq_ignore_ascii_case("TIME") {
+        return None;
+    }
+    let mut fields = words.next()?.split(':');
+    let hour: u8 = fields.next()?.parse().ok()?;
+    let minute: u8 = fields.next()?.parse().ok()?;
+    let second: u8 = fields.next()?.parse().ok()?;
+    if fields.next().is_some() || hour > 23 || minute > 59 || second > 59 {
+        return None;
+    }
+    Some((hour, minute, second))
+}
+
+/// The RTC counts from the last set (or from power-on), so a value this large can only have been
+/// written by us: it is the RTC's "has been set" mark as well as its base. 2000-01-01T00:00:00 is a
+/// whole number of days, which makes the time of day a plain remainder.
+const CLOCK_RTC_BASE_SECONDS: u64 = 946_684_800;
+
+/// The time of day the RTC holds, or None when it has never been set.
+pub fn rtc_time_of_day(rtc: &Rtc<'_>) -> Option<(u8, u8, u8)> {
+    let seconds = rtc.current_time_us() / 1_000_000;
+    if seconds < CLOCK_RTC_BASE_SECONDS {
+        return None;
+    }
+    let day = (seconds - CLOCK_RTC_BASE_SECONDS) % 86_400;
+    Some(((day / 3600) as u8, ((day / 60) % 60) as u8, (day % 60) as u8))
+}
+
+/// Writes the time of day into the RTC, base included. esp-hal keeps the offset in the RTC domain, so
+/// this survives a reset -- which is exactly why the mark above works.
+pub fn set_rtc_time_of_day(rtc: &Rtc<'_>, hour: u8, minute: u8, second: u8) {
+    let day = hour.min(23) as u64 * 3600 + minute.min(59) as u64 * 60 + second.min(59) as u64;
+    rtc.set_current_time_us((CLOCK_RTC_BASE_SECONDS + day) * 1_000_000);
 }
 
 // --- A helper of your own ---------------------------------------------------------------------

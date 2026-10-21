@@ -59,7 +59,7 @@ test('every ESP board names its chip, target and flash size', () => {
     for (const [id, [family, chip, target, flashSize]] of Object.entries(expected)) {
         const board = espBoard(id);
         equal(board.family, family, `${id} family`);
-        equal(board.espChip, chip, `${id} espflash/esp-hal chip name`);
+        equal(board.espChip, chip, `${id} should be an ESP board`);
         equal(board.target, target, `${id} Xtensa target triple`);
         equal(board.flashSize, flashSize, `${id} flash size`);
         equal(board.psram, false, `${id} must not claim PSRAM by default`);
@@ -913,4 +913,45 @@ test('a Designer project carries the touch setting, and its firmware reads it', 
     });
     notContains(configOf(tqt), 'TOUCH_ENABLED', 'a board without a controller has nothing to switch');
     notContains(mainOf(tqt), 'const TOUCH', 'and no constant to read');
+});
+
+test('a Designer project keeps the time in the RTC and asks a host when it has never been set', () => {
+    // The two halves of the feature. The RTC is what a reset does not take away, so the hands no
+    // longer jump back to the drawn time after a flash; the request is how an RTC that has never
+    // been set learns what a PC's clock says, which no board can find out on its own.
+    const filesOf = (boardId) =>
+        generateProjectFiles({ board: boardById(boardId), projectName: 'x', template: 'designer', rotation: 0 });
+    const sourceOf = (files) => sketchSource(files);
+
+    const cyd = sourceOf(filesOf('sunton-3248s035r'));
+    contains(cyd, 'Rtc::new(peripherals.RTC_TIMER)', 'the chip RTC is opened before the design exists');
+    contains(cyd, 'fn rtc_time_of_day', 'and read at boot');
+    contains(cyd, 'fn set_rtc_time_of_day', 'and written when a host answers');
+    contains(cyd, 'if ui::HAS_CLOCK && state.needs_time {', 'the CYD asks even with no evidence of a host');
+    contains(cyd, 'esp_println::println!("TIME?")', 'the CYD asks with a plain line, not a log line');
+    contains(cyd, 'Some(uart.with_rx(peripherals.GPIO3))', 'its console is UART0, on the CH340 side of the socket');
+    contains(cyd, 'state.host_seen = true;', 'and a byte arriving is recorded as host evidence');
+    notContains(cyd, 'usb_host_attached', 'a bridge hides the cable, so there is no connection check to make');
+
+    const tqt = sourceOf(filesOf('lilygo-tqt'));
+    contains(tqt, 'UsbSerialJtag::new(peripherals.USB_DEVICE)', 'the T-QT console is the chip USB peripheral');
+    contains(tqt, 'pub fn usb_host_attached() -> bool {', 'whose Start-of-Frame status is the connection check');
+    contains(tqt, 'esp32s3::USB_DEVICE::ptr()', 'read through the chip own PAC');
+    contains(tqt, 'state.console.write(b"TIME?\\n")', 'the request goes out on the same console');
+    contains(tqt, 'if ui::HAS_CLOCK && state.needs_time && state.host_seen {', 'and waits for a host the USB controller can see');
+    contains(tqt, 'Rtc::new(peripherals.RTC_TIMER)', 'and the RTC is the same on this chip');
+
+    // The generated design is what decides whether any of it matters.
+    const uiOf = (files) => files.find((file) => file.path === 'src/ui.rs').content;
+    notContains(uiOf(filesOf('sunton-3248s035r')), 'HAS_CLOCK: bool = true', 'the starter design has no clock');
+    contains(uiOf(filesOf('sunton-3248s035r')), 'pub const HAS_CLOCK: bool = false');
+
+    // The chip's PAC is named only where it is needed, and the CYD's manifest is untouched.
+    const manifestOf = (files) => files.find((file) => file.path === 'Cargo.toml').content;
+    contains(manifestOf(filesOf('lilygo-tqt')), 'esp32s3 = "0.36"', 'the T-QT names the PAC for its USB status');
+    notContains(manifestOf(filesOf('sunton-3248s035r')), 'esp32s3 =', 'the CYD has no such peripheral to read');
+
+    // A template that draws no design has no clock to think about.
+    const blinky = sourceOf(generateProjectFiles({ board: boardById('esp32-devkitc'), projectName: 'x', template: 'blinky' }));
+    notContains(blinky, 'Rtc::new', 'a periodic-task project does not open the RTC');
 });

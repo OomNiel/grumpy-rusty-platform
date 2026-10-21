@@ -262,7 +262,16 @@ export function registerNewProjectCommand(
             return;
         }
 
-        const files = generateProjectFiles({ board, projectName, template, rotation, touch });
+        const files = generateProjectFiles({
+            board,
+            projectName,
+            template,
+            rotation,
+            touch,
+            // The Wi-Fi clock shows local time; the machine that creates the project is the only
+            // thing here that knows the offset. getTimezoneOffset counts minutes west of UTC.
+            clockOffsetMinutes: -new Date().getTimezoneOffset(),
+        });
         for (const file of files) {
             const segments = file.path.split('/');
             const directory = vscode.Uri.joinPath(target, ...segments.slice(0, -1));
