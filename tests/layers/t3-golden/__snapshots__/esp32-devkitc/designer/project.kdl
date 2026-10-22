@@ -1,0 +1,9 @@
+// Grumpy's Rusty Platform -- the project's screen manifest.
+//
+// Asset paths in src/ui.kdl are relative to the project root because this file is here:
+// embedded-gui looks for a project.kdl above a screen and treats its directory as the asset root. Deleting it
+// does not break the build, but it silently moves the root to src/ and every asset path with it.
+
+project {
+    screen id="RustyPanel" file="src/ui.kdl"
+}

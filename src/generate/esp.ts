@@ -31,9 +31,10 @@ import {
     stateStruct,
 } from './sketch';
 import { DESIGNER_SD_PERIPHERAL, emitSdRs } from './esp-sd';
-import { BoardChoices, displayFor } from '../boards/esp';
+import { BoardChoices, displayFor, hasBacklight, touchFor } from '../boards/esp';
 import { EspBoardProfile, EspDisplay, EspTouch } from '../boards/types';
 import { LCD_ROTATION_LABELS, LcdRotation, asLcdRotation, templateUsesPanel } from '../display/rotation';
+import { DEFAULT_BRIGHTNESS, clampBrightness } from '../display/backlight';
 import {
     DESIGNER_FILES,
     emitHandlersRs,
@@ -115,6 +116,13 @@ export interface EspGenerateOptions {
      * which is UTC -- the tests' stable default; the wizard passes the machine's own offset.
      */
     clockOffsetMinutes?: number;
+    /**
+     * The panel backlight's brightness, in percent, when the panel has a backlight pin.
+     *
+     * Written into `.cargo/esp-config.toml` and read at compile time, like the rotation -- the Designer's
+     * Brightness slider is the thing that changes it later. Omitted means fully on.
+     */
+    brightness?: number;
 }
 
 /**
@@ -279,14 +287,21 @@ export function generateEspProjectFiles(options: EspGenerateOptions): GeneratedF
     }
 
     // A designer project on a board with a touch controller carries the setting; a board without one has no
-    // touch code to switch, and the firmware reads an absent key as "on".
+    // touch code to switch, and the firmware reads an absent key as "on". The controller may belong to the
+    // board (the CYD's XPT2046) or to the display module plugged into it (a DevKitC's ILI9341), which is why
+    // the answer is taken from the panel that was chosen.
     const touchSetting =
-        template === 'designer' && board.touch !== undefined ? (options.touch ?? true) : undefined;
+        template === 'designer' && touchFor(board, panel) !== undefined ? (options.touch ?? true) : undefined;
+    // The backlight is a wire on the panel, not a promise of the board: a module that leaves BL unconnected
+    // gets no key, and a template that never brings the panel up (blinky, wifi, ...) has nothing to dim.
+    const brightness = usesPanel && hasBacklight(panel)
+        ? clampBrightness(options.brightness ?? DEFAULT_BRIGHTNESS)
+        : undefined;
 
     const files: GeneratedFile[] = [
         { path: 'Cargo.toml', content: espCargoToml(board, crateName, template, choices) },
         { path: '.cargo/config.toml', content: espCargoConfigToml(board, template) },
-        { path: '.cargo/esp-config.toml', content: espConfigToml(rotation, usesPanel, touchSetting, template === 'designer' ? options.clockOffsetMinutes ?? 0 : undefined) },
+        { path: '.cargo/esp-config.toml', content: espConfigToml(rotation, usesPanel, touchSetting, template === 'designer' ? options.clockOffsetMinutes ?? 0 : undefined, brightness) },
         { path: 'rust-toolchain.toml', content: espRustToolchainToml() },
         { path: 'build.rs', content: espBuildRs() },
         ...espMainFiles(board, template, choices),
@@ -307,8 +322,8 @@ export function generateEspProjectFiles(options: EspGenerateOptions): GeneratedF
         });
         files.push(
             { path: DESIGNER_FILES.markup, content: emitStarterKdl(starter) },
-            { path: DESIGNER_FILES.rust, content: emitUiRs(starter, board.touch !== undefined) },
-            { path: DESIGNER_FILES.handlers, content: emitHandlersRs(starter, board.touch !== undefined) },
+            { path: DESIGNER_FILES.rust, content: emitUiRs(starter, touchFor(board, panel) !== undefined) },
+            { path: DESIGNER_FILES.handlers, content: emitHandlersRs(starter, touchFor(board, panel) !== undefined) },
             { path: DESIGNER_FILES.document, content: `${JSON.stringify(starter, null, 2)}\n` },
             // The manifest that anchors asset paths to the project root -- without it the crate resolves
             // them from src/, which is where the screen file lives.
@@ -334,16 +349,18 @@ export function generateEspProjectFiles(options: EspGenerateOptions): GeneratedF
 /**
  * The `[features]` block of a Designer Cargo.toml, or `''` when the project carries none.
  *
- * The block exists in two cases: a board whose catalog entry offers more than one panel revision (the LilyGo
- * T-QT exposes both a GC9107 and a GC9A01), and a Designer project that can switch its SD card off. The card is
- * gated behind cargo's `sd` feature -- optional `embedded-sdmmc` and `critical-section` dependencies plus a
- * `#[cfg(feature = "sd")]` on `mod sd;` and the `sd::init` call -- so that *enabling* the card adds the FAT
- * filesystem to the build and *disabling* it drops the crate again. `default` starts out carrying `"sd"` on a
- * board that has a socket, which is every Designer project as it is generated; the Designer toolbar is what
- * flips it later. Keeping the feature in `default` is what lets the setting be changed without regenerating
- * `src/main.rs`, in the same way the panel-revision switch already does.
+ * The block exists in two cases: a board whose catalog entry offers more than one display module (the LilyGo
+ * T-QT exposes both a GC9107 and a GC9A01, and a DevKitC takes an ST7789 or an ILI9341 module), and a Designer
+ * project that can switch its SD card off. The panel features are also what tells the Designer which module a
+ * project was made for -- its size and whether it brings a touch controller -- so they are written for every
+ * choice, not only the chosen one. The card is gated behind cargo's `sd` feature -- optional `embedded-sdmmc`
+ * and `critical-section` dependencies plus a `#[cfg(feature = "sd")]` on `mod sd;` and the `sd::init` call --
+ * so that *enabling* the card adds the FAT filesystem to the build and *disabling* it drops the crate again.
+ * `default` starts out carrying `"sd"` on a board that has a socket, which is every Designer project as it is
+ * generated; the Designer toolbar is what flips it later. Keeping the feature in `default` is what lets the
+ * setting be changed without regenerating `src/main.rs`, in the same way the panel-revision switch already does.
  */
-function espFeaturesSection(panelChoice: string | undefined, sdFeature: boolean, smtpFeature: boolean): string {
+function espFeaturesSection(panelChoice: string | undefined, sdFeature: boolean, smtpFeature: boolean, board?: EspBoardProfile): string {
     if (panelChoice === undefined && !sdFeature && !smtpFeature) {
         return '';
     }
@@ -357,13 +374,17 @@ function espFeaturesSection(panelChoice: string | undefined, sdFeature: boolean,
     const lines: string[] = [''];
     lines.push('[features]');
     if (panelChoice !== undefined) {
-        lines.push('# LilyGo shipped two panels under one name; this feature picks which init table the');
-        lines.push('# firmware uses. Flip it and rebuild to try the other revision.');
+        lines.push('# The display this project was made for. A board like the DevKitC takes any module plugged into');
+        lines.push('# it, so the choice is recorded here; flip it and rebuild to use another. It also tells the');
+        lines.push('# Designer which panel -- and therefore which size and touch controller -- the project has.');
     }
     lines.push(`default = [${defaultItems.join(', ')}]`);
     if (panelChoice !== undefined) {
-        lines.push('panel-gc9107 = []');
-        lines.push('panel-gc9a01 = []');
+        const choices = board?.options.find((option) => option.id === 'panel')?.choices ?? [];
+        const ids = choices.length > 0 ? choices.map((choice) => choice.id) : [panelChoice];
+        for (const id of ids) {
+            lines.push(`panel-${id} = []`);
+        }
     }
     if (sdFeature) {
         lines.push(
@@ -403,7 +424,7 @@ function espCargoToml(
     // switches it on, and a project that never sets SMTP up still needs the definition for the toggle to
     // have something to move.
     const smtpFeature = template === 'designer';
-    const features = espFeaturesSection(panelChoice, sdFeature, smtpFeature);
+    const features = espFeaturesSection(panelChoice, sdFeature, smtpFeature, board);
     const espRtosFeatures = ['embassy', board.espChip];
 
     // The radio templates: Wi-Fi on `wifi`, the Bluetooth LE controller on `bluetooth`. A Designer
@@ -481,7 +502,7 @@ function espCargoToml(
         // because a Designer project built without the `sd` feature names neither the Mutex nor the card.
         dependencies.push(`critical-section = { version = "${ESP_CRATE_VERSIONS.criticalSection}", optional = true }`);
     }
-    if (template === 'touch' || template === 'board' || (template === 'designer' && board.touch !== undefined)) {
+    if (template === 'touch' || template === 'board' || (template === 'designer' && touchFor(board, display) !== undefined)) {
         // The calibration is kept in flash, so the project needs the NOR-flash crate. Its chip feature is
         // what selects the flash driver, and it pulls the ROM glue that is already in the tree.
         dependencies.push(`esp-storage = { version = "${ESP_CRATE_VERSIONS.espStorage}", features = ["${board.espChip}"] }`);
@@ -507,7 +528,7 @@ function espCargoToml(
         // wizard when it creates a Designer project.
         dependencies.push(`rusty-gui-widgets = { path = "codegen/rusty-gui-widgets", default-features = false }`);
     }
-    if (template === 'touch' || template === 'board' || (template === 'designer' && board.touch !== undefined)) {
+    if (template === 'touch' || template === 'board' || (template === 'designer' && touchFor(board, display) !== undefined)) {
         // The touch template reads the controller through a function generic over `SpiDevice`, so the
         // trait has to be nameable: `embedded-hal-bus` brings the trait's *implementations* but not the
         // crate name itself. Same 1.0 line mipidsi and embedded-hal-bus already resolve to.
@@ -646,7 +667,7 @@ build-std = [${needsAlloc ? '"alloc", ' : ''}"core"]
 `;
 }
 
-function espConfigToml(rotation: LcdRotation, usesPanel: boolean, touch?: boolean, clockOffsetMinutes?: number): string {
+function espConfigToml(rotation: LcdRotation, usesPanel: boolean, touch?: boolean, clockOffsetMinutes?: number, brightness?: number): string {
     // An environment table is what makes the rotation reachable at compile time: cargo applies `[env]` to
     // the rustc invocations, so `option_env!` in main.rs sees it without the extension having to inject
     // anything at build time -- which is also why `cargo run` in a plain terminal honours it.
@@ -681,12 +702,24 @@ TOUCH_ENABLED = "${touch ? '1' : '0'}"
 # hour here when the clocks go forward, and take it back when they go back.
 TZ_OFFSET_MINUTES = "${clockOffsetMinutes}"
 `;
+    // The backlight is dimmed by PWM on its BL pin. The number is the brightness a person sees -- the
+    // firmware inverts it for a panel whose transistor switches on with a low level, so 30 always means
+    // 30 % of the light and never a duty cycle.
+    const backlightEntry =
+        brightness === undefined
+            ? ''
+            : `
+# The panel backlight's brightness in percent, read at compile time by src/main.rs. 100 is fully on,
+# 0 is off. The Designer's Brightness slider writes this line; editing it here works just as well, and
+# neither ever touches src/main.rs.
+BACKLIGHT_BRIGHTNESS = "${brightness}"
+`;
     return `# Runtime configuration for the ESP logging stack.
 [env]
 # log level for esp-println, read by esp_println::logger::init_logger_from_env() in main;
 # change to "debug" or "trace" when something is silent.
 ESP_LOG = "info"
-${rotationEntry}${touchEntry}${clockEntry}`;
+${rotationEntry}${touchEntry}${clockEntry}${backlightEntry}`;
 }
 
 function espRustToolchainToml(): string {
@@ -825,7 +858,25 @@ ${heap}
 `;
 }
 
-function espImports(board: EspBoardProfile, template: AppTemplate): string {
+/**
+ * The LEDC imports a panel with a backlight pin needs -- and nothing at all for a panel without one.
+ *
+ * An unused import is a warning in a generated project, so the lines are added where the hardware is: the
+ * backlight is the only thing the sketch PWMs, and a module that leaves BL unconnected has no channel.
+ */
+function backlightImports(display: EspDisplay | undefined): string[] {
+    if (!hasBacklight(display)) {
+        return [];
+    }
+    return [
+        'use esp_hal::gpio::DriveMode;',
+        'use esp_hal::ledc::channel::{self, Channel, ChannelIFace};',
+        'use esp_hal::ledc::timer::{self, TimerIFace};',
+        'use esp_hal::ledc::{Ledc, LSGlobalClkSource, LowSpeed};',
+    ];
+}
+
+function espImports(board: EspBoardProfile, template: AppTemplate, display: EspDisplay | undefined): string {
     if (template === 'wifi') {
         return [
             'use core::net::Ipv4Addr;',
@@ -891,7 +942,7 @@ function espImports(board: EspBoardProfile, template: AppTemplate): string {
             'use esp_println as _;',
         ].join('\n');
     }
-    if (template === 'touch' || template === 'board' || (template === 'designer' && board.touch !== undefined)) {
+    if (template === 'touch' || template === 'board' || (template === 'designer' && touchFor(board, display) !== undefined)) {
         // Only the board template drives the LDR and the speaker, and an unused import is a warning, so the
         // analog imports are added where the hardware actually is.
         // The paint timing below is Designer-only, and an unused import is a warning in a generated project.
@@ -931,10 +982,12 @@ function espImports(board: EspBoardProfile, template: AppTemplate): string {
             'use embedded_hal_bus::spi::RefCellDevice;',
             'use esp_hal::clock::CpuClock;',
             'use esp_hal::delay::Delay;',
-            // The radio's heap lives in a reclaimed RAM region, named by this attribute macro.
-            'use esp_hal::ram;',
+            // The radio's heap lives in a reclaimed RAM region, named by this attribute macro -- and only a
+            // Designer project has a heap (its clock task). The named templates would warn about it.
+            ...(template === 'designer' ? ['use esp_hal::ram;'] : []),
             // `Input`/`Pull` are the touch controller's PENIRQ line: low means pressed.
             'use esp_hal::gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull};',
+            ...backlightImports(display),
             // Flash access, for keeping the calibration across a power cycle.
             'use esp_storage::FlashStorage;',
             ...hardwareImports,
@@ -948,7 +1001,7 @@ function espImports(board: EspBoardProfile, template: AppTemplate): string {
             'use mipidsi::interface::SpiInterface as SPIInterface;',
         ].join('\n');
     }
-    if (template === 'designer' && board.touch === undefined) {
+    if (template === 'designer' && touchFor(board, display) === undefined) {
         // The panel bring-up imports without the diagnostic screen's drawing primitives and fonts. This
         // template paints a design through the GUI, so keeping them produced eight unused-import warnings in
         // every Designer project on a board with no touch controller (the T-QT).
@@ -962,6 +1015,7 @@ function espImports(board: EspBoardProfile, template: AppTemplate): string {
             'use esp_hal::clock::CpuClock;',
             'use esp_hal::delay::Delay;',
             'use esp_hal::gpio::{Level, Output, OutputConfig};',
+            ...backlightImports(display),
             // The heap's reclaimed region is declared with this attribute macro, and an attribute
             // macro has to be in scope to be named: #[ram(reclaimed)] alone is unresolved.
             'use esp_hal::ram;',
@@ -971,7 +1025,9 @@ function espImports(board: EspBoardProfile, template: AppTemplate): string {
             'use esp_hal::spi::master::{Config as SpiConfig, Spi};',
             'use esp_hal::time::Rate;',
             'use esp_hal::timer::timg::TimerGroup;',
-            'use esp_hal::usb::usb_serial_jtag::UsbSerialJtag;',
+            ...(board.espChip === 'esp32s3'
+                ? ['use esp_hal::usb::usb_serial_jtag::UsbSerialJtag;']
+                : ['use esp_hal::uart::{Config as UartConfig, Uart};']),
             'use esp_println as _;',
             'use mipidsi::options::{ColorOrder, Orientation, Rotation};',
             'use mipidsi::{models, Builder};',
@@ -993,6 +1049,7 @@ function espImports(board: EspBoardProfile, template: AppTemplate): string {
             'use esp_hal::clock::CpuClock;',
             'use esp_hal::delay::Delay;',
             'use esp_hal::gpio::{Level, Output, OutputConfig};',
+            ...backlightImports(display),
             'use esp_hal::spi::master::{Config as SpiConfig, Spi};',
             'use esp_hal::time::Rate;',
             'use esp_hal::timer::timg::TimerGroup;',
@@ -1051,8 +1108,12 @@ function espMainFiles(board: EspBoardProfile, template: AppTemplate, choices: Bo
 function espSketch(board: EspBoardProfile, template: AppTemplate, choices: BoardChoices): SketchFiles {
     const usesPanel = templateUsesPanel(template);
     const display = usesPanel ? displayFor(board, choices) : undefined;
+    // The controller can be the board's own (the CYD) or the display module's (a DevKitC panel with an
+    // XPT2046 on it), so it is asked of the panel that was chosen rather than of the board alone.
     const touch =
-        template === 'touch' || template === 'board' || template === 'designer' ? board.touch : undefined;
+        template === 'touch' || template === 'board' || template === 'designer'
+            ? touchFor(board, display)
+            : undefined;
     const led = board.led;
     const withHardware = template === 'board';
 
@@ -1101,16 +1162,17 @@ function espSketch(board: EspBoardProfile, template: AppTemplate, choices: Board
 
     return sketchFiles({
         banner: espMainHeader(board, template).trimEnd(),
-        imports: espImportList(board, template),
+        imports: espImportList(board, template, display),
         sideEffects: [],
-        modules: espModules(board, template),
+        modules: espModules(board, template, touch),
         prologue: `#![no_std]
 #![no_main]
 
 // The ESP-IDF bootloader expects an application descriptor in the image. Without it the
 // bootloader refuses to start the image, so this line is not decoration.
 esp_bootloader_esp_idf::esp_app_desc!();`,
-        statics: [display === undefined ? '' : espPanelStatics(touch !== undefined)].filter((text) => text !== '')
+        statics: [display === undefined ? '' : espPanelStatics(touch !== undefined, hasBacklight(display))]
+            .filter((text) => text !== '')
             .join('\n\n'),
         state: stateStruct(espStateDoc(template), fields),
         setup: setupFn({
@@ -1151,8 +1213,8 @@ pub type BtController = ExternalController<BleConnector<'static>, 1>;`;
  * and that only happens in the file it is compiled in, so the two side-effect imports stay in the crate root
  * and are not re-exported. Duplicates are dropped: the template lists already carry `esp_println`.
  */
-function espImportList(board: EspBoardProfile, template: AppTemplate): string[] {
-    const lines = [...espImports(board, template).split('\n'), 'use esp_println as _;', 'use esp_backtrace as _;']
+function espImportList(board: EspBoardProfile, template: AppTemplate, display: EspDisplay | undefined): string[] {
+    const lines = [...espImports(board, template, display).split('\n'), 'use esp_println as _;', 'use esp_backtrace as _;']
         .map((line) => line.trim())
         .filter((line) => line !== '');
     return [...new Set(lines)];
@@ -1201,11 +1263,60 @@ pub fn touch_clock() -> SpiConfig {
 }`
             : '',
     ].filter((text) => text !== '');
-    return [...aliases, ...references, ...clocks].join('\n\n');
+    return [...aliases, ...references, ...clocks, ...backlightMaterial(display)].join('\n\n');
 }
 
-/** The two statics the panel's storage lives in, which is what lets it outlive `setup()`. */
-function espPanelStatics(shared: boolean): string {
+/**
+ * The backlight's PWM plumbing, as header material: the channel's name and the brightness constants.
+ *
+ * The brightness is read at *compile* time from `BACKLIGHT_BRIGHTNESS` in `.cargo/esp-config.toml`, the same
+ * way the rotation is, so changing the Designer's slider never rewrites `src/main.rs`. The number in that
+ * file is the brightness a person sees; the duty the pin needs is the complement for a panel whose
+ * transistor switches on with a LOW level, and that inversion happens here rather than in the file.
+ */
+function backlightMaterial(display: EspDisplay): string[] {
+    if (!hasBacklight(display)) {
+        return [];
+    }
+    const activeLow = display.backlightActiveLow === true;
+    return [
+        `/// The backlight's PWM channel: the LEDC channel that dims the panel by switching its transistor.
+pub type Backlight = Channel<'static, LowSpeed>;`,
+        `/// The brightness setting, as a percentage: 0-100 from \`.cargo/esp-config.toml\`, read at compile time.
+/// Anything that is not a number in range -- an empty value, a typo, a hand-edited line -- is 100, so a
+/// mistake can never leave the panel dark.
+pub const BACKLIGHT_PERCENT: u8 = match option_env!("BACKLIGHT_BRIGHTNESS") {
+    Some(text) => percent_from_env(text),
+    None => 100,
+};
+
+const fn percent_from_env(text: &str) -> u8 {
+    let bytes = text.as_bytes();
+    if bytes.len() == 0 {
+        return 100;
+    }
+    let mut value: u32 = 0;
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if byte < b'0' || byte > b'9' {
+            return 100;
+        }
+        value = value * 10 + (byte - b'0') as u32;
+        index += 1;
+    }
+    if value > 100 { 100 } else { value as u8 }
+}
+
+/// The duty the pin runs at, in percent of its *high* time. ${activeLow
+            ? 'This board switches the backlight transistor on with a LOW level, so the duty is the complement of\n/// the brightness: 100 % brightness is a pin held low.'
+            : 'This board switches the backlight transistor on with a HIGH level, so the duty is the\n/// brightness itself.'}
+pub const BACKLIGHT_DUTY_PCT: u8 = ${activeLow ? '100 - BACKLIGHT_PERCENT' : 'BACKLIGHT_PERCENT'};`,
+    ];
+}
+
+/** The statics the panel's storage lives in, which is what lets it outlive `setup()`. */
+function espPanelStatics(shared: boolean, backlight: boolean): string {
     const bus = shared
         ? `/// The shared SPI bus. A static rather than a local because the panel's device borrows it and the
 /// panel travels back to main() in the sketch's State.
@@ -1214,7 +1325,18 @@ static BUS_CELL: static_cell::StaticCell<HalBus> = static_cell::StaticCell::new(
     const buffer = `/// The batching buffer mipidsi's interface borrows, for the same reason: the interface is part of the
 /// State, so the buffer has to outlive setup().
 static BUFFER_CELL: static_cell::StaticCell<[u8; 512]> = static_cell::StaticCell::new();`;
-    return [bus, buffer].filter((text) => text !== '').join('\n\n');
+    // The channel borrows the peripheral *and* the timer, and it travels back to main() in the State -- so
+    // both have to be 'static. A local timer would be dropped at the end of setup(), and the channel's
+    // stored reference would outlive it.
+    const pwm = backlight
+        ? `/// The LEDC peripheral, a static for the same reason the timer is: the backlight channel borrows both.
+static LEDC_CELL: static_cell::StaticCell<Ledc<'static>> = static_cell::StaticCell::new();
+
+/// The backlight's PWM timer. The channel keeps a reference to it once configured, so it may not be a local.
+static BACKLIGHT_TIMER_CELL: static_cell::StaticCell<timer::Timer<'static, LowSpeed>> =
+    static_cell::StaticCell::new();`
+        : '';
+    return [bus, buffer, pwm].filter((text) => text !== '').join('\n\n');
 }
 
 /** One phrase per template, used to say what the sketch is for in the generated docs. */
@@ -1552,13 +1674,19 @@ function espStateFields(
             keepAlive: template === 'designer' && touch === undefined,
             doc: 'The panel, brought up and ready to draw on.',
         });
-        fields.push({
-            name: 'backlight',
-            type: "Output<'static>",
-            keepAlive: true,
-            doc: 'The backlight pin, held on. Nothing reads it: it is here so that it is not dropped with the'
-                + ' rest of `setup()`\u2019s locals, which would leave the panel lit but the glass dark.',
-        });
+        // A panel with no backlight pin wired has nothing to keep alive and nothing to dim.
+        if (hasBacklight(display)) {
+            fields.push({
+                name: 'backlight',
+                type: 'Backlight',
+                // `configure` takes `&mut self`, so the local may not lose its `mut` (see sketch.ts).
+                mutableInSetup: true,
+                keepAlive: true,
+                doc: 'The backlight\u2019s PWM channel. Nothing reads it: it is kept so the channel -- and the' +
+                    ' timer it borrows -- outlive `setup()`, which is what holds the panel lit. Its duty comes' +
+                    ' from BACKLIGHT_BRIGHTNESS, so the Designer\u2019s Brightness slider reaches the glass.',
+            });
+        }
     }
     if (drivesTouch && panel) {
         fields.push(
@@ -1639,8 +1767,6 @@ function espStateFields(
             { name: 'console', type: "Option<Uart<'static, esp_hal::Blocking>>", doc: 'The console the toolchain hands the time over on, when it' },
             { name: 'console_line', type: '[u8; 32]', doc: 'One line of it, in the making.' },
             { name: 'console_len', type: 'usize', doc: 'How much of that line is filled.' },
-            { name: 'wall_clock', type: 'Option<(u8, u8, u8)>', doc: 'The local time the toolchain sent, and whether the design has' },
-            { name: 'wall_clock_applied', type: 'bool', doc: 'been told yet: the design only exists after the first frame.' },
         );
     }
     if (template === 'designer') {
@@ -1663,17 +1789,31 @@ function espStateFields(
                     doc: 'The design. On a panel with no touchscreen this loop is the only thing that asks it whether anything changed.',
                 },
         );
-        // The clock's own state: the RTC that survives a reset, and the hand-over that fills it.
-        // A board with a touch controller already declares the console and wall-clock fields in the
-        // touch block above; a board without one gets them here.
-        if (touch === undefined) {
+        // The clock's own state: the RTC that survives a reset, and the hand-over that fills it. A board
+        // with a touch controller declares the console and wall-clock fields in the touch block above; this
+        // adds the two the hand-over needs there, since the touch block is shared with templates that have
+        // no design to tell the time to.
+        if (touch !== undefined) {
             fields.push(
-                {
+                { name: 'wall_clock', type: 'Option<(u8, u8, u8)>', doc: 'The local time the toolchain sent, and whether the design has' },
+                { name: 'wall_clock_applied', type: 'bool', doc: 'been told yet: the design only exists after the first frame.' },
+            );
+        } else {
+            const consoleField = board.espChip === 'esp32s3'
+                ? {
                     name: 'console',
                     type: "UsbSerialJtag<'static, esp_hal::Blocking>",
                     doc: 'The console the host hands the time over on. This board\u2019s USB socket is wired to'
                         + ' the chip, so its console is the USB-Serial-JTAG controller itself.',
-                },
+                }
+                : {
+                    name: 'console',
+                    type: "Option<Uart<'static, esp_hal::Blocking>>",
+                    doc: 'The console the host hands the time over on. This board\u2019s USB socket goes through a'
+                        + ' bridge, so its console is UART0 on the bridge\u2019s side.',
+                };
+            fields.push(
+                consoleField,
                 { name: 'console_line', type: '[u8; 32]', doc: 'One line of it, in the making.' },
                 { name: 'console_len', type: 'usize', doc: 'How much of that line is filled.' },
                 { name: 'wall_clock', type: 'Option<(u8, u8, u8)>', doc: 'The local time the host sent, and whether the design has' },
@@ -2107,7 +2247,7 @@ async fn net_task(mut runner: Runner<'static, Interface>) {
 }
 
 /** The extra modules a Designer project is made of, and the two constants that describe it. */
-function espModules(board: EspBoardProfile, template: AppTemplate): string {
+function espModules(board: EspBoardProfile, template: AppTemplate, touch: EspTouch | undefined): string {
     if (template !== 'designer') {
         return '';
     }
@@ -2118,7 +2258,7 @@ function espModules(board: EspBoardProfile, template: AppTemplate): string {
         (board.sd === undefined
             ? ''
             : "\n// The card a design's `sd:/NAME.BMP` images are read from.\n#[cfg(feature = \"sd\")]\nmod sd;\n") +
-        (board.touch === undefined
+        (touch === undefined
             ? ''
             : "\n/// This project draws the design, so the diagnostic screen the touch template can paint is folded\n/// away at compile time. Kept rather than deleted: it is what to fall back on when a panel comes up wrong.\nconst DESIGNER: bool = true;\n\n/// Whether touch is wanted, read at compile time so the driver, the calibration and the sampling fold\n/// away when it is off: no SPI traffic to a controller nobody asked for. Only \"0\" is off, so a project\n/// generated before the setting existed keeps the touchscreen it had.\nconst TOUCH: bool = match option_env!(\"TOUCH_ENABLED\") {\n    Some(value) => !(value.len() == 1 && value.as_bytes()[0] == b'0'),\n    None => true,\n};\n")
     );
@@ -3322,11 +3462,7 @@ ${designer ? espClockSetupDecls(board) : `    // The console the toolchain talks
         }
     };
     let mut console_line = [0u8; 32];
-    let mut console_len: usize = 0;
-    // The local time the toolchain handed over, and whether the design has been told. The design
-    // does not exist until the first calibrated frame, and the line arrives long before that.
-    let mut wall_clock: Option<(u8, u8, u8)> = None;
-    let mut wall_clock_applied = false;`}
+    let mut console_len: usize = 0;`}
     // Whether the four corners have been measured -- by this run or by a previous one, which is what the
     // flash sector is for. Until they have, the panel shows the calibration screen.
     let mut calibrated = stored.is_some();${designer ? `
@@ -3527,8 +3663,6 @@ ${designer ? espClockLoop(board, 'screen.as_mut()') : `        // Whatever the t
                         if let Some((hour, minute, second)) =
                             parse_clock_time(&console_line[..filled])
                         {
-                            wall_clock = Some((hour, minute, second));
-                            wall_clock_applied = false;
                             log::info!(
                                 "clock: the console says {:02}:{:02}:{:02}",
                                 hour,
@@ -3548,14 +3682,7 @@ ${designer ? espClockLoop(board, 'screen.as_mut()') : `        // Whatever the t
                 }
             }
         }
-        // The design exists only from the first calibrated frame, and the time line arrives long
-        // before that: the hand-over is remembered until there is a design to tell.
-        if !wall_clock_applied {
-            if let (Some(design), Some((hour, minute, second))) = (screen.as_mut(), wall_clock) {
-                design.set_wall_clock(hour, minute, second);
-                wall_clock_applied = true;
-            }
-        }`}
+`}
 
         // Every third tick is about 60 ms; a burst is a few bytes at 2 MHz, so the panel's clock is only
         // away for microseconds.
@@ -3757,16 +3884,13 @@ function espPanelSetup(display: EspDisplay, shared: boolean): string {
         display.rst === undefined
             ? ''
             : `\n    let rst = Output::new(peripherals.GPIO${display.rst}, Level::High, OutputConfig::default());\n`;
+    // Built once and used by both branches: the two differ in how the bus is shared, never in how the
+    // backlight is brought up.
+    const backlight = backlightSetup(display);
 
     if (shared) {
         return `
-    // Backlight first, and note the level: ${display.backlightActiveLow ? 'this board switches the transistor on with a LOW level' : 'this board switches the transistor on with a HIGH level'}.
-    let mut backlight = Output::new(
-        peripherals.GPIO${display.backlight},
-        ${display.backlightActiveLow ? 'Level::Low' : 'Level::High'},
-        OutputConfig::default(),
-    );
-${resetSetup}
+${backlight}${resetSetup}
     // The panel's clock is the function in MainHeader.rs: the touch controller on the same bus needs a
     // slower one, and the bus is re-configured around each touch read and put back afterwards.
     let spi = Spi::new(peripherals.SPI2, panel_clock())
@@ -3837,13 +3961,7 @@ ${resetSetup}
 `;
     }
     return `
-    // Backlight first, and note the level: ${display.backlightActiveLow ? 'this board switches the transistor on with a LOW level' : 'this board switches the transistor on with a HIGH level'}.
-    let mut backlight = Output::new(
-        peripherals.GPIO${display.backlight},
-        ${display.backlightActiveLow ? 'Level::Low' : 'Level::High'},
-        OutputConfig::default(),
-    );
-${resetSetup}
+${backlight}${resetSetup}
     let spi = Spi::new(
         peripherals.SPI2,
         // ${display.label}: ${display.spiHz} Hz. Lower this first if the image is unstable.
@@ -3909,6 +4027,49 @@ ${resetSetup}
         .expect("panel initialisation");
 
     log::info!("panel ready: ${rustString(display.label)}");
+`;
+}
+
+/**
+ * The backlight, brought up as a PWM channel rather than a pin held on.
+ *
+ * A panel's backlight transistor is a switch, so a square wave on its pin is a dimmer: the duty cycle is the
+ * brightness. The timer and the peripheral live in statics (see `espPanelStatics`) because the channel keeps
+ * references to both for as long as it exists, and it travels back to main() in the sketch's State.
+ *
+ * A module with no BL pin wired gets nothing at all: no channel, no pin driven by accident, and -- in the
+ * Designer -- no Brightness setting to offer.
+ */
+function backlightSetup(display: EspDisplay): string {
+    if (display.backlight === undefined) {
+        return '';
+    }
+    const level = display.backlightActiveLow === true
+        ? 'this board switches the transistor on with a LOW level, so BACKLIGHT_DUTY_PCT is inverted'
+        : 'this board switches the transistor on with a HIGH level, so the duty is the brightness';
+    return `
+    // Backlight first: PWM on its pin, so the brightness in .cargo/esp-config.toml is what the glass shows.
+    // Note the level: ${level}.
+    let ledc = LEDC_CELL.init(Ledc::new(peripherals.LEDC));
+    ledc.set_global_slow_clock(LSGlobalClkSource::APBClk);
+    let backlight_timer = BACKLIGHT_TIMER_CELL.init(ledc.timer::<LowSpeed>(timer::Number::Timer0));
+    // 10 bits is 1024 steps across the range -- finer than an eye can see -- and 5 kHz is far above the
+    // frequency at which a backlight flicker would be visible.
+    backlight_timer
+        .configure(timer::config::Config {
+            duty: timer::config::Duty::Duty10Bit,
+            clock_source: timer::LSClockSource::APBClk,
+            frequency: Rate::from_khz(5),
+        })
+        .expect("the backlight PWM timer");
+    let mut backlight = ledc.channel(channel::Number::Channel0, peripherals.GPIO${display.backlight});
+    backlight
+        .configure(channel::config::Config {
+            timer: backlight_timer,
+            duty_pct: BACKLIGHT_DUTY_PCT,
+            drive_mode: DriveMode::PushPull,
+        })
+        .expect("the backlight PWM channel");
 `;
 }
 
@@ -4329,10 +4490,13 @@ function espReadme(
     // heartbeat. Found by generating one, 2026-10-08.
     const usesPanel = templateUsesPanel(template);
     const display = usesPanel ? displayFor(board, choices) : undefined;
-    // A Designer project drives touch where the board has a controller and is a static screen where it does
-    // not: the T-QT has a panel and no touch controller.
+    // A Designer project drives touch where the *chosen panel* has a controller and is a static screen where it
+    // does not: the T-QT has a panel and no controller, and a DevKitC's modules differ (the ILI9341 brings an
+    // XPT2046, the ST7789 does not).
     const touch =
-        template === 'touch' || template === 'board' || template === 'designer' ? board.touch : undefined;
+        template === 'touch' || template === 'board' || template === 'designer'
+            ? touchFor(board, display)
+            : undefined;
     // The card is claimed by a Designer project only: the sdcard and board templates mount it too, but they
     // are diagnostic and describe it in their own log rather than in this table.
     const designerCard = template === 'designer' ? board.sd : undefined;
@@ -4343,7 +4507,9 @@ function espReadme(
         if (display.rst !== undefined) {
             pinRows.push(`| ${display.rst} | panel reset |`);
         }
-        pinRows.push(`| ${display.backlight} | panel backlight (active ${display.backlightActiveLow ? 'low' : 'high'}) |`);
+        if (display.backlight !== undefined) {
+            pinRows.push(`| ${display.backlight} | panel backlight (PWM) |`);
+        }
         pinRows.push(`| ${display.spi.sclk} | panel SPI clock |`);
         pinRows.push(`| ${display.spi.mosi} | panel SPI data out |`);
         if (display.spi.miso !== undefined) {
@@ -4444,12 +4610,12 @@ The rotation turns the interface, and the drawing area turns with it. You hand t
 native size and the driver swaps the area it draws into when the rotation is 90 or 270 degrees, so the generated
 screens are solved for the shape that is actually being addressed: a landscape rotation gets a landscape frame,
 bars, corner markers, status lines and touch targets, and a portrait rotation gets a portrait one. Verified at
-270 degrees on hardware with every edge, corner and bar visible.${board.touch !== undefined ? `
+270 degrees on hardware with every edge, corner and bar visible.${touch === undefined ? '' : `
 The touch calibration is versioned by rotation: a record measured in one orientation is
 discarded when the rotation changes and the four corners are asked for again. To force that by hand, press
 and hold in the top-left corner of the screen for about two seconds - the stored calibration is thrown away
 and the corner screen comes back. Anything else you do with a finger (a tap, a long press on a widget, a
-drag) leaves the calibration alone.` : ''}
+drag) leaves the calibration alone.`}
 `
         : '';
     // The card is a Designer feature here: an image whose source the design writes as `sd:/PIC1.BMP` is
@@ -4479,6 +4645,19 @@ These come from the board's own schematic or board definition rather than from a
 guess; if you change one, change it in \`src/main.rs\` as well.
 `;
 
+    // The backlight is PWM, so its brightness is a build-time number rather than a pin held on. Said here
+    // because it is the one panel setting a user changes after the glass is already working.
+    const backlightSection = display?.backlight === undefined
+        ? ''
+        : `
+## Backlight brightness
+
+GPIO${display.backlight} is the panel's backlight, driven by **PWM** rather than held on. Its brightness is
+\`BACKLIGHT_BRIGHTNESS\` (0-100) in \`.cargo/esp-config.toml\`, read at **compile time** -- the Designer's
+**Brightness** slider writes that line, editing it by hand works just as well, and nothing in \`src/main.rs\`
+has to change. A project that does not mention the key is fully on. Rebuild to apply a change.
+`;
+
     return `# ${crateName}
 
 ${board.family} firmware for **${board.name}**, generated by Grumpy's Rusty Platform
@@ -4488,7 +4667,7 @@ for VS Code.
 - Chip: \`${board.espChip}\` (${board.flashSize} flash)
 - Template: \`${template}\`
 - Flashed with: \`espflash\` over USB serial — **no debug probe**
-${wifiNote}${bluetoothNote}${rotationSection}${cardNote}
+${wifiNote}${bluetoothNote}${rotationSection}${backlightSection}${cardNote}
 ## First-time setup
 
 The Xtensa targets are not in released Rust, so one extra toolchain is needed:

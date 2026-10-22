@@ -202,6 +202,10 @@ export interface GenerateOptions {
      * the wizard passes the machine's own offset so a new clock is right without an edit.
      */
     clockOffsetMinutes?: number;
+    /**
+     * The panel backlight's brightness in percent, for a panel with a backlight pin. Defaults to fully on.
+     */
+    brightness?: number;
 }
 
 // The naming helpers (crateNameFrom, binaryNameFrom, isAcceptableProjectName) now live in
@@ -223,6 +227,7 @@ export function generateProjectFiles(options: GenerateOptions): GeneratedFile[] 
             rotation: options.rotation,
             touch: options.touch,
             clockOffsetMinutes: options.clockOffsetMinutes,
+            brightness: options.brightness,
         });
     }
 

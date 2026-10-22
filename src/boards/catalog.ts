@@ -140,7 +140,6 @@ export const BOARDS: BoardProfile[] = [
     {
         kind: 'esp',
         id: 'esp32-devkitc',
-        options: [],
         name: 'Espressif ESP32-DevKitC V4',
         vendor: 'Espressif',
         family: 'ESP32',
@@ -155,7 +154,63 @@ export const BOARDS: BoardProfile[] = [
         // instead of pretending the board has one. GPIO4 is free of strapping duty --
         // GPIO0/2/5/12/15 all influence how the chip boots, so none of those is offered.
         led: { kind: 'gpio', pin: '4', external: true },
-        displays: [],
+        options: [
+            {
+                id: 'panel',
+                label: 'Display module',
+                prompt: 'Which display is wired to this DevKitC?',
+                choices: [
+                    {
+                        id: 'st7789',
+                        label: 'Generic 1.54" TFT SPI ST7789 240x240',
+                        description: 'A 1.54 inch 240x240 ST7789 panel over SPI. No touch controller.',
+                    },
+                    {
+                        id: 'ili9341',
+                        label: 'Generic 2.8" TFT SPI ILI9341 240x320 with XPT2046 touch',
+                        description: 'A 2.8 inch 240x320 ILI9341 panel over SPI with an XPT2046 touch controller.',
+                    },
+                ],
+                default: 'st7789',
+            },
+        ],
+        displays: [
+            {
+                controller: 'ST7789',
+                label: '1.54" ST7789 240x240',
+                width: 240,
+                height: 240,
+                cs: 5,
+                dc: 22,
+                rst: 4,
+                backlight: 21,
+                backlightActiveLow: false,
+                spi: { sclk: 18, mosi: 23 },
+                colorOrder: 'rgb',
+                mirrorX: false,
+                mirrorY: false,
+                spiHz: 40_000_000,
+                panelChoice: 'st7789',
+            },
+            {
+                controller: 'ILI9341Rgb565',
+                label: '2.8" ILI9341 240x320',
+                width: 240,
+                height: 320,
+                cs: 5,
+                dc: 22,
+                rst: 4,
+                backlight: 21,
+                backlightActiveLow: false,
+                spi: { sclk: 18, mosi: 23, miso: 19 },
+                colorOrder: 'rgb',
+                mirrorX: false,
+                mirrorY: false,
+                spiHz: 40_000_000,
+                panelChoice: 'ili9341',
+                touch: { controller: 'XPT2046', cs: 33, irq: 36, spiHz: 1_000_000 },
+            },
+        ],
         notes: 'ESP32-WROOM-32 with a USB-UART bridge (CP2102). No user LED. Wire one to GPIO4, or follow the serial log.',
     },
     {

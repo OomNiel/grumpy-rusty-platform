@@ -17,3 +17,8 @@ TOUCH_ENABLED = "1"
 # The Wi-Fi time server answers in UTC; this is what turns it into the time on the glass. Add an
 # hour here when the clocks go forward, and take it back when they go back.
 TZ_OFFSET_MINUTES = "0"
+
+# The panel backlight's brightness in percent, read at compile time by src/main.rs. 100 is fully on,
+# 0 is off. The Designer's Brightness slider writes this line; editing it here works just as well, and
+# neither ever touches src/main.rs.
+BACKLIGHT_BRIGHTNESS = "100"

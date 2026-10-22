@@ -27,6 +27,13 @@ mod net;
 /// State, so the buffer has to outlive setup().
 static BUFFER_CELL: static_cell::StaticCell<[u8; 512]> = static_cell::StaticCell::new();
 
+/// The LEDC peripheral, a static for the same reason the timer is: the backlight channel borrows both.
+static LEDC_CELL: static_cell::StaticCell<Ledc<'static>> = static_cell::StaticCell::new();
+
+/// The backlight's PWM timer. The channel keeps a reference to it once configured, so it may not be a local.
+static BACKLIGHT_TIMER_CELL: static_cell::StaticCell<timer::Timer<'static, LowSpeed>> =
+    static_cell::StaticCell::new();
+
 /// Every value this sketch keeps: the design and the panel it is drawn on, created once by setup() and used by
 /// the loop in main().
 pub struct State {
@@ -34,9 +41,9 @@ pub struct State {
     #[allow(dead_code)]
     display: DisplayDriver,
 
-    /// The backlight pin, held on. Nothing reads it: it is here so that it is not dropped with the rest of `setup()`’s locals, which would leave the panel lit but the glass dark.
+    /// The backlight’s PWM channel. Nothing reads it: it is kept so the channel -- and the timer it borrows -- outlive `setup()`, which is what holds the panel lit. Its duty comes from BACKLIGHT_BRIGHTNESS, so the Designer’s Brightness slider reaches the glass.
     #[allow(dead_code)]
-    backlight: Output<'static>,
+    backlight: Backlight,
 
     /// The design. On a panel with no touchscreen this loop is the only thing that asks it whether anything changed.
     screen: ui::Designer,
@@ -99,12 +106,28 @@ pub async fn setup(spawner: Spawner) -> State {
     // with a line that can only come from this run.
     log::info!("=== {} {} starting ===", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
     log::info!("board: LilyGo T-QT (ESP32-S3) (ESP32S3), 4 MB flash");
-    // Backlight first, and note the level: this board switches the transistor on with a LOW level.
-    let backlight = Output::new(
-        peripherals.GPIO10,
-        Level::Low,
-        OutputConfig::default(),
-    );
+    // Backlight first: PWM on its pin, so the brightness in .cargo/esp-config.toml is what the glass shows.
+    // Note the level: this board switches the transistor on with a LOW level, so BACKLIGHT_DUTY_PCT is inverted.
+    let ledc = LEDC_CELL.init(Ledc::new(peripherals.LEDC));
+    ledc.set_global_slow_clock(LSGlobalClkSource::APBClk);
+    let backlight_timer = BACKLIGHT_TIMER_CELL.init(ledc.timer::<LowSpeed>(timer::Number::Timer0));
+    // 10 bits is 1024 steps across the range -- finer than an eye can see -- and 5 kHz is far above the
+    // frequency at which a backlight flicker would be visible.
+    backlight_timer
+        .configure(timer::config::Config {
+            duty: timer::config::Duty::Duty10Bit,
+            clock_source: timer::LSClockSource::APBClk,
+            frequency: Rate::from_khz(5),
+        })
+        .expect("the backlight PWM timer");
+    let mut backlight = ledc.channel(channel::Number::Channel0, peripherals.GPIO10);
+    backlight
+        .configure(channel::config::Config {
+            timer: backlight_timer,
+            duty_pct: BACKLIGHT_DUTY_PCT,
+            drive_mode: DriveMode::PushPull,
+        })
+        .expect("the backlight PWM channel");
 
     let rst = Output::new(peripherals.GPIO1, Level::High, OutputConfig::default());
 

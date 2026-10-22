@@ -143,6 +143,36 @@ body {
     cursor: default;
 }
 
+/* A project setting with a range of values (the backlight brightness). The range input is the control and
+   the percentage is its reading: a thumb is not a number, and the value has to be legible in both themes --
+   hence an explicit colour, like every other label in the toolbar. accent-color is what tints the thumb in
+   the webview's Chromium. */
+.tool-slider {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    color: var(--vscode-foreground);
+    user-select: none;
+}
+
+.tool-slider-input {
+    width: 84px;
+    margin: 0;
+    accent-color: var(--vscode-focusBorder);
+}
+
+.tool-slider-value {
+    min-width: 3ch;
+    color: var(--vscode-foreground);
+    opacity: 0.85;
+    font-variant-numeric: tabular-nums;
+}
+
+.tool-slider-input:disabled,
+.tool-slider-input:disabled ~ .tool-slider-value {
+    opacity: 0.45;
+}
+
 .toolbar-separator {
     width: 1px;
     height: 18px;

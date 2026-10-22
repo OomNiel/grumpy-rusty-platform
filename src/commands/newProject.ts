@@ -19,6 +19,8 @@ import {
     LcdRotation,
     templateUsesPanel,
 } from '../display/rotation';
+import { needsPanelChoice, panelChoices, displayFor, touchFor } from '../boards/esp';
+import type { BoardChoices } from '../boards/esp';
 import { installFirmwareIntoProject } from '../toolchain/cyw43FirmwareRunner';
 import { samePath } from '../project/workspaceFolders';
 import { ensureEspToolchain } from './espToolchainCommands';
@@ -130,8 +132,15 @@ async function pickRotation(board: BoardProfile, template: AppTemplate): Promise
  * a board that *has* a controller is asked: the named templates are what their names say, and a board without a
  * controller has nothing to switch.
  */
-async function pickTouch(board: BoardProfile, template: AppTemplate): Promise<boolean | undefined> {
-    if (template !== 'designer' || board.kind !== 'esp' || board.touch === undefined) {
+async function pickTouch(
+    board: BoardProfile,
+    template: AppTemplate,
+    choices: BoardChoices,
+): Promise<boolean | undefined> {
+    // The controller can belong to the display module (a DevKitC's ILI9341) rather than to the board, so the
+    // question is asked of the panel this project is being made for -- and only after that panel is known.
+    const controller = board.kind === 'esp' ? touchFor(board, displayFor(board, choices)) : undefined;
+    if (template !== 'designer' || controller === undefined) {
         return true;
     }
     const picked = await vscode.window.showQuickPick(
@@ -159,6 +168,28 @@ async function pickTouch(board: BoardProfile, template: AppTemplate): Promise<bo
         },
     );
     return picked?.enabled;
+}
+
+async function pickPanel(board: BoardProfile, template: AppTemplate): Promise<BoardChoices | undefined> {
+    if (!templateUsesPanel(template) || board.kind !== 'esp' || !needsPanelChoice(board)) {
+        return {};
+    }
+    const choices = panelChoices(board);
+    const picked = await vscode.window.showQuickPick(
+        choices.map((choice) => ({
+            label: choice.label,
+            description: choice.description,
+            choice,
+        })),
+        {
+            title: `${board.name} — select a display`,
+            placeHolder: 'Display module',
+        },
+    );
+    if (!picked) {
+        return undefined;
+    }
+    return { panel: picked.choice.id };
 }
 
 async function pickParentFolder(): Promise<vscode.Uri | undefined> {
@@ -236,7 +267,14 @@ export function registerNewProjectCommand(
             return;
         }
 
-        const touch = await pickTouch(board, template);
+        // The panel first: which display module is attached decides whether there is a touch controller at
+        // all, so the touch question cannot come before it.
+        const panelChoicesAnswer = await pickPanel(board, template);
+        if (panelChoicesAnswer === undefined) {
+            return;
+        }
+
+        const touch = await pickTouch(board, template, panelChoicesAnswer);
         if (touch === undefined) {
             return;
         }
@@ -270,6 +308,7 @@ export function registerNewProjectCommand(
             template,
             rotation,
             touch,
+            choices: panelChoicesAnswer,
             // The Wi-Fi clock shows local time; the machine that creates the project is the only
             // thing here that knows the offset. getTimezoneOffset counts minutes west of UTC.
             clockOffsetMinutes: -new Date().getTimezoneOffset(),

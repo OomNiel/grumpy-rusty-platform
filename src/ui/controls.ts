@@ -361,11 +361,11 @@ export function healthSummary(input: HealthSummaryInput): HealthSummary {
                     ]
                     : [
                         `**cargo** ${status.cargo.version ?? '?'}`,
-                            `**probe-rs** ${status.probeRs.version ?? '?'}`,
-                            `**targets** ${status.installedTargets.filter((t) => t !== 'x86_64-unknown-linux-gnu').join(', ')}`,
-                            ...espLine,
-                            `**probe** ${probe} — ${status.probeDiagnosis.message}`,
-                        ]),
+                        `**probe-rs** ${status.probeRs.version ?? '?'}`,
+                        `**targets** ${status.installedTargets.filter((t) => t !== 'x86_64-unknown-linux-gnu').join(', ')}`,
+                        ...espLine,
+                        `**probe** ${probe} — ${status.probeDiagnosis.message}`,
+                    ]),
             ].join('  \n'),
         };
     }

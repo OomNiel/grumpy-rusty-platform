@@ -41,6 +41,23 @@ export interface DesignerInit {
     smtpAvailable: boolean;
     /** Whether the project is built with the `smtp` cargo feature -- the keep-alive client is complied in. */
     smtpEnabled: boolean;
+    /**
+     * True when the chosen panel has a backlight pin wired, which is what makes a Brightness setting possible.
+     *
+     * Optional like the load fields: the panel tests build `init` messages by hand, and a missing flag has to
+     * read as "no backlight" rather than crash the toolbar.
+     */
+    backlight?: boolean;
+    /**
+     * Whether this project's `src/main.rs` already drives the backlight by PWM.
+     *
+     * A project generated before the brightness setting existed holds the pin on with an `Output`, so writing
+     * the config line would change nothing on the glass. The control is offered disabled until the firmware
+     * can act on it, rather than appearing to work.
+     */
+    backlightPwm?: boolean;
+    /** The brightness the project's `.cargo/esp-config.toml` asks for, 0-100. */
+    brightness?: number;
     /** The document as it was read, when it could not be parsed -- shown instead of a blank canvas. */
     loadError?: string;
     /**
@@ -111,6 +128,8 @@ export interface DesignerReport {
     smtpEnabled?: boolean;
     /** Whether `src/smtp.rs` exists -- the switch is enabled by it as soon as the wizard has run. */
     smtpAvailable?: boolean;
+    /** The brightness the project's config carries after this report, so the slider follows the file. */
+    brightness?: number;
 }
 
 /** The panel has finished loading and is ready for its document. */
@@ -164,6 +183,21 @@ export interface DesignerAssetPicked {
 export interface DesignerSetTouch {
     type: 'setTouch';
     enabled: boolean;
+}
+
+/**
+ * The panel asking for a backlight brightness.
+ *
+ * A compile-time setting like the rotation and the touch switch -- the firmware reads it with `option_env!`
+ * -- so this writes `.cargo/esp-config.toml` and says that a rebuild is what makes it real. The firmware does
+ * the inversion for a panel whose transistor switches on with a LOW level, so the number here is always the
+ * brightness a person sees.
+ */
+export interface DesignerSetBrightness {
+    type: 'setBrightness';
+    /** 0-100. Clamped, not refused: a slider cannot produce anything else, and a hand-sent value should not
+     * lose the setting altogether. */
+    percent: number;
 }
 
 /**
@@ -236,6 +270,7 @@ export type DesignerToHost =
     | DesignerSetTouch
     | DesignerSetSd
     | DesignerSetSmtp
+    | DesignerSetBrightness
     | DesignerFontRasterised;
 export type HostToDesigner =
     | DesignerInit

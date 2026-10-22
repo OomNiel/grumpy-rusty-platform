@@ -94,6 +94,12 @@ let sdEnabled = true;
 let smtpAvailable = false;
 /** Whether the project is built with the `smtp` cargo feature (the keep-alive client). */
 let smtpEnabled = false;
+/** Whether the chosen panel has a backlight pin wired, which is what makes a Brightness setting possible. */
+let backlightBoard = false;
+/** Whether the project's `src/main.rs` already dims the backlight by PWM, i.e. whether a change can reach it. */
+let backlightPwm = false;
+/** The brightness the project asks for, 0-100. */
+let brightness = 100;
 let postTimer: number | undefined;
 
 const root = document.getElementById('designer');
@@ -209,6 +215,11 @@ window.addEventListener('message', (event: MessageEvent<
         sdEnabled = message.sdEnabled;
         smtpAvailable = message.smtpAvailable;
         smtpEnabled = message.smtpEnabled;
+        // Optional on purpose: the panel tests build init messages by hand, and a missing flag has to read as
+        // "no backlight" rather than leave a control that writes a setting the panel cannot honour.
+        backlightBoard = message.backlight === true;
+        backlightPwm = message.backlightPwm === true;
+        brightness = message.brightness ?? 100;
         // Before the first paint: a declared font's glyphs are not in the design, so they arrive with the
         // document and the canvas has to know them before it draws a widget that uses one.
         for (const [name, pixels] of Object.entries(message.fonts ?? {})) {
@@ -267,12 +278,14 @@ window.addEventListener('message', (event: MessageEvent<
             (message.sdEnabled !== undefined && message.sdEnabled !== sdEnabled)
             || (message.smtpEnabled !== undefined && message.smtpEnabled !== smtpEnabled)
             || (message.smtpAvailable !== undefined && message.smtpAvailable !== smtpAvailable)
+            || (message.brightness !== undefined && message.brightness !== brightness)
         ) {
             // The switches are reported as the manifest actually is, not as the click assumed: a project
             // whose Cargo.toml cannot carry the feature refuses it, and the toolbar goes back to the truth.
             sdEnabled = message.sdEnabled ?? sdEnabled;
             smtpEnabled = message.smtpEnabled ?? smtpEnabled;
             smtpAvailable = message.smtpAvailable ?? smtpAvailable;
+            brightness = message.brightness ?? brightness;
             refreshToolbar();
         }
         report(message);
@@ -414,6 +427,24 @@ function setSmtp(enabled: boolean, why?: string): void {
     status(why ?? (enabled ? 'SMTP enabled. Rebuild for it to take effect.' : 'SMTP disabled. Rebuild for it to take effect.'), false);
 }
 
+/**
+ * Asks for a new backlight brightness.
+ *
+ * Posted on `change` (the thumb released), not on `input`: a drag would otherwise write the project's config
+ * file on every pixel the pointer moves. The label under the pointer follows on `input`, so the control still
+ * feels live while nothing is written.
+ */
+function setBrightness(percent: number): void {
+    const value = Math.max(0, Math.min(100, Math.round(percent)));
+    if (value === brightness) {
+        return;
+    }
+    brightness = value;
+    host.postMessage({ type: 'setBrightness', percent: value });
+    refreshToolbar();
+    status(`Brightness ${value}%. Rebuild for it to take effect.`, false);
+}
+
 /** A tag dropped or clicked in the Toolbox: put it in the middle of the canvas. */
 function drop(tag: string): void {
     // A control that raises events is a control that needs touch, so dropping one turns it on rather than
@@ -549,6 +580,11 @@ function refreshToolbar(): void {
         onChange: (on) => setSmtp(on),
     });
 
+    // Brightness is a range rather than a switch, and it is only offered when the panel has a BL pin: a
+    // module that leaves it unconnected has nothing to dim. The number in the project is the brightness a
+    // person sees -- the firmware inverts it for an active-low transistor.
+    const brightnessControl = backlightBoard ? brightnessSlider() : undefined;
+
     const revealKdl = toolButton('Markup', () => host.postMessage({ type: 'action', action: 'revealKdl' }));
     const revealDocument = toolButton('Design file', () => host.postMessage({ type: 'action', action: 'revealDocument' }));
     const build = toolButton('Build', () => host.postMessage({ type: 'action', action: 'build' }));
@@ -573,6 +609,7 @@ function refreshToolbar(): void {
         touch,
         sd,
         smtpSwitch,
+        ...(brightnessControl === undefined ? [] : [brightnessControl]),
         separator(),
         revealDocument,
         revealKdl,
@@ -636,6 +673,48 @@ function separator(): HTMLElement {
     const node = document.createElement('span');
     node.className = 'toolbar-separator';
     return node;
+}
+
+/**
+ * The backlight brightness: a labelled range with its value in text beside it.
+ *
+ * A slider rather than a menu because the setting is a percentage and every step between the ends is
+ * meaningful. It is *disabled* when the project's `src/main.rs` still holds the pin on: the line would be
+ * written but nothing would read it, and a control that appears to work is worse than one that explains
+ * itself. The percentage is redrawn on `input` and only posted on `change`, so dragging writes nothing.
+ */
+function brightnessSlider(): HTMLLabelElement {
+    const wrap = document.createElement('label');
+    wrap.className = 'tool-slider';
+    wrap.title = backlightPwm
+        ? 'The panel backlight brightness, by PWM on its BL pin. It is compiled in: rebuild for a change to take effect.'
+        : "This project's src/main.rs still holds the backlight on. Recreate the project (or drive the BL pin by "
+        + 'PWM) for the setting to reach the panel.';
+
+    const label = document.createElement('span');
+    label.className = 'tool-toggle-label';
+    label.textContent = 'Brightness';
+
+    const value = document.createElement('span');
+    value.className = 'tool-slider-value';
+    value.textContent = `${brightness}%`;
+
+    const input = document.createElement('input');
+    input.type = 'range';
+    input.className = 'tool-slider-input';
+    input.min = '0';
+    input.max = '100';
+    input.step = '5';
+    input.value = String(brightness);
+    input.disabled = !backlightPwm;
+    // The label under the thumb follows the drag; only the release is written to the project.
+    input.addEventListener('input', () => {
+        value.textContent = `${input.value}%`;
+    });
+    input.addEventListener('change', () => setBrightness(Number(input.value)));
+
+    wrap.append(label, input, value);
+    return wrap;
 }
 
 /**

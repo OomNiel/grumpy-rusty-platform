@@ -28,6 +28,13 @@ screens are solved for the shape that is actually being addressed: a landscape r
 bars, corner markers, status lines and touch targets, and a portrait rotation gets a portrait one. Verified at
 270 degrees on hardware with every edge, corner and bar visible.
 
+## Backlight brightness
+
+GPIO10 is the panel's backlight, driven by **PWM** rather than held on. Its brightness is
+`BACKLIGHT_BRIGHTNESS` (0-100) in `.cargo/esp-config.toml`, read at **compile time** -- the Designer's
+**Brightness** slider writes that line, editing it by hand works just as well, and nothing in `src/main.rs`
+has to change. A project that does not mention the key is fully on. Rebuild to apply a change.
+
 ## First-time setup
 
 The Xtensa targets are not in released Rust, so one extra toolchain is needed:
@@ -70,7 +77,7 @@ from the Pico's.
 | 5 | panel chip select |
 | 6 | panel data/command |
 | 1 | panel reset |
-| 10 | panel backlight (active low) |
+| 10 | panel backlight (PWM) |
 | 3 | panel SPI clock |
 | 2 | panel SPI data out |
 

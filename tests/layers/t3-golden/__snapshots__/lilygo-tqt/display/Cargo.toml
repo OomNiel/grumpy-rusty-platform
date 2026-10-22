@@ -13,8 +13,9 @@ license = "MIT OR Apache-2.0"
 publish = false
 
 [features]
-# LilyGo shipped two panels under one name; this feature picks which init table the
-# firmware uses. Flip it and rebuild to try the other revision.
+# The display this project was made for. A board like the DevKitC takes any module plugged into
+# it, so the choice is recorded here; flip it and rebuild to use another. It also tells the
+# Designer which panel -- and therefore which size and touch controller -- the project has.
 default = ["panel-gc9107"]
 panel-gc9107 = []
 panel-gc9a01 = []

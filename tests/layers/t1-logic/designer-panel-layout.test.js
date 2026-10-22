@@ -122,6 +122,8 @@ test('every button row names its own text colour', () => {
         '.context-item',
         '.tool-toggle',
         '.tool-toggle-label',
+        '.tool-slider',
+        '.tool-slider-value',
     ]) {
         const colour = styleOf(selector)['color'];
         ok(colour !== undefined, `${selector} must name a text colour, or the browser picks its own`);

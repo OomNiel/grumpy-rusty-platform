@@ -20,6 +20,10 @@ pub use embedded_hal_bus::spi::ExclusiveDevice;
 pub use esp_hal::clock::CpuClock;
 pub use esp_hal::delay::Delay;
 pub use esp_hal::gpio::{Level, Output, OutputConfig};
+pub use esp_hal::gpio::DriveMode;
+pub use esp_hal::ledc::channel::{self, Channel, ChannelIFace};
+pub use esp_hal::ledc::timer::{self, TimerIFace};
+pub use esp_hal::ledc::{Ledc, LSGlobalClkSource, LowSpeed};
 pub use esp_hal::spi::master::{Config as SpiConfig, Spi};
 pub use esp_hal::time::Rate;
 pub use esp_hal::timer::timg::TimerGroup;
@@ -49,6 +53,39 @@ pub type DisplayDriver = mipidsi::Display<PanelInterface, models::ST7796, mipids
 pub fn panel_clock() -> SpiConfig {
     SpiConfig::default().with_frequency(Rate::from_khz(24000))
 }
+
+/// The backlight's PWM channel: the LEDC channel that dims the panel by switching its transistor.
+pub type Backlight = Channel<'static, LowSpeed>;
+
+/// The brightness setting, as a percentage: 0-100 from `.cargo/esp-config.toml`, read at compile time.
+/// Anything that is not a number in range -- an empty value, a typo, a hand-edited line -- is 100, so a
+/// mistake can never leave the panel dark.
+pub const BACKLIGHT_PERCENT: u8 = match option_env!("BACKLIGHT_BRIGHTNESS") {
+    Some(text) => percent_from_env(text),
+    None => 100,
+};
+
+const fn percent_from_env(text: &str) -> u8 {
+    let bytes = text.as_bytes();
+    if bytes.len() == 0 {
+        return 100;
+    }
+    let mut value: u32 = 0;
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if byte < b'0' || byte > b'9' {
+            return 100;
+        }
+        value = value * 10 + (byte - b'0') as u32;
+        index += 1;
+    }
+    if value > 100 { 100 } else { value as u8 }
+}
+
+/// The duty the pin runs at, in percent of its *high* time. This board switches the backlight transistor on with a HIGH level, so the duty is the
+/// brightness itself.
+pub const BACKLIGHT_DUTY_PCT: u8 = BACKLIGHT_PERCENT;
 
 /// Where the diagnostic screen puts everything, solved for one orientation.
 ///

@@ -47,15 +47,22 @@ static BUS_CELL: static_cell::StaticCell<HalBus> = static_cell::StaticCell::new(
 /// State, so the buffer has to outlive setup().
 static BUFFER_CELL: static_cell::StaticCell<[u8; 512]> = static_cell::StaticCell::new();
 
+/// The LEDC peripheral, a static for the same reason the timer is: the backlight channel borrows both.
+static LEDC_CELL: static_cell::StaticCell<Ledc<'static>> = static_cell::StaticCell::new();
+
+/// The backlight's PWM timer. The channel keeps a reference to it once configured, so it may not be a local.
+static BACKLIGHT_TIMER_CELL: static_cell::StaticCell<timer::Timer<'static, LowSpeed>> =
+    static_cell::StaticCell::new();
+
 /// Every value this sketch keeps: the design and the panel it is drawn on, created once by setup() and used by
 /// the loop in main().
 pub struct State {
     /// The panel, brought up and ready to draw on.
     display: DisplayDriver,
 
-    /// The backlight pin, held on. Nothing reads it: it is here so that it is not dropped with the rest of `setup()`’s locals, which would leave the panel lit but the glass dark.
+    /// The backlight’s PWM channel. Nothing reads it: it is kept so the channel -- and the timer it borrows -- outlive `setup()`, which is what holds the panel lit. Its duty comes from BACKLIGHT_BRIGHTNESS, so the Designer’s Brightness slider reaches the glass.
     #[allow(dead_code)]
-    backlight: Output<'static>,
+    backlight: Backlight,
 
     /// The touch controller, on the panel’s bus with its own chip select.
     touch: BusDevice,
@@ -174,14 +181,14 @@ pub struct State {
     /// How much of that line is filled.
     console_len: usize,
 
+    /// The design, built on the first calibrated frame and driven by touch from then on.
+    screen: Option<ui::Designer>,
+
     /// The local time the toolchain sent, and whether the design has
     wall_clock: Option<(u8, u8, u8)>,
 
     /// been told yet: the design only exists after the first frame.
     wall_clock_applied: bool,
-
-    /// The design, built on the first calibrated frame and driven by touch from then on.
-    screen: Option<ui::Designer>,
 
     /// The chip’s RTC: the only thing on the board that still knows the time after a reset.
     rtc: Rtc<'static>,
@@ -234,12 +241,28 @@ pub async fn setup(spawner: Spawner) -> State {
         peripherals.GPIO18, // card SPI clock
         peripherals.GPIO23, // card SPI data out
         peripherals.GPIO19, // card SPI data in
-    );    // Backlight first, and note the level: this board switches the transistor on with a HIGH level.
-    let backlight = Output::new(
-        peripherals.GPIO27,
-        Level::High,
-        OutputConfig::default(),
-    );
+    );    // Backlight first: PWM on its pin, so the brightness in .cargo/esp-config.toml is what the glass shows.
+    // Note the level: this board switches the transistor on with a HIGH level, so the duty is the brightness.
+    let ledc = LEDC_CELL.init(Ledc::new(peripherals.LEDC));
+    ledc.set_global_slow_clock(LSGlobalClkSource::APBClk);
+    let backlight_timer = BACKLIGHT_TIMER_CELL.init(ledc.timer::<LowSpeed>(timer::Number::Timer0));
+    // 10 bits is 1024 steps across the range -- finer than an eye can see -- and 5 kHz is far above the
+    // frequency at which a backlight flicker would be visible.
+    backlight_timer
+        .configure(timer::config::Config {
+            duty: timer::config::Duty::Duty10Bit,
+            clock_source: timer::LSClockSource::APBClk,
+            frequency: Rate::from_khz(5),
+        })
+        .expect("the backlight PWM timer");
+    let mut backlight = ledc.channel(channel::Number::Channel0, peripherals.GPIO27);
+    backlight
+        .configure(channel::config::Config {
+            timer: backlight_timer,
+            duty_pct: BACKLIGHT_DUTY_PCT,
+            drive_mode: DriveMode::PushPull,
+        })
+        .expect("the backlight PWM channel");
 
     // The panel's clock is the function in MainHeader.rs: the touch controller on the same bus needs a
     // slower one, and the bus is re-configured around each touch read and put back afterwards.
@@ -536,9 +559,9 @@ pub async fn setup(spawner: Spawner) -> State {
         console,
         console_line,
         console_len,
+        screen,
         wall_clock,
         wall_clock_applied,
-        screen,
         rtc,
         needs_time,
         host_seen,

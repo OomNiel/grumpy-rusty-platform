@@ -121,11 +121,11 @@ export interface EspSpiBus {
  * A panel that is soldered to the board.
  *
  * `controller` names a mipidsi model and was checked against mipidsi 0.10, which
- * ships `GC9107`, `GC9A01` and `ST7796` -- every panel used here is stock, so no
+ * ships `GC9107`, `GC9A01`, `ST7796`, `ST7789` and `ILI9341Rgb565` -- every panel used here is stock, so no
  * hand-written init sequence is needed.
  */
 export interface EspDisplay {
-    controller: 'GC9107' | 'GC9A01' | 'ST7796';
+    controller: 'GC9107' | 'GC9A01' | 'ST7796' | 'ST7789' | 'ILI9341Rgb565';
     /** The name printed on the panel, for logs and the README. */
     label: string;
     width: number;
@@ -134,8 +134,16 @@ export interface EspDisplay {
     dc: number;
     /** Absent when the panel reset is tied to the board reset. */
     rst?: number;
-    backlight: number;
-    backlightActiveLow: boolean;
+    /**
+     * The pin that switches the panel's backlight, when one is wired.
+     *
+     * Optional because a module can leave BL unconnected (a panel that is always on), and a project must not
+     * drive a pin it does not have. Everything about the backlight -- the PWM that dims it and the Designer's
+     * Brightness setting -- is offered only when this is set.
+     */
+    backlight?: number;
+    /** Whether the backlight transistor switches on with a LOW level. Only meaningful with `backlight`. */
+    backlightActiveLow?: boolean;
     spi: EspSpiBus;
     colorOrder: 'rgb' | 'bgr';
     mirrorX: boolean;
@@ -144,6 +152,14 @@ export interface EspDisplay {
     spiHz: number;
     /** `BoardOption` choice this panel belongs to, when the board has revisions. */
     panelChoice?: string;
+    /**
+     * Touch controller wired to this panel, when it has one.
+     *
+     * A fact of the *module*, not of the board: a DevKitC carries whatever panel was plugged into it, and only
+     * some of those modules bring an XPT2046 along. A project drives `display.touch` when the panel has one and
+     * the board's own `touch` otherwise (the CYD, whose controller is on the board).
+     */
+    touch?: EspTouch;
 }
 
 /**

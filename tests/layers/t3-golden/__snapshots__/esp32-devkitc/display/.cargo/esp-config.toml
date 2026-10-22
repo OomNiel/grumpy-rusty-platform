@@ -1,0 +1,15 @@
+# Runtime configuration for the ESP logging stack.
+[env]
+# log level for esp-println, read by esp_println::logger::init_logger_from_env() in main;
+# change to "debug" or "trace" when something is silent.
+ESP_LOG = "info"
+
+# Panel rotation, read at compile time by src/main.rs. 0 = none, 1 = 90, 2 = 180, 3 = 270 degrees
+# clockwise. The rustyPlatform.lcdRotation setting writes this line; editing it here works just as well
+# (the compiler reads this file), and neither ever touches src/main.rs.
+LCD_ROTATION = "0"
+
+# The panel backlight's brightness in percent, read at compile time by src/main.rs. 100 is fully on,
+# 0 is off. The Designer's Brightness slider writes this line; editing it here works just as well, and
+# neither ever touches src/main.rs.
+BACKLIGHT_BRIGHTNESS = "100"

@@ -21,7 +21,7 @@ const { espDiagnosticLayout } = compiled('generate/esp');
 const ESP_IDS = ['esp32-devkitc', 'lilygo-tqt', 'sunton-3248s035r'];
 
 /** Every panel controller the generated code can name, as mipidsi 0.10 spells them. */
-const MIPIDSI_MODELS = ['GC9107', 'GC9A01', 'ST7796'];
+const MIPIDSI_MODELS = ['GC9107', 'GC9A01', 'ST7796', 'ST7789', 'ILI9341Rgb565'];
 
 function espBoard(id) {
     const board = boardById(id);
@@ -183,8 +183,8 @@ test('every panel names a controller that mipidsi actually ships', () => {
 test('an ESP board offers only templates that are implemented', () => {
     equal(
         templatesFor(espBoard('esp32-devkitc')).map((info) => info.id),
-        ['blinky', 'wifi', 'bluetooth'],
-        'the DevKitC has no panel and no card, so it gets the two radio templates and nothing else',
+        ['blinky', 'designer', 'display', 'wifi', 'bluetooth'],
+        'the DevKitC now carries the two external display modules, so the panel templates come with them',
     );
     equal(
         templatesFor(espBoard('lilygo-tqt')).map((info) => info.id),
@@ -279,13 +279,13 @@ test('a chip without Bluetooth is never offered the Bluetooth template', () => {
     const s2 = { ...espBoard('esp32-devkitc'), family: 'ESP32', radio: { wifi: true, bluetooth: 'none' } };
     equal(
         templatesFor(s2).map((info) => info.id),
-        ['blinky', 'wifi'],
+        ['blinky', 'designer', 'display', 'wifi'],
         'Wi-Fi stays, Bluetooth goes',
     );
     const deaf = { ...s2, radio: { wifi: false, bluetooth: 'none' } };
     equal(
         templatesFor(deaf).map((info) => info.id),
-        ['blinky'],
+        ['blinky', 'designer', 'display'],
         'a chip with no radio at all gets neither',
     );
 });
@@ -562,11 +562,14 @@ test('the T-QT panel revision becomes a cargo feature, not dead code', () => {
 });
 
 test('the backlight polarity comes from the board, not from a guess', () => {
+    // The backlight is PWM, so what polarity decides is the *duty*: an active-low transistor is fully lit
+    // with the pin low, which is a duty of 0 % high time. The number in the config stays a brightness, and
+    // the firmware inverts it.
     const low = filesFor(espBoard('lilygo-tqt'), 'display', { panel: 'gc9107' }).get('src/main.rs');
-    contains(low, 'Level::Low', 'the T-QT switches its backlight transistor on with a low level');
+    contains(low, 'pub const BACKLIGHT_DUTY_PCT: u8 = 100 - BACKLIGHT_PERCENT;', 'the T-QT switches its backlight transistor on with a low level');
 
     const high = filesFor(espBoard('sunton-3248s035r'), 'display').get('src/main.rs');
-    contains(high, 'Level::High', 'the CYD is active high');
+    contains(high, 'pub const BACKLIGHT_DUTY_PCT: u8 = BACKLIGHT_PERCENT;', 'the CYD is active high');
 });
 
 test('the README explains the missing debugger and the first-time setup', () => {

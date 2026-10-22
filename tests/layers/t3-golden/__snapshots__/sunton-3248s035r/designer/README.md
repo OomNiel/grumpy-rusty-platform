@@ -33,6 +33,13 @@ and hold in the top-left corner of the screen for about two seconds - the stored
 and the corner screen comes back. Anything else you do with a finger (a tap, a long press on a widget, a
 drag) leaves the calibration alone.
 
+## Backlight brightness
+
+GPIO27 is the panel's backlight, driven by **PWM** rather than held on. Its brightness is
+`BACKLIGHT_BRIGHTNESS` (0-100) in `.cargo/esp-config.toml`, read at **compile time** -- the Designer's
+**Brightness** slider writes that line, editing it by hand works just as well, and nothing in `src/main.rs`
+has to change. A project that does not mention the key is fully on. Rebuild to apply a change.
+
 ## Reading images from the card
 
 An image control whose source is written as `sd:/PIC1.BMP` is read from the TF card when it is drawn,
@@ -81,7 +88,7 @@ from the Pico's.
 |---|---|
 | 15 | panel chip select |
 | 2 | panel data/command |
-| 27 | panel backlight (active high) |
+| 27 | panel backlight (PWM) |
 | 14 | panel SPI clock |
 | 13 | panel SPI data out |
 | 12 | panel SPI data in |

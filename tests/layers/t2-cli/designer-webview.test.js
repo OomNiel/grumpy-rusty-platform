@@ -1036,3 +1036,78 @@ test('the toolbar offers SD and SMTP as switches, and posts what was flipped', (
     env.window.emit('message', { data: { type: 'report', problems: [], smtpAvailable: false, smtpEnabled: false } });
     equal(inputOf(labelFor('SMTP')).disabled, true, 'no module means no switch to flip');
 });
+
+test('the toolbar offers a brightness slider only for a panel with a backlight pin', () => {
+    // Brightness is a range, not a switch, and it is a project setting like touch and SD. Two rules are
+    // asserted: the control exists only when the panel has a BL pin, and it posts a message only when the
+    // thumb is *released* -- a drag must not rewrite the config file on every pixel.
+    const boot = (extra) => {
+        const env = dom.install();
+        delete require.cache[require.resolve(BUNDLE)];
+        require(BUNDLE);
+        env.window.emit('message', {
+            data: {
+                type: 'init',
+                document: starterDocument({ boardId: 'esp32-devkitc', panelWidth: 240, panelHeight: 240, rotation: 3 }),
+                canvas: { width: 240, height: 240 },
+                paths: { document: 'designer/panel.ui.json', kdl: 'src/ui.kdl' },
+                touchBoard: false,
+                touchEnabled: false,
+                ...extra,
+            },
+        });
+        const label = env.root
+            .descendants()
+            .find((element) => element.className.split(' ').includes('tool-slider'));
+        return { env, label };
+    };
+
+    const { env, label } = boot({ backlight: true, backlightPwm: true, brightness: 60 });
+    ok(label !== undefined, 'the setting is offered');
+    ok(
+        label.descendants().some((element) => element.textContent === 'Brightness'),
+        'and it is named',
+    );
+    const input = label.descendants().find((element) => element.tagName === 'INPUT');
+    equal(input.type, 'range');
+    equal(input.min, '0');
+    equal(input.max, '100');
+    equal(input.value, '60', 'the slider starts from the project config');
+    equal(input.disabled, false);
+    ok(
+        label.descendants().some((element) => element.textContent === '60%'),
+        'the value is spelled out beside the thumb',
+    );
+
+    // Dragging updates the reading and writes nothing; releasing asks the extension to write the line.
+    env.messages.length = 0;
+    input.value = '25';
+    input.emit('input');
+    equal(env.messages.length, 0, 'a drag writes nothing to the project');
+    ok(
+        label.descendants().some((element) => element.textContent === '25%'),
+        'but the reading follows the thumb',
+    );
+    input.emit('change');
+    equal(env.messages.at(-1).type, 'setBrightness');
+    equal(env.messages.at(-1).percent, 25);
+
+    // A report with the manifest's own value moves the slider, the same way the switches follow theirs.
+    env.window.emit('message', { data: { type: 'report', problems: [], brightness: 80 } });
+    const moved = env.root
+        .descendants()
+        .find((element) => element.className.split(' ').includes('tool-slider'))
+        .descendants()
+        .find((element) => element.tagName === 'INPUT');
+    equal(moved.value, '80', 'the slider follows the file, not the click');
+
+    // A project whose firmware still holds the pin on gets the control disabled, with the reason on it.
+    const older = boot({ backlight: true, backlightPwm: false, brightness: 100 });
+    const olderInput = older.label.descendants().find((element) => element.tagName === 'INPUT');
+    equal(olderInput.disabled, true, 'the setting cannot reach a firmware that does not read it');
+    contains(older.label.title, 'src/main.rs', 'and the tooltip says why');
+
+    // No BL pin wired: no control at all, rather than one that writes a line nothing can act on.
+    const bare = boot({ backlight: false, brightness: 100 });
+    equal(bare.label, undefined, 'a panel with no backlight pin has no brightness to set');
+});

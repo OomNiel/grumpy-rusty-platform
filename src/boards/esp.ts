@@ -7,7 +7,7 @@
  * and the answer has to survive into Cargo.toml, the generated source and the README.
  */
 
-import { BoardOptionChoice, BoardProfile, EspBoardProfile, EspDisplay } from './types';
+import { BoardOptionChoice, BoardProfile, EspBoardProfile, EspDisplay, EspTouch } from './types';
 
 /** Answers to a board's `options`, keyed by option id. */
 export type BoardChoices = Record<string, string>;
@@ -32,6 +32,62 @@ export function panelChoices(board: EspBoardProfile): BoardOptionChoice[] {
 /** True when the board needs the user to pick a panel revision. */
 export function needsPanelChoice(board: EspBoardProfile): boolean {
     return board.displays.some((display) => display.panelChoice !== undefined);
+}
+
+/**
+ * Whether the panel has a backlight pin wired at all.
+ *
+ * A module may leave BL unconnected, and then there is nothing to switch, nothing to dim and no Brightness
+ * setting to offer. Every panel catalogued today wires it -- the check exists so a future one that does not
+ * cannot get a PWM channel driving a pin that goes nowhere.
+ */
+export function hasBacklight(display: EspDisplay | undefined): boolean {
+    return display?.backlight !== undefined;
+}
+
+/**
+ * The touch controller a project drives: the panel's own, or the board's.
+ *
+ * A DevKitC carries whatever display module was plugged in, so a controller is a fact of the module (`display`)
+ * while the CYD's XPT2046 is soldered to the board. The panel wins when it has one -- it is the more specific
+ * fact, and it is the one the wizard asked about.
+ */
+export function touchFor(
+    board: EspBoardProfile,
+    display: EspDisplay | undefined,
+): EspTouch | undefined {
+    return display?.touch ?? board.touch;
+}
+
+/**
+ * The panel choice a generated project records in its own `Cargo.toml`.
+ *
+ * The generator puts `panel-<id>` in `[features] default`, so the manifest is the durable answer to "which
+ * display was this project made for" -- the generated `src/main.rs` is not something the Designer can read
+ * back, and a board like the DevKitC has modules that differ in size and in whether they bring a touch
+ * controller. Absent for a board with one panel and for a project generated before the option existed.
+ */
+export function panelChoiceFromCargo(cargoToml: string): string | undefined {
+    const match = /^\s*default\s*=\s*\[([^\]]*)\]/m.exec(cargoToml);
+    if (match === null) {
+        return undefined;
+    }
+    const feature = /panel-([A-Za-z0-9_-]+)/.exec(match[1] ?? '');
+    return feature?.[1];
+}
+
+/**
+ * The panel a project was generated for, read back from its manifest.
+ *
+ * Falls back to `displayFor`'s own rule (the single panel, or the option's default) when the manifest does not
+ * say -- which is what a project generated before a board had panel revisions looks like.
+ */
+export function displayForProject(
+    board: EspBoardProfile,
+    cargoToml: string,
+): EspDisplay | undefined {
+    const choice = panelChoiceFromCargo(cargoToml);
+    return displayFor(board, choice === undefined ? {} : { panel: choice });
 }
 
 /**
@@ -78,16 +134,21 @@ export function espPinUsage(board: EspBoardProfile, choices: BoardChoices = {}):
         if (display.rst !== undefined) {
             lines.push(`${display.rst}: panel reset`);
         }
-        lines.push(`${display.backlight}: panel backlight (active ${display.backlightActiveLow ? 'low' : 'high'})`);
+        if (display.backlight !== undefined) {
+            lines.push(
+                `${display.backlight}: panel backlight (${display.backlightActiveLow === true ? 'active low' : 'active high'}, PWM)`,
+            );
+        }
         lines.push(`${display.spi.sclk}: panel SPI clock`);
         lines.push(`${display.spi.mosi}: panel SPI data out`);
         if (display.spi.miso !== undefined) {
             lines.push(`${display.spi.miso}: panel SPI data in`);
         }
     }
-    if (board.touch) {
-        lines.push(`${board.touch.cs}: touch chip select (${board.touch.controller})`);
-        lines.push(`${board.touch.irq}: touch interrupt`);
+    const touch = touchFor(board, display);
+    if (touch) {
+        lines.push(`${touch.cs}: touch chip select (${touch.controller})`);
+        lines.push(`${touch.irq}: touch interrupt`);
     }
     if (board.sd) {
         lines.push(`${board.sd.cs}: microSD chip select`);

@@ -27,11 +27,13 @@ native size and the driver swaps the area it draws into when the rotation is 90 
 screens are solved for the shape that is actually being addressed: a landscape rotation gets a landscape frame,
 bars, corner markers, status lines and touch targets, and a portrait rotation gets a portrait one. Verified at
 270 degrees on hardware with every edge, corner and bar visible.
-The touch calibration is versioned by rotation: a record measured in one orientation is
-discarded when the rotation changes and the four corners are asked for again. To force that by hand, press
-and hold in the top-left corner of the screen for about two seconds - the stored calibration is thrown away
-and the corner screen comes back. Anything else you do with a finger (a tap, a long press on a widget, a
-drag) leaves the calibration alone.
+
+## Backlight brightness
+
+GPIO27 is the panel's backlight, driven by **PWM** rather than held on. Its brightness is
+`BACKLIGHT_BRIGHTNESS` (0-100) in `.cargo/esp-config.toml`, read at **compile time** -- the Designer's
+**Brightness** slider writes that line, editing it by hand works just as well, and nothing in `src/main.rs`
+has to change. A project that does not mention the key is fully on. Rebuild to apply a change.
 
 ## First-time setup
 
@@ -74,7 +76,7 @@ from the Pico's.
 |---|---|
 | 15 | panel chip select |
 | 2 | panel data/command |
-| 27 | panel backlight (active high) |
+| 27 | panel backlight (PWM) |
 | 14 | panel SPI clock |
 | 13 | panel SPI data out |
 | 12 | panel SPI data in |

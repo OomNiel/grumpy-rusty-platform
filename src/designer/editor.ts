@@ -19,7 +19,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import type { BoardProfile } from '../boards/types';
+import type { BoardProfile, EspDisplay, EspTouch } from '../boards/types';
+import { displayForProject, hasBacklight, touchFor } from '../boards/esp';
 import { readActiveProject, readProjectAt } from '../project/activeProject';
 import { pickSerialPort, serialPortCandidates, serialPortEntriesForPlatform } from '../flash/espFlash';
 import { runShellCommand, updateClock } from '../flash/clockSync';
@@ -27,6 +28,11 @@ import { clockHostPlan } from '../flash/clockHost';
 import { closeTerminal, openTerminalNames, runInTerminal } from '../commands/terminal';
 import { lcdRotationFromConfig, setLcdRotationInConfig, type LcdRotation } from '../display/rotation';
 import { setTouchInConfig, touchFromConfig, touchNeededBy } from '../display/touchSetting';
+import {
+    brightnessFromConfig,
+    clampBrightness,
+    setBrightnessInConfig,
+} from '../display/backlight';
 import {
     DESIGNER_DOCUMENT_PATH,
     DESIGNER_HANDLERS_PATH,
@@ -113,11 +119,14 @@ class DesignerPanel {
         private readonly output: vscode.OutputChannel,
         private readonly folder: vscode.Uri,
         private readonly board: BoardProfile | undefined,
+        private readonly display: EspDisplay | undefined,
         document: DesignerDocument,
         private touchEnabled: boolean,
         private sdEnabled: boolean,
         private smtpAvailable: boolean,
         private smtpEnabled: boolean,
+        private brightness: number,
+        private readonly backlightPwm: boolean,
         private readonly loadError: string | undefined,
         private readonly loadNotes: string[],
         private readonly loadProblems: string[],
@@ -132,6 +141,16 @@ class DesignerPanel {
             this.disposables,
         );
         this.panel.onDidDispose(() => this.dispose(), undefined, this.disposables);
+    }
+
+    /**
+     * The touch controller this project can drive, if any.
+     *
+     * The panel's own controller or the board's: a DevKitC carries whatever module is plugged in, and only
+     * some of those bring an XPT2046. A board with no controller has no touch code to compile and no switch.
+     */
+    private get touchController(): EspTouch | undefined {
+        return this.board?.kind === 'esp' ? touchFor(this.board, this.display) : undefined;
     }
 
     /**
@@ -172,7 +191,6 @@ class DesignerPanel {
         const config = (await readText(configPath)) ?? '';
         const rotation = lcdRotationFromConfig(config);
 
-        const touchEnabled = touchFromConfig(config);
         // SD is a cargo feature rather than an env key, so it is read out of `Cargo.toml`'s `default` rather
         // than out of `.cargo/esp-config.toml`.
         const cargoToml = (await readText(vscode.Uri.joinPath(project.folder, 'Cargo.toml'))) ?? '';
@@ -184,11 +202,20 @@ class DesignerPanel {
         const stored = await readText(vscode.Uri.joinPath(project.folder, DESIGNER_DOCUMENT_PATH));
         const loaded = loadDocument(stored ?? '');
         const folderName = project.folder.path.split('/').pop() ?? 'Panel';
-        // The board's own panel: every display it ships has the same size on the boards here, and a board
-        // whose revisions differed in size would have to say which one this project was generated for. The
-        // chosen panel is recorded in the generated `main.rs`, which is not something this can read back, so
-        // the first display is the answer and the document keeps its own copy of the size.
-        const display = board.displays[0];
+        // The panel this project was generated for. A board like the DevKitC takes any module plugged into it,
+        // and the modules differ in size and in whether they bring a touch controller, so the manifest's own
+        // `panel-<id>` feature is what settles it -- the generated `main.rs` is not something this can read
+        // back. An older project with no such feature falls back to the board's own first panel.
+        const display = displayForProject(board, cargoToml);
+        // A panel with no controller has no touch code, whatever the config says: reading the key alone
+        // generated pointer plumbing that nothing could call -- and a warning in the user's own project.
+        const touchEnabled = touchFor(board, display) === undefined ? false : touchFromConfig(config);
+        // The backlight is PWM in the firmware this version generates: a project from before that holds the
+        // pin on, and the setting cannot reach it. Detected rather than assumed, because a slider that writes
+        // a line nothing reads is worse than a disabled slider that says why.
+        const mainRs = (await readText(vscode.Uri.joinPath(project.folder, 'src', 'main.rs'))) ?? '';
+        const backlightPwm = mainRs.includes('BACKLIGHT_DUTY_PCT');
+        const brightness = brightnessFromConfig(config);
         const document =
             loaded.document ??
             createDocument({
@@ -243,11 +270,14 @@ class DesignerPanel {
             output,
             project.folder,
             board,
+            display,
             document,
             touchEnabled,
             sdEnabled,
             smtpAvailable,
             smtpEnabled,
+            brightness,
+            backlightPwm,
             loaded.error,
             loaded.notes ?? [],
             rendered.problems,
@@ -311,6 +341,9 @@ class DesignerPanel {
         }
         if (message.type === 'setSmtp') {
             await this.setSmtp(message.enabled);
+        }
+        if (message.type === 'setBrightness') {
+            await this.setBrightness(message.percent);
         }
         if (message.type === 'fontRasterised') {
             await this.writeRasterisedFont(message);
@@ -567,10 +600,46 @@ class DesignerPanel {
         this.output.appendLine(`[designer] touch ${enabled ? 'enabled' : 'disabled'} for this project`);
         await this.panel.webview.postMessage({
             type: 'report',
-            problems: touchNeededBy(this.document.widgets, enabled),
+            problems: this.touchController === undefined
+                ? []
+                : touchNeededBy(this.document.widgets, enabled),
             note: enabled
                 ? 'Touch enabled. Rebuild for it to take effect.'
                 : 'Touch disabled. Rebuild for it to take effect.',
+            kdl: undefined,
+        });
+    }
+
+    /**
+     * Writes the panel's brightness, and says that a rebuild is what makes it real.
+     *
+     * The same arrangement as touch: a compile-time environment variable in `.cargo/esp-config.toml`, so the
+     * running firmware keeps whatever it was built with. The value is clamped rather than refused -- a slider
+     * cannot send anything out of range, and a stray value must not silently lose the setting.
+     *
+     * A project whose `src/main.rs` predates the PWM backlight has nothing that reads the line. It is still
+     * written (the file is the project's truth), and the panel is told in so many words, because a control
+     * that appears to work and changes nothing on the glass is the worst of the three outcomes.
+     */
+    private async setBrightness(percent: number): Promise<void> {
+        const value = clampBrightness(percent);
+        const configUri = vscode.Uri.joinPath(this.folder, '.cargo', 'esp-config.toml');
+        const existing = (await readText(configUri)) ?? '';
+        const updated = setBrightnessInConfig(existing, value);
+        if (updated !== existing) {
+            await writeProjectFile(this.folder, '.cargo/esp-config.toml', updated);
+        }
+        this.brightness = value;
+        this.output.appendLine(`[designer] backlight brightness ${value}% for this project`);
+        await this.panel.webview.postMessage({
+            type: 'report',
+            problems: [],
+            brightness: value,
+            note: this.backlightPwm
+                ? `Brightness ${value}%. Rebuild for it to take effect.`
+                : `Brightness ${value}% is saved, but this project's src/main.rs still holds the backlight on. `
+                + 'Recreate the project with this version of the extension (or drive the pin by PWM) for the '
+                + 'setting to reach the panel.',
             kdl: undefined,
         });
     }
@@ -779,12 +848,15 @@ class DesignerPanel {
             document: this.document,
             canvas,
             paths: { document: DESIGNER_DOCUMENT_PATH, kdl: DESIGNER_KDL_PATH },
-            touchBoard: (this.board?.kind === 'esp' && this.board.touch !== undefined) || false,
+            touchBoard: this.touchController !== undefined,
             touchEnabled: this.touchEnabled,
             sdBoard: (this.board?.kind === 'esp' && this.board.sd !== undefined) || false,
             sdEnabled: this.sdEnabled,
             smtpAvailable: this.smtpAvailable,
             smtpEnabled: this.smtpEnabled,
+            backlight: hasBacklight(this.display),
+            backlightPwm: this.backlightPwm,
+            brightness: this.brightness,
             loadError: this.loadError,
             loadNotes: this.loadNotes,
             loadProblems: this.loadProblems,
@@ -849,8 +921,11 @@ class DesignerPanel {
         const rendered = renderDesign(this.document);
         const assets = missingAssets(document, (relative) => this.assetExists(relative));
         // Reported, never enforced: a design with controls in it and touch switched off is a decision the user
-        // is allowed to make -- a half-built design, or placeholder buttons -- but not a silent one.
-        const touch = touchNeededBy(document.widgets, this.touchEnabled);
+        // is allowed to make -- a half-built design, or placeholder buttons -- but not a silent one. On a panel
+        // with no controller at all there is nothing to switch on, so there is nothing to say either.
+        const touch = this.touchController === undefined
+            ? []
+            : touchNeededBy(document.widgets, this.touchEnabled);
         // An image from the card has two requirements the design cannot state: the board must have a socket, and
         // the project must have the module that mounts it. Both are reported here because both fail at build
         // time otherwise -- `crate::sd::with_file` is named by the generated markup, so a project without it does

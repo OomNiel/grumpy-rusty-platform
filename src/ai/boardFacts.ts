@@ -62,13 +62,14 @@ export function boardFacts(board: BoardProfile | undefined, chip?: string): stri
             lines.push(
                 `Panel: ${d.label} (${d.controller}) ${d.width}x${d.height}, SPI sclk=${d.spi.sclk} mosi=${d.spi.mosi}` +
                 `${d.spi.miso !== undefined ? ` miso=${d.spi.miso}` : ''} cs=${d.cs} dc=${d.dc}` +
-                `${d.rst !== undefined ? ` rst=${d.rst}` : ''} backlight=${d.backlight}${d.backlightActiveLow ? ' (active low)' : ''}, ` +
+                `${d.rst !== undefined ? ` rst=${d.rst}` : ''}` +
+                `${d.backlight === undefined ? '' : ` backlight=${d.backlight} (PWM)${d.backlightActiveLow === true ? ', active low' : ''}`}, ` +
                 `colour order ${d.colorOrder}, ${d.spiHz} Hz.`
             );
         }
-        if (board.touch) {
-            const t = board.touch;
-            lines.push(`Touch: ${t.controller} on the panel's SPI bus, cs=${t.cs}, irq=${t.irq}.`);
+        const touch = board.displays.map((d) => d.touch).find((candidate) => candidate !== undefined) ?? board.touch;
+        if (touch) {
+            lines.push(`Touch: ${touch.controller} on the panel's SPI bus, cs=${touch.cs}, irq=${touch.irq}.`);
         }
         if (board.sd) {
             lines.push(`microSD: cs=${board.sd.cs}, sclk=${board.sd.spi.sclk}, mosi=${board.sd.spi.mosi}.`);
