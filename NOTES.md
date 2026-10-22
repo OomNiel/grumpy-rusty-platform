@@ -7684,3 +7684,96 @@ the `smtp` feature proved to gate the module by corrupting `smtp.rs` with the fe
 (compiled). Version 0.13.9 is what `package.json` says; the crate changes mean an existing project needs
 **Update now** for its vendored copy.
 
+---
+
+## §152 — DevKitC display modules, a PWM backlight, and the panel a project is really for (0.13.11–0.13.12, 2026-10-22)
+
+Asked: *"I have implemented the WYSIWYG designer for the ESP32-DEVKITC board … check for errors/weakness. Then
+implement a 'Brightness' setting … 0% to 100% brightness by using PWM on the BL pin … only available when using
+a LCD panel with a BL pin wired."* The review found four real defects around the new board support, and the
+brightness feature could not be built properly until "which panel is this project for" had one answer.
+
+### The panel is a property of the project (and of the module)
+
+- The catalog now has two DevKitC modules: **ST7789 240×240** (no touch) and **ILI9341Rgb565 240×320 with an
+  XPT2046** (MISO 19 on the shared bus), both at GPIO18/23, BL on GPIO21. Both mipidsi models were verified in
+  the **0.10.0 source** (`src/models/st7789.rs`, `src/models/ili9341.rs`), not from memory.
+- `EspDisplay.touch` is new: a controller can belong to the *module* (a DevKitC panel) or to the *board* (the
+  CYD). `touchFor(board, display) = display?.touch ?? board.touch` is the one rule, used by the generator, the
+  wizard and the Designer.
+- The manifest is the durable record: `panel-<id>` in `[features] default`
+  (`panelChoiceFromCargo`/`displayForProject` in `src/boards/esp.ts`). `src/main.rs` cannot be read back for
+  it, and the two DevKitC modules differ in size *and* in whether they bring touch.
+- **The defect this fixed:** the Designer used `board.displays[0]` and `board.touch` (the old comment "every
+  display it ships has the same size" stopped being true with the DevKitC). An ILI9341 project therefore
+  opened a 240×240 canvas and generated touchless firmware. Now resolved in `espSketch`, `espImports`,
+  `espCargoToml`, `generateEspProjectFiles` (`touchSetting`, starter `ui.rs`/handlers), `espModules`
+  (`DESIGNER`/`TOUCH`) and the README.
+- The wizard asks **panel first, then touch**: the panel answer decides whether there is a touchscreen to ask
+  about. `pickTouch(board, template, choices)` uses `touchFor(board, displayFor(board, choices))`.
+- Kept as a limitation: the DevKitC does not *offer* the standalone `touch`/`board` templates, because
+  `templatesFor` is computed before a module is chosen. The Designer covers touch on that board.
+
+### Two pre-existing template bugs, found by compiling
+
+- **`touch` and `board` did not compile at all.** Both carried a Designer-only clock hand-over block that
+  refers to `screen` (`E0425`) — a leftover from the RTC/host-time feature (0.13.0). The committed t3
+  snapshots contain the broken text, so it predates this session. The block now exists only in the Designer
+  loop, `wall_clock`/`wall_clock_applied` are declared only where a design can be told the time, and the
+  non-Designer console reader keeps parsing/logging the `TIME` line.
+- `use esp_hal::ram;` was imported for `touch`/`board` (only the Designer heap uses `#[ram(reclaimed)]`) ⇒ an
+  unused-import warning in every such project. Now Designer-only.
+
+### The brightness setting
+
+- **Storage:** `BACKLIGHT_BRIGHTNESS = "0".."100"` in `.cargo/esp-config.toml`, beside `LCD_ROTATION` and
+  `TOUCH_ENABLED`. Read at compile time, so `src/main.rs` is never edited by the setting. Written only for a
+  template that drives a panel *and* a module with a BL pin (`usesPanel && hasBacklight(panel)`) — the first
+  cut wrote it for `blinky`/`wifi` too, which the golden diff showed immediately.
+- **Absent or unreadable ⇒ 100.** The Rust side is a `const fn percent_from_env` (while loop over bytes,
+  early `return 100` on a non-digit or an empty value, clamp above 100); the extension mirrors it in
+  `src/display/backlight.ts` (`brightnessFromConfig`, `clampBrightness`, `setBrightnessInConfig`). A typo must
+  never switch the panel off — that looks exactly like a dead board.
+- **Firmware:** LEDC, low-speed timer 0 / channel 0, `Duty10Bit`, 5 kHz, `duty_pct`. esp-hal **1.2.2** facts
+  that shaped it (read from the registry source):
+  - `channel::config::Config` takes **`duty_pct: u8`** (0–100) and a `drive_mode`; there is **no
+    `output_invert`**, so an active-low panel gets `100 - BACKLIGHT_PERCENT` in `BACKLIGHT_DUTY_PCT` instead.
+  - `configure` takes `&mut self`, and the config stores `&'a dyn TimerIFace`, where `'a` is the *channel's*
+    lifetime. The channel lives in `State`, so the timer may not be a local: `LEDC_CELL` and
+    `BACKLIGHT_TIMER_CELL` are `StaticCell`s. `Ledc::set_global_slow_clock(LSGlobalClkSource::APBClk)` is
+    required before a low-speed timer will run.
+  - The `State` field is `Backlight = Channel<'static, LowSpeed>` with `mutableInSetup: true` — otherwise
+    `sketch.ts`'s `immutableLocals` strips the `mut` that `configure` needs.
+  - The constants must be **`pub`**: a child module's private items are not reachable through
+    `use main_header::*`, and this was the one compile error the first generated project produced
+    (`BACKLIGHT_DUTY_PCT` "exists but is inaccessible").
+- **Availability:** `hasBacklight(display)` gates the key, the PWM code, the `Backlight` field and the toolbar
+  control. No catalogued module lacks a BL pin today, so the *negative* path is covered by the helper's tests
+  rather than a golden.
+- **Old projects:** `src/main.rs` is written once. The Designer reads it, and when it does not contain
+  `BACKLIGHT_DUTY_PCT` the slider is **disabled with the reason** in its tooltip rather than writing a line
+  nothing reads. `testnew` was patched by regeneration (its hand-added
+  `.invert_colors(ColorInversion::Inverted)` re-applied), and the bench config now says `30` — written by the
+  slider.
+- **UI:** `.tool-slider` (range 0–100 step 5). The percentage follows on `input`; the message is posted on
+  `change`, because a drag would otherwise rewrite the project's config on every pixel. `init` fields are
+  optional (`backlight?`, `backlightPwm?`, `brightness?`), the same defensive rule the load fields follow, and
+  the colour-rule test in `designer-panel-layout.test.js` grew `.tool-slider`/`.tool-slider-value`.
+
+### No-touch Designer projects
+
+`touchEnabled` came from the config alone, and an absent key means "on": a DevKitC/T-QT Designer project
+generated `pointer`/`pump`/`down` without `#[allow(dead_code)]` (two warnings in the user's own project) and
+`touchNeededBy` told the user to switch touch on where no controller exists. Now
+`touchEnabled = controller === undefined ? false : touchFromConfig(config)`, `emitUiRs`/`syncHandlerStubs`
+receive that, and the advisory is raised only when there is a controller. `testnew`'s `ui.rs` was regenerated
+with `emitUiRs(doc, false)` and checks warning-free.
+
+### Verification recipe
+
+Generated into `/tmp`, `rsync crates/<c> → codegen/` (minus `target/`), marker written, then
+`set -a; . ~/export-esp.sh; set +a; cargo check` — clean and warning-free for **seven** configurations:
+DevKitC designer (ST7789), DevKitC designer (ILI9341 + touch), DevKitC-mirror of `testnew`, T-QT designer
+(active-low), T-QT display, CYD designer, CYD `board`, CYD `touch`. Suite **1063** hermetic
+(t1 985 · t2 74 · t3 4), `tsc` clean, t3 re-recorded (47 files; the DevKitC snapshot folders are new).
+

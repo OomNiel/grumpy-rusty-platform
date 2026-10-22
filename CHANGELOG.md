@@ -11,6 +11,64 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.13.12] - 2026-10-22
+
+Covers 0.13.11 as well: that build (the DevKitC display modules) was packaged and installed while this work was
+in progress, and this entry is the version in `package.json`.
+
+### Added
+
+- **The Espressif ESP32-DevKitC V4 carries display modules.** Asked for directly. Its board option now lists
+  two: a 1.54" **ST7789 240×240** (no touch) and a 2.8" **ILI9341 240×320 with an XPT2046**, both over SPI on
+  GPIO18/23 (MISO 19 on the touch module). The board therefore generates `designer` and `display` projects.
+  The chosen module is recorded as a `panel-<id>` cargo feature, which is also what the Designer reads back to
+  get the canvas size and the touch controller — the generated `src/main.rs` is written once and cannot be
+  queried.
+- **Brightness setting for the panel backlight.** A **Brightness** slider (0 % – 100 %, steps of 5) in the
+  Designer control bar. The value lives in `.cargo/esp-config.toml` as `BACKLIGHT_BRIGHTNESS` and is read at
+  compile time, so changing it never touches `src/main.rs`; a project that does not mention the key is fully
+  on, and a typo can never leave the panel dark. The firmware now drives the BL pin by **LEDC PWM** (10-bit,
+  5 kHz) instead of holding it on, and inverts the duty automatically for a panel whose transistor switches on
+  with a LOW level — the number in the file is always the brightness a person sees. The setting is offered
+  **only when the chosen panel has a BL pin wired**, and a project whose `src/main.rs` predates the PWM
+  backlight gets the slider disabled with the reason rather than a control that changes nothing.
+- **Touch controllers can belong to a display module.** `EspDisplay.touch` complements the board-level
+  controller, so a DevKitC with the ILI9341 module drives its XPT2046 exactly as the CYD drives its own.
+
+### Changed
+
+- **The New Project wizard asks for the panel before touching.** Which module is wired decides whether there
+  is a touchscreen at all, so the touch question (and the generated `TOUCH_ENABLED` key) now follows the panel
+  answer. A panel module without a controller is not asked about.
+- **Generated panel docs** name the backlight as PWM and gain a *Backlight brightness* section; the
+  `[features]` comment is board-neutral instead of talking about LilyGo on an Espressif board.
+
+### Fixed
+
+- **The `touch` and `board` templates did not compile.** Both emitted a Designer-only clock hand-over block
+  that referenced an undefined `screen` (`E0425`), left behind when the RTC/host-time feature landed in
+  0.13.0. Found by compiling the generated projects; the block now exists only for Designer projects, and
+  `wall_clock`/`wall_clock_applied` are only part of `State` where a design can be told the time.
+- **A DevKitC project used the wrong panel.** The Designer and the generator read `board.displays[0]` and
+  `board.touch`, so an ILI9341 project opened a 240×240 canvas, offered no touch and generated touchless
+  firmware. Both now resolve the panel from the project's manifest (`displayForProject`) and the controller
+  from the panel (`touchFor`), across the sketch, imports, dependencies, `ui.rs` and `DESIGNER`/`TOUCH`.
+- **No-touch Designer projects carried two warnings**, and the panel advised switching touch on where no
+  controller exists. `touchEnabled` is now false when the chosen panel has no controller, and the advisory is
+  only raised when there is something to switch on.
+- **An unused `esp_hal::ram` import** in the `touch` and `board` templates (it is only a Designer heap).
+
+### Notes
+
+- Test suite: **1063 hermetic** (t1 985, t2 74, t3 4). Goldens re-recorded (47 files) and DevKitC
+  `designer`/`display` snapshots added.
+- Cross-compiled with the ESP toolchain, warning-free, for seven generated projects: DevKitC `designer`
+  (ST7789), DevKitC `designer` (ILI9341 + touch), T-QT `designer` (active-low), T-QT `display`, CYD
+  `designer`, CYD `board` and CYD `touch`.
+- No crate change, so existing Designer projects do **not** need *Update now* for their `codegen/` copy; a
+  project generated before this version keeps its old `main.rs` (hold-the-pin backlight) until it is
+  regenerated or patched, which the Designer says out loud.
+
 ## [0.13.10] - 2026-10-21
 
 ### Removed
