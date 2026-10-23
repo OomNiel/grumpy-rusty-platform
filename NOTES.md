@@ -7777,3 +7777,59 @@ DevKitC designer (ST7789), DevKitC designer (ILI9341 + touch), DevKitC-mirror of
 (active-low), T-QT display, CYD designer, CYD `board`, CYD `touch`. Suite **1063** hermetic
 (t1 985 · t2 74 · t3 4), `tsc` clean, t3 re-recorded (47 files; the DevKitC snapshot folders are new).
 
+## §153 — A 4" ST7796 module, a dated clock, and terminals that release themselves (0.13.13–0.13.15, 2026-10-23)
+
+### The DevKitC's third module
+
+- Asked for: a `4-Inch-SPI-TFT-ST7796-320x480-Touch-XPT2046` option on the ESP32-DevKitC V4. One `EspDisplay`
+  entry with `panelChoice: 'st7796'` in `boards/catalog.ts` is the whole model change: the cargo feature
+  (`panel-st7796`), the `models::ST7796` driver, the 320×480 canvas, the touch controller and the backlight all
+  fall out of the existing rules (`espFeaturesSection`, `displayForProject`, `touchFor`, `hasBacklight`).
+  24 MHz because the CYD runs the same controller at that rate; BGR + mirrored X for the same reason.
+- The 2.8" ILI9341 row was corrected at the same time (**bgr**, `mirrorX: true`) — confirmed by the user against
+  the module. Colour order and mirroring are the two facts no compiler can check, so
+  `t1-logic/esp-boards.test.js` now pins every DevKitC module's pins, size, order, rate and touch.
+- The DevKitC's option offers **designer + Bluetooth LE only** (`OFFERED_TEMPLATES`). `templatesFor` still lists
+  everything, so the panel diagnostic and the golden/board layers keep building it;
+  `defaultTemplateForEsp` takes the first *offered* template, which is why the wizard preselects the designer.
+
+### The clock keeps the date
+
+- An SNTP answer used to be a time of day, so an RTC set from the network counted from the 2000 base and lost the
+  date at the next power cycle. `SYNCED_TIME` is now `(year, month, day, hour, minute, second)`; `espClockLoop`
+  writes it with `set_rtc_datetime`, and `net.rs`/`smtp.rs` both build it with the same `civil_from_days`.
+- **Hinnant's civil-from-days, not a table**: `civil_from_days`/`days_from_civil` live in the generated
+  `MainHeader.rs`, so both modules reach them as `crate::main_header::…`; `div_euclid` keeps a date before 1970
+  correct, and `DAYS_1970_TO_2000` is derived from `CLOCK_RTC_BASE_SECONDS / 86_400` rather than written twice.
+- **`set_rtc_time_of_day` reads the RTC first** and keeps the day it finds: a flash's `TIME HH:MM:SS` hand-over
+  carries no date, and the old code rewrote the counter to the 2000 base — which would have dragged a
+  network-set date back to the base. `Rtc::current_time_us() -> u64` in esp-hal 1.2.2 (read from the registry
+  source) is what makes that possible; `days.max(0)` keeps a pre-2000 date from wrapping the unsigned counter.
+- **Known limitation (cross-version):** `src/main.rs` and `src/net.rs` are written once. A 0.13.12 project keeps
+  its 3-tuple `SYNCED_TIME`, and running the SMTP wizard on 0.13.15 rewrites `src/smtp.rs` with the 6-tuple, so
+  the two then disagree. Only a regenerated project (or a hand-patched pair) is consistent; the recipe in the
+  section above is how an older project is brought forward.
+
+### Terminals that release themselves
+
+- Asked for: release the terminal a Build or Flash session created instead of leaving it behind. The first cut
+  matched the **command line** (`line.includes('cargo')`), which has two traps: the probe flash is
+  `probe-rs download … && probe-rs reset …`, containing neither "flash" nor "espflash", so that listener could
+  never fire; and a `cargo` command typed in *any* terminal (the user's own `cargo test`) would fire it early.
+  `whenTerminalCommandEnds` now takes the `vscode.Terminal` that `runInTerminal` returned, compares
+  `event.terminal === terminal`, and disposes both listeners when the command ends **or** the terminal closes —
+  so nothing is left holding a dead terminal where shell integration is unavailable.
+- **Close on success only** (the user's decision): a failed build or flash keeps its terminal, because that
+  terminal holds the error text. The test is `exitCode === 0`; an exit code the shell cannot report counts as
+  unknown, which also leaves the terminal alone.
+- The clock listener is re-armed on **any** end, not only a successful one — a flash that failed is exactly when
+  a board is likely to ask for the time again.
+
+### Verification
+
+- `cargo check` (esp toolchain, repo crates rsynced into `codegen/`) clean and warning-free for DevKitC Designer
+  on the ST7796 module (touch, `Output<'static>` reset) and DevKitC `display` on the same module.
+- Suite **1065** hermetic (t1 987 · t2 74 · t3 4), `tsc` clean; t3 re-recorded (11 files: `panel-st7796` in the
+  two DevKitC manifests, the dated clock in every Designer snapshot).
+
+

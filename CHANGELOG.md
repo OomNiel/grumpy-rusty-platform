@@ -11,6 +11,53 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.13.15] - 2026-10-23
+
+Covers 0.13.13 and 0.13.14 as well: those builds were packaged and installed while this work was in progress,
+and this entry is the version in `package.json`.
+
+### Added
+
+- **A 4" ST7796 320×480 module for the ESP32-DevKitC V4.** Its board option lists a third module, the
+  `4-Inch-SPI-TFT-ST7796-320x480-Touch-XPT2046` panel with its own XPT2046 on the shared SPI bus (CS 33, PENIRQ
+  36), driven at 24 MHz with BGR colour order and X mirrored — the same controller facts as the ESP32-035's
+  panel. Like the other two it is recorded as a cargo feature (`panel-st7796`), so the Designer opens a 320×480
+  canvas with touch for that project.
+- **The clock keeps the date the network gave.** An SNTP answer now carries the calendar date as well as the
+  time of day (`SYNCED_TIME` is a `(year, month, day, hour, minute, second)`), and a Designer project writes both
+  into the chip's RTC, so a board that learned the date keeps it across a reset instead of counting from the
+  2000 base. A host's `TIME HH:MM:SS` line — what a flash hands over, and which carries no date — now replaces
+  only the time of day and leaves the RTC's calendar day alone. The civil-date arithmetic
+  (`civil_from_days`/`days_from_civil`) sits in the generated `MainHeader.rs` and is shared by `net.rs` and
+  `smtp.rs`.
+
+### Changed
+
+- **The Espressif ESP32-DevKitC V4 board option offers only the WYSIWYG designer and the Bluetooth LE
+  peripheral.** Asked for directly. The board still generates its other templates — the panel diagnostic is
+  how a display module is brought up, and the board/golden tests build it — but the New Project wizard no
+  longer presents them, and the designer is the default it preselects.
+- **The 2.8" ILI9341 module is drawn BGR with X mirrored**, which is what the module does; its catalogue entry
+  had the controller's own defaults.
+- **A Build or Flash terminal closes itself once its command has succeeded**, instead of being left behind for
+  the rest of the session. A command that *fails* keeps its terminal, because that terminal holds the compiler's
+  or the flasher's own words about what went wrong.
+
+### Fixed
+
+- **The terminal release listens to the terminal, not to the command line.** Matching the command text would
+  have left the probe route as dead code — `probe-rs download …` contains neither "flash" nor "espflash" — and
+  a stray `cargo` typed in any other terminal could have closed a build that was still running. One listener
+  per terminal now, dropped when that terminal's command ends or when the terminal closes.
+
+### Notes
+
+- Test suite: **1065 hermetic** (t1 987, t2 74, t3 4), `tsc` clean. Golden snapshots re-recorded (11 files) for
+  the new `panel-st7796` feature and the dated clock.
+- Generated firmware verified by `cargo check` with the esp toolchain (vendored crates copied in): DevKitC
+  Designer on the ST7796 module (touch, backlight) and DevKitC `display` on the same module — both clean and
+  warning-free.
+
 ## [0.13.12] - 2026-10-22
 
 Covers 0.13.11 as well: that build (the DevKitC display modules) was packaged and installed while this work was

@@ -3,7 +3,7 @@
     "displayName": "Grumpy's Rusty Platform for VS Code",
     "description": "PlatformIO-style embedded development for RP2040/RP2350 (Raspberry Pi Pico) and ESP32/ESP32-S3 boards in Rust (Embassy, esp-hal, probe-rs, espflash).",
     "icon": "resources/grumpy.png",
-    "version": "0.13.12",
+    "version": "0.13.15",
     "publisher": "grumpy",
     "license": "MIT OR Apache-2.0",
     "repository": {
