@@ -19,6 +19,7 @@ publish = false
 default = ["panel-st7789"]
 panel-st7789 = []
 panel-ili9341 = []
+panel-st7796 = []
 
 # The SMTP keep-alive client. `src/smtp.rs` is written by the SMTP wizard and left in the
 # project; this feature is what compiles it in and spawns its task (the wizard puts "smtp"

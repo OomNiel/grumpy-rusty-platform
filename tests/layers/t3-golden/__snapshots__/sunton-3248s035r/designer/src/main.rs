@@ -795,13 +795,21 @@ async fn main(spawner: Spawner) -> ! {
         // The network's answer, when the Wi-Fi task got one. Same effect as a console line: the RTC
         // is set and the hands follow. A time that arrives after another source already set the RTC
         // is taken and dropped, so the two never fight over the clock.
-        if let Some((hour, minute, second)) = net::SYNCED_TIME.try_take() {
+        if let Some((year, month, day, hour, minute, second)) = net::SYNCED_TIME.try_take() {
             if state.needs_time {
                 state.wall_clock = Some((hour, minute, second));
                 state.wall_clock_applied = false;
-                set_rtc_time_of_day(&state.rtc, hour, minute, second);
+                set_rtc_datetime(&state.rtc, year, month, day, hour, minute, second);
                 state.needs_time = false;
-                log::info!("clock: the network says {:02}:{:02}:{:02}", hour, minute, second);
+                log::info!(
+                    "clock: the network says {:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+                    year,
+                    month,
+                    day,
+                    hour,
+                    minute,
+                    second
+                );
             }
         }
         // The design exists only from the first frame, and the time can arrive before it: the value

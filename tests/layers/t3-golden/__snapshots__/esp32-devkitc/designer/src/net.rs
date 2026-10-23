@@ -27,8 +27,8 @@ use esp_radio::wifi::{
     AuthenticationMethodConfig, Config as WifiConfig, ControllerConfig, Interface, WifiController,
 };
 
-/// The local time an NTP server gave, waiting for the main loop to put it in the RTC.
-pub static SYNCED_TIME: Signal<CriticalSectionRawMutex, (u8, u8, u8)> = Signal::new();
+/// The local date and time of day an NTP server gave, waiting for the main loop to put it in the RTC.
+pub static SYNCED_TIME: Signal<CriticalSectionRawMutex, (u16, u8, u8, u8, u8, u8)> = Signal::new();
 
 /// The network the build was given. The same contract as the Wi-Fi template: read at compile time,
 //  never in the source tree.
@@ -138,15 +138,18 @@ pub async fn time_task(wifi: WIFI<'static>) {
     }
 
     for attempt in 1..=3u32 {
-        if let Some((hour, minute, second)) = ntp_time(stack).await {
+        if let Some((year, month, day, hour, minute, second)) = ntp_time(stack).await {
             log::info!(
-                "clock: the network says {:02}:{:02}:{:02} (attempt {})",
+                "clock: the network says {:04}-{:02}-{:02} {:02}:{:02}:{:02} (attempt {})",
+                year,
+                month,
+                day,
                 hour,
                 minute,
                 second,
                 attempt
             );
-            SYNCED_TIME.signal((hour, minute, second));
+            SYNCED_TIME.signal((year, month, day, hour, minute, second));
             return;
         }
         log::warn!("clock: no answer from the time server (attempt {})", attempt);
@@ -155,8 +158,8 @@ pub async fn time_task(wifi: WIFI<'static>) {
     log::warn!("clock: giving up on the network time; the design keeps its own");
 }
 
-/// One SNTP request, and the local time of day from its answer.
-async fn ntp_time(stack: embassy_net::Stack<'static>) -> Option<(u8, u8, u8)> {
+/// One SNTP request, and the local date and time of day from its answer.
+async fn ntp_time(stack: embassy_net::Stack<'static>) -> Option<(u16, u8, u8, u8, u8, u8)> {
     // The server is a name, so the stack's resolver is used first. A literal address would skip
     // this, but a hard-coded one is a server that can move.
     let addresses = with_timeout(
@@ -212,8 +215,9 @@ async fn ntp_time(stack: embassy_net::Stack<'static>) -> Option<(u8, u8, u8)> {
     }
     let unix = seconds - 2_208_988_800;
     let local = unix + tz_offset_minutes() * 60;
-    let day = local.rem_euclid(86_400);
-    Some(((day / 3600) as u8, ((day / 60) % 60) as u8, (day % 60) as u8))
+    let (year, month, day) = crate::main_header::civil_from_days(local.div_euclid(86_400));
+    let tod = local.rem_euclid(86_400);
+    Some((year, month, day, (tod / 3600) as u8, ((tod / 60) % 60) as u8, (tod % 60) as u8))
 }
 
 /// Drives the network stack; no packet moves while it is not being polled.

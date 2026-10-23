@@ -300,15 +300,18 @@ pub async fn smtp_task(wifi: WIFI<'static>, wants_time: bool) {
     // the time simply drops it.
     if wants_time {
         for attempt in 1..=3u32 {
-            if let Some((hour, minute, second)) = ntp_time(stack).await {
+            if let Some((year, month, day, hour, minute, second)) = ntp_time(stack).await {
                 log::info!(
-                    "clock: the network says {:02}:{:02}:{:02} (attempt {})",
+                    "clock: the network says {:04}-{:02}-{:02} {:02}:{:02}:{:02} (attempt {})",
+                    year,
+                    month,
+                    day,
                     hour,
                     minute,
                     second,
                     attempt
                 );
-                crate::net::SYNCED_TIME.signal((hour, minute, second));
+                crate::net::SYNCED_TIME.signal((year, month, day, hour, minute, second));
                 break;
             }
             log::warn!("clock: no answer from the time server (attempt {})", attempt);
@@ -421,10 +424,10 @@ async fn smtp_post(stack: embassy_net::Stack<'static>) -> Result<(), SmtpError> 
     Ok(())
 }
 
-/// One SNTP request, and the local time of day from its answer. The same query net.rs makes, so a
+/// One SNTP request, and the local date and time of day from its answer. The same query net.rs makes, so a
 /// design with the SMTP client and one without get their time from the same server and the same
 /// offset.
-async fn ntp_time(stack: embassy_net::Stack<'static>) -> Option<(u8, u8, u8)> {
+async fn ntp_time(stack: embassy_net::Stack<'static>) -> Option<(u16, u8, u8, u8, u8, u8)> {
     // The server is a name, so the stack's resolver is used first. A literal address would skip
     // this, but a hard-coded one is a server that can move.
     let addresses = with_timeout(
@@ -480,8 +483,9 @@ async fn ntp_time(stack: embassy_net::Stack<'static>) -> Option<(u8, u8, u8)> {
     }
     let unix = seconds - 2_208_988_800;
     let local = unix + tz_offset_minutes() * 60;
-    let day = local.rem_euclid(86_400);
-    Some(((day / 3600) as u8, ((day / 60) % 60) as u8, (day % 60) as u8))
+    let (year, month, day) = crate::main_header::civil_from_days(local.div_euclid(86_400));
+    let tod = local.rem_euclid(86_400);
+    Some((year, month, day, (tod / 3600) as u8, ((tod / 60) % 60) as u8, (tod % 60) as u8))
 }
 
 /// Resolve SMTP_HOST to one address. Mirrors net.rs's DNS + send_to step so the address handling is

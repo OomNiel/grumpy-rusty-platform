@@ -37,28 +37,58 @@ import { rearmClockListener } from '../designer/editor';
 const PROBE_CHECK_NOTICE_DELAY_MS = 500;
 
 /**
- * Runs `after` once the flash command in its terminal has ended.
+ * Runs `ended` once a command in *this* terminal has finished, and lets go of the terminal either way.
  *
- * The clock listener is closed before a flash so `espflash` can own the serial port, and it has to
- * come back afterwards -- a board that is powered off later asks for the time, and nobody would be
- * listening. Shell integration is what says the command ended; where it is unavailable nothing
- * happens, which is safe: the flash's own TIME line has already set the RTC, so only a later cold
- * boot would go without a listener.
+ * The terminal is what is matched, not the command line: a flash is `probe-rs download …` on one route
+ * and `espflash flash …` on the other, and matching text is how a listener quietly stops firing (the
+ * probe command line contains neither "flash" nor "espflash").
+ *
+ * Shell integration is what reports the end of a command, with its exit code. Where it is unavailable
+ * nothing arrives; the listener is then dropped as soon as the terminal closes, so no callback is left
+ * holding a closed terminal.
  */
-function whenFlashCommandEnds(after: () => void): void {
+function whenTerminalCommandEnds(terminal: vscode.Terminal, ended: (succeeded: boolean) => void): void {
+    let stopped = false;
+    const stop = (): void => {
+        if (stopped) {
+            return;
+        }
+        stopped = true;
+        ends?.dispose();
+        closed.dispose();
+    };
+    const closed = vscode.window.onDidCloseTerminal((closedTerminal) => {
+        if (closedTerminal === terminal) {
+            stop();
+        }
+    });
     const events = vscode.window as unknown as {
         onDidEndTerminalShellExecution?: (
-            listener: (event: { execution?: { commandLine?: { value?: string } } }) => void,
+            listener: (event: { terminal?: vscode.Terminal; exitCode?: number }) => void,
         ) => vscode.Disposable;
     };
-    if (events.onDidEndTerminalShellExecution === undefined) {
-        return;
-    }
-    const disposable = events.onDidEndTerminalShellExecution((event) => {
-        const line = event.execution?.commandLine?.value ?? '';
-        if (line.includes('espflash')) {
-            disposable.dispose();
-            after();
+    const ends = events.onDidEndTerminalShellExecution?.((event) => {
+        if (event.terminal !== terminal) {
+            return;
+        }
+        stop();
+        // An exit code the integration cannot report counts as unknown, and unknown is not success:
+        // the terminal then stays, which is the safe half of the choice.
+        ended(event.exitCode === 0);
+    });
+}
+
+/**
+ * Closes one of our terminals once the command in it has succeeded.
+ *
+ * A failed command keeps its terminal, because that terminal holds the compiler's or the flasher's
+ * own words about what went wrong -- closing it on the way out is how a red build becomes a message
+ * nobody can read.
+ */
+function closeWhenSucceeded(name: string, terminal: vscode.Terminal): void {
+    whenTerminalCommandEnds(terminal, (succeeded) => {
+        if (succeeded) {
+            closeTerminal(name);
         }
     });
 }
@@ -236,7 +266,11 @@ export function registerProjectCommands(
         try {
             const elf = await buildElf(project.folder, output, profile, buildEnv());
             output.appendLine(`Writing ${path.basename(elf)} through the probe (chip ${chip})`);
-            runInTerminal('Rusty: flash', probeFlashCommand(probeRsCommand(), chip, elf), project.folder);
+            // The flash is a one-shot write: release its terminal once the write has gone through.
+            closeWhenSucceeded(
+                'Rusty: flash',
+                runInTerminal('Rusty: flash', probeFlashCommand(probeRsCommand(), chip, elf), project.folder),
+            );
             // Remember what the chip now holds: the no-flash entries are only safe against a match.
             await context.workspaceState.update(LAST_FLASHED_KEY, profile);
         } catch (error) {
@@ -330,10 +364,17 @@ export function registerProjectCommands(
             const command = monitorAfter
                 ? espFlashAndMonitorCommand(espflashCommand(), chip, elf, port, process.platform, handover)
                 : espFlashCommand(espflashCommand(), chip, elf, port, handover);
-            runInTerminal('Rusty: flash', command, project.folder);
+            const terminal = runInTerminal('Rusty: flash', command, project.folder);
             // The flash borrowed the port from the clock listener; the listener comes back when the
-            // command ends, so a board powered off later still finds a host that can answer it.
-            whenFlashCommandEnds(() => rearmClockListener());
+            // command ends, so a board powered off later still finds a host that can answer it -- a
+            // write that failed is exactly when a board is likely to ask again. A write that went
+            // through leaves nothing to read, so its terminal is released too.
+            whenTerminalCommandEnds(terminal, (succeeded) => {
+                rearmClockListener();
+                if (succeeded && !monitorAfter) {
+                    closeTerminal('Rusty: flash');
+                }
+            });
             // Remember what the chip now holds, the same way the RP routes do.
             await context.workspaceState.update(LAST_FLASHED_KEY, profile);
         } catch (error) {
@@ -419,19 +460,28 @@ export function registerProjectCommands(
         vscode.commands.registerCommand('rustyPlatform.build', () =>
             withProject(async (project) => {
                 await ensureSmtpEnv(context, project.folder, output);
-                runInTerminal('Rusty: build', `${defmtPrefix()}cargo build`, project.folder);
+                closeWhenSucceeded(
+                    'Rusty: build',
+                    runInTerminal('Rusty: build', `${defmtPrefix()}cargo build`, project.folder),
+                );
             }),
         ),
         vscode.commands.registerCommand('rustyPlatform.buildDebug', () =>
             withProject(async (project) => {
                 await ensureSmtpEnv(context, project.folder, output);
-                runInTerminal('Rusty: build', `${defmtPrefix()}cargo build`, project.folder);
+                closeWhenSucceeded(
+                    'Rusty: build',
+                    runInTerminal('Rusty: build', `${defmtPrefix()}cargo build`, project.folder),
+                );
             }),
         ),
         vscode.commands.registerCommand('rustyPlatform.buildRelease', () =>
             withProject(async (project) => {
                 await ensureSmtpEnv(context, project.folder, output);
-                runInTerminal('Rusty: build', `${defmtPrefix()}cargo build --release`, project.folder);
+                closeWhenSucceeded(
+                    'Rusty: build',
+                    runInTerminal('Rusty: build', `${defmtPrefix()}cargo build --release`, project.folder),
+                );
             }),
         ),
 
@@ -506,7 +556,7 @@ export function registerProjectCommands(
 
         vscode.commands.registerCommand('rustyPlatform.clean', () =>
             withProject(async (project) => {
-                runInTerminal('Rusty: build', 'cargo clean', project.folder);
+                closeWhenSucceeded('Rusty: build', runInTerminal('Rusty: build', 'cargo clean', project.folder));
             }),
         ),
     ];

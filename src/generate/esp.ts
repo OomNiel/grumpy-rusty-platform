@@ -130,13 +130,15 @@ export interface EspGenerateOptions {
  * board can generate.
  *
  * The ESP32-035 is a design-first panel; asked for 2026-10-21, its board option offers the WYSIWYG designer
- * and nothing else, so a new project from that board is always the one the board is for. The other templates
- * stay generatable: the panel diagnostic is still how a glass is brought up and what the board is verified
- * with, so it remains reachable from code and from the golden and board tests -- it is simply not offered
- * when the board is picked in the wizard.
+ * and nothing else, so a new project from that board is always the one the board is for. Asked for
+ * 2026-10-23, the ESP32-DevKitC V4 offers only the WYSIWYG designer and the Bluetooth LE peripheral. The
+ * other templates stay generatable: the panel diagnostic is still how a glass is brought up and what the
+ * board is verified with, so it remains reachable from code and from the golden and board tests -- it is
+ * simply not offered when the board is picked in the wizard.
  */
 const OFFERED_TEMPLATES: Record<string, readonly AppTemplate[]> = {
     'sunton-3248s035r': ['designer'],
+    'esp32-devkitc': ['designer', 'bluetooth'],
 };
 
 /**
@@ -1447,11 +1449,59 @@ pub fn rtc_time_of_day(rtc: &Rtc<'_>) -> Option<(u8, u8, u8)> {
     Some(((day / 3600) as u8, ((day / 60) % 60) as u8, (day % 60) as u8))
 }
 
+/// Days from 1970-01-01 to 2000-01-01. The RTC's base and the civil calendar's 1970 epoch are both whole
+/// numbers of days, so a civil date folds back into the counter with no remainder.
+const DAYS_1970_TO_2000: i64 = (CLOCK_RTC_BASE_SECONDS / 86_400) as i64;
+
+/// Howard Hinnant's civil-from-days: days since 1970-01-01 to (year, month, day). Integer math only,
+/// no_std, and div_euclid on the era keeps dates before the epoch correct too.
+pub fn civil_from_days(days: i64) -> (u16, u8, u8) {
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 157_908) / 365;
+    let mut year = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let month_day = (5 * doy + 2) / 153;
+    let day = (doy - (153 * month_day + 2) / 5 + 1) as u8;
+    let month = if month_day < 10 { month_day + 3 } else { month_day - 9 } as u8;
+    if month <= 2 {
+        year += 1;
+    }
+    (year as u16, month, day)
+}
+
+/// The inverse of civil_from_days: a civil date back to days since 1970-01-01.
+pub fn days_from_civil(year: i64, month: u8, day: u8) -> i64 {
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let month = if month > 2 { month - 3 } else { month + 9 };
+    let doy = (153 * month as i64 + 2) / 5 + day as i64 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// The calendar date and the time of day the network gave, written into the RTC together so the whole
+/// wall-clock -- not just the hands -- survives a reset. The counter is advanced to the local civil
+/// timestamp, which is exactly what rtc_time_of_day reads back as the time of day.
+pub fn set_rtc_datetime(rtc: &Rtc<'_>, year: u16, month: u8, day: u8, hour: u8, minute: u8, second: u8) {
+    let days = days_from_civil(year as i64, month, day) - DAYS_1970_TO_2000;
+    let now = hour.min(23) as u64 * 3600 + minute.min(59) as u64 * 60 + second.min(59) as u64;
+    let seconds = CLOCK_RTC_BASE_SECONDS + days.max(0) as u64 * 86_400 + now;
+    rtc.set_current_time_us(seconds * 1_000_000);
+}
+
 /// Writes the time of day into the RTC, base included. esp-hal keeps the offset in the RTC domain, so
-/// this survives a reset -- which is exactly why the mark above works.
+/// this survives a reset -- which is exactly why the mark above works. A host's TIME line is a hand-over
+/// of the time only: it carries no date, so the date the RTC already holds is kept, and a board that
+/// learned a calendar day from the network is not dragged back to the 2000 base when a host hands the
+/// hands over.
 pub fn set_rtc_time_of_day(rtc: &Rtc<'_>, hour: u8, minute: u8, second: u8) {
-    let day = hour.min(23) as u64 * 3600 + minute.min(59) as u64 * 60 + second.min(59) as u64;
-    rtc.set_current_time_us((CLOCK_RTC_BASE_SECONDS + day) * 1_000_000);
+    let seconds = rtc.current_time_us() / 1_000_000;
+    let day = (seconds.saturating_sub(CLOCK_RTC_BASE_SECONDS) / 86_400) * 86_400;
+    let now = hour.min(23) as u64 * 3600 + minute.min(59) as u64 * 60 + second.min(59) as u64;
+    rtc.set_current_time_us((CLOCK_RTC_BASE_SECONDS + day + now) * 1_000_000);
 }
 ${usbHost}`;
 }
@@ -1619,13 +1669,21 @@ function espClockLoop(board: EspBoardProfile, screenAccess: string): string {
         // The network's answer, when the Wi-Fi task got one. Same effect as a console line: the RTC
         // is set and the hands follow. A time that arrives after another source already set the RTC
         // is taken and dropped, so the two never fight over the clock.
-        if let Some((hour, minute, second)) = net::SYNCED_TIME.try_take() {
+        if let Some((year, month, day, hour, minute, second)) = net::SYNCED_TIME.try_take() {
             if needs_time {
                 wall_clock = Some((hour, minute, second));
                 wall_clock_applied = false;
-                set_rtc_time_of_day(&rtc, hour, minute, second);
+                set_rtc_datetime(&rtc, year, month, day, hour, minute, second);
                 needs_time = false;
-                log::info!("clock: the network says {:02}:{:02}:{:02}", hour, minute, second);
+                log::info!(
+                    "clock: the network says {:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+                    year,
+                    month,
+                    day,
+                    hour,
+                    minute,
+                    second
+                );
             }
         }
         // The design exists only from the first frame, and the time can arrive before it: the value
@@ -2049,8 +2107,8 @@ use esp_radio::wifi::{
     AuthenticationMethodConfig, Config as WifiConfig, ControllerConfig, Interface, WifiController,
 };
 
-/// The local time an NTP server gave, waiting for the main loop to put it in the RTC.
-pub static SYNCED_TIME: Signal<CriticalSectionRawMutex, (u8, u8, u8)> = Signal::new();
+/// The local date and time of day an NTP server gave, waiting for the main loop to put it in the RTC.
+pub static SYNCED_TIME: Signal<CriticalSectionRawMutex, (u16, u8, u8, u8, u8, u8)> = Signal::new();
 
 /// The network the build was given. The same contract as the Wi-Fi template: read at compile time,
 //  never in the source tree.
@@ -2160,15 +2218,18 @@ pub async fn time_task(wifi: WIFI<'static>) {
     }
 
     for attempt in 1..=3u32 {
-        if let Some((hour, minute, second)) = ntp_time(stack).await {
+        if let Some((year, month, day, hour, minute, second)) = ntp_time(stack).await {
             log::info!(
-                "clock: the network says {:02}:{:02}:{:02} (attempt {})",
+                "clock: the network says {:04}-{:02}-{:02} {:02}:{:02}:{:02} (attempt {})",
+                year,
+                month,
+                day,
                 hour,
                 minute,
                 second,
                 attempt
             );
-            SYNCED_TIME.signal((hour, minute, second));
+            SYNCED_TIME.signal((year, month, day, hour, minute, second));
             return;
         }
         log::warn!("clock: no answer from the time server (attempt {})", attempt);
@@ -2177,8 +2238,8 @@ pub async fn time_task(wifi: WIFI<'static>) {
     log::warn!("clock: giving up on the network time; the design keeps its own");
 }
 
-/// One SNTP request, and the local time of day from its answer.
-async fn ntp_time(stack: embassy_net::Stack<'static>) -> Option<(u8, u8, u8)> {
+/// One SNTP request, and the local date and time of day from its answer.
+async fn ntp_time(stack: embassy_net::Stack<'static>) -> Option<(u16, u8, u8, u8, u8, u8)> {
     // The server is a name, so the stack's resolver is used first. A literal address would skip
     // this, but a hard-coded one is a server that can move.
     let addresses = with_timeout(
@@ -2234,8 +2295,9 @@ async fn ntp_time(stack: embassy_net::Stack<'static>) -> Option<(u8, u8, u8)> {
     }
     let unix = seconds - 2_208_988_800;
     let local = unix + tz_offset_minutes() * 60;
-    let day = local.rem_euclid(86_400);
-    Some(((day / 3600) as u8, ((day / 60) % 60) as u8, (day % 60) as u8))
+    let (year, month, day) = crate::main_header::civil_from_days(local.div_euclid(86_400));
+    let tod = local.rem_euclid(86_400);
+    Some((year, month, day, (tod / 3600) as u8, ((tod / 60) % 60) as u8, (tod % 60) as u8))
 }
 
 /// Drives the network stack; no packet moves while it is not being polled.

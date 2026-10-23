@@ -138,6 +138,43 @@ test('the CYD panel matches the board schematic', () => {
     equal(panel.spiHz, 24_000_000);
 });
 
+test('the DevKitC display modules match the modules that plug into it', () => {
+    const board = espBoard('esp32-devkitc');
+    equal(needsPanelChoice(board), true, 'a DevKitC takes whichever module is plugged in');
+    equal(defaultChoices(board).panel, 'st7789', 'the small module stays the preselected one');
+    equal(
+        panelChoices(board).map((choice) => choice.id),
+        ['st7789', 'ili9341', 'st7796'],
+        'the wizard offers exactly the modules the catalog describes',
+    );
+
+    // The 4" ST7796 module: panel and touch controller share the bus, so MISO 19 belongs to both.
+    const st7796 = displayFor(board, { panel: 'st7796' });
+    equal(st7796.controller, 'ST7796');
+    equal(st7796.label, '4-Inch-SPI-TFT-ST7796-320x480-Touch-XPT2046');
+    equal(st7796.width, 320);
+    equal(st7796.height, 480);
+    equal(st7796.cs, 5);
+    equal(st7796.dc, 22);
+    equal(st7796.rst, 4);
+    equal(st7796.backlight, 21);
+    equal(st7796.backlightActiveLow, false);
+    equal(st7796.spi.sclk, 18);
+    equal(st7796.spi.mosi, 23);
+    equal(st7796.spi.miso, 19);
+    equal(st7796.colorOrder, 'bgr');
+    equal(st7796.mirrorX, true, 'X is mirrored relative to the controller default, as on the CYD');
+    equal(st7796.spiHz, 24_000_000, 'the same rate the CYD runs its ST7796 at');
+    equal(st7796.touch.controller, 'XPT2046');
+    equal(st7796.touch.cs, 33);
+    equal(st7796.touch.irq, 36);
+
+    // Checked on the 2.8" ILI9341 module itself: BGR and mirrored on X.
+    const ili9341 = displayFor(board, { panel: 'ili9341' });
+    equal(ili9341.colorOrder, 'bgr');
+    equal(ili9341.mirrorX, true);
+});
+
 test('the CYD board carries its touch and microSD wiring', () => {
     const board = espBoard('sunton-3248s035r');
     equal(board.touch.controller, 'XPT2046');
@@ -217,13 +254,32 @@ test('the ESP32-035 board option offers the WYSIWYG designer alone', () => {
         'the diagnostic is still generatable for this board',
     );
     // The allowlist is that board's, not a global narrowing.
-    for (const id of ['esp32-devkitc', 'lilygo-tqt']) {
-        equal(
-            templatesOfferedFor(espBoard(id)).map((info) => info.id),
-            templatesFor(espBoard(id)).map((info) => info.id),
-            `${id}: every supported template is still offered`,
-        );
-    }
+    equal(
+        templatesOfferedFor(espBoard('lilygo-tqt')).map((info) => info.id),
+        templatesFor(espBoard('lilygo-tqt')).map((info) => info.id),
+        'the T-QT still offers every supported template',
+    );
+});
+
+test('the ESP32-DevKitC board option offers only the designer and Bluetooth LE', () => {
+    // Asked for 2026-10-23: "for the ESP32-DevKitC V4 board option, remove all templates except the WYSIWYG
+    // Designer and Bluetooth LE peripheral templates." As with the ESP32-035, the board still generates the
+    // others -- the panel diagnostic is how a module is brought up -- but the wizard offers these two alone.
+    const devkitc = espBoard('esp32-devkitc');
+    equal(
+        templatesOfferedFor(devkitc).map((info) => info.id),
+        ['designer', 'bluetooth'],
+        'the option is the designer and the Bluetooth LE peripheral',
+    );
+    ok(
+        templatesFor(devkitc).some((info) => info.id === 'display'),
+        'the diagnostic is still generatable for this board',
+    );
+    equal(
+        defaultTemplateFor(devkitc),
+        'designer',
+        'the first offered template is the default, as it is for the ESP32-035',
+    );
 });
 
 test('the touch template is only offered where a touch controller exists', () => {

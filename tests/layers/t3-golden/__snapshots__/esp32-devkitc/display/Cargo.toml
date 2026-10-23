@@ -19,6 +19,7 @@ publish = false
 default = ["panel-st7789"]
 panel-st7789 = []
 panel-ili9341 = []
+panel-st7796 = []
 
 [dependencies]
 esp-hal = { version = "~1.2.2", features = ["esp32", "log-04"] }
