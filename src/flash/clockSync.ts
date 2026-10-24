@@ -2,7 +2,7 @@
  * Setting the module's RTC from the designer, without a flash.
  *
  * A flashed board is told the PC's time once, on the console, right after the write (see
- * `clockHandoverLine`). That leaves two moments it does not cover: a board that has been running long
+ * `clockHandoverLines`). That leaves two moments it does not cover: a board that has been running long
  * enough for its clock to drift, and a user who simply wants the hands right *now* rather than after a
  * full rebuild-and-flash. Both are the same line on the same port, so this is that line on its own.
  *
@@ -19,7 +19,7 @@
  */
 
 import { execFileSync } from 'child_process';
-import { clockHandoverLine, writeSerialLineCommand } from './espFlash';
+import { clockHandoverLines, writeSerialLineCommand } from './espFlash';
 
 /** What pressing the button did, in the words the panel can show as-is. */
 export interface ClockUpdateResult {
@@ -29,7 +29,7 @@ export interface ClockUpdateResult {
 
 /** What is about to happen, or why it will not. */
 export type ClockUpdatePlan =
-    | { kind: 'write'; port: string; line: string; command: string }
+    | { kind: 'write'; port: string; lines: string[]; command: string }
     | { kind: 'refuse'; message: string };
 
 /** Running one shell line: a command string in, whether it worked out. */
@@ -62,8 +62,8 @@ export function clockUpdatePlan(options: {
                 'port it appears on.',
         };
     }
-    const line = clockHandoverLine(options.now ?? new Date());
-    return { kind: 'write', port, line, command: writeSerialLineCommand(port, line, options.platform) };
+    const lines = clockHandoverLines(options.now ?? new Date());
+    return { kind: 'write', port, lines, command: writeSerialLineCommand(port, lines, options.platform) };
 }
 
 /** Run a shell line with no window, a short timeout, and its stderr kept for the message. */
@@ -121,5 +121,5 @@ export function updateClock(options: {
                 'A Monitor terminal holds the port while it runs -- close it and press Update Time again.',
         };
     }
-    return { ok: true, message: `Clock set to ${plan.line.replace(/^TIME /, '')} on ${plan.port}.` };
+    return { ok: true, message: `Clock set to ${plan.lines[0]?.replace(/^TIME /, '') ?? ''} on ${plan.port}.` };
 }

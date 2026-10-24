@@ -52,9 +52,9 @@ export function espFlashCommand(
     if (handover === undefined) {
         return flash;
     }
-    // The board only boots into the new image after the write has finished, so the line is sent a
+    // The board only boots into the new image after the write has finished, so the lines are sent a
     // couple of seconds later; a write that fails is not a flash that failed.
-    const write = writeSerialLineCommand(handover.port, handover.line, platform);
+    const write = writeSerialLineCommand(handover.port, handover.lines, platform);
     return platform === 'win32'
         ? `${flash}; if ($LASTEXITCODE -eq 0) { Start-Sleep -Milliseconds 2000; try { ${write} } catch { } }`
         : `${flash} && (sleep 2; ${write} || true)`;
@@ -63,7 +63,8 @@ export function espFlashCommand(
 /** The local time to hand the board, and the port to hand it over on. */
 export interface ClockHandover {
     port: string;
-    line: string;
+    /** In order: the dated line first, then the bare `TIME HH:MM:SS` an older project understands. */
+    lines: string[];
 }
 
 /**
@@ -75,43 +76,56 @@ export function espMonitorCommand(espflash: string, chip: string, port?: string)
 }
 
 /**
- * The line the firmware takes its clock from: `TIME HH:MM:SS`, the PC's local time.
+ * The lines the firmware takes its clock from: `TIME YYYY-MM-DD HH:MM:SS`, then the bare
+ * `TIME HH:MM:SS`.
  *
  * An ESP32's internal RTC has no battery, so a board that has been powered off has no idea of the
- * time. The firmware reads this line off the console (see `parse_clock_time` in the generated
- * `main.rs`), and a design's clock follows it from then on -- so the hands show the PC's clock, not
- * a count that started when the board booted.
+ * time. The firmware reads this line off the console (see `parse_clock_datetime` / `parse_clock_time`
+ * in the generated `main.rs`), and a design's clock follows it from then on -- so the hands show the
+ * PC's clock, not a count that started when the board booted.
+ *
+ * **Two lines, because the date is the half that used to be missing.** A bare time can only set the
+ * hands: a board with no network kept counting from the RTC's 2000 base and lost the calendar day.
+ * A project generated before the date existed ignores the dated line (its parser wants
+ * `HH:MM:SS` as the second word) and takes the second one, so it keeps working unchanged.
  */
-export function clockHandoverLine(now: Date = new Date()): string {
+export function clockHandoverLines(now: Date = new Date()): string[] {
     const pad = (value: number): string => String(value).padStart(2, '0');
-    return `TIME ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+    const time = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+    const date = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+    return [`TIME ${date} ${time}`, `TIME ${time}`];
 }
 
 /**
- * A shell command that writes one line to the serial port, quoted once, for the platform's own
- * shell.
+ * A shell command that writes the clock line(s) to the serial port, quoted once, for the platform's
+ * own shell.
  *
- * There is no serial library in this extension and adding one for a single line would be a
+ * There is no serial library in this extension and adding one for a couple of lines would be a
  * dependency on a native module, so the platform's shell does it: `stty` and a redirect on a POSIX
  * shell, `System.IO.Ports` in PowerShell. Both assume the port is free, which it is: this runs
  * after `espflash` has exited and before `espflash monitor` opens it.
  */
 export function writeSerialLineCommand(
     port: string,
-    line: string,
+    line: string | readonly string[],
     platform: NodeJS.Platform = process.platform,
 ): string {
+    const lines = typeof line === 'string' ? [line] : line;
     if (platform === 'win32') {
+        // One `Write` for all of them: the port is opened once, and the firmware parses per line.
+        const payload = lines.join('\`n');
         return (
             `$p = [System.IO.Ports.SerialPort]::new('${port}', 115200); $p.Open(); ` +
-            `$p.Write("${line}\`n"); $p.Close()`
+            `$p.Write("${payload}\`n"); $p.Close()`
         );
     }
     // `-F` is GNU stty, `-f` is BSD/macOS: try the one this machine has, so the same command works
     // on both.
+    // `printf` repeats its format for each argument, so several lines are one redirect.
+    const payload = lines.map((text) => `'${text}'`).join(' ');
     return (
         `(stty -F ${port} 115200 raw -echo 2>/dev/null || stty -f ${port} 115200 raw -echo) && ` +
-        `printf '%s\\n' '${line}' > ${port}`
+        `printf '%s\\n' ${payload} > ${port}`
     );
 }
 
@@ -138,7 +152,7 @@ export function espFlashAndMonitorCommand(
     const write =
         handover === undefined
             ? undefined
-            : writeSerialLineCommand(handover.port, handover.line, platform);
+            : writeSerialLineCommand(handover.port, handover.lines, platform);
     if (platform === 'win32') {
         const between =
             write === undefined ? '' : `Start-Sleep -Milliseconds 2000; try { ${write} } catch { } `;

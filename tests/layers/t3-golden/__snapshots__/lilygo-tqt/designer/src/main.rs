@@ -294,7 +294,28 @@ async fn main(spawner: Spawner) -> ! {
                             // A local, because a range ending in console_len reads as a field access
                             // to the code that rewrites the loop's names onto state.
                             let filled = state.console_len;
-                            if let Some((hour, minute, second)) = parse_clock_time(&state.console_line[..filled]) {
+                            // A dated line first: its date is the half a bare TIME HH:MM:SS cannot
+                            // carry, and the extension writes both, so a project generated before the date
+                            // existed still works.
+                            if let Some((year, month, day, hour, minute, second)) =
+                                parse_clock_datetime(&state.console_line[..filled])
+                            {
+                                state.wall_clock = Some((hour, minute, second));
+                                state.wall_clock_applied = false;
+                                set_rtc_datetime(&state.rtc, year, month, day, hour, minute, second);
+                                state.needs_time = false;
+                                log::info!(
+                                    "clock: the console says {:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+                                    year,
+                                    month,
+                                    day,
+                                    hour,
+                                    minute,
+                                    second
+                                );
+                            } else if let Some((hour, minute, second)) =
+                                parse_clock_time(&state.console_line[..filled])
+                            {
                                 state.wall_clock = Some((hour, minute, second));
                                 state.wall_clock_applied = false;
                                 set_rtc_time_of_day(&state.rtc, hour, minute, second);

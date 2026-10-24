@@ -1030,6 +1030,31 @@ test('a Designer project keeps the time in the RTC and asks a host when it has n
     contains(tqt, 'if ui::HAS_CLOCK && state.needs_time && state.host_seen {', 'and waits for a host the USB controller can see');
     contains(tqt, 'Rtc::new(peripherals.RTC_TIMER)', 'and the RTC is the same on this chip');
 
+    // The console takes a dated line too, and tries it first: the extension writes
+    // `TIME YYYY-MM-DD HH:MM:SS` and then the bare `TIME HH:MM:SS`, which is what a project generated
+    // before the date existed still understands. Without the date a board with no network can only be
+    // given the hands, and it counts the calendar from the RTC's 2000 base.
+    for (const [name, source] of [
+        ['CYD', cyd],
+        ['T-QT', tqt],
+    ]) {
+        contains(
+            source,
+            'pub fn parse_clock_datetime(line: &[u8]) -> Option<(u16, u8, u8, u8, u8, u8)>',
+            `${name}: the dated line has a parser`,
+        );
+        contains(
+            source,
+            'set_rtc_datetime(&state.rtc, year, month, day, hour, minute, second)',
+            `${name}: and sets the whole wall clock, not only the hands`,
+        );
+        ok(
+            source.indexOf('parse_clock_datetime(&state.console_line[..filled])') <
+                source.indexOf('parse_clock_time(&state.console_line[..filled])'),
+            `${name}: the dated line is tried first`,
+        );
+    }
+
     // The generated design is what decides whether any of it matters.
     const uiOf = (files) => files.find((file) => file.path === 'src/ui.rs').content;
     notContains(uiOf(filesOf('sunton-3248s035r')), 'HAS_CLOCK: bool = true', 'the starter design has no clock');

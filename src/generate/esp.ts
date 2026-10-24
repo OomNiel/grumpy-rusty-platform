@@ -1434,6 +1434,35 @@ pub fn parse_clock_time(line: &[u8]) -> Option<(u8, u8, u8)> {
     Some((hour, minute, second))
 }
 
+/// The dated line a host sends instead: TIME YYYY-MM-DD HH:MM:SS.
+///
+/// A bare TIME HH:MM:SS can only set the hands, so a board with no network kept counting from the
+/// RTC's 2000 base and lost the calendar day. The extension writes this line first and the bare one
+/// after it, which is also what keeps a project generated before the date existed working: its
+/// parser wants HH:MM:SS as the second word and ignores this line.
+pub fn parse_clock_datetime(line: &[u8]) -> Option<(u16, u8, u8, u8, u8, u8)> {
+    let text = core::str::from_utf8(line).ok()?;
+    let mut words = text.split_whitespace();
+    if !words.next()?.eq_ignore_ascii_case("TIME") {
+        return None;
+    }
+    let mut date = words.next()?.split('-');
+    let year: u16 = date.next()?.parse().ok()?;
+    let month: u8 = date.next()?.parse().ok()?;
+    let day: u8 = date.next()?.parse().ok()?;
+    if date.next().is_some() || year < 2000 || month < 1 || month > 12 || day < 1 || day > 31 {
+        return None;
+    }
+    let mut fields = words.next()?.split(':');
+    let hour: u8 = fields.next()?.parse().ok()?;
+    let minute: u8 = fields.next()?.parse().ok()?;
+    let second: u8 = fields.next()?.parse().ok()?;
+    if fields.next().is_some() || hour > 23 || minute > 59 || second > 59 {
+        return None;
+    }
+    Some((year, month, day, hour, minute, second))
+}
+
 /// The RTC counts from the last set (or from power-on), so a value this large can only have been
 /// written by us: it is the RTC's "has been set" mark as well as its base. 2000-01-01T00:00:00 is a
 /// whole number of days, which makes the time of day a plain remainder.
@@ -1571,6 +1600,56 @@ function espClockSetupDecls(board: EspBoardProfile): string {
  * cable can recognise it. The CYD can only learn that a host exists from a byte arriving -- its bridge
  * hides the cable -- so the host-side listener says hello first.
  */
+/**
+ * What the loop does with one complete console line: a dated `TIME` line first, then the bare form.
+ *
+ * One text for both chips, because the two readers differ in how a byte arrives and in nothing else --
+ * a copy per chip is how the S3 and the CYD consoles drift apart. `indent` is the depth the reader
+ * sits at, since the two `match` arms are not at the same one.
+ */
+function espClockLineHandler(indent: string): string {
+    const inner = `${indent}    `;
+    return [
+        `${indent}// A local, because a range ending in console_len reads as a field access`,
+        `${indent}// to the code that rewrites the loop's names onto state.`,
+        `${indent}let filled = console_len;`,
+        `${indent}// A dated line first: its date is the half a bare TIME HH:MM:SS cannot`,
+        `${indent}// carry, and the extension writes both, so a project generated before the date`,
+        `${indent}// existed still works.`,
+        `${indent}if let Some((year, month, day, hour, minute, second)) =`,
+        `${inner}parse_clock_datetime(&console_line[..filled])`,
+        `${indent}{`,
+        `${inner}wall_clock = Some((hour, minute, second));`,
+        `${inner}wall_clock_applied = false;`,
+        `${inner}set_rtc_datetime(&rtc, year, month, day, hour, minute, second);`,
+        `${inner}needs_time = false;`,
+        `${inner}log::info!(`,
+        `${inner}    "clock: the console says {:04}-{:02}-{:02} {:02}:{:02}:{:02}",`,
+        `${inner}    year,`,
+        `${inner}    month,`,
+        `${inner}    day,`,
+        `${inner}    hour,`,
+        `${inner}    minute,`,
+        `${inner}    second`,
+        `${inner});`,
+        `${indent}} else if let Some((hour, minute, second)) =`,
+        `${inner}parse_clock_time(&console_line[..filled])`,
+        `${indent}{`,
+        `${inner}wall_clock = Some((hour, minute, second));`,
+        `${inner}wall_clock_applied = false;`,
+        `${inner}set_rtc_time_of_day(&rtc, hour, minute, second);`,
+        `${inner}needs_time = false;`,
+        `${inner}log::info!(`,
+        `${inner}    "clock: the console says {:02}:{:02}:{:02}",`,
+        `${inner}    hour,`,
+        `${inner}    minute,`,
+        `${inner}    second`,
+        `${inner});`,
+        `${indent}}`,
+        `${indent}console_len = 0;`,
+    ].join('\n');
+}
+
 function espClockLoop(board: EspBoardProfile, screenAccess: string): string {
     const read = board.espChip === 'esp32s3'
         ? `        // A host on the cable is visible in the USB-Serial-JTAG controller itself; anything it says
@@ -1585,22 +1664,7 @@ function espClockLoop(board: EspBoardProfile, screenAccess: string): string {
                     match byte {
                         b'\\r' => {}
                         b'\\n' => {
-                            // A local, because a range ending in console_len reads as a field access
-                            // to the code that rewrites the loop's names onto state.
-                            let filled = console_len;
-                            if let Some((hour, minute, second)) = parse_clock_time(&console_line[..filled]) {
-                                wall_clock = Some((hour, minute, second));
-                                wall_clock_applied = false;
-                                set_rtc_time_of_day(&rtc, hour, minute, second);
-                                needs_time = false;
-                                log::info!(
-                                    "clock: the console says {:02}:{:02}:{:02}",
-                                    hour,
-                                    minute,
-                                    second
-                                );
-                            }
-                            console_len = 0;
+${espClockLineHandler('                            ')}
                         }
                         _ if console_len < console_line.len() => {
                             console_line[console_len] = byte;
@@ -1628,22 +1692,7 @@ function espClockLoop(board: EspBoardProfile, screenAccess: string): string {
                 match byte[0] {
                     b'\\r' => {}
                     b'\\n' => {
-                        // A local, because a range ending in console_len reads as a field access
-                        // to the code that rewrites the loop's names onto state.
-                        let filled = console_len;
-                        if let Some((hour, minute, second)) = parse_clock_time(&console_line[..filled]) {
-                            wall_clock = Some((hour, minute, second));
-                            wall_clock_applied = false;
-                            set_rtc_time_of_day(&rtc, hour, minute, second);
-                            needs_time = false;
-                            log::info!(
-                                "clock: the console says {:02}:{:02}:{:02}",
-                                hour,
-                                minute,
-                                second
-                            );
-                        }
-                        console_len = 0;
+${espClockLineHandler('                        ')}
                     }
                     _ if console_len < console_line.len() => {
                         console_line[console_len] = byte[0];

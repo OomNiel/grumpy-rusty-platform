@@ -3,7 +3,8 @@
  *
  * The firmware side of the clock is a request, not a read -- a board cannot know what a PC's clock
  * says. `TIME?` goes out on the console once a second while the chip's RTC has never been set, and
- * whatever owns the serial port answers with the same `TIME HH:MM:SS` line a flash writes. This is
+ * whatever owns the serial port answers with the same `TIME YYYY-MM-DD HH:MM:SS` line a flash
+ * writes, followed by the bare `TIME HH:MM:SS`. This is
  * that answer, kept in a terminal for as long as the design is open: a board loses its RTC time when
  * the power goes, so a cold boot asks again, and a listener that had stopped would leave it waiting.
  *
@@ -80,19 +81,25 @@ export function clockHostCommand(port: string, platform: NodeJS.Platform = proce
             `while ($true) { $p.ReadTimeout = 1000; ` +
             `try { $line = $p.ReadLine() } catch { $line = $null }; ` +
             `if ($line -and $line.Contains('TIME?')) { ` +
-            `$answer = 'TIME ' + (Get-Date).ToString('HH:mm:ss'); $p.WriteLine($answer); ` +
+            `$now = Get-Date; ` +
+            `$answer = 'TIME ' + $now.ToString('yyyy-MM-dd HH:mm:ss'); ` +
+            `$p.WriteLine($answer); ` +
+            `$p.WriteLine('TIME ' + $now.ToString('HH:mm:ss')); ` +
             `Write-Host ('clock: ' + $answer) } }`
         );
     }
     // One handle for both directions (fd 3). `-hupcl` keeps DTR up when the port is closed, so
     // stopping the listener does not reset the board. `-F` is GNU stty and `-f` is BSD/macOS.
+    // Two lines per answer: the dated one sets the calendar day, the bare one is what a project
+    // generated before that existed understands (it ignores the line it cannot parse).
     return (
         `(stty -F "${port}" 115200 raw -echo -hupcl 2>/dev/null || stty -f "${port}" 115200 raw -echo -hupcl) && ` +
         `exec 3<>"${port}" || { echo 'clock: the port could not be opened (is Monitor holding it?)'; exit 1; }; ` +
         `for i in 1 2 3 4 5 6 7 8 9 10; do printf 'RUSTY?\\n' >&3; sleep 0.3; done; ` +
         `while IFS= read -r line <&3; do ` +
-        `case "$line" in *"TIME?"*) answer=$(date +%H:%M:%S); ` +
-        `printf 'TIME %s\\n' "$answer" >&3; echo "clock: time sent ($answer)";; esac; ` +
+        `case "$line" in *"TIME?"*) today=$(date +%Y-%m-%d); answer=$(date +%H:%M:%S); ` +
+        `printf 'TIME %s %s\\nTIME %s\\n' "$today" "$answer" "$answer" >&3; ` +
+        `echo "clock: time sent ($today $answer)";; esac; ` +
         `done; ` +
         `exec 3>&-`
     );

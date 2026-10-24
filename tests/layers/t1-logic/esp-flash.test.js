@@ -16,7 +16,7 @@ const {
     espMonitorArgs,
     espFlashCommand,
     espMonitorCommand,
-    clockHandoverLine,
+    clockHandoverLines,
     espFlashAndMonitorCommand,
     isEspProgrammerName,
     serialPortCandidates,
@@ -198,17 +198,24 @@ test('flashing and monitoring chain in a way the shell accepts', () => {
 });
 
 test('the PC clock is handed over the console once the write finishes', () => {
-    // An ESP32's internal RTC has no battery: the extension sends `TIME HH:MM:SS` (local, no zone)
-    // after espflash exits, and the firmware's console reader takes the design's clock from it. The
-    // write belongs *between* the flash and the monitor, because the monitor holds the port.
-    equal(clockHandoverLine(new Date(2026, 9, 17, 14, 5, 9)), 'TIME 14:05:09');
-    equal(clockHandoverLine(new Date(2026, 9, 17, 0, 0, 0)), 'TIME 00:00:00');
+    // An ESP32's internal RTC has no battery: the extension writes `TIME YYYY-MM-DD HH:MM:SS` (local,
+    // no zone) and then the bare `TIME HH:MM:SS`, after espflash exits, and the firmware's console
+    // reader takes the design's whole wall clock from the dated line. The bare line is what a project
+    // generated before the date existed understands -- it wants HH:MM:SS as the second word and
+    // ignores what it cannot parse. The write belongs *between* the flash and the monitor, because
+    // the monitor holds the port.
+    equal(
+        clockHandoverLines(new Date(2026, 9, 17, 14, 5, 9)),
+        ['TIME 2026-10-17 14:05:09', 'TIME 14:05:09'],
+        'the dated line first, then the bare one',
+    );
+    equal(clockHandoverLines(new Date(2026, 0, 1, 0, 0, 0))[0], 'TIME 2026-01-01 00:00:00', 'zero padded');
 
-    const handover = { port: '/dev/ttyUSB0', line: 'TIME 14:05:09' };
+    const handover = { port: '/dev/ttyUSB0', lines: clockHandoverLines(new Date(2026, 9, 17, 14, 5, 9)) };
     const flash = espFlashCommand('espflash', 'esp32', 'app', '/dev/ttyUSB0', handover, 'linux');
-    contains(flash, 'TIME 14:05:09', 'the line is written');
+    contains(flash, "'TIME 2026-10-17 14:05:09' 'TIME 14:05:09'", 'both lines are written, in that order');
     contains(flash, '> /dev/ttyUSB0', 'to the board\'s port');
-    ok(flash.indexOf('espflash flash') < flash.indexOf('TIME 14:05:09'), 'after the write');
+    ok(flash.indexOf('espflash flash') < flash.indexOf('TIME 2026-10-17'), 'after the write');
 
     // Flash and monitor: the hand-over sits between them, and the monitor is last.
     const both = espFlashAndMonitorCommand('espflash', 'esp32', 'app', '/dev/ttyUSB0', 'linux', handover);
@@ -217,7 +224,8 @@ test('the PC clock is handed over the console once the write finishes', () => {
     // Windows has no `&&` in PowerShell 5.1: the same intent, written the way it accepts.
     const windows = espFlashAndMonitorCommand('espflash', 'esp32', 'app', 'COM5', 'win32', handover);
     contains(windows, 'System.IO.Ports.SerialPort', 'PowerShell opens the port');
-    ok(windows.indexOf('TIME 14:05:09') < windows.indexOf('espflash monitor'));
+    contains(windows, 'TIME 2026-10-17 14:05:09\`nTIME 14:05:09', 'both lines, one write');
+    ok(windows.indexOf('TIME 2026-10-17') < windows.indexOf('espflash monitor'));
 
     // Without a port there is nothing to write to, and the commands are exactly what they were.
     equal(

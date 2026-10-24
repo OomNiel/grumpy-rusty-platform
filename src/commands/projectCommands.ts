@@ -10,7 +10,7 @@ import { describeUf2Info } from '../flash/bootsel';
 import { flashRouteForProject, routeReason, uf2FamilyForProject, usesSerialFlash } from '../flash/route';
 import { probeFlashCommand } from '../flash/probeFlash';
 import {
-    clockHandoverLine,
+    clockHandoverLines,
     espFlashAndMonitorCommand,
     espFlashCommand,
     espMonitorCommand,
@@ -355,10 +355,10 @@ export function registerProjectCommands(
             // over the console once it is running: that is what a design's clock follows. Without a
             // port of our own there is nothing to write to -- espflash is left to pick one, and the
             // design starts from its own time instead.
-            const handover = port === undefined ? undefined : { port, line: clockHandoverLine() };
+            const handover = port === undefined ? undefined : { port, lines: clockHandoverLines() };
             if (handover !== undefined) {
                 output.appendLine(
-                    `clock: handing the board ${handover.line} on ${handover.port} when the write finishes`,
+                    `clock: handing the board ${handover.lines[0]} on ${handover.port} when the write finishes`,
                 );
             }
             const command = monitorAfter

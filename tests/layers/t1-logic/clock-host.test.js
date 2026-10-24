@@ -51,9 +51,14 @@ test('the listener holds one handle, says hello, and answers TIME? with the loca
     contains(plan.command, "for i in 1 2 3 4 5 6 7 8 9 10; do printf 'RUSTY?\\n' >&3; sleep 0.3; done", 'the hello is repeated while the board reboots from the port being opened');
     contains(plan.command, 'while IFS= read -r line <&3', 'then it listens for as long as the terminal is open');
     contains(plan.command, '*"TIME?"*', 'the request is matched literally, so a log line cannot trigger it');
-    contains(plan.command, 'answer=$(date +%H:%M:%S)', 'the answer is this PC\'s local time');
-    contains(plan.command, "printf 'TIME %s\\n' \"$answer\" >&3", 'written in the line the firmware parses');
-    contains(plan.command, 'clock: time sent ($answer)', 'and said in the terminal, so the developer can see it');
+    contains(plan.command, 'today=$(date +%Y-%m-%d)', 'the answer carries the date, not just the hands');
+    contains(plan.command, 'answer=$(date +%H:%M:%S)', 'and this PC\'s local time');
+    contains(
+        plan.command,
+        "printf 'TIME %s %s\\nTIME %s\\n' \"$today\" \"$answer\" \"$answer\" >&3",
+        'the dated line first, then the bare one, both in what the firmware parses',
+    );
+    contains(plan.command, 'clock: time sent ($today $answer)', 'and said in the terminal, so the developer can see it');
     contains(plan.command, 'exec 3>&-', 'the handle is closed when the loop ends, releasing the port');
 
     // A cold boot must be answered too, so nothing may end the loop early.
@@ -63,7 +68,7 @@ test('the listener holds one handle, says hello, and answers TIME? with the loca
     contains(plan.command, 'the port could not be opened (is Monitor holding it?)', 'a port someone else holds says so');
 
     // The board's parser is the contract, and both halves must agree on it.
-    contains(plan.command, 'TIME %s', 'the answer is TIME HH:MM:SS, the same line a flash sends');
+    contains(plan.command, 'TIME %s %s', 'the answer is TIME YYYY-MM-DD HH:MM:SS, the same line a flash sends');
 });
 
 test('Windows keeps its port open and answers every request', () => {
@@ -73,7 +78,8 @@ test('Windows keeps its port open and answers every request', () => {
     contains(command, "for ($i = 0; $i -lt 10; $i++) { $p.WriteLine('RUSTY?'); Start-Sleep -Milliseconds 300 }", 'the same repeated hello');
     contains(command, 'while ($true)', 'it listens for the life of the terminal');
     contains(command, "Contains('TIME?')", 'the same request');
-    contains(command, "Get-Date).ToString('HH:mm:ss')", 'and the same local-time answer');
+    contains(command, "$now.ToString('yyyy-MM-dd HH:mm:ss')", 'the dated answer first');
+    contains(command, "WriteLine('TIME ' + $now.ToString('HH:mm:ss'))", 'then the bare one');
     contains(command, 'clock: ', 'said in the terminal');
     notContains(command, 'break', 'no early exit after one answer');
     notContains(command, '`n', 'no PowerShell backtick escapes: this line travels through a JavaScript template');

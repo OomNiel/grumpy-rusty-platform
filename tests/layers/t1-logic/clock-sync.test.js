@@ -49,16 +49,25 @@ test('no port is refused, and the message names the setting that fixes it', () =
 test('the line is the same TIME line a flash sends, on the port that was found', () => {
     const plan = clockUpdatePlan({ hasClock: true, port: '/dev/ttyUSB0', now: AT, platform: 'linux' });
     equal(plan.kind, 'write');
-    equal(plan.line, 'TIME 09:05:07', 'the firmware parses exactly this');
+    equal(
+        plan.lines,
+        ['TIME 2026-10-17 09:05:07', 'TIME 09:05:07'],
+        'the dated line first, then the bare one an older project parses',
+    );
     contains(plan.command, '/dev/ttyUSB0', 'the port is in the command');
-    contains(plan.command, "printf '%s\\n' 'TIME 09:05:07'", 'and so is the line');
+    contains(
+        plan.command,
+        "printf '%s\\n' 'TIME 2026-10-17 09:05:07' 'TIME 09:05:07'",
+        'and so are both lines',
+    );
     contains(plan.command, 'stty', 'the port is put into raw mode first');
 });
 
-test('Windows writes the same line through the serial-port class', () => {
+test('Windows writes the same lines through the serial-port class', () => {
     const plan = clockUpdatePlan({ hasClock: true, port: 'COM4', now: AT, platform: 'win32' });
     equal(plan.kind, 'write');
     contains(plan.command, '[System.IO.Ports.SerialPort]::new(\'COM4\', 115200)');
+    contains(plan.command, 'TIME 2026-10-17 09:05:07');
     contains(plan.command, 'TIME 09:05:07');
     notContains(plan.command, 'stty', 'no stty on Windows');
 });
@@ -75,8 +84,8 @@ test('a write that works says what was set and where', () => {
         },
     });
     ok(result.ok, 'the write is reported as done');
-    equal(result.message, 'Clock set to 09:05:07 on /dev/ttyUSB0.');
-    equal(commands.length, 1, 'one line, one shell command');
+    equal(result.message, 'Clock set to 2026-10-17 09:05:07 on /dev/ttyUSB0.');
+    equal(commands.length, 1, 'one write, one shell command');
 });
 
 test('a port that will not take the line is a message, not an exception', () => {
