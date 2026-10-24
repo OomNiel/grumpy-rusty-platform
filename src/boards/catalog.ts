@@ -302,11 +302,12 @@ export const BOARDS: BoardProfile[] = [
                 backlight: 10,
                 backlightActiveLow: true,
                 spi: { sclk: 3, mosi: 2 },
-                colorOrder: 'rgb',
-                // The newer glass is the one that draws inverted: with the panel's default polarity white
-                // came out black on a T-QT of this revision (reported 2026-10-24). The GC9107 above is fine
-                // as it is, which is why this is a fact per panel rather than per board.
+                // The newer glass is the one that draws inverted, and it takes its colour in the other
+                // order: with the panel's default polarity white came out black, and once that was fixed
+                // red and blue were swapped with green correct (both reported on the bench 2026-10-24).
+                // The GC9107 above is normal RGB and does neither, which is why these are facts per panel.
                 invertColors: true,
+                colorOrder: 'bgr',
                 mirrorX: false,
                 mirrorY: false,
                 // LilyGo's setup runs the newer panel at 40 MHz; the older one at 27 MHz.

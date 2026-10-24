@@ -113,17 +113,21 @@ test('the T-QT panel revisions share the same wiring', () => {
         equal(panel.spi.sclk, 3);
         equal(panel.spi.mosi, 2);
         equal(panel.spi.miso, undefined, 'the T-QT does not route MISO to the panel');
-        equal(panel.colorOrder, 'rgb');
     }
     // LilyGo runs the newer panel at 40 MHz and the older one at 27 MHz.
     equal(panels.find((p) => p.panelChoice === 'gc9107').spiHz, 27_000_000);
     equal(panels.find((p) => p.panelChoice === 'gc9a01').spiHz, 40_000_000);
+    // The two glasses do not share their colour, and only the bench could say so: the older one is plain
+    // RGB, the newer one draws inverted and takes its colour in BGR order.
+    equal(panels.find((p) => p.panelChoice === 'gc9107').colorOrder, 'rgb');
+    equal(panels.find((p) => p.panelChoice === 'gc9a01').colorOrder, 'bgr');
 });
 
-test('the T-QT newer panel is the one whose glass draws inverted', () => {
-    // Reported on the bench 2026-10-24: with the newer GC9A01 revision white came out black. Colour
-    // polarity is a property of the glass -- no compile and no datasheet check can settle it -- so the
-    // catalogue carries it, and only that revision carries it.
+test('the T-QT newer panel is the one whose glass draws inverted, in BGR', () => {
+    // Reported on the bench 2026-10-24: with the newer GC9A01 revision white came out black, and once that
+    // was fixed red and blue were swapped while green was right -- an inversion and a colour order, which
+    // are two different things. Colour polarity is a property of the glass: no compile and no datasheet
+    // check can settle it, so the catalogue carries it, and only that revision carries it.
     const board = espBoard('lilygo-tqt');
     equal(displayFor(board, { panel: 'gc9107' }).invertColors, undefined, 'the older panel is normal');
     equal(displayFor(board, { panel: 'gc9a01' }).invertColors, true, 'the newer one inverts');
@@ -132,6 +136,11 @@ test('the T-QT newer panel is the one whose glass draws inverted', () => {
         filesFor(board, 'display', { panel: 'gc9a01' }).get('src/main.rs').includes('.invert_colors(ColorInversion::Inverted)'),
         true,
         'the builder sends the inversion command',
+    );
+    contains(
+        filesFor(board, 'display', { panel: 'gc9a01' }).get('src/main.rs'),
+        '.color_order(ColorOrder::Bgr)',
+        'and the BGR order the same glass needs',
     );
     contains(
         filesFor(board, 'display', { panel: 'gc9a01' }).get('src/MainHeader.rs'),
