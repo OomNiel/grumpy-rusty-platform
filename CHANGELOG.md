@@ -11,6 +11,40 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.13.19] - 2026-10-24
+
+### Added
+
+- **The Designer can hold more than one view.** A design is no longer one screenful: a tab strip above the
+  canvas adds a view (`+`), renames one (right-click, or double-click the tab), and deletes one (with its
+  widgets, and never the last). Everything else follows the tab you are on — the canvas, hit-testing, the
+  widget list, the Properties panel — so a layout can be built a screen at a time.
+
+  A view is a **layer of the one screen**, not a second screen. Every widget is still emitted into the same
+  grid, and the generated `ui.rs` hides the ones whose view is not on show, so a switch is a handful of flag
+  writes: no rebuild, no re-layout, and the node budget does not double. Two consequences worth knowing:
+  widget ids stay unique across the design (so every `on_...` handler and every `app.widgets.<id>` keeps
+  working), and a hidden view still occupies its grid cells.
+
+- **A button can switch views with no code.** Tick the new `navigate` event and choose where it goes; the
+  generated `pump` calls `show_view` itself, and no handler stub is written for it. `design.show_view(View::X)`
+  is still there for switches that are code-driven (a timer, a sensor).
+
+- **Multi-view designs get a `View` enum** in `ui.rs` — one variant per view, `new()` hides the views the
+  design does not start on, and `show_view`/`active_view` are the API the app's own code uses.
+
+### Notes
+
+- A **single-view design generates exactly what it generated before**: the markup is byte-identical (that is
+  what keeps the goldens meaningful), and `ui.rs` carries no enum, no field and no method. `panel.ui.json`
+  gained `version: 3` and a per-widget `view`, which a version 2 file loads without.
+- Verified by `cargo check` with the esp toolchain on two generated projects (ESP32-035 and DevKitC with the
+  ST7796 module), each with two views and a navigate button: clean and warning-free. Found and fixed on the
+  way: the `View` enum was being emitted between the struct's doc comment and its `#[allow(dead_code)]`, so a
+  no-touch board got two dead-code warnings.
+- Test suite: **1079 hermetic** (t1 1000, t2 75, t3 4), `tsc` clean. Goldens re-recorded for the three
+  Designer boards' `panel.ui.json` only.
+
 ## [0.13.18] - 2026-10-24
 
 ### Fixed

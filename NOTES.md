@@ -7900,3 +7900,39 @@ DevKitC designer (ST7789), DevKitC designer (ILI9341 + touch), DevKitC-mirror of
 
 
 
+## §157 — Views: more than one screenful in one design (0.13.19, 2026-10-24)
+
+- Asked for after the T-QT work: *"For when the user want to create more than 1 view in a WYSIWYG project, we
+  need to implement a way for the user to design those additional screen views."* Proposal first (§ "Suggested
+  first step"), then Phase 1 — model, emitter, canvas tabs, the `navigate` event.
+- **The proposal's premise was wrong, and checking the crate is what found it.** I wrote that "the parser
+  already reads `visible` per widget; `kdl.ts` just starts emitting it". It does not: the only `visible` in the
+  grammar is an icon *part*'s flag. So views became a runtime fact instead — every widget is emitted as it
+  always was, and `ui.rs` hides the ones whose view is not on show with `gui.set_visible` (→ `set_hidden`). That
+  turned out to be the better answer anyway: **the markup is byte-identical for every design**, which is why the
+  t3 goldens for `ui.kdl`/`ui.rs` did not move and why a single-view project is provably unaffected.
+- What the runtime already had, verified before designing anything: `WidgetNode::hidden()`, `render` returning
+  early for it, `pointer_hit` gating on `effective_visible` (so a hidden ancestor hides its children from a
+  finger too), and `set_flag` calling `mark_subtree_dirty` **twice** — a view switch repaints without any help
+  from the design's code. `interop/three_d.rs`'s cinematic carousel already used `set_hidden` this way.
+- Document: `version: 3`, `views: [{id, label}]`, `widget.view` (absent = the first view). Additive, so a
+  version 2 file loads and stays a one-view design — nothing is invented on load. Ids must be Rust identifiers
+  and must not *become* the same variant (`view_1` and `view1` both become `View1`), which the validator says
+  before `rustc` would.
+- `ui.rs` for a multi-view design: `pub enum View`, a `view` field, start-up hiding of the views the design does
+  not start on, `show_view(&mut self, View)` and `active_view()`. A one-view design emits none of it.
+- `navigate`: the crate has no navigation event, so it rides on `Clicked` and the *extension* answers it —
+  `EVENT_SPECS.navigate.action` names the property carrying the destination, `requiredHandlers` skips it (no stub
+  is written), and `armsFor` folds it into one arm: `self.show_view(View::X)` and, if the widget's own `clicked`
+  handler is also ticked, that call after it. Two arms matching `Clicked` would have meant the second never ran.
+- **Bug found by compiling, not by testing:** the `View` enum was emitted at the anchor `pub struct Designer`,
+  which put it *between* the struct's doc comment and its `#[allow(dead_code)]`. A no-touch board therefore lost
+  that attribute and built with two dead-code warnings (`down` never read, `pointer`/`pump` never used) that a
+  no-view project of the same board does not have. The enum now goes above the doc comment, and the test asserts
+  `#[allow(dead_code)]\npub struct Designer {` as a literal.
+- Panels: the tab strip lives in the stage (`.view-tabs` above the canvas); right-click renames or deletes, and
+  the destination picker is a row in **Events**, not in Properties — a designer-only property that is also an
+  event's destination would otherwise appear twice.
+- Verified: two generated projects (ESP32-035 and DevKitC + ST7796), two views each plus a navigate button,
+  `cargo check` clean and warning-free. Suite **1079** (t1 1000 · t2 75 · t3 4).
+
