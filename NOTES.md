@@ -7832,4 +7832,35 @@ DevKitC designer (ST7789), DevKitC designer (ILI9341 + touch), DevKitC-mirror of
 - Suite **1065** hermetic (t1 987 · t2 74 · t3 4), `tsc` clean; t3 re-recorded (11 files: `panel-st7796` in the
   two DevKitC manifests, the dated clock in every Designer snapshot).
 
+## §154 — The hand-over learns the date (0.13.16, 2026-10-24)
+
+- Asked after a bench session on the 4" DevKitC (`~/Projekte/TestExtApps/test4InchESP32-DevKitC`): the device
+  list showed a name and an RSSI but no date. Two causes were **in that project**; one gap was ours.
+- **Ours:** the console hand-over sent `TIME HH:MM:SS` — the hands only — so a board with no network could not
+  learn the calendar day: `set_rtc_time_of_day` keeps whatever day the RTC holds, and on a cold board that is
+  the 2000 base. 0.13.15's dated clock therefore only worked over Wi-Fi. The generated `main.rs` now also
+  parses `TIME YYYY-MM-DD HH:MM:SS` (`parse_clock_datetime`, tried before `parse_clock_time`), and both
+  writers — the flash hand-over and the **Answer Time Requests** listener — send the dated line *and then* the
+  bare one.
+  - **The order is the compatibility mechanism.** A project generated before today wants `HH:MM:SS` as the
+    second word, so it ignores the dated line and acts on the bare one exactly as before; a new project takes
+    the date first, and the bare line that follows only rewrites the time of day — `set_rtc_time_of_day`
+    preserves the day, which is the rule 0.13.15 introduced for a host that has no date to give.
+  - One text for both consoles: `espClockLineHandler(indent)` in `generate/esp.ts` emits the line handler for
+    the S3 and the CYD readers, which differ in how a byte arrives and in nothing else — two copies is how the
+    two drift.
+- **The bench project's own bugs** (do not re-derive): its `net.rs` *added* the epoch offset
+  (`days_since_unix + 10957`) where 1970→2000 is a subtraction, so the date came out 2 × 10957 days late —
+  2086-10-23 for 2026-10-24, which reads as "month right, day one short"; and its `upsert` stamps a row only
+  when a device is first seen, so a device picked up during the seconds before SNTP answered stayed dateless
+  for as long as it was in range. The generator cannot have the first bug: it derives the date with
+  `civil_from_days(days since 1970)` and has no epoch constant whose sign could be wrong.
+- Also from that session: at a readable face a list row does not fit on one line — `Mono8x16` gives 35
+  characters across a 320 px panel and `name + date + rssi` is 39, so the second line is not decoration, it is
+  what keeps the RSSI from being clipped.
+- Verification: `cargo check` (esp toolchain, vendored crates copied in) clean and warning-free for a DevKitC
+  Designer project (classic UART0 console) and a T-QT one (USB-Serial-JTAG console); suite **1065**, goldens 6
+  files (`main.rs` + `MainHeader.rs` on all three Designer boards).
+
+
 

@@ -11,6 +11,27 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.13.16] - 2026-10-24
+
+### Changed
+
+- **The console hand-over carries the date.** A board told the time over the cable was given
+  `TIME HH:MM:SS` — the hands only — so a board with no network counted the calendar from the RTC's
+  2000 base and could not say which day it was. A Designer project now also parses
+  `TIME YYYY-MM-DD HH:MM:SS` and tries it first, and both the flash hand-over and the
+  **Answer Time Requests** listener write that line *and then* the bare `TIME HH:MM:SS`. That order is
+  what keeps an older project working: its parser wants `HH:MM:SS` as the second word, ignores the
+  line it cannot read, and takes the bare one exactly as before. The result is a cable alone being
+  enough to set a whole wall clock, network or not.
+
+### Notes
+
+- Verified by `cargo check` with the esp toolchain: a DevKitC Designer project (ESP32, classic UART0
+  console) and a T-QT Designer project (ESP32-S3, USB-Serial-JTAG console) — both clean and
+  warning-free, so both console readers compile with the dated line in front.
+- Test suite: **1065 hermetic** (t1 987, t2 74, t3 4), `tsc` clean; goldens re-recorded (6 files:
+  `main.rs` + `MainHeader.rs` for the three Designer boards).
+
 ## [0.13.15] - 2026-10-23
 
 Covers 0.13.13 and 0.13.14 as well: those builds were packaged and installed while this work was in progress,
