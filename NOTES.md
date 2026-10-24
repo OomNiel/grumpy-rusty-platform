@@ -7862,5 +7862,25 @@ DevKitC designer (ST7789), DevKitC designer (ILI9341 + touch), DevKitC-mirror of
   Designer project (classic UART0 console) and a T-QT one (USB-Serial-JTAG console); suite **1065**, goldens 6
   files (`main.rs` + `MainHeader.rs` on all three Designer boards).
 
+## §155 — The T-QT's newer panel draws inverted (0.13.17, 2026-10-24)
+
+- Reported: *"For the LilyGo device option — with the new version option — the display colours seem to be
+  inverted (white is Black)"*. The T-QT asks which panel revision it has; the **GC9A01** (newer, 40 MHz) glass
+  needs `ColorInversion::Inverted`, the **GC9107** (older, 27 MHz) does not, and both were emitted with the
+  controller's default. That is a negative of the whole image, not a channel swap — which is how it was told
+  apart from a `ColorOrder` mistake: a wrong order turns white into a colour, an inverted panel turns it black.
+- **The flag is per panel, not per board** (`EspDisplay.invertColors`), because the same board has both glasses
+  and only one of them is wired that way. The emission is `inversion(display)` in `generate/esp.ts`, beside
+  `orientation(display)` and used at both builder sites (the diagnostic/designer one and the `display` one), and
+  `mipidsiOptionImports(display)` adds `ColorInversion` to the options import **only** for a panel that uses it
+  — an unused import would be a warning in every other generated project.
+- Nothing can prove this from the outside: no compile, no datasheet. It stays catalogue data with a comment
+  saying where it was observed, the same class as the CYD's X mirror and the missing touch controller.
+- Verification: T-QT `display` and T-QT `designer` on the GC9A01 revision, `cargo check` with the esp toolchain
+  (vendored crates for the designer), both clean and warning-free. Suite **1066** (new test: the flag, the
+  builder line, and the import only where it is used); goldens did **not** move, because the t3 layer generates
+  each board's *default* revision and that is the GC9107.
+
+
 
 

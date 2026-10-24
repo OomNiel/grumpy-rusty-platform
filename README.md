@@ -4,7 +4,7 @@ Embedded development for **Raspberry Pi Pico** and **ESP32** boards in **Rust** 
 
 ## Features
 
-- **Project Wizard**: Support for RP2040, RP2350 (Pico, Pico 2, Pico W, Pico 2 W) and ESP32 family chips. A board that can take more than one display module asks which one is wired — the T-QT's two panel revisions, the DevKitC's ST7789, ILI9341-with-touch or 4" ST7796-with-touch module — and records the answer in the project's `Cargo.toml`. The ESP32-035 panel is design-first: picking it goes straight to the WYSIWYG designer, with no template menu. The ESP32-DevKitC V4 offers only the WYSIWYG designer and the Bluetooth LE peripheral.
+- **Project Wizard**: Support for RP2040, RP2350 (Pico, Pico 2, Pico W, Pico 2 W) and ESP32 family chips. A board that can take more than one display module asks which one is wired — the T-QT's two panel revisions, the DevKitC's ST7789, ILI9341-with-touch or 4" ST7796-with-touch module — and records the answer in the project's `Cargo.toml`. The panel record carries what only the glass can say: the T-QT's newer GC9A01 revision needs its colours inverted, and the generated builder does that for it alone. The ESP32-035 panel is design-first: picking it goes straight to the WYSIWYG designer, with no template menu. The ESP32-DevKitC V4 offers only the WYSIWYG designer and the Bluetooth LE peripheral.
 - **Embedded Rust & Embassy**: Generates clean structures with `setup()` and `main()` loops, separating board configs and headers.
 - **Toolchain Manager**: One-click installer for `rustup`, targets, prebuilt `probe-rs` (with SHA-256 checks), `espup`, and `espflash`.
 - **Debugging & Monitoring**: Full SWD debugging with `probe-rs` and RTT for RP boards, plus serial flashing/monitoring via `espflash` for ESP chips.

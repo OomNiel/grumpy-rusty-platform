@@ -11,6 +11,25 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.13.17] - 2026-10-24
+
+### Fixed
+
+- **The T-QT's newer panel drew white as black.** With the **GC9A01** revision chosen, the glass painted the
+  negative of every colour: that panel's polarity is inverted, and nothing in the driver's default says so.
+  Colour inversion is now a fact of the panel in the catalogue (`EspDisplay.invertColors`), the GC9A01
+  revision sets it, and a project generated for it emits
+  `Builder::invert_colors(ColorInversion::Inverted)` — with `ColorInversion` imported only where it is used,
+  so every other project keeps its imports clean. The older **GC9107** revision is untouched: same board,
+  and it was already right.
+
+### Notes
+
+- Verified by `cargo check` with the esp toolchain (vendored crates where the template needs them): T-QT
+  `display` and T-QT Designer, both on the GC9A01 revision — clean and warning-free.
+- Test suite: **1066 hermetic** (t1 988, t2 74, t3 4), `tsc` clean. Goldens unchanged: they are generated
+  with each board's default revision, which for the T-QT is the GC9107.
+
 ## [0.13.16] - 2026-10-24
 
 ### Changed
