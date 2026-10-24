@@ -11,6 +11,26 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.13.18] - 2026-10-24
+
+### Fixed
+
+- **The T-QT's newer panel had red and blue swapped.** 0.13.17 fixed its inversion (white came out black);
+  with that right, red showed as blue and green was correct — the GC9A01 glass also takes its colour in
+  **BGR** order. The catalogue now records that per panel (`colorOrder: 'bgr'` on the GC9A01 revision; the
+  older GC9107 stays RGB), and a project generated for it emits `ColorOrder::Bgr`.
+
+  Two facts, two fixes: polarity is the panel's INVERTON setting and colour order is how it reads the pixel
+  bytes. A wrong order turns white into a *colour*; an inverted panel turns it *black* — which is how each was
+  told apart on the glass.
+
+### Notes
+
+- Verified by `cargo check` with the esp toolchain (vendored crates where the template needs them): T-QT
+  `display` and T-QT Designer on the GC9A01 revision — clean and warning-free.
+- Test suite: **1066 hermetic** (t1 988, t2 74, t3 4), `tsc` clean. Goldens unchanged: the t3 layer generates
+  each board's default revision, the GC9107.
+
 ## [0.13.17] - 2026-10-24
 
 ### Fixed

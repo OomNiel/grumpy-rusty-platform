@@ -7881,6 +7881,22 @@ DevKitC designer (ST7789), DevKitC designer (ILI9341 + touch), DevKitC-mirror of
   builder line, and the import only where it is used); goldens did **not** move, because the t3 layer generates
   each board's *default* revision and that is the GC9107.
 
+## §156 — The same glass also wanted BGR (0.13.18, 2026-10-24)
+
+- Follow-up to §155, minutes later: *"colour inversion correct, but Red is Blue and vice versa. Green correct."*
+  Green is the axis an RGB/BGR swap leaves alone, which is what identifies it — a swap moves red onto blue and
+  back, and the 565 bit layout keeps the six green bits where they are.
+- So the GC9A01 revision carries **two** facts: `invertColors: true` (INVERTON) *and* `colorOrder: 'bgr'`. They
+  are not one setting seen twice: polarity turns white black, order turns white into a colour. Fixing only the
+  polarity is what made the second one visible — the first report ("white is black") hid it, because with a
+  fully inverted palette the swapped channels are also inverted.
+- The test that pins both is `the T-QT newer panel is the one whose glass draws inverted, in BGR`: the flag,
+  the emitted `.invert_colors(...)`, the emitted `.color_order(ColorOrder::Bgr)`, and the import only where it is
+  used. The shared-wiring test no longer claims both revisions are RGB — that assertion is what would have hidden
+  this class of bug.
+- Bench project `~/Projekte/TestExtApps/lilygo-test2` patched by hand (its `main.rs` is written once) and
+  `cargo check`ed; everything else is generator-side, so a new project gets it.
+
 
 
 
