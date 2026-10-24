@@ -144,7 +144,8 @@ export type DesignerEvent =
     | 'opened'
     | 'closed'
     | 'textInput'
-    | 'submitted';
+    | 'submitted'
+    | 'navigate';
 
 export interface DesignerEventSpec {
     /** The `UiEvent` variant that carries it. */
@@ -171,6 +172,15 @@ export interface DesignerEventSpec {
     parameter?: { name: string; type: string };
     /** What the handler is called, appended to `on_<widget>_`. */
     suffix: string;
+    /**
+     * An event the generated code handles itself, rather than handing it to the user's code-behind.
+     *
+     * `navigate` is the only one so far, and it is the reason views are usable without writing Rust: a button
+     * that switches to another view is a property of the design, so the extension writes the switch into
+     * `Designer::pump` and no handler stub is created for it. `targetProperty` names the widget property that
+     * carries where the switch goes -- `designerOnly`, because the crate has no attribute for it.
+     */
+    action?: { targetProperty: string };
 }
 
 /**
@@ -211,6 +221,15 @@ export const EVENT_SPECS: Record<DesignerEvent, DesignerEventSpec> = {
         suffix: 'text_input',
         parameter: { name: 'ch', type: 'char' },
     },
+    // A click that switches to another view of the same screen. It rides on `Clicked` -- the crate has no
+    // navigation variant of its own -- and the emitter turns it into `self.show_view(...)` instead of a call
+    // into `ui_handlers.rs`, so a design can move between views with no code at all.
+    navigate: {
+        variant: 'Clicked',
+        pattern: 'Clicked(id)',
+        suffix: 'navigate',
+        action: { targetProperty: 'navigate_to' },
+    },
 };
 
 /** The order events are offered in, so the property panel and the golden markup stay stable. */
@@ -228,6 +247,9 @@ export const DESIGNER_EVENTS: DesignerEvent[] = [
     // A keypad's Enter. The line it submitted comes with the event rather than from a payload the
     // crate does not carry (see `EVENT_SPECS.submitted`).
     'submitted',
+    // A click that switches view. Last because it is the only one that is about the design rather than about
+    // what the widget reports, and it needs a second view to point at.
+    'navigate',
 ];
 
 /** Toolbox grouping. Purely presentational, but it keeps thirty tags navigable. */
@@ -430,6 +452,23 @@ const CLICKABLE_COLOURS: KdlProperty[] = [
     { name: 'corner_radius', kind: 'int', label: 'Corner radius', defaultValue: 4, min: 0, max: 64 },
 ];
 
+/**
+ * Where a click sends the design, for a widget that raises `navigate`.
+ *
+ * The designer's own property, never a markup attribute: the crate has nothing that switches views, so the
+ * extension writes the switch into the generated `pump` (see `EVENT_SPECS.navigate`). A text value rather than
+ * a closed list because the legal answers are the design's own view ids, which change as views are added --
+ * and both the panel and the validator read them from the document rather than from this catalogue.
+ */
+const NAVIGATE_PROPERTY: KdlProperty = {
+    name: 'navigate_to',
+    kind: 'text',
+    label: 'Goes to view',
+    defaultValue: '',
+    designerOnly: true,
+    optional: true,
+};
+
 /** The option list a dropdown, roller or carousel starts with. */
 export const DEFAULT_OPTIONS: readonly string[] = ['One', 'Two', 'Three'];
 
@@ -485,6 +524,7 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
             { name: 'font', kind: 'font', label: 'Font', defaultValue: '' },
             STYLE_PROPERTY,
             ...CLICKABLE_COLOURS,
+            NAVIGATE_PROPERTY,
         ],
         fontSupport: 'style',
         events: ['clicked', 'pressed', 'released', 'doubleClicked', 'longPressed'],
@@ -522,6 +562,7 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
             },
             ...APPEARANCE_BLOCK,
             TEXT_COLOUR_PROPERTY,
+            NAVIGATE_PROPERTY,
         ],
         fontSupport: 'style',
         events: ['valueChanged', 'clicked'],
@@ -572,6 +613,7 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
             APPEARANCE_ACCENT,
             ...APPEARANCE_BLOCK,
             TEXT_COLOUR_PROPERTY,
+            NAVIGATE_PROPERTY,
         ],
         events: ['valueChanged', 'clicked'],
     },
@@ -1356,7 +1398,15 @@ export function toolboxGroups(): { category: KdlCategory; label: string; widgets
 /** True when the widget raises the event, which is what decides whether the property panel offers it. */
 export function widgetRaises(tag: string, event: DesignerEvent): boolean {
     const spec = widgetSpec(tag);
-    return spec !== undefined && spec.events.includes(event);
+    if (spec === undefined) {
+        return false;
+    }
+    // `navigate` is not in a widget's list because the crate knows nothing about it: it is a click the design
+    // answers itself, so it is offered exactly where a click is.
+    if (event === 'navigate') {
+        return spec.events.includes('clicked');
+    }
+    return spec.events.includes(event);
 }
 
 /** True when the property cannot be left empty, because the parser errors on a widget without it. */
@@ -1394,6 +1444,7 @@ const PROPERTY_HELP: Record<string, string> = {
     box_width: 'How wide the box is, in pixels. Zero keeps the crate\'s own eight-pixel rule',
     box_height: 'How tall the box is, in pixels. Zero keeps the crate\'s own eight-pixel rule',
     box_size: 'Superseded by the box width and height, and still read so an older design keeps its size',
+    navigate_to: 'Which view a navigate click switches to. Written into the generated code, not the markup',
     label_position: 'Which side of the box the label is drawn on',
     knob_width: 'How wide the slider\'s grip is, in pixels. Its height is the space between the borders',
     chevron_color: 'Colour of the outline around the minus and plus buttons',

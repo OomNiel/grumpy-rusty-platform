@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "boardId": "lilygo-tqt",
   "panelWidth": 128,
   "panelHeight": 128,
@@ -44,7 +44,8 @@
         "focused_bg": "#4a7eb5",
         "focused_fg": "#ffffff",
         "border_color": "#101010",
-        "corner_radius": 4
+        "corner_radius": 4,
+        "navigate_to": ""
       },
       "events": [
         "clicked"

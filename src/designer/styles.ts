@@ -242,6 +242,48 @@ body {
     touch-action: none;
 }
 
+/* The view tabs, above the canvas: which screenful of the design is being edited. */
+.view-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: stretch;
+    gap: 2px;
+    margin-bottom: 8px;
+}
+
+.view-tab,
+.view-tab-add {
+    padding: 2px 10px;
+    border: 1px solid transparent;
+    border-radius: 2px;
+    cursor: pointer;
+    color: var(--vscode-foreground);
+    background: var(--vscode-button-secondaryBackground, #3a3d41);
+}
+
+.view-tab:hover,
+.view-tab-add:hover {
+    background: var(--vscode-button-secondaryHoverBackground, #45494e);
+}
+
+.view-tab-active {
+    border-color: var(--vscode-focusBorder);
+    background: var(--vscode-button-background);
+    color: var(--vscode-button-foreground);
+}
+
+.view-tab-add {
+    font-weight: 600;
+}
+
+/* The field a tab's caption becomes while the view is being renamed. */
+.view-tab-input {
+    width: 8em;
+    color: var(--vscode-input-foreground);
+    background: var(--vscode-input-background);
+    border: 1px solid var(--vscode-input-border, #3c3c3c);
+}
+
 /* Panels */
 
 .panel-title {

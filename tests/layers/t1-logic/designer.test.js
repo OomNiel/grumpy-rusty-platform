@@ -1439,18 +1439,19 @@ test('a triangle\'s six points are one group of optional properties', () => {
         equal(property.max, 1000, `${property.name} stops at the box's far edge`);
     }
     equal(new Set(points.map((property) => property.group)).size, 1, 'and they all share the one heading');
-    // Nothing else in the catalogue is optional apart from one superseded field: a shape's points are the case
-    // this exists for, and the checkbox's old `box_size` joined them because the crate defaults it and every
-    // widget dropped now leaves it out. Named rather than counted, so adding an optional property has to be a
-    // deliberate act instead of something that slips in.
+    // Nothing else in the catalogue is optional apart from one superseded field and the navigate target: a
+    // shape's points are the case this exists for, the checkbox's old `box_size` joined them because the crate
+    // defaults it and every widget dropped now leaves it out, and `navigate_to` is only named by a widget that
+    // raises `navigate`. Named rather than counted, so adding an optional property has to be a deliberate act
+    // instead of something that slips in.
     const optional = KDL_WIDGETS.flatMap((entry) => entry.props)
         .filter((property) => property.optional === true)
         .map((property) => property.name)
         .sort();
     equal(
         optional.join(','),
-        ['box_size', ...TRIANGLE_POINT_NAMES].sort().join(','),
-        'the triangle\'s points and the checkbox\'s superseded box size are the only optional properties',
+        ['box_size', 'navigate_to', 'navigate_to', 'navigate_to', ...TRIANGLE_POINT_NAMES].sort().join(','),
+        'the points, the superseded box size and the navigate target are the only optional properties',
     );
 });
 

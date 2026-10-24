@@ -39,8 +39,12 @@ import { type LcdRotation } from '../display/rotation';
  * Version 2 added `fonts`. Version 1 documents are *migrated* rather than refused (see `migrateDocument` in
  * `store.ts`): the change is purely additive, so refusing them would throw away work for no reason, and a
  * migration seam is what makes the version number worth having at all.
+ *
+ * Version 3 added `views`: a design may hold more than one screenful of widgets, shown one view at a time.
+ * The markup does not change -- every widget is still emitted, and the generated `ui.rs` hides the views that
+ * are not on show -- so a document with one view produces byte-identical markup to version 2.
  */
-export const DESIGNER_FILE_VERSION = 2;
+export const DESIGNER_FILE_VERSION = 3;
 
 /** Where the document lives inside a generated project, relative to the project root. */
 export const DESIGNER_DOCUMENT_PATH = 'designer/panel.ui.json';
@@ -106,6 +110,13 @@ export interface DesignerWidget {
     id: string;
     /** A canonical tag from the catalogue. */
     tag: string;
+    /**
+     * The view this widget belongs to.
+     *
+     * Absent means the design's first view, which is every widget of a design written before views existed:
+     * a single-view document never gains the field, so its file stays as small as it was.
+     */
+    view?: string;
     /** Canvas position and size in whole pixels, inside the designed area. */
     x: number;
     y: number;
@@ -117,6 +128,21 @@ export interface DesignerWidget {
     events: DesignerEvent[];
     /** The body, for the five tags the parser reads children from. Absent for everything else. */
     children?: DesignerChildren;
+}
+
+/**
+ * One view of a design: a screenful of widgets the board shows as a whole.
+ *
+ * Views are exclusive *layers* of one screen rather than several screens: every widget is emitted into the one
+ * grid, and the generated `ui.rs` hides the ones that are not on show. That is deliberate -- the markup has one
+ * `screen` and one container, so a view costs nothing in codegen, and a widget id stays unique across the whole
+ * design, which is what keeps handlers and `design.widgets.<id>` working unchanged.
+ */
+export interface DesignerView {
+    /** The name other things refer to: `widget.view`, and the generated Rust enum variant. */
+    id: string;
+    /** What the designer's tab shows; the id when empty. */
+    label: string;
 }
 
 export interface DesignerDocument {
@@ -132,6 +158,8 @@ export interface DesignerDocument {
     theme: string;
     /** Fonts the screen declares, which the widgets' `font` properties refer to by name. */
     fonts: DesignerFont[];
+    /** The views, in the order the designer's tabs show and the order the board numbers them. */
+    views?: DesignerView[];
     widgets: DesignerWidget[];
 }
 
@@ -205,6 +233,56 @@ export function createDocument(options: {
         fonts: [],
         widgets: [],
     };
+}
+
+/** The id of the view a document has when it names none: the one every pre-views design used. */
+export const DEFAULT_VIEW_ID = 'main';
+
+/**
+ * The document's views, never empty.
+ *
+ * A document written before views existed has none, and every one of its widgets belongs to the implicit first
+ * view -- so the fallback is the same answer the design has always had, not a special case the caller has to
+ * know about.
+ */
+export function designViews(document: DesignerDocument): DesignerView[] {
+    const views = document.views ?? [];
+    return views.length > 0 ? views : [{ id: DEFAULT_VIEW_ID, label: 'Main' }];
+}
+
+/** The view the board starts on: the first one, in the order the document lists them. */
+export function startViewId(document: DesignerDocument): string {
+    return designViews(document)[0]?.id ?? DEFAULT_VIEW_ID;
+}
+
+/** The view a widget belongs to: the one it names, or the first when it names none or a missing one. */
+export function widgetViewId(document: DesignerDocument, widget: DesignerWidget): string {
+    const views = designViews(document);
+    const named = widget.view;
+    if (typeof named === 'string' && views.some((view) => view.id === named)) {
+        return named;
+    }
+    return views[0]?.id ?? DEFAULT_VIEW_ID;
+}
+
+/** The widgets of one view, in document order -- which is the order they are painted in. */
+export function widgetsInView(document: DesignerDocument, viewId: string): DesignerWidget[] {
+    return document.widgets.filter((widget) => widgetViewId(document, widget) === viewId);
+}
+
+/**
+ * A view id as the Rust enum variant the generated `ui.rs` names it by.
+ *
+ * `main` becomes `Main`, `scr_settings` becomes `ScrSettings`. Ids are restricted to identifiers by the
+ * validator, so this is a case change and nothing more -- which is what lets the panel emit a variant without
+ * inventing a second naming scheme the app would have to learn.
+ */
+export function viewEnumName(viewId: string): string {
+    return viewId
+        .split('_')
+        .filter((part) => part !== '')
+        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+        .join('');
 }
 
 /** The properties a dropped widget starts with, so its markup is always complete. */
@@ -511,7 +589,7 @@ function pointOf(pixel: number, origin: number, size: number): number {
     return Math.min(1000, Math.ceil((span * 1000) / size));
 }
 
-function isRustIdentifier(value: string): boolean {
+export function isRustIdentifier(value: string): boolean {
     return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
 }
 
@@ -603,6 +681,36 @@ export function validateDocument(document: DesignerDocument): string[] {
     const seenIds = new Map<string, string>();
     const seenFields = new Map<string, string>();
 
+    // The views first: a widget names one, so a document whose view list is wrong would produce problems that
+    // read about widgets while the mistake is here.
+    const viewIds = new Set<string>();
+    const viewVariants = new Map<string, string>();
+    for (const view of document.views ?? []) {
+        const where = view.id === '' ? '(unnamed view)' : `view "${view.id}"`;
+        if (!isRustIdentifier(view.id)) {
+            problems.push(
+                `${where}: the name must start with a letter and contain only letters, digits and underscores`,
+            );
+            continue;
+        }
+        if (viewIds.has(view.id)) {
+            problems.push(`${where}: two views have this name`);
+            continue;
+        }
+        viewIds.add(view.id);
+        // The tab title is free text; the Rust variant is not, so two names that differ only in case or in
+        // underscores have to be caught here rather than by rustc in the generated project.
+        const variant = viewEnumName(view.id);
+        const clash = viewVariants.get(variant);
+        if (clash !== undefined) {
+            problems.push(
+                `${where}: the name becomes ${variant} in the generated code, which "${clash}" already uses`,
+            );
+        } else {
+            viewVariants.set(variant, view.id);
+        }
+    }
+
     const fonts = document.fonts ?? [];
     const fontIds = new Set<string>();
     const fontConstants = new Map<string, string>();
@@ -636,6 +744,26 @@ export function validateDocument(document: DesignerDocument): string[] {
 
     for (const widget of document.widgets) {
         const where = widget.id === '' ? '(unnamed widget)' : `"${widget.id}"`;
+
+        // A widget that names a view the document does not have would be emitted with the first view and
+        // disappear from the tab it was meant for -- silent, and only visible on the glass.
+        if (widget.view !== undefined && !viewIds.has(widget.view)) {
+            problems.push(`${where}: it belongs to view "${widget.view}", which this design does not have`);
+        }
+
+        // A `navigate` click is answered by the generated code, so its destination has to be a view this
+        // design actually has -- and a one-view design has nowhere to go.
+        if (widget.events.includes('navigate')) {
+            if (viewIds.size < 2) {
+                problems.push(`${where}: navigate needs a second view to switch to`);
+            }
+            const target = widget.props.navigate_to;
+            if (typeof target !== 'string' || target === '') {
+                problems.push(`${where}: navigate has no view chosen`);
+            } else if (!viewIds.has(target)) {
+                problems.push(`${where}: navigate goes to view "${target}", which this design does not have`);
+            }
+        }
 
         for (const complaint of sdImageSourceProblems(widget)) {
             problems.push(`${where}: ${complaint}`);

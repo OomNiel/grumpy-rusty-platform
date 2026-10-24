@@ -13,10 +13,12 @@
  */
 
 import { widgetSpec } from '../../src/designer/catalog';
+import { DEFAULT_VIEW_ID } from '../../src/designer/model';
 import { registerDesignFont } from './glyphs';
 import { rasteriseFont } from './rasterise';
 import { CanvasView } from './canvas';
 import {
+    type ContextMenuItem,
     fontMenu,
     hideContextMenu,
     renderProperties,
@@ -27,17 +29,24 @@ import {
 import {
     type DesignerState,
     addFontDeclaration,
+    addView,
     addWidget,
+    assignView,
     declareFontFromPath,
     canRedo,
     canUndo,
     canvasOf,
+    freeViewId,
     initialState,
     moveWidget,
     redo,
+    removeView,
     removeWidget,
+    renameView,
     setRotation,
+    setViewLabel,
     undo,
+    viewsOf,
     widgetById,
 } from '../../src/designer/state';
 import type {
@@ -120,10 +129,14 @@ toolbox.className = 'pane toolbox';
 
 const stage = document.createElement('section');
 stage.className = 'pane stage';
+// The view tabs sit above the canvas, in the pane that holds it: they say which screenful of the design is
+// being edited, which is the same thing the canvas is showing.
+const viewTabs = document.createElement('div');
+viewTabs.className = 'view-tabs';
 const canvasElement = document.createElement('canvas');
 canvasElement.className = 'canvas';
 canvasElement.id = 'canvas';
-stage.append(canvasElement);
+stage.append(viewTabs, canvasElement);
 
 const properties = document.createElement('aside');
 properties.className = 'pane properties';
@@ -237,6 +250,10 @@ window.addEventListener('message', (event: MessageEvent<
         selectedId = undefined;
         state = initialState(message.document);
         view.select(undefined);
+        // The design opens on its first view, which is the one the board starts on too. Set before the first
+        // state, so the first paint is already the right view and the design is drawn once.
+        activeViewTab = viewsOf(state.document)[0]?.id;
+        view.setActiveView(currentView());
         view.setState(state);
         document.title = `${message.document.screenId} - ${canvasWidth}x${canvasHeight}`;
         renderToolbox(toolbox, (tag) => drop(tag));
@@ -458,17 +475,170 @@ function drop(tag: string): void {
     state = next;
     const added = next.document.widgets[next.document.widgets.length - 1];
     if (added !== undefined) {
+        // A widget dropped while a view is being edited belongs to that view: `addWidget` puts it on the first.
+        state = assignView(state, added.id, currentView());
         selectedId = added.id;
         view.select(added.id);
     }
-    view.setState(next);
+    view.setState(state);
     refreshProperties();
     refreshToolbar();
     flushPost();
 }
 
+// ---------------------------------------------------------------- views
+
+/** The view being edited. UI state, not document state: which tab you have open is not saved. */
+let activeViewTab: string | undefined;
+
+/** The view being edited, defaulting to the design's first one. */
+function currentView(): string {
+    const views = viewsOf(state.document);
+    if (activeViewTab !== undefined && views.some((entry) => entry.id === activeViewTab)) {
+        return activeViewTab;
+    }
+    return views[0]?.id ?? DEFAULT_VIEW_ID;
+}
+
+/** Switches the canvas to a view. */
+function switchView(viewId: string): void {
+    activeViewTab = viewId;
+    view.setActiveView(viewId);
+    refreshProperties();
+}
+
+/** Rebuilds the tab strip: one tab per view, and the one that adds another. */
+function refreshViewTabs(): void {
+    const views = viewsOf(state.document);
+    const current = currentView();
+    viewTabs.replaceChildren();
+    for (const entry of views) {
+        const tab = document.createElement('button');
+        tab.type = 'button';
+        tab.className = entry.id === current ? 'view-tab view-tab-active' : 'view-tab';
+        tab.textContent = entry.label === '' ? entry.id : entry.label;
+        tab.title = `View "${entry.id}" -- right-click to rename or delete it`;
+        tab.addEventListener('click', () => switchView(entry.id));
+        tab.addEventListener('contextmenu', (event) => {
+            event.preventDefault();
+            // The menu is an overlay over the whole shell, so it is positioned against it -- the body stands in
+            // when the shell is missing, which the module check at load time has already refused.
+            const overlay: HTMLElement = root ?? document.body;
+            overlay.addEventListener('click', () => hideContextMenu(overlay), { once: true });
+            showContextMenu(overlay, event.clientX, event.clientY, viewMenu(entry.id));
+        });
+        viewTabs.append(tab);
+    }
+    const add = document.createElement('button');
+    add.type = 'button';
+    add.className = 'view-tab view-tab-add';
+    add.textContent = '+';
+    add.title = 'Add a view: another screenful of widgets, one tap apart';
+    add.addEventListener('click', addEmptyView);
+    viewTabs.append(add);
+}
+
+/** What a view tab's right-click offers. */
+function viewMenu(viewId: string): ContextMenuItem[] {
+    const items: ContextMenuItem[] = [{ label: 'Rename view...', action: () => renameViewTab(viewId) }];
+    if (viewsOf(state.document).length > 1) {
+        items.push({
+            label: 'Delete view',
+            danger: true,
+            action: () => {
+                const next = removeView(state, viewId);
+                if (next === state) {
+                    return;
+                }
+                state = next;
+                activeViewTab = viewsOf(state.document)[0]?.id;
+                view.setActiveView(currentView());
+                view.setState(state);
+                refreshProperties();
+                refreshViewTabs();
+                flushPost();
+            },
+        });
+    }
+    return items;
+}
+
+/** Adds a view, and goes to it: a tab nobody is looking at would make the button look broken. */
+function addEmptyView(): void {
+    const next = addView(state, freeViewId(state.document));
+    if (next === state) {
+        return;
+    }
+    state = next;
+    const views = viewsOf(state.document);
+    const added = views[views.length - 1];
+    if (added !== undefined) {
+        activeViewTab = added.id;
+    }
+    view.setActiveView(currentView());
+    view.setState(state);
+    refreshProperties();
+    refreshViewTabs();
+    flushPost();
+}
+
+/**
+ * Renames a view in place: its tab becomes a field.
+ *
+ * The *id* is what is edited, because that is what the generated `View::` variant is made from; a view whose
+ * caption was its id follows it, so the tab does not keep the old name.
+ */
+function renameViewTab(viewId: string): void {
+    const views = viewsOf(state.document);
+    const index = views.findIndex((entry) => entry.id === viewId);
+    const tab: unknown = viewTabs.children[index];
+    if (index === -1 || !(tab instanceof HTMLButtonElement)) {
+        return;
+    }
+    const input = document.createElement('input');
+    input.className = 'view-tab-input';
+    input.value = viewId;
+    tab.replaceChildren(input);
+    input.focus();
+    input.select();
+    let done = false;
+    const commit = (): void => {
+        if (done) {
+            return;
+        }
+        done = true;
+        const next = input.value.trim();
+        const label = views.find((entry) => entry.id === viewId)?.label;
+        if (next !== '' && next !== viewId) {
+            const renamed = renameView(state, viewId, next);
+            if (renamed !== state) {
+                // A caption that was the id was a placeholder; follow the new name rather than keep the old.
+                state = label === viewId ? setViewLabel(renamed, next, next) : renamed;
+                activeViewTab = next;
+                view.setActiveView(currentView());
+                view.setState(state);
+                flushPost();
+            }
+        }
+        refreshProperties();
+        refreshViewTabs();
+    };
+    input.addEventListener('blur', commit);
+    input.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+            commit();
+        } else if (event.key === 'Escape') {
+            done = true;
+            refreshViewTabs();
+        }
+    });
+}
+
 function refreshProperties(): void {
     renderProperties(properties, state, selectedId, panels);
+    // The tabs are rebuilt with the panel because every path that can change the design -- a drop, a property,
+    // an undo -- comes through here, and adding or deleting a view is one of those edits.
+    refreshViewTabs();
 }
 
 /** The toolbar's buttons and selects, rebuilt whenever something they show may have changed. */

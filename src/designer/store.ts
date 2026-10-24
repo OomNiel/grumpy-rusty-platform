@@ -77,7 +77,10 @@ export function loadDocument(json: string): LoadResult {
  */
 function migrateDocument(candidate: Partial<DesignerDocument>): LoadResult {
     const version = candidate.version;
-    if (version !== 1 && version !== DESIGNER_FILE_VERSION) {
+    // Every version up to this one is readable: 1 had no `fonts`, 2 had no `views` and no `widget.view`, and
+    // both shapes are what this code already does when those fields are absent. A *newer* document is still
+    // refused, because it may carry fields this extension would silently drop on the next save.
+    if (typeof version !== 'number' || version < 1 || version > DESIGNER_FILE_VERSION) {
         return {
             error:
                 `the design file says it is version ${String(version)}, and this extension reads version ` +

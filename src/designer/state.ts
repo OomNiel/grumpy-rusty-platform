@@ -20,19 +20,23 @@ import {
     type DesignerFont,
     type DesignerIconPart,
     type DesignerWidget,
+    type DesignerView,
     type TriangleBox,
     TRIANGLE_POINT_NAMES,
     createDocument,
     defaultChildren,
     defaultProps,
     designCanvasSize,
+    designViews,
     isFontId,
+    isRustIdentifier,
     placeWidget,
     triangleFromVertices,
     triangleVertices,
     uniqueWidgetId,
+    widgetViewId,
 } from './model';
-import type { DesignerEvent } from './catalog';
+import { EVENT_SPECS, type DesignerEvent } from './catalog';
 import type { LcdRotation } from '../display/rotation';
 import type { Rect } from './grid';
 
@@ -283,14 +287,14 @@ export function duplicateWidget(state: DesignerState, id: string): DesignerState
                 source.children === undefined
                     ? undefined
                     : source.children.kind === 'parts'
-                      ? { kind: 'parts', parts: source.children.parts.map((part) => ({ ...part })) }
-                      : source.children.kind === 'options'
-                        ? { kind: 'options', values: [...source.children.values] }
-                        : {
-                              kind: 'table',
-                              headers: [...source.children.headers],
-                              rows: source.children.rows.map((row) => [...row]),
-                          },
+                        ? { kind: 'parts', parts: source.children.parts.map((part) => ({ ...part })) }
+                        : source.children.kind === 'options'
+                            ? { kind: 'options', values: [...source.children.values] }
+                            : {
+                                kind: 'table',
+                                headers: [...source.children.headers],
+                                rows: source.children.rows.map((row) => [...row]),
+                            },
         };
         return { ...document, widgets: [...document.widgets, copy] };
     });
@@ -321,13 +325,34 @@ export function setProperty(
 /** Adds or removes the code-behind handler for one event. */
 export function toggleEvent(state: DesignerState, id: string, event: DesignerEvent): DesignerState {
     return edit(state, undefined, (document) =>
-        withWidget(document, id, (widget) => ({
-            ...widget,
-            events: widget.events.includes(event)
+        withWidget(document, id, (widget) => {
+            const on = widget.events.includes(event);
+            const events = on
                 ? widget.events.filter((candidate) => candidate !== event)
-                : [...widget.events, event],
-        })),
+                : [...widget.events, event];
+            const action = EVENT_SPECS[event].action;
+            if (action === undefined) {
+                return { ...widget, events };
+            }
+            // An event the generated code answers itself carries its destination as a property. Ticking it
+            // picks a view that is not the one the widget is on -- so the design is valid the moment it is
+            // ticked -- and unticking it drops the property, so nothing stale is left pointing at a view.
+            const props = { ...widget.props };
+            if (on) {
+                delete props[action.targetProperty];
+            } else {
+                const own = widgetViewId(document, widget);
+                const elsewhere = designViews(document).find((view) => view.id !== own);
+                props[action.targetProperty] = elsewhere?.id ?? '';
+            }
+            return { ...widget, events, props };
+        }),
     );
+}
+
+/** Where a widget's `navigate` click goes. Kept apart from `setProperty` so the panel edits it as an event. */
+export function setNavigateTarget(state: DesignerState, id: string, target: string): DesignerState {
+    return setProperty(state, id, EVENT_SPECS.navigate.action?.targetProperty ?? 'navigate_to', target);
 }
 
 /**
@@ -481,10 +506,10 @@ export function setFontField(
         widgets:
             field === 'id'
                 ? document.widgets.map((widget) =>
-                      widget.props.font === id
-                          ? { ...widget, props: { ...widget.props, font: value } }
-                          : widget,
-                  )
+                    widget.props.font === id
+                        ? { ...widget, props: { ...widget.props, font: value } }
+                        : widget,
+                )
                 : document.widgets,
     }));
 }
@@ -530,12 +555,21 @@ export function widgetById(document: DesignerDocument, id: string): DesignerWidg
  *
  * Topmost is the *last* widget in document order, because that is the order the engine draws in, so clicking
  * where two widgets overlap must select the one the user can see.
+ *
+ * `onlyView` restricts the search to one view, which is what the canvas passes: the widgets of the views that
+ * are not on show are in the document but not on the glass, so a click must not land on one of them.
  */
-export function widgetAt(document: DesignerDocument, x: number, y: number): DesignerWidget | undefined {
+export function widgetAt(
+    document: DesignerDocument,
+    x: number,
+    y: number,
+    onlyView?: string,
+): DesignerWidget | undefined {
     for (let index = document.widgets.length - 1; index >= 0; index -= 1) {
         const widget = document.widgets[index];
         if (
             widget !== undefined &&
+            (onlyView === undefined || widgetViewId(document, widget) === onlyView) &&
             x >= widget.x &&
             x < widget.x + widget.width &&
             y >= widget.y &&
@@ -550,3 +584,119 @@ export function widgetAt(document: DesignerDocument, x: number, y: number): Desi
 function clamp(value: number, low: number, high: number): number {
     return Math.max(low, Math.min(value, Math.max(low, high)));
 }
+
+// ---- views -------------------------------------------------------------------------------------------
+//
+// A view is a screenful of widgets shown one at a time. Everything below is a document edit, so adding,
+// renaming, moving into and deleting a view are each one Ctrl+Z -- and the *rendering* of a view is not here
+// at all: the board hides the widgets of the views it is not showing (see `emitUiRs`).
+
+/** The views a design has, in the order the tabs show them. Never empty. */
+export function viewsOf(document: DesignerDocument): DesignerView[] {
+    return designViews(document);
+}
+
+/** A view id nothing uses: `view2`, `view3`… with `main` taken by the first. */
+export function freeViewId(document: DesignerDocument): string {
+    const taken = new Set(designViews(document).map((view) => view.id));
+    for (let n = 2; ; n += 1) {
+        const id = `view${n}`;
+        if (!taken.has(id)) {
+            return id;
+        }
+    }
+}
+
+/**
+ * Adds an empty view.
+ *
+ * The label is the id by default, because a tab with no name is a tab the user cannot tell from its neighbour;
+ * renaming is one double-click away.
+ */
+export function addView(state: DesignerState, id = freeViewId(state.document)): DesignerState {
+    return edit(state, undefined, (document) => {
+        const views = designViews(document);
+        if (views.some((view) => view.id === id) || !isRustIdentifier(id)) {
+            return document;
+        }
+        return { ...document, views: [...views, { id, label: id }] };
+    });
+}
+
+/**
+ * Renames a view's id, and every widget that belonged to it.
+ *
+ * Two things have to move together: the entry in `views`, and the `view` field of each widget of that view.
+ * Renaming only the first would leave the widgets pointing at a name nothing has, which the validator reports
+ * as a problem on every save.
+ */
+export function renameView(state: DesignerState, from: string, to: string): DesignerState {
+    return edit(state, undefined, (document) => {
+        const views = designViews(document);
+        const target = views.find((view) => view.id === from);
+        if (target === undefined || from === to || views.some((view) => view.id === to) || !isRustIdentifier(to)) {
+            return document;
+        }
+        return {
+            ...document,
+            views: views.map((view) => (view.id === from ? { ...view, id: to } : view)),
+            widgets: document.widgets.map((widget) =>
+                widgetViewId(document, widget) === from ? { ...widget, view: to } : widget,
+            ),
+        };
+    });
+}
+
+/** Renames only the tab's caption, which the generated code never reads. */
+export function setViewLabel(state: DesignerState, id: string, label: string): DesignerState {
+    return edit(state, `view:label:${id}`, (document) => {
+        const views = designViews(document);
+        if (!views.some((view) => view.id === id && view.label !== label)) {
+            return document;
+        }
+        return { ...document, views: views.map((view) => (view.id === id ? { ...view, label } : view)) };
+    });
+}
+
+/** Moves a widget into another view, which is the one gesture that makes a design more than a pile of layers. */
+export function assignView(state: DesignerState, widgetId: string, viewId: string): DesignerState {
+    return edit(state, undefined, (document) => {
+        const views = designViews(document);
+        if (!views.some((view) => view.id === viewId)) {
+            return document;
+        }
+        // Naming the first view explicitly is redundant, and leaving it out keeps a design that has just been
+        // given a second view from growing a field on every widget that never left the first one.
+        const first = views[0]?.id;
+        return withWidget(document, widgetId, (widget) => {
+            const next = { ...widget };
+            if (viewId === first) {
+                delete next.view;
+            } else {
+                next.view = viewId;
+            }
+            return next;
+        });
+    });
+}
+
+/**
+ * Removes a view and everything in it.
+ *
+ * The last view is kept: a design with no views has nowhere to put a widget, and the alternative -- an empty
+ * document the user did not ask for -- is a worse answer to a slip of the mouse.
+ */
+export function removeView(state: DesignerState, id: string): DesignerState {
+    return edit(state, undefined, (document) => {
+        const views = designViews(document);
+        if (views.length <= 1 || !views.some((view) => view.id === id)) {
+            return document;
+        }
+        return {
+            ...document,
+            views: views.filter((view) => view.id !== id),
+            widgets: document.widgets.filter((widget) => widgetViewId(document, widget) !== id),
+        };
+    });
+}
+

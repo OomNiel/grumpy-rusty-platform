@@ -18,11 +18,16 @@
 import { EVENT_SPECS, type DesignerEvent, widgetSpec } from './catalog';
 import {
     type DesignerDocument,
+    type DesignerView,
     type DesignerWidget,
     createDocument,
     designCanvasSize,
+    designViews,
     defaultChildren,
     defaultProps,
+    startViewId,
+    viewEnumName,
+    widgetsInView,
 } from './model';
 import { emitKdl } from './kdl';
 import { rustFieldName } from './model';
@@ -155,6 +160,11 @@ export function requiredHandlers(document: DesignerDocument): string[] {
     const names: string[] = [];
     for (const widget of document.widgets) {
         for (const event of widget.events) {
+            // An event the generated code answers itself (`navigate`) has no handler to write, and a stub for
+            // it would be a function nothing calls.
+            if (EVENT_SPECS[event].action !== undefined) {
+                continue;
+            }
             const name = handlerName(widget.id, event);
             if (!names.includes(name)) {
                 names.push(name);
@@ -276,6 +286,52 @@ ${resume}
 `;
 }
 
+/**
+ * The `match` arms one widget contributes to `pump`.
+ *
+ * Almost always one arm per event, calling the handler of that name. `navigate` is the exception: it rides on
+ * `Clicked`, answers it with `show_view` instead of a handler call, and folds the widget's own `clicked`
+ * handler into the same arm -- two arms matching one variant would mean the second never ran.
+ */
+function armsFor(widget: DesignerWidget, multiView: boolean): string[] {
+    const field = rustFieldName(widget.id);
+    const navigate = widget.events.find((event) => EVENT_SPECS[event].action !== undefined);
+    const arms: string[] = [];
+    for (const event of widget.events) {
+        const spec = EVENT_SPECS[event];
+        if (spec.action !== undefined) {
+            continue;
+        }
+        // The click this widget navigates on is the arm below, not a second one on the same pattern.
+        if (navigate !== undefined && spec.variant === EVENT_SPECS[navigate].variant) {
+            continue;
+        }
+        arms.push(
+            `                UiEvent::${spec.pattern} if id == self.widgets.${field} => crate::ui_handlers::${handlerCall(widget, event)},`,
+        );
+    }
+    const spec = navigate === undefined ? undefined : EVENT_SPECS[navigate];
+    const target = widget.props[spec?.action?.targetProperty ?? ''];
+    // No enum to name, or no destination chosen: the validator says so in the panel, and a project is not
+    // left with code that could not compile.
+    if (spec !== undefined && multiView && typeof target === 'string' && target !== '') {
+        // A widget can ask for both: the switch, and a handler of its own on the same click.
+        const alsoCalls = widget.events.find(
+            (event) => event !== navigate && EVENT_SPECS[event].variant === spec.variant,
+        );
+        const thenClick =
+            alsoCalls === undefined
+                ? ''
+                : `\n                    crate::ui_handlers::${handlerCall(widget, alsoCalls)};`;
+        arms.unshift(
+            `                UiEvent::${spec.pattern} if id == self.widgets.${field} => {\n` +
+            `                    self.show_view(View::${viewEnumName(target)});${thenClick}\n` +
+            '                }',
+        );
+    }
+    return arms;
+}
+
 /** The call an event makes, with whatever the variant carries. */
 function handlerCall(widget: DesignerWidget, event: DesignerEvent): string {
     const name = handlerName(widget.id, event);
@@ -304,6 +360,66 @@ export function designHasClock(document: DesignerDocument): boolean {
 }
 
 /**
+ * The `View` enum a multi-view design gets.
+ *
+ * Variants come from the view ids (`viewEnumName`), because the app calls this from its own code and the file
+ * it reads the name in should not teach a second naming scheme. No backticks in this text: it lives inside a
+ * JavaScript template literal.
+ */
+function viewEnumOf(views: readonly DesignerView[], start: string): string {
+    const variants = views.map((view) => `    ${viewEnumName(view.id)},`).join('\n');
+    return `/// Which view the design is showing.
+///
+/// A view is a layer of this one screen, not a second screen: every widget is in the markup, and the ones
+/// that are not on show are hidden. So a switch is a handful of flag writes -- no rebuild, no re-layout, and
+/// no second node budget. The design starts on "${start}", and show_view changes it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum View {
+${variants}
+}
+
+`;
+}
+
+/**
+ * `show_view` and `active_view` for a multi-view design.
+ *
+ * Each view's widgets are named in a loop of their own, so the runtime is told, per widget, whether it is on
+ * show -- there is no table to keep in step with the design, and an empty view simply has no loop.
+ */
+function viewMethodsOf(document: DesignerDocument, views: readonly DesignerView[]): string {
+    const loops = views
+        .filter((view) => widgetsInView(document, view.id).length > 0)
+        .map((view) => {
+            const ids = widgetsInView(document, view.id)
+                .map((widget) => `self.widgets.${rustFieldName(widget.id)}`)
+                .join(', ');
+            return `        for id in [${ids}] {
+            let _ = self.gui_mut().set_visible(id, view == View::${viewEnumName(view.id)});
+        }`;
+        })
+        .join('\n');
+    return `
+    /// Shows one view and hides every other.
+    ///
+    /// A view is a layer of the one screen: every widget is in the markup, and switching tells each of them
+    /// whether it is on show. The runtime skips a hidden widget when it draws and when it looks for the widget
+    /// under a finger, so nothing is rebuilt and the node budget does not double.
+    #[allow(dead_code)]
+    pub fn show_view(&mut self, view: View) {
+${loops}
+        self.view = view;
+    }
+
+    /// The view on show.
+    #[allow(dead_code)]
+    pub fn active_view(&self) -> View {
+        self.view
+    }
+`;
+}
+
+/**
  * The generated Rust side: the markup's `include_gui!`, the budgets, and the plumbing `main.rs` drives.
  *
  * Two details are load-bearing. The node budget is the markup's own `NODE_COUNT` plus headroom, so adding
@@ -312,13 +428,12 @@ export function designHasClock(document: DesignerDocument): boolean {
  * second, and honouring the damage rectangles is what makes dragging a finger affordable.
  */
 export function emitUiRs(document: DesignerDocument, touch = true): string {
-    const arms = document.widgets.flatMap((widget) =>
-        widget.events.map((event) => {
-            const spec = EVENT_SPECS[event];
-            const field = rustFieldName(widget.id);
-            return `                UiEvent::${spec.pattern} if id == self.widgets.${field} => crate::ui_handlers::${handlerCall(widget, event)},`;
-        }),
-    );
+    // ---- views ---------------------------------------------------------------------------------
+    // A design with one view emits none of this: a project made before views existed generates exactly the
+    // file it generated before, which is also why the goldens do not move.
+    const views = designViews(document);
+    const multiView = views.length > 1;
+    const arms = document.widgets.flatMap((widget) => armsFor(widget, multiView));
     const armText = arms.length === 0 ? '                // No widget in this design raises an event yet.' : arms.join('\n');
     // The `widgets` field is the app's handle to its own widgets, and a design that raises no event has
     // nothing in this file reading it — so the compiler calls it dead and a generated project builds with a
@@ -373,6 +488,28 @@ export function emitUiRs(document: DesignerDocument, touch = true): string {
             '    #[allow(dead_code)]\n' +
             '    pub widgets: ';
 
+    // ---- views ---------------------------------------------------------------------------------
+    const viewEnum = multiView ? viewEnumOf(views, startViewId(document)) : '';
+    const viewField = multiView
+        ? '    /// The view on show. `show_view` is what changes it.\n    view: View,\n'
+        : '';
+    const viewInit = multiView ? `            view: View::${viewEnumName(startViewId(document))},\n` : '';
+    // Hidden before the first frame, not after it: `new` builds the design, so this is the one moment a widget
+    // of another view could paint itself. The ids are copied out of the widget struct as an array, which keeps
+    // the borrow of `app.widgets` over before `gui` is borrowed mutably.
+    const viewStartHide = views
+        .filter((view) => view.id !== startViewId(document))
+        .map((view) => {
+            const ids = widgetsInView(document, view.id);
+            if (ids.length === 0) {
+                return '';
+            }
+            const list = ids.map((widget) => `app.widgets.${rustFieldName(widget.id)}`).join(', ');
+            return `        for id in [${list}] {\n            let _ = gui.set_visible(id, false);\n        }\n`;
+        })
+        .join('');
+    const viewMethods = multiView ? viewMethodsOf(document, views) : '';
+
     return `// Grumpy's Rusty Platform -- the design's Rust side.
 //
 // Generated. The markup it compiles (${DESIGNER_FILES.markup}) is what the designer rewrites on every save,
@@ -414,7 +551,7 @@ pub const DIRTY: usize = 8;
 /// RgbColor trait, which this file does not pull in.
 pub const SCREEN_BACKGROUND: Rgb565 = Rgb565::new(0, 0, 0);
 
-/// The screen, and the pointer state the widgets need to see a press and a release as a pair.
+${viewEnum}/// The screen, and the pointer state the widgets need to see a press and a release as a pair.
 ${touch ? '' : `///
 /// A board with no touch controller cannot raise an event, so the pointer plumbing below is never called --
 /// kept so that the same design compiles for both kinds of board rather than two shapes of this file.
@@ -425,19 +562,19 @@ ${touch ? '' : `///
 ${widgetsField}${PINNED_SCREEN_ID}Widgets,
     down: bool,
     painted: bool,
-${wallField}${movementField}}
+${wallField}${movementField}${viewField}}
 
 ${touch ? '' : '#[allow(dead_code)]\n'}impl Designer {
     /// Builds the screen once, at the size the panel is actually drawn at.
     pub fn new(width: u32, height: u32) -> Self {
         let mut gui = GuiContext::new(Rect::new(0, 0, width, height));
         let app = design::${PINNED_SCREEN_ID}App::build(&mut gui).expect("the design fits its node budget");
-        Self {
+${viewStartHide}        Self {
             gui,
             widgets: app.widgets,
             down: false,
             painted: false,
-${wallInit}${movementInit}        }
+${wallInit}${movementInit}${viewInit}        }
     }
 
     /// The design's own context, for an app that drives a widget itself.
@@ -497,7 +634,7 @@ ${armText}
             }
         }
     }
-
+${viewMethods}
     /// True when something changed and the panel needs repainting.
 ${isDirtyDoc}    pub fn is_dirty(&self) -> bool {
 ${isDirty}

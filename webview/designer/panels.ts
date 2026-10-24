@@ -34,12 +34,14 @@ import {
     circleRadius,
     circleRect,
     designCanvasSize,
+    widgetViewId,
 } from '../../src/designer/model';
 import { NAMED_STYLES } from '../../src/designer/appearance';
 import { BUILT_IN_FONTS, type FontSupport } from '../../src/designer/fonts';
 import {
     type DesignerState,
     addFont,
+    assignView,
     declareFontFromPath,
     duplicateWidget,
     moveWidget,
@@ -51,9 +53,11 @@ import {
     setChildren,
     setFontField,
     setIconParts,
+    setNavigateTarget,
     setProperty,
     setScreenField,
     toggleEvent,
+    viewsOf,
 } from '../../src/designer/state';
 
 export interface PanelCallbacks {
@@ -306,6 +310,21 @@ function identityForm(state: DesignerState, widget: DesignerWidget, callbacks: P
         field('Name', textInput(widget.id, (value) => callbacks.onEdit(renameWidget(state, widget.id, value)))),
     );
     node.append(field('Tag', element('span', 'field-static', widget.tag)));
+    // Which view the widget is on. Offered only once there is a second one: a design with one view keeps
+    // exactly the panel it had before views existed.
+    const views = viewsOf(state.document);
+    if (views.length > 1) {
+        const select = element('select', 'field-input');
+        for (const view of views) {
+            const option = element('option');
+            option.value = view.id;
+            option.textContent = view.label === '' ? view.id : view.label;
+            select.append(option);
+        }
+        select.value = widgetViewId(state.document, widget);
+        select.addEventListener('change', () => callbacks.onEdit(assignView(state, widget.id, select.value)));
+        node.append(field('View', select));
+    }
     return node;
 }
 
@@ -405,6 +424,11 @@ function propertyForm(
     for (const property of spec.props) {
         // A superseded property is read and written but not offered: editing one would be editing the past.
         if (property.legacy === true) {
+            continue;
+        }
+        // An event's own property belongs beside the event, not in the list of things that reach the board:
+        // the navigate destination has a row of its own in the Events section.
+        if (actionTargets().includes(property.name)) {
             continue;
         }
         if (property.group !== undefined && property.group !== group) {
@@ -582,6 +606,13 @@ function propertyControl(
     }
 }
 
+/** The property names that events carry, which the Events section edits rather than the property list. */
+function actionTargets(): string[] {
+    return Object.values(EVENT_SPECS)
+        .map((spec) => spec.action?.targetProperty)
+        .filter((name): name is string => name !== undefined);
+}
+
 function eventForm(
     state: DesignerState,
     widget: DesignerWidget,
@@ -596,6 +627,36 @@ function eventForm(
     node.append(element('p', 'panel-note', 'Tick an event to have a handler inserted into src/ui_handlers.rs.'));
     for (const event of DESIGNER_EVENTS) {
         if (!widgetRaises(widget.tag, event)) {
+            continue;
+        }
+        const spec = EVENT_SPECS[event];
+        if (spec.action !== undefined) {
+            // Not a handler: a destination. The generated code answers the click itself, so the row asks which
+            // view to show -- and says so when the design has only one, because then there is nowhere to go.
+            const views = viewsOf(state.document);
+            if (views.length < 2) {
+                node.append(element('p', 'panel-note', 'A navigate event needs a second view to switch to.'));
+                continue;
+            }
+            const select = element('select', 'field-input');
+            const current = String(widget.props[spec.action.targetProperty] ?? '');
+            for (const view of views) {
+                const option = element('option', undefined, view.label === view.id ? view.id : `${view.label} (${view.id})`);
+                option.value = view.id;
+                option.selected = view.id === current;
+                select.append(option);
+            }
+            select.addEventListener('change', () =>
+                callbacks.onEdit(setNavigateTarget(state, widget.id, select.value)),
+            );
+            const box = element('input', 'field-input');
+            box.type = 'checkbox';
+            box.checked = widget.events.includes(event);
+            box.addEventListener('change', () => callbacks.onEdit(toggleEvent(state, widget.id, event)));
+            // Two rows rather than one nested label: a `<label>` inside a `<label>` is not valid markup, and
+            // the picker has to be reachable on its own anyway.
+            node.append(field('Navigate', box));
+            node.append(field('Goes to view', select));
             continue;
         }
         const input = element('input', 'field-input');

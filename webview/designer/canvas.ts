@@ -36,6 +36,7 @@ import {
     triangleBoxOf,
     triangleFromVertices,
     triangleVertices,
+    widgetViewId,
 } from '../../src/designer/model';
 import type { Rect } from '../../src/designer/grid';
 import { widgetSpec } from '../../src/designer/catalog';
@@ -96,6 +97,13 @@ export class CanvasView {
     private drag?: Drag;
     private guides: Guide[] = [];
     private zoom = 1;
+    /**
+     * The view being edited, or `undefined` until the panel says which.
+     *
+     * The widgets of the other views are in the document but not on the glass, so they are not drawn, not hit
+     * and not snapped to: the canvas shows what the board would show.
+     */
+    private activeView?: string;
 
     constructor(
         private readonly element: HTMLCanvasElement,
@@ -121,6 +129,34 @@ export class CanvasView {
             this.callbacks.onSelect(undefined);
         }
         this.draw();
+    }
+
+    /**
+     * Switches the view being edited.
+     *
+     * The selection is dropped when it belongs to another view: it would otherwise keep its handles on screen
+     * with nothing under them, and the property panel would be editing a widget nobody can see.
+     */
+    setActiveView(viewId: string): void {
+        this.activeView = viewId;
+        if (this.state === undefined) {
+            // Nothing drawn yet: the panel sets the view before its first state, and the first `setState` paints
+            // with it. Drawing here as well would paint the design twice on every open.
+            return;
+        }
+        if (this.selected !== undefined) {
+            const widget = this.state.document.widgets.find((candidate) => candidate.id === this.selected);
+            if (widget !== undefined && widgetViewId(this.state.document, widget) !== viewId) {
+                this.selected = undefined;
+                this.callbacks.onSelect(undefined);
+            }
+        }
+        this.draw();
+    }
+
+    /** The view being edited, once the panel has said. */
+    getActiveView(): string | undefined {
+        return this.activeView;
     }
 
     setZoom(zoom: number): void {
@@ -169,6 +205,10 @@ export class CanvasView {
         this.drawGrid(context, width, height);
 
         for (const widget of state.document.widgets) {
+            // Only the view on show: a layer that is not on the glass must not look like it is.
+            if (this.activeView !== undefined && widgetViewId(state.document, widget) !== this.activeView) {
+                continue;
+            }
             drawWidget(context, widget, DARK_PALETTE);
         }
 
@@ -232,7 +272,7 @@ export class CanvasView {
             return;
         }
         const { x, y } = this.point(event);
-        const target = hitTest(state.document, x, y, this.selected);
+        const target = hitTest(state.document, x, y, this.selected, this.activeView);
         this.selected = target?.id;
         this.callbacks.onSelect(target?.id);
 
@@ -295,7 +335,7 @@ export class CanvasView {
         }
 
         const wanted = { ...drag.origin, x: drag.origin.x + dx, y: drag.origin.y + dy };
-        const snapped = snapMove(wanted, snapTargets(state.document, drag.id), canvas);
+        const snapped = snapMove(wanted, snapTargets(state.document, drag.id, this.activeView), canvas);
         this.guides = snapped.guides;
         this.callbacks.onEdit(moveWidget(state, drag.id, snapped.x, snapped.y));
     }
@@ -323,7 +363,7 @@ export class CanvasView {
         }
         event.preventDefault();
         const { x, y } = this.point(event);
-        const target = hitTest(state.document, x, y, this.selected);
+        const target = hitTest(state.document, x, y, this.selected, this.activeView);
         if (target === undefined) {
             return;
         }
@@ -349,7 +389,7 @@ export class CanvasView {
             return;
         }
         const { x, y } = this.point(event);
-        const target = hitTest(state.document, x, y, this.selected);
+        const target = hitTest(state.document, x, y, this.selected, this.activeView);
         if (target === undefined) {
             return;
         }

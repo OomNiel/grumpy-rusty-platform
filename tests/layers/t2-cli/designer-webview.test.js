@@ -1111,3 +1111,94 @@ test('the toolbar offers a brightness slider only for a panel with a backlight p
     const bare = boot({ backlight: false, brightness: 100 });
     equal(bare.label, undefined, 'a panel with no backlight pin has no brightness to set');
 });
+
+test('a two-view design gets view tabs, and a navigate event gets a destination picker', () => {
+    // The two halves of the views feature the user actually touches. Both are built from the document, so what
+    // is asserted is what the panel put on screen and what it posted back when it was used.
+    const { root, messages, window } = dom.install();
+    // A fresh DOM needs a fresh module: the bundle captures the shell's root when it loads, so a cached copy
+    // would keep painting into the previous test's document.
+    delete require.cache[require.resolve(BUNDLE)];
+    require(BUNDLE);
+
+    const design = starterDocument({
+        boardId: 'sunton-3248s035r',
+        panelWidth: 320,
+        panelHeight: 480,
+        rotation: 3,
+    });
+    design.views = [
+        { id: 'main', label: 'Main' },
+        { id: 'settings', label: 'Settings' },
+    ];
+    const button = design.widgets.find((widget) => widget.tag === 'button');
+    button.view = 'settings';
+    button.events = ['navigate'];
+    button.props.navigate_to = 'main';
+
+    window.emit('message', {
+        data: {
+            type: 'init',
+            document: design,
+            canvas: { width: 480, height: 320 },
+            paths: { document: 'designer/panel.ui.json', kdl: 'src/ui.kdl' },
+            touchBoard: true,
+            touchEnabled: true,
+        },
+    });
+
+    const all = () => root.descendants();
+    // The `+` is a `.view-tab` too -- the same shape, so the strip looks like one row of tabs -- so the strip is
+    // the tabs that are not the add button.
+    const tabs = all().filter(
+        (element) => element.classList.contains('view-tab') && !element.classList.contains('view-tab-add'),
+    );
+    equal(
+        tabs.map((tab) => tab.textContent),
+        ['Main', 'Settings'],
+        'one tab per view, in the design’s own order',
+    );
+    const active = all().filter((element) => element.classList.contains('view-tab-active'));
+    equal(active.length, 1, 'exactly one tab is the one being edited');
+    equal(active[0].textContent, 'Main', 'and the design starts on its first view');
+    ok(
+        all().some((element) => element.classList.contains('view-tab-add')),
+        'with a way to add another',
+    );
+
+    // The button is on the other view, so the tab has to be switched before it can be selected.
+    tabs[1].emit('click');
+    const moved = all().find((element) => element.classList.contains('view-tab-active'));
+    equal(moved.textContent, 'Settings', 'clicking a tab edits that view');
+
+    const canvas = all().find((element) => element.tagName === 'CANVAS');
+    canvas.emit('pointerdown', { clientX: button.x + 4, clientY: button.y + 4, pointerId: 1, button: 0 });
+    canvas.emit('pointerup', { clientX: button.x + 4, clientY: button.y + 4, pointerId: 1, button: 0 });
+
+    // The row is found by its label, because the stub DOM does not reflect a chosen `<option>` into the
+    // `<select>`'s value the way a browser does.
+    const row = all().find(
+        (element) =>
+            element.classList.contains('field') &&
+            element.descendants().some((child) => child.textContent === 'Goes to view'),
+    );
+    ok(row !== undefined, 'the navigate event shows the view it goes to');
+    const picker = row.descendants().find((element) => element.tagName === 'SELECT');
+    ok(picker !== undefined, 'as a picker rather than a handler name');
+    equal(
+        picker
+            .descendants()
+            .filter((element) => element.tagName === 'OPTION')
+            .map((option) => option.value),
+        ['main', 'settings'],
+        'offering every view of the design',
+    );
+
+    messages.length = 0;
+    picker.value = 'settings';
+    picker.emit('change');
+    const posted = messages.filter((message) => message.type === 'changed').pop();
+    ok(posted !== undefined, 'picking a destination posts a change');
+    const edited = posted.document.widgets.find((widget) => widget.tag === 'button');
+    equal(edited.props.navigate_to, 'settings', 'with the view that was picked');
+});

@@ -22,6 +22,7 @@ import {
     designCanvasSize,
     triangleBoxOf,
     triangleVertex,
+    widgetViewId,
 } from './model';
 import { widgetSpec } from './catalog';
 import type { Rect } from './grid';
@@ -121,6 +122,7 @@ export function hitTest(
     x: number,
     y: number,
     selectedId?: string,
+    onlyView?: string,
 ): Target | undefined {
     if (selectedId !== undefined) {
         const selected = document.widgets.find((widget) => widget.id === selectedId);
@@ -142,6 +144,7 @@ export function hitTest(
         const widget = document.widgets[index];
         if (
             widget !== undefined &&
+            (onlyView === undefined || widgetViewId(document, widget) === onlyView) &&
             x >= widget.x &&
             x < widget.x + widget.width &&
             y >= widget.y &&
@@ -192,6 +195,7 @@ export function resizeFrom(rect: Rect, handle: Handle, dx: number, dy: number): 
 export function snapTargets(
     document: DesignerDocument,
     excludeId: string,
+    onlyView?: string,
 ): { xs: number[]; ys: number[] } {
     const canvas = designCanvasSize(document.panelWidth, document.panelHeight, document.rotation);
     const xs = [0, canvas.width, Math.floor(canvas.width / 2)];
@@ -199,6 +203,10 @@ export function snapTargets(
 
     for (const widget of document.widgets) {
         if (widget.id === excludeId) {
+            continue;
+        }
+        // A widget of a view that is not on show is not on the glass, so its edges are not guides.
+        if (onlyView !== undefined && widgetViewId(document, widget) !== onlyView) {
             continue;
         }
         xs.push(widget.x, widget.x + widget.width, widget.x + Math.floor(widget.width / 2));
