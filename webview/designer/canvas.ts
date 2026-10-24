@@ -105,6 +105,15 @@ export class CanvasView {
      */
     private activeView?: string;
 
+    /**
+     * Whether the other views are drawn as outlines.
+     *
+     * Off is the truthful picture: what is on the glass is what is on the canvas. On is a locating aid -- the
+     * one way to see that a widget was dropped on the wrong view -- and the outlines are never hit, never
+     * snapped to and never selected, so switching them on cannot change the design by accident.
+     */
+    private overlay = false;
+
     constructor(
         private readonly element: HTMLCanvasElement,
         private readonly callbacks: CanvasCallbacks,
@@ -157,6 +166,15 @@ export class CanvasView {
     /** The view being edited, once the panel has said. */
     getActiveView(): string | undefined {
         return this.activeView;
+    }
+
+    /** Shows (or hides) the other views' widgets as outlines. Undoable in one click, nothing to save. */
+    setOverlay(shown: boolean): void {
+        this.overlay = shown;
+        if (this.state === undefined) {
+            return;
+        }
+        this.draw();
     }
 
     setZoom(zoom: number): void {
@@ -212,6 +230,10 @@ export class CanvasView {
             drawWidget(context, widget, DARK_PALETTE);
         }
 
+        if (this.overlay) {
+            this.drawOtherViews(context);
+        }
+
         const selected = state.document.widgets.find((widget) => widget.id === this.selected);
         if (selected !== undefined) {
             drawSelection(context, selected, DARK_PALETTE, HANDLE_SIZE);
@@ -230,6 +252,37 @@ export class CanvasView {
                 context.lineTo(width, guide.position + 0.5);
             }
             context.stroke();
+        }
+        context.restore();
+    }
+
+    /**
+     * The widgets of the views that are not on show, as dashed outlines.
+     *
+     * Not a preview of them: an outline says where a widget is, which is the question the overlay answers --
+     * "where did that label go?" -- without suggesting the board would paint it here. A drop or a click on one
+     * of these falls through to the canvas, because hit testing only ever looks at the active view.
+     */
+    private drawOtherViews(context: CanvasRenderingContext2D): void {
+        const state = this.state;
+        if (state === undefined) {
+            return;
+        }
+        context.save();
+        context.strokeStyle = DARK_PALETTE.guide;
+        context.lineWidth = 1;
+        context.setLineDash([4, 3]);
+        for (const widget of state.document.widgets) {
+            const view = widgetViewId(state.document, widget);
+            if (this.activeView !== undefined && view === this.activeView) {
+                continue;
+            }
+            context.strokeRect(
+                widget.x + 0.5,
+                widget.y + 0.5,
+                Math.max(1, widget.width - 1),
+                Math.max(1, widget.height - 1),
+            );
         }
         context.restore();
     }

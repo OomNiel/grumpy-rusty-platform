@@ -31,9 +31,11 @@ import {
     isFontId,
     isRustIdentifier,
     placeWidget,
+    startViewId,
     triangleFromVertices,
     triangleVertices,
     uniqueWidgetId,
+    widgetsInView,
     widgetViewId,
 } from './model';
 import { EVENT_SPECS, type DesignerEvent } from './catalog';
@@ -280,24 +282,37 @@ export function duplicateWidget(state: DesignerState, id: string): DesignerState
             id: uniqueWidgetId(document, source.id),
             x: Math.min(source.x + offset, Math.max(0, canvas.width - source.width)),
             y: Math.min(source.y + offset, Math.max(0, canvas.height - source.height)),
-            // Deep enough that editing the copy cannot touch the original.
-            props: { ...source.props },
-            events: [...source.events],
-            children:
-                source.children === undefined
-                    ? undefined
-                    : source.children.kind === 'parts'
-                        ? { kind: 'parts', parts: source.children.parts.map((part) => ({ ...part })) }
-                        : source.children.kind === 'options'
-                            ? { kind: 'options', values: [...source.children.values] }
-                            : {
-                                kind: 'table',
-                                headers: [...source.children.headers],
-                                rows: source.children.rows.map((row) => [...row]),
-                            },
+            ...copyWidgetContents(source),
         };
         return { ...document, widgets: [...document.widgets, copy] };
     });
+}
+
+/**
+ * A widget's contents, deep enough that editing the copy cannot touch the original.
+ *
+ * The properties and the events are flat, so a shallow copy of each is the whole job; the body is the one that
+ * nests (`table` rows, icon `parts`), which is why it is spelled out rather than delegated to a JSON round trip.
+ */
+function copyWidgetContents(
+    source: DesignerWidget,
+): Pick<DesignerWidget, 'props' | 'events' | 'children'> {
+    return {
+        props: { ...source.props },
+        events: [...source.events],
+        children:
+            source.children === undefined
+                ? undefined
+                : source.children.kind === 'parts'
+                    ? { kind: 'parts', parts: source.children.parts.map((part) => ({ ...part })) }
+                    : source.children.kind === 'options'
+                        ? { kind: 'options', values: [...source.children.values] }
+                        : {
+                            kind: 'table',
+                            headers: [...source.children.headers],
+                            rows: source.children.rows.map((row) => [...row]),
+                        },
+    };
 }
 
 /** Renames a widget. The validator is what rejects a name the generated code cannot carry. */
@@ -644,6 +659,70 @@ export function renameView(state: DesignerState, from: string, to: string): Desi
                 widgetViewId(document, widget) === from ? { ...widget, view: to } : widget,
             ),
         };
+    });
+}
+
+/**
+ * Makes a view the one the board starts on.
+ *
+ * One flag and not a reordering: the tabs stay in the order the user arranged them, so the view a board boots
+ * into can be the last tab. Clearing the others here is what keeps a hand-edited file's two flags from being
+ * two start views -- the validator reports that case, and this is the edit that cannot produce it.
+ */
+export function setStartView(state: DesignerState, id: string): DesignerState {
+    return edit(state, undefined, (document) => {
+        const views = designViews(document);
+        if (!views.some((view) => view.id === id) || startViewId(document) === id) {
+            return document;
+        }
+        return {
+            ...document,
+            views: views.map((view) => {
+                const next = { ...view };
+                if (view.id === id) {
+                    next.start = true;
+                } else {
+                    delete next.start;
+                }
+                return next;
+            }),
+        };
+    });
+}
+
+/**
+ * Copies a view and everything on it, right after the original.
+ *
+ * The copy is how a variant gets made: same widgets in the same places, new ids so both views can be on the
+ * screen at once, and the copy is never the start view -- two of those is a design nobody meant to write.
+ */
+export function duplicateView(state: DesignerState, id: string): DesignerState {
+    return edit(state, undefined, (document) => {
+        const views = designViews(document);
+        const source = views.find((view) => view.id === id);
+        const copyId = freeViewId(document);
+        if (source === undefined || views.some((view) => view.id === copyId) || !isRustIdentifier(copyId)) {
+            return document;
+        }
+        // Ids have to be unique against the widgets already placed *and* against the copies made before them
+        // in this same loop, so each copy is added to the document it is named in as it is named.
+        const copies: DesignerWidget[] = [];
+        for (const widget of widgetsInView(document, id)) {
+            const taken = { ...document, widgets: [...document.widgets, ...copies] };
+            copies.push({
+                ...widget,
+                ...copyWidgetContents(widget),
+                // From the root name: a copy of a copy counts on (`title_2` becomes `title_3`) instead of
+                // stacking suffixes the way naming the whole id would.
+                id: uniqueWidgetId(taken, widget.id.replace(/_\d+$/, '')),
+                // Explicitly the copy's view: the first view's widgets carry no `view` at all.
+                view: copyId,
+            });
+        }
+        const label = source.label === '' ? source.id : source.label;
+        const next = [...views];
+        next.splice(views.findIndex((view) => view.id === id) + 1, 0, { id: copyId, label: `${label} copy` });
+        return { ...document, views: next, widgets: [...document.widgets, ...copies] };
     });
 }
 

@@ -20,6 +20,7 @@ import {
     type KdlWidgetSpec,
     DESIGNER_EVENTS,
     EVENT_SPECS,
+    navigateTriggerFor,
     propertyHelp,
     toolboxGroups,
     widgetHelp,
@@ -654,8 +655,19 @@ function eventForm(
             box.checked = widget.events.includes(event);
             box.addEventListener('change', () => callbacks.onEdit(toggleEvent(state, widget.id, event)));
             // Two rows rather than one nested label: a `<label>` inside a `<label>` is not valid markup, and
-            // the picker has to be reachable on its own anyway.
-            node.append(field('Navigate', box));
+            // the picker has to be reachable on its own anyway. The title says which event fires it, because
+            // that is the widget's own event -- a click on a button, a change on a dropdown.
+            const fires = navigateTriggerFor(widget.tag);
+            node.append(
+                field(
+                    'Navigate',
+                    box,
+                    'field',
+                    fires === undefined
+                        ? 'Switch view without a handler'
+                        : `Switches view when the widget reports ${EVENT_SPECS[fires].suffix.replace(/_/g, ' ')}, and needs no handler`,
+                ),
+            );
             node.append(field('Goes to view', select));
             continue;
         }

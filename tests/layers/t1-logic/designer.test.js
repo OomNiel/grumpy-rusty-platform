@@ -1790,6 +1790,32 @@ test('the generated code-behind runs a clock whose Run is on, from a one-second 
     notOk(ui.includes('minute = minute + 1'), 'the carries are the crate\'s, not a second copy here');
 });
 
+test('a clock on a view that is not showing is not ticked', () => {
+    const clock = widget('clk', 'clock', { x: 0, y: 0, width: 96, height: 96 });
+    const photo = widget('photo', 'image', { x: 0, y: 0, width: 96, height: 96 }, { view: 'v2' });
+    const doc = document(0, [clock, photo]);
+    doc.views = [{ id: 'v1', label: 'Main' }, { id: 'v2', label: 'Second' }];
+    const ui = emitUiRs(doc);
+    // A hidden clock still moves when it is ticked, and its damage is cleared to the background
+    // without being repainted -- black blocks once a second on the view that is showing.
+    contains(
+        ui,
+        'if self.view == View::V1 {\n                let _ = self.gui.advance_clock(self.widgets.clk);\n            }',
+        'the movement waits for its own view',
+    );
+    contains(
+        ui,
+        'if self.view == View::V1 {\n                let _ = self.gui.set_clock_time(self.widgets.clk, hour, minute, second);\n            }',
+        'and so does the wall clock it is handed',
+    );
+});
+
+test('a single-view design keeps its clock unguarded', () => {
+    const clock = widget('clk', 'clock', { x: 0, y: 0, width: 96, height: 96 });
+    const ui = emitUiRs(document(0, [clock]));
+    notOk(ui.includes('self.view =='), 'one view has nothing to wait for, so no test is emitted');
+});
+
 test('a clock whose Run is off generates none of that', () => {
     const clock = widget('clk', 'clock', { x: 0, y: 0, width: 96, height: 96 });
     clock.props.movement = false;

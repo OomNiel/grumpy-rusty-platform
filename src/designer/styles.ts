@@ -276,6 +276,21 @@ body {
     font-weight: 600;
 }
 
+/*
+ * The view the board starts on carries a dot. The tabs keep the order the user gave them, so the start view can
+ * be any of them -- a marker rather than a move to the front, which would reorder the strip under the cursor.
+ */
+.view-tab-start::before {
+    content: '● ';
+    color: var(--vscode-focusBorder);
+}
+
+/* The all-views overlay sits at the far end: it is about the whole strip, not about one tab. */
+.view-tab-overlay {
+    margin-left: auto;
+    font-style: italic;
+}
+
 /* The field a tab's caption becomes while the view is being renamed. */
 .view-tab-input {
     width: 8em;

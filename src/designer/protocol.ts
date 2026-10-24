@@ -12,6 +12,7 @@
 
 import type { DesignFontPixels } from './bitmapFont';
 import type { RasterisedFont } from './fontImport';
+import type { DesignerImageAsset } from './imageAssets';
 import type { DesignerDocument } from './model';
 
 /** Everything the panel needs to draw itself, sent once when it is ready and again on every change. */
@@ -88,6 +89,13 @@ export interface DesignerInit {
     fonts?: Record<string, DesignFontPixels>;
     /** Why a declared font is not among the pixels above, in the panel's own words. */
     fontNotes?: string[];
+    /**
+     * The design's image files, so the canvas can draw them.
+     *
+     * A webview cannot read the project, and the panel used to paint an image widget as an empty box -- which
+     * made a view holding only an image look blank. The bytes travel as a data URL; the browser decodes them.
+     */
+    images?: DesignerImageAsset[];
 }
 
 /** The panel's answer to every edit: it sends the whole document back rather than a diff. */
@@ -116,6 +124,8 @@ export interface DesignerReport {
     fonts?: Record<string, DesignFontPixels>;
     /** Why a declared font is not among the pixels above. */
     fontNotes?: string[];
+    /** The design's image files, for the canvas. Sent again whenever the set of them changes. */
+    images?: DesignerImageAsset[];
     /**
      * The project's authoritative `sd` feature state after this report.
      *

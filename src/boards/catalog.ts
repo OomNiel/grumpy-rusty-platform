@@ -310,6 +310,15 @@ export const BOARDS: BoardProfile[] = [
                 colorOrder: 'bgr',
                 mirrorX: false,
                 mirrorY: false,
+                // And its glass is bonded into the controller's RAM off the origin, by a different amount on each
+                // axis: at (0, 0) the last row and column of the panel stayed unwritten and showed as a band of
+                // noise along the right and bottom edges -- not even a full-display clear reached them (bench,
+                // 2026-10-24). With (1, 1) the bottom went clean and the right still had its band, and a 1px
+                // frame drawn on the design's own edges then settled it: the frame's left side was invisible
+                // while its right side showed one pixel inside the band, so the glass covers RAM 2..129 across
+                // and 1..128 down. mipidsi swaps the two for a vertical rotation, so this pair is the answer for
+                // every orientation.
+                displayOffset: { x: 2, y: 1 },
                 // LilyGo's setup runs the newer panel at 40 MHz; the older one at 27 MHz.
                 spiHz: 40_000_000,
                 panelChoice: 'gc9a01',

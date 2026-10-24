@@ -11,6 +11,107 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.13.24] - 2026-10-24
+
+### Fixed
+
+- **A view that is not showing no longer damages the one that is.** With more than one view in a design, the
+  code-behind kept ticking every clock, whether or not its view was on the panel. A hidden clock still moves,
+  and the engine clears the damage it marks to the background but does not repaint a hidden widget — so black
+  blocks appeared on the visible view about once a second (reported on a T-QT design, 2026-10-24).
+
+  Each clock's second tick and each hand-over of the wall clock are now emitted behind
+  `if self.view == View::<its own view>`: a clock on a view that is not showing does neither. Designs with a
+  single view emit no such test at all, so existing firmware is generated exactly as before.
+
+## [0.13.23] - 2026-10-24
+
+### Fixed
+
+- **The Designer draws your pictures.** An image (or a composite icon's parts) was always painted as a plain
+  widget face — the webview cannot read the project's files — so a picture looked like an empty box, and a view
+  holding nothing but an image looked like a blank screen (reported on a T-QT design, 2026-10-24).
+
+  The extension now reads each file the design names and sends it to the panel as a data URL, and the **browser**
+  decodes it: BMP, PNG, JPEG, GIF and WebP all arrive through the same door, so there is no image parser in this
+  codebase to get wrong. `fit` is honoured (`stretch` fills the cell, `center` draws at the file's own size).
+  An `sd:` image is still left to the board, a missing file is still reported, and a file over 1.5 MB is not
+  shipped through a message.
+
+- **An image whose pixels are not on the canvas says so**: a dashed frame in the selection colour plus the file's
+  own name, so a widget that is waiting for its bytes never reads as an empty screen.
+
+### Notes
+
+- Test suite: **1092** hermetic (t1 1011 · t2 77 · t3 4). The canvas half is also measured in a real browser
+  (the bundle, a stub of the VS Code API and the bench project's own design): the canvas went from 4 distinct
+  colours on that view to 8 257, i.e. the photograph, not a face.
+
+## [0.13.22] - 2026-10-24
+
+### Fixed
+
+- **A design that does not validate no longer writes a `ui.rs` the markup cannot build.** The markup (`ui.kdl`)
+  is deliberately only written for a design that validates — but the Rust was regenerated from the document
+  regardless, and it names the widgets the markup builds. A save made while the design was momentarily
+  incomplete therefore left `src/ui.rs` mentioning a widget nothing compiled:
+  `E0609: no field image on type RustyPanelWidgets`, met on a real project (an image whose asset had not been
+  chosen yet).
+
+  The Rust is now regenerated only alongside the markup, so the last good pair stays and the project keeps
+  building while the design is finished. The design document is still written either way — it is the user's
+  work.
+
+## [0.13.21] - 2026-10-24
+
+### Fixed
+
+- **The T-QT's newer panel left its last row and column unwritten.** A complete band of random pixels ran down
+  the right edge and the bottom edge of the GC9A01 revision. A full-display clear to red did not reach it, which
+  ruled the design out: the glass is bonded **into the controller's RAM off the origin**, so the window
+  `display_size(128, 128)` sets at (0, 0) stops short of what the panel shows.
+
+  Panels now record that as a fact of the module (`EspDisplay.displayOffset`, emitted as
+  `Builder::display_offset(x, y)`), the same way polarity and colour order are recorded. The offset moves the
+  address window and not the logical coordinates, so nothing in a design moves with it; only the GC9A01
+  revision declares one. **The two axes differ** — this glass covers RAM 2…129 across and 1…128 down, measured
+  on the bench with a one-pixel frame drawn on the design's own edges — and mipidsi swaps the pair itself for a
+  vertical rotation, so the catalogue carries one answer for every orientation.
+
+### Added
+
+- **A view can be the one the board starts on.** Right-click a tab → *Start the board on this view*; the tab
+  carries a dot and the generated `new()` starts there. The tabs keep the order you gave them — the flag moves,
+  the tab does not — and two views marked as the start is refused rather than left to `rustc`.
+
+- **Duplicate view** (right-click a tab) copies a view and everything on it, right after the original: same
+  widgets in the same places, ids re-named (`title` → `title_2`, and a copy of a copy counts on rather than
+  stacking suffixes), the copy is never a second start view, and the panel switches to it.
+
+- **All views** on the tab strip draws the other views' widgets as dashed outlines. Off by default, because
+  what is on the glass is what is on the canvas; the outlines are never hit-tested or snapped to, so turning
+  them on cannot change the design. It is the one way to see that a widget was dropped on the wrong view.
+
+- **`navigate` now works wherever a widget reports an event**, not only on the three that raise a click: a
+  dropdown switches view when its choice changes, a keypad when Enter is pressed. The switch borrows the event
+  the widget already reports (`Clicked`, `ValueChanged`, `Submitted` — in that order of preference for a widget
+  that reports several), and still needs no handler.
+
+### Changed
+
+- **Build, Clean and Flash close every terminal the window has open before they start.** A terminal is what
+  holds the port: the Designer's clock listener keeps the serial port for the life of the panel, Monitor and
+  `probe-rs attach` keep the port or the probe until they are closed, and a shell where `espflash monitor` was
+  typed by hand holds it with no record of ours at all. Any of those turns the next flash into “could not open
+  the device”, which reads as a hardware fault.
+
+  The sweep is over `vscode.window.terminals` — every terminal, the user's own shells included — because that is
+  the only list that covers a holder the extension did not start. The log names what was closed and why, and the
+  flash no longer asks whether a Monitor terminal may be closed: it is already gone.
+
+  The clock listener comes back when a flash ends (as before) or when the designer panel is reopened: a build
+  does not restart it, so a design that wants its time back needs one of those two.
+
 ## [0.13.19] - 2026-10-24
 
 ### Added

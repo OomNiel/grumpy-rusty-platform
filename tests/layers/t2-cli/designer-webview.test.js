@@ -1148,10 +1148,13 @@ test('a two-view design gets view tabs, and a navigate event gets a destination 
     });
 
     const all = () => root.descendants();
-    // The `+` is a `.view-tab` too -- the same shape, so the strip looks like one row of tabs -- so the strip is
-    // the tabs that are not the add button.
+    // The `+` and the `All` overlay are `.view-tab`s too -- the same shape, so the strip looks like one row of
+    // tabs -- so the strip is the tabs that are neither of them.
     const tabs = all().filter(
-        (element) => element.classList.contains('view-tab') && !element.classList.contains('view-tab-add'),
+        (element) =>
+            element.classList.contains('view-tab') &&
+            !element.classList.contains('view-tab-add') &&
+            !element.classList.contains('view-tab-overlay'),
     );
     equal(
         tabs.map((tab) => tab.textContent),
@@ -1201,4 +1204,153 @@ test('a two-view design gets view tabs, and a navigate event gets a destination 
     ok(posted !== undefined, 'picking a destination posts a change');
     const edited = posted.document.widgets.find((widget) => widget.tag === 'button');
     equal(edited.props.navigate_to, 'settings', 'with the view that was picked');
+});
+
+test('the start view, the copy and the overlay are all reachable from the tab strip', () => {
+    const { root, messages, window } = dom.install();
+    delete require.cache[require.resolve(BUNDLE)];
+    require(BUNDLE);
+
+    const design = starterDocument({
+        boardId: 'sunton-3248s035r',
+        panelWidth: 320,
+        panelHeight: 480,
+        rotation: 3,
+    });
+    design.views = [
+        { id: 'main', label: 'Main' },
+        { id: 'settings', label: 'Settings' },
+    ];
+    design.widgets.find((widget) => widget.tag === 'button').view = 'settings';
+
+    window.emit('message', {
+        data: {
+            type: 'init',
+            document: design,
+            canvas: { width: 480, height: 320 },
+            paths: { document: 'designer/panel.ui.json', kdl: 'src/ui.kdl' },
+            touchBoard: true,
+            touchEnabled: true,
+        },
+    });
+
+    const all = () => root.descendants();
+    const tabs = () =>
+        all().filter(
+            (element) =>
+                element.classList.contains('view-tab') &&
+                !element.classList.contains('view-tab-add') &&
+                !element.classList.contains('view-tab-overlay'),
+        );
+    const menuItem = (label) => {
+        messages.length = 0;
+        tabs()[1].emit('contextmenu', { clientX: 10, clientY: 10, preventDefault() { } });
+        const item = all().find((element) => element.textContent === label && element.tagName === 'BUTTON');
+        ok(item !== undefined, `the view menu offers "${label}"`);
+        return item;
+    };
+
+    // The start marker is a class, so the caption is not reworded: the tab strip keeps the order the user gave it.
+    ok(tabs()[0].classList.contains('view-tab-start'), 'the first view is marked as the one the board starts on');
+    ok(!tabs()[1].classList.contains('view-tab-start'), 'and only that one');
+
+    // Start the board on the second view.
+    menuItem('Start the board on this view').emit('click');
+    const started = messages.filter((message) => message.type === 'changed').pop();
+    ok(started !== undefined, 'marking the start view posts a change');
+    equal(
+        started.document.views.filter((view) => view.start === true).map((view) => view.id),
+        ['settings'],
+        'with the flag moved, not added',
+    );
+
+    // Duplicate it: two tabs become three, and the copy is the one on screen.
+    menuItem('Duplicate view').emit('click');
+    const duplicated = messages.filter((message) => message.type === 'changed').pop();
+    ok(duplicated !== undefined, 'copying a view posts a change');
+    equal(
+        duplicated.document.views.map((view) => view.id),
+        ['main', 'settings', 'view2'],
+        'the copy lands after its original',
+    );
+    const active = all().find((element) => element.classList.contains('view-tab-active'));
+    equal(active.textContent, 'Settings copy', 'and the panel goes to it, since a tab nobody is looking at is a dead button');
+
+    // The overlay is a view of the design, not an edit: it toggles the class and posts nothing.
+    const overlayButton = all().find((element) => element.classList.contains('view-tab-overlay'));
+    ok(overlayButton !== undefined, 'there is an all-views overlay toggle');
+    messages.length = 0;
+    overlayButton.emit('click');
+    equal(messages.length, 0, 'turning the overlay on writes nothing to the project');
+    ok(
+        all().find((element) => element.classList.contains('view-tab-overlay')).classList.contains('view-tab-active'),
+        'and it shows it is on',
+    );
+});
+
+test('an image widget names its file on the canvas, and draws the picture once the bytes arrive', () => {
+    // Reported 2026-10-24: a view whose only widget was an image looked blank. The canvas had drawn the image
+    // widget as the same face every other widget gets -- a colour that reads as "nothing here" -- because the
+    // webview has no access to the project's files. It now names the file while it waits for the bytes.
+    const { root, messages, window } = dom.install();
+    delete require.cache[require.resolve(BUNDLE)];
+    require(BUNDLE);
+
+    const design = starterDocument({
+        boardId: 'lilygo-tqt',
+        panelWidth: 128,
+        panelHeight: 128,
+        rotation: 0,
+    });
+    design.views = [
+        { id: 'main', label: 'Main' },
+        { id: 'view2', label: 'view2' },
+    ];
+    design.widgets = [
+        {
+            id: 'photo',
+            tag: 'image',
+            x: 0,
+            y: 0,
+            width: 128,
+            height: 128,
+            props: { ...defaultProps('image'), src: 'assets/photo.bmp' },
+            events: [],
+            view: 'view2',
+        },
+    ];
+
+    window.emit('message', {
+        data: {
+            type: 'init',
+            document: design,
+            canvas: { width: 128, height: 128 },
+            paths: { document: 'designer/panel.ui.json', kdl: 'src/ui.kdl' },
+            touchBoard: false,
+            touchEnabled: false,
+        },
+    });
+
+    const all = () => root.descendants();
+    const canvas = all().find((element) => element.tagName === 'CANVAS');
+    const tabs = all().filter(
+        (element) => element.classList.contains('view-tab') && !element.classList.contains('view-tab-add'),
+    );
+    tabs.find((tab) => tab.textContent === 'view2').emit('click');
+
+    const texts = canvas
+        .getContext('2d')
+        .calls.filter((call) => call.method === 'fillText')
+        .map((call) => String(call.args[0]));
+    ok(texts.includes('assets/photo.bmp'), `the canvas names the file it is waiting for, got ${JSON.stringify(texts)}`);
+    ok(
+        canvas.getContext('2d').calls.some((call) => call.method === 'setLineDash' && call.args[0].length > 0),
+        'and frames the space, so a view with only an image is not an empty screen',
+    );
+
+    // The stub DOM has no `Image`, so a picture the extension sends is left to the placeholder here; what the
+    // real browser does with the same message is measured in the harness, not in this stub.
+    messages.length = 0;
+    window.emit('message', { data: { type: 'report', problems: [], wroteDocument: true, images: [] } });
+    equal(messages.length, 0, 'and an empty asset list asks the extension for nothing');
 });

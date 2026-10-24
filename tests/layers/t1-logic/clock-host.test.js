@@ -99,3 +99,37 @@ test('the automatic start and the flash agree on the terminal that holds the por
     contains(editor, "closeTerminal('Rusty: clock')", 'and closing the panel releases the port');
     contains(commands, "closeTerminal('Rusty: clock')", 'while a flash and Monitor close that same terminal');
 });
+
+test('build and flash kill the terminals the IDE has open before they start', () => {
+    // The rule, in the user's words (2026-10-24): *kill all terminals open in the IDE before executing
+    // build or flashing -- the open listener is blocking the port.* A terminal is what holds the port:
+    // the clock listener, Monitor, `probe-rs attach`, or a shell where `espflash monitor` was typed by
+    // hand. So the sweep is over `vscode.window.terminals` and not over our own record of what we
+    // started, and it runs before the command that needs the port -- asserted on the source, because
+    // both files import `vscode` and neither can be loaded in a test.
+    const fs = require('fs');
+    const path = require('path');
+    const { repoRoot } = require('../../lib/harness');
+    const terminal = fs.readFileSync(path.join(repoRoot(), 'src', 'commands', 'terminal.ts'), 'utf8');
+    const commands = fs.readFileSync(path.join(repoRoot(), 'src', 'commands', 'projectCommands.ts'), 'utf8');
+
+    ok(/export function killAllTerminals\(\)/.test(terminal), 'there is one sweep to call');
+    contains(terminal, 'vscode.window.terminals', 'over every terminal in the window, not just ours');
+    contains(commands, 'killAllTerminals()', 'and the commands call it');
+
+    const swipes = (call) => commands.split(call).length - 1;
+    equal(swipes("await clearTerminals('build')"), 3, 'all three build commands sweep first');
+    equal(swipes("await clearTerminals('clean')"), 1, 'and so does Clean, which is a build of nothing');
+    // The four flash routes: `flashProject` is Flash, Flash (debug), Flash (release), and the explicit
+    // USB route has its own body. Two calls cover them, and neither may come after the port is opened.
+    equal(swipes("await clearTerminals('flash')"), 2, 'both flash entry points sweep');
+    // The file matters, not just the count: the sweep has to be the first thing `flashProject` does,
+    // before it asks for credentials or decides which route the board takes.
+    const body = commands.slice(commands.indexOf('async function flashProject('));
+    const sweepAt = body.indexOf("await clearTerminals('flash')");
+    ok(sweepAt > 0, 'flashProject sweeps in its own body');
+    ok(
+        sweepAt < body.indexOf('await ensureWifiEnv('),
+        'as its first act -- before a prompt can sit in front of a terminal that holds the port',
+    );
+});

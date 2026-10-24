@@ -14,6 +14,7 @@
 
 const { test, ok, notOk, equal, contains, notContains, compiled } = require('../../lib/harness');
 const { loadDocument, renderDesign } = compiled('designer/store');
+const { navigateTriggerFor, widgetRaises } = compiled('designer/catalog');
 const {
     createDocument,
     defaultChildren,
@@ -32,10 +33,12 @@ const { requiredHandlers } = compiled('designer/generate');
 const {
     addView,
     assignView,
+    duplicateView,
     initialState,
     freeViewId,
     removeView,
     renameView,
+    setStartView,
     setViewLabel,
     toggleEvent,
     undo,
@@ -285,4 +288,112 @@ test('a navigate that has nowhere to go is refused', () => {
         validateDocument(single).some((problem) => problem.includes('navigate needs a second view')),
         'a one-view design has nowhere to navigate to',
     );
+});
+
+test('the view the board starts on is a flag, not the first tab', () => {
+    // A board boots into one view, and which one is the design's choice: the tabs keep the order the user gave
+    // them, so the start view can be the last of them.
+    const doc = twoViewDocument();
+    equal(startViewId(doc), 'main', 'with no flag it is still the first view, as it always was');
+
+    const marked = setStartView(initialState(doc), 'settings');
+    equal(startViewId(marked.document), 'settings', 'the flag decides');
+    equal(viewsOf(marked.document)[0].id, 'main', 'and the tab order is untouched');
+
+    // The generated code follows the flag: the enum field starts on it, and the other view is what is hidden.
+    equal(emitUiRs(marked.document).includes('view: View::Settings,'), true, 'new() starts on it');
+    contains(emitUiRs(marked.document), 'for id in [app.widgets.title]', 'and hides the view that is not on show');
+
+    // Setting it back moves the flag rather than adding one.
+    const back = setStartView(marked, 'main');
+    equal(viewsOf(back.document).filter((view) => view.start === true).map((view) => view.id), ['main']);
+    equal(setStartView(back, 'main'), back, 'marking the start view again is not an edit');
+});
+
+test('two start views are refused, because new() could only pick one', () => {
+    const doc = twoViewDocument();
+    doc.views = [
+        { id: 'main', label: 'Main', start: true },
+        { id: 'settings', label: 'Settings', start: true },
+    ];
+    ok(
+        validateDocument(doc).some((problem) => problem.includes('two views start the board')),
+        'a hand-edited file with two flags is reported while the tab is on screen',
+    );
+});
+
+test('a view can be copied, widgets and all, and the copy is never the start view', () => {
+    const doc = twoViewDocument();
+    doc.views = [
+        { id: 'main', label: 'Main', start: true },
+        { id: 'settings', label: 'Settings' },
+    ];
+    const copied = duplicateView(initialState(doc), 'main');
+    const views = viewsOf(copied.document);
+    equal(
+        views.map((view) => view.id),
+        ['main', 'view2', 'settings'],
+        'the copy lands right after its original',
+    );
+    equal(views[1].label, 'Main copy', 'with a caption that says what it is');
+    equal(views[1].start, undefined, 'and it is not a second start view');
+
+    const copies = copied.document.widgets.filter((widget) => widgetViewId(copied.document, widget) === 'view2');
+    equal(copies.map((widget) => widget.id), ['title_2'], 'the widgets come with it, renamed');
+    equal(copies[0].x, doc.widgets[0].x, 'in the same place, unlike a duplicated widget');
+    equal(validateDocument(copied.document).length, 0, 'and the design still validates');
+
+    // The copy is a real view: duplicating it again names the next one, not the same one twice.
+    const twice = duplicateView(copied, 'view2');
+    equal(
+        viewsOf(twice.document).map((view) => view.id),
+        ['main', 'view2', 'view3', 'settings'],
+        'the next free name',
+    );
+    equal(
+        twice.document.widgets.filter((widget) => widgetViewId(twice.document, widget) === 'view3').map((w) => w.id),
+        ['title_3'],
+        'and its widgets get their own names too',
+    );
+});
+
+test('a navigate rides on the event its widget actually reports', () => {
+    // A button is clicked, a dropdown is changed, a keypad is submitted -- the crate has no navigation variant,
+    // so the switch borrows whichever event the widget has. That is what lets the same "no handler" rule work
+    // across the toolbox instead of only on the three widgets that raise a click.
+    const doc = twoViewDocument();
+    doc.views.push({ id: 'scr_log', label: 'Log' });
+    const pick = { ...widget('pick', 'dropdown', { x: 0, y: 80, width: 100, height: 24 }), view: 'settings', events: ['navigate'], props: { ...defaultProps('dropdown'), navigate_to: 'scr_log' } };
+    const pad = { ...widget('pad', 'keypad', { x: 0, y: 120, width: 100, height: 60 }), view: 'settings', events: ['navigate'], props: { ...defaultProps('keypad'), navigate_to: 'main' } };
+    doc.widgets.push(pick, pad);
+
+    equal(navigateTriggerFor('button'), 'clicked', 'a button navigates on its click');
+    equal(navigateTriggerFor('dropdown'), 'valueChanged', 'a dropdown on the choice it makes');
+    equal(navigateTriggerFor('keypad'), 'submitted', 'and a keypad on Enter');
+    equal(navigateTriggerFor('label'), undefined, 'a label raises nothing, so it cannot navigate');
+    ok(!widgetRaises('label', 'navigate'), 'and the panel does not offer it one');
+
+    const ui = emitUiRs(doc);
+    contains(ui, 'UiEvent::ValueChanged(id) if id == self.widgets.pick => {', 'the dropdown switches on a change');
+    contains(ui, 'self.show_view(View::ScrLog);', 'to the view it names');
+    contains(ui, 'UiEvent::Submitted(id) if id == self.widgets.pad => {', 'the keypad on Enter');
+    notContains(ui, 'on_pick_navigate', 'and neither writes a handler stub');
+    equal(requiredHandlers(doc).length, 0, 'so the handlers file stays empty');
+});
+
+test('a widget can both navigate and run its own handler on the same click', () => {
+    // One arm, not two: two arms matching `Clicked` for one widget would mean the second never ran, so the
+    // switch and the handler share the one that does.
+    const doc = twoViewDocument();
+    doc.widgets[1].events = ['navigate', 'clicked'];
+    doc.widgets[1].props.navigate_to = 'main';
+    const ui = emitUiRs(doc);
+    equal(
+        ui.split('UiEvent::Clicked(id) if id == self.widgets.open').length - 1,
+        1,
+        'the widget contributes exactly one click arm',
+    );
+    contains(ui, 'self.show_view(View::Main);', 'which switches view');
+    contains(ui, 'crate::ui_handlers::on_open_clicked();', 'and then calls the handler that was also ticked');
+    equal(requiredHandlers(doc).length, 1, 'the handler still gets its stub');
 });

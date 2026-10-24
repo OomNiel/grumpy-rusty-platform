@@ -15,7 +15,7 @@
  * arrives through the two files above.
  */
 
-import { EVENT_SPECS, type DesignerEvent, widgetSpec } from './catalog';
+import { EVENT_SPECS, type DesignerEvent, navigateTriggerFor, widgetSpec } from './catalog';
 import {
     type DesignerDocument,
     type DesignerView,
@@ -28,6 +28,7 @@ import {
     startViewId,
     viewEnumName,
     widgetsInView,
+    widgetViewId,
 } from './model';
 import { emitKdl } from './kdl';
 import { rustFieldName } from './model';
@@ -186,15 +187,33 @@ export function requiredHandlers(document: DesignerDocument): string[] {
  * project's main loop already asks `is_dirty()` every pass. Answering "yes" once a second is what
  * makes an untouched panel keep up with the time.
  */
-function movementMethodsFor(clocks: readonly DesignerWidget[]): string {
+function movementMethodsFor(document: DesignerDocument, clocks: readonly DesignerWidget[]): string {
+    // A clock on another view is not on the glass, and moving it still damages its own rectangle -- which the
+    // renderer then clears to the background and does not paint over, because the widget is hidden. That showed
+    // up as black blocks appearing on the visible view once a second (bench, 2026-10-24), so the movement only
+    // runs for a clock whose view is the one on show. A one-view design emits no guard at all, which is why the
+    // goldens of a single-view project do not move.
+    const guard = (widget: DesignerWidget, body: string, indent: string): string => {
+        const views = designViews(document);
+        if (views.length <= 1) {
+            return body;
+        }
+        const variant = viewEnumName(widgetViewId(document, widget));
+        return `${indent}if self.view == View::${variant} {\n${indent}    ${body.trim()}\n${indent}}`;
+    };
     const advances = clocks
-        .map((widget) => `            let _ = self.gui.advance_clock(self.widgets.${rustFieldName(widget.id)});`)
+        .map((widget) =>
+            guard(widget, `let _ = self.gui.advance_clock(self.widgets.${rustFieldName(widget.id)});`, '            '),
+        )
         .join('\n');
     // The same clocks, told the time a wall clock says rather than stepped by a count of ticks.
     const shows = clocks
-        .map(
-            (widget) =>
-                `                let _ = self.gui.set_clock_time(self.widgets.${rustFieldName(widget.id)}, hour, minute, second);`,
+        .map((widget) =>
+            guard(
+                widget,
+                `let _ = self.gui.set_clock_time(self.widgets.${rustFieldName(widget.id)}, hour, minute, second);`,
+                '            ',
+            ),
         )
         .join('\n');
     return `
@@ -289,21 +308,27 @@ ${resume}
 /**
  * The `match` arms one widget contributes to `pump`.
  *
- * Almost always one arm per event, calling the handler of that name. `navigate` is the exception: it rides on
- * `Clicked`, answers it with `show_view` instead of a handler call, and folds the widget's own `clicked`
- * handler into the same arm -- two arms matching one variant would mean the second never ran.
+ * Almost always one arm per event, calling the handler of that name. `navigate` is the exception: it borrows the
+ * event the widget reports -- `Clicked` for a button, `ValueChanged` for a dropdown, `Submitted` for a keypad --
+ * answers it with `show_view` instead of a handler call, and folds that event's own handler into the same arm, so
+ * a widget can both switch view and run its own code. Two arms matching one variant would mean the second never
+ * ran, which is why the borrowed one is left out of the loop below.
  */
 function armsFor(widget: DesignerWidget, multiView: boolean): string[] {
     const field = rustFieldName(widget.id);
     const navigate = widget.events.find((event) => EVENT_SPECS[event].action !== undefined);
+    // The event the switch is fired by: the crate has no navigation variant, so a navigate is the widget's own
+    // event, answered by the generated code. Only when the widget navigates at all -- otherwise this would name
+    // the event of an ordinary arm and then skip it.
+    const trigger = navigate === undefined ? undefined : navigateTriggerFor(widget.tag);
     const arms: string[] = [];
     for (const event of widget.events) {
         const spec = EVENT_SPECS[event];
         if (spec.action !== undefined) {
             continue;
         }
-        // The click this widget navigates on is the arm below, not a second one on the same pattern.
-        if (navigate !== undefined && spec.variant === EVENT_SPECS[navigate].variant) {
+        // The event the switch borrows is the arm below, not a second one on the same pattern.
+        if (trigger !== undefined && event === trigger) {
             continue;
         }
         arms.push(
@@ -314,17 +339,13 @@ function armsFor(widget: DesignerWidget, multiView: boolean): string[] {
     const target = widget.props[spec?.action?.targetProperty ?? ''];
     // No enum to name, or no destination chosen: the validator says so in the panel, and a project is not
     // left with code that could not compile.
-    if (spec !== undefined && multiView && typeof target === 'string' && target !== '') {
-        // A widget can ask for both: the switch, and a handler of its own on the same click.
-        const alsoCalls = widget.events.find(
-            (event) => event !== navigate && EVENT_SPECS[event].variant === spec.variant,
-        );
-        const thenClick =
-            alsoCalls === undefined
-                ? ''
-                : `\n                    crate::ui_handlers::${handlerCall(widget, alsoCalls)};`;
+    if (spec !== undefined && trigger !== undefined && multiView && typeof target === 'string' && target !== '') {
+        // A widget can ask for both: the switch, and a handler of its own on the same event.
+        const thenClick = widget.events.includes(trigger)
+            ? `\n                    crate::ui_handlers::${handlerCall(widget, trigger)};`
+            : '';
         arms.unshift(
-            `                UiEvent::${spec.pattern} if id == self.widgets.${field} => {\n` +
+            `                UiEvent::${EVENT_SPECS[trigger].pattern} if id == self.widgets.${field} => {\n` +
             `                    self.show_view(View::${viewEnumName(target)});${thenClick}\n` +
             '                }',
         );
@@ -477,7 +498,7 @@ export function emitUiRs(document: DesignerDocument, touch = true): string {
     const isDirty = movement
         ? '        !self.gui.dirty_regions().is_empty() || self.clock_due()'
         : '        !self.gui.dirty_regions().is_empty()';
-    const movementMethods = movement ? movementMethodsFor(movingClocks) : '';
+    const movementMethods = movement ? movementMethodsFor(document, movingClocks) : '';
     const wallMethods = wallMethodsFor(movement);
 
     const widgetsField =

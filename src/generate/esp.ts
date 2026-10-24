@@ -2451,6 +2451,23 @@ function inversion(display: EspDisplay): string {
 }
 
 /**
+ * Where the glass's first pixel sits inside the controller's RAM, for a module that is not at (0, 0).
+ *
+ * The offset moves the *address window*, not the logical coordinate system, so the design is untouched and a
+ * board that needs none emits nothing -- the controller's default is the origin. Without it the last row and
+ * column of the panel are never written, which shows as a band of random pixels along two edges.
+ */
+function offset(display: EspDisplay): string {
+    if (display.displayOffset === undefined) {
+        return '';
+    }
+    const { x, y } = display.displayOffset;
+    return `
+        // ${display.label}: the glass starts ${x}px/${y}px into the controller's RAM.
+        .display_offset(${x}, ${y})`;
+}
+
+/**
  * The RGB LED on a board that has one: three pins, cycled through red, green and blue.
  *
  * Kept as its own body rather than a branch inside the single-LED one because it is a different thing to
@@ -4092,7 +4109,7 @@ ${backlight}${resetSetup}
     // thing to pass and what the layouts below have to be solved against when the rotation is vertical.
     let rotated = matches!(rotation, Rotation::Deg90 | Rotation::Deg270);
     let mut display = Builder::new(models::${display.controller}, di)
-        .display_size(width, height)${reset}${orientation(display)}
+        .display_size(width, height)${offset(display)}${reset}${orientation(display)}
         .color_order(ColorOrder::${display.colorOrder === 'bgr' ? 'Bgr' : 'Rgb'})${inversion(display)}
         .init(&mut delay)
         .expect("panel initialisation");
@@ -4161,7 +4178,7 @@ ${backlight}${resetSetup}
     // thing to pass and what the layouts below have to be solved against when the rotation is vertical.
     let rotated = matches!(rotation, Rotation::Deg90 | Rotation::Deg270);
     let mut display = Builder::new(models::${display.controller}, di)
-        .display_size(width, height)${reset}${orientation(display)}
+        .display_size(width, height)${offset(display)}${reset}${orientation(display)}
         .color_order(ColorOrder::${display.colorOrder === 'bgr' ? 'Bgr' : 'Rgb'})${inversion(display)}
         .init(&mut delay)
         .expect("panel initialisation");

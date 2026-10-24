@@ -330,3 +330,38 @@ test('the project folder itself is not mistaken for a file inside it', () => {
     equal(plan.relativePath, 'assets/logo.bmp', 'a sibling folder is outside, so the file is copied');
     equal(plan.copyFrom, '/home/me/project-two/logo.bmp', 'from where it was');
 });
+
+test('a design that does not validate writes no markup, and so must not write the Rust either', () => {
+    // The pair `ui.kdl` + `ui.rs` is compiled together: the markup is what `include_gui!` turns into the
+    // `RustyPanelWidgets` fields, and the Rust names them. So dropping only the markup leaves a `ui.rs` that
+    // mentions a widget nothing builds -- `E0609: no field image on type RustyPanelWidgets`, found on a real
+    // project on 2026-10-24 (an image whose asset had not been chosen when the design was saved).
+    const doc = document([
+        {
+            id: 'picture',
+            tag: 'image',
+            x: 0,
+            y: 0,
+            width: 128,
+            height: 128,
+            props: { ...defaultProps('image'), src: '' },
+            events: [],
+            children: defaultChildren('image'),
+        },
+    ]);
+    const rendered = renderDesign(doc);
+    ok(rendered.problems.length > 0, 'an image with no asset is refused');
+    equal(rendered.kdl, undefined, 'and no markup is produced for it');
+    ok(rendered.documentJson.includes('"picture"'), 'while the design itself is still written: it is the work');
+
+    // The editor has to keep the Rust with the markup. Asserted on the source because both files import
+    // `vscode`, so the save path cannot be run in a test.
+    const fs = require('fs');
+    const path = require('path');
+    const { repoRoot } = require('../../lib/harness');
+    const editor = fs.readFileSync(path.join(repoRoot(), 'src', 'designer', 'editor.ts'), 'utf8');
+    // The save path has two guards on the markup (the document write, and the Rust), so the assertion is on
+    // the pair being adjacent: the sync call must sit between the guard and its closing brace.
+    const guard = editor.indexOf('if (rendered.kdl !== undefined) {\n            await this.syncModule(document);');
+    ok(guard !== -1, 'the Rust is regenerated inside the markup guard, not beside it');
+});

@@ -175,12 +175,17 @@ export interface DesignerEventSpec {
     /**
      * An event the generated code handles itself, rather than handing it to the user's code-behind.
      *
-     * `navigate` is the only one so far, and it is the reason views are usable without writing Rust: a button
+     * `navigate` is the only one so far, and it is the reason views are usable without writing Rust: a widget
      * that switches to another view is a property of the design, so the extension writes the switch into
      * `Designer::pump` and no handler stub is created for it. `targetProperty` names the widget property that
      * carries where the switch goes -- `designerOnly`, because the crate has no attribute for it.
+     *
+     * `triggers` is what the action rides on, most natural first: a button is clicked, a dropdown is changed, a
+     * keypad is submitted. Whichever of them the widget reports is the one that switches view -- the crate has
+     * no navigation event of its own, so a navigate *is* the event it borrows. A widget that reports two of them
+     * (a toggle is clicked *and* changed) uses the first listed, which is the one that matches the tap.
      */
-    action?: { targetProperty: string };
+    action?: { targetProperty: string; triggers: DesignerEvent[] };
 }
 
 /**
@@ -221,14 +226,15 @@ export const EVENT_SPECS: Record<DesignerEvent, DesignerEventSpec> = {
         suffix: 'text_input',
         parameter: { name: 'ch', type: 'char' },
     },
-    // A click that switches to another view of the same screen. It rides on `Clicked` -- the crate has no
-    // navigation variant of its own -- and the emitter turns it into `self.show_view(...)` instead of a call
-    // into `ui_handlers.rs`, so a design can move between views with no code at all.
+    // A click that switches to another view of the same screen. It borrows the event the widget already reports --
+    // `Clicked` for a button, `ValueChanged` for a dropdown, `Submitted` for a keypad -- because the crate has no
+    // navigation variant of its own, and the emitter turns it into `self.show_view(...)` instead of a call into
+    // `ui_handlers.rs`, so a design can move between views with no code at all.
     navigate: {
         variant: 'Clicked',
         pattern: 'Clicked(id)',
         suffix: 'navigate',
-        action: { targetProperty: 'navigate_to' },
+        action: { targetProperty: 'navigate_to', triggers: ['clicked', 'valueChanged', 'submitted'] },
     },
 };
 
@@ -1401,12 +1407,24 @@ export function widgetRaises(tag: string, event: DesignerEvent): boolean {
     if (spec === undefined) {
         return false;
     }
-    // `navigate` is not in a widget's list because the crate knows nothing about it: it is a click the design
-    // answers itself, so it is offered exactly where a click is.
+    // `navigate` is not in a widget's list because the crate knows nothing about it: it is one of the widget's
+    // own events, answered by the generated code instead of the user's, so it is offered wherever it could fire.
     if (event === 'navigate') {
-        return spec.events.includes('clicked');
+        return navigateTriggerFor(tag) !== undefined;
     }
     return spec.events.includes(event);
+}
+
+/**
+ * The event that makes a widget navigate: whichever of the action's triggers this widget reports first.
+ *
+ * The order in `EVENT_SPECS.navigate.action.triggers` is what decides for a widget that reports more than one --
+ * a toggle is both clicked and changed, and a tap is a click.
+ */
+export function navigateTriggerFor(tag: string): DesignerEvent | undefined {
+    const spec = widgetSpec(tag);
+    const triggers = EVENT_SPECS.navigate.action?.triggers ?? [];
+    return triggers.find((event) => spec?.events.includes(event) === true);
 }
 
 /** True when the property cannot be left empty, because the parser errors on a widget without it. */

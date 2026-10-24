@@ -32,6 +32,7 @@ import type { DesignerWidget } from '../../src/designer/model';
 import { triangleBoxOf, triangleVertices } from '../../src/designer/model';
 import { VERTEX_HANDLE_SIZE, vertexHandles } from '../../src/designer/hit';
 import { previewWidget } from './preview';
+import { bitmapFor } from './bitmaps';
 
 export interface Palette {
     /** The screen behind everything. */
@@ -301,7 +302,18 @@ export function drawWidget(
         } else if (draws === 'triangle') {
             paintTriangle(context, widget, palette);
         } else {
-            previewed = previewWidget(context, widget, {});
+            // An image is a picture, not a widget face: draw the file the extension sent, and when there are no
+            // pixels yet say which file it is waiting for. The plain face it used to get was the same colour as
+            // every other widget's, which made a view holding only an image read as an empty screen (reported
+            // 2026-10-24).
+            const source = spec?.tag === 'image' ? widget.props.src : undefined;
+            const bitmap = typeof source === 'string' ? bitmapFor(source) : undefined;
+            if (bitmap !== undefined) {
+                drawImageAsset(context, bitmap, widget);
+                previewed = true;
+            } else {
+                previewed = previewWidget(context, widget, {});
+            }
             if (!previewed) {
                 const radius = typeof widget.props.corner_radius === 'number' ? widget.props.corner_radius : 2;
                 // A theme panel is what the engine paints for the shapes; everything else is a widget surface.
@@ -312,6 +324,9 @@ export function drawWidget(
                 context.strokeStyle = palette.border;
                 context.lineWidth = 1;
                 context.stroke();
+            }
+            if (spec?.tag === 'image' && bitmap === undefined && typeof source === 'string' && source !== '') {
+                drawAssetPlaceholder(context, source, x, y, width, height, palette);
             }
         }
 
@@ -358,6 +373,65 @@ export function drawWidget(
             context.restore();
         }
     }
+}
+
+/**
+ * Paints an image widget's file, honouring the widget's `fit` the way the crate does.
+ *
+ * `stretch` fills the cell and `center` draws the picture at its own size in the middle of it; the widget is
+ * already clipped to its cell by the caller, so an oversized picture is cropped exactly where the board crops it.
+ */
+function drawImageAsset(context: CanvasRenderingContext2D, bitmap: CanvasImageSource, widget: DesignerWidget): void {
+    const fit = widget.props.fit === 'center' ? 'center' : 'stretch';
+    if (fit === 'center') {
+        const size = bitmapSize(bitmap);
+        context.drawImage(
+            bitmap,
+            widget.x + Math.floor((widget.width - size.width) / 2),
+            widget.y + Math.floor((widget.height - size.height) / 2),
+        );
+        return;
+    }
+    context.drawImage(bitmap, widget.x, widget.y, widget.width, widget.height);
+}
+
+/** The decoded size of a bitmap, which differs by the kind of source the browser handed back. */
+function bitmapSize(bitmap: CanvasImageSource): { width: number; height: number } {
+    const size = bitmap as { width?: number; height?: number; naturalWidth?: number; naturalHeight?: number };
+    return {
+        width: size.width ?? size.naturalWidth ?? 0,
+        height: size.height ?? size.naturalHeight ?? 0,
+    };
+}
+
+/**
+ * What an image widget says when its pixels are not on the canvas.
+ *
+ * A dashed frame in the selection colour plus the file's own name: the point is that the widget is *visible*
+ * even before its bytes arrive, so a view with one picture on it never looks blank.
+ */
+function drawAssetPlaceholder(
+    context: CanvasRenderingContext2D,
+    source: string,
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+    palette: Palette,
+): void {
+    context.save();
+    context.strokeStyle = palette.selection;
+    context.lineWidth = 1;
+    context.setLineDash([4, 3]);
+    context.strokeRect(x + 0.5, y + 0.5, Math.max(1, width - 1), Math.max(1, height - 1));
+    context.setLineDash([]);
+    const name = source.startsWith('sd:') ? `SD card: ${source.slice('sd:'.length)}` : source;
+    context.fillStyle = palette.placeholder;
+    context.font = '9px sans-serif';
+    context.textAlign = 'center';
+    context.textBaseline = 'middle';
+    context.fillText(name, x + width / 2, y + height / 2, Math.max(8, width - 8));
+    context.restore();
 }
 
 /** The eight handles around a selected widget. */

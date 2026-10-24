@@ -13,10 +13,12 @@
  */
 
 import { widgetSpec } from '../../src/designer/catalog';
-import { DEFAULT_VIEW_ID } from '../../src/designer/model';
+import { startViewId } from '../../src/designer/model';
 import { registerDesignFont } from './glyphs';
 import { rasteriseFont } from './rasterise';
 import { CanvasView } from './canvas';
+import { clearBitmaps, setBitmap } from './bitmaps';
+import type { DesignerImageAsset } from '../../src/designer/imageAssets';
 import {
     type ContextMenuItem,
     fontMenu,
@@ -36,6 +38,7 @@ import {
     canRedo,
     canUndo,
     canvasOf,
+    duplicateView,
     freeViewId,
     initialState,
     moveWidget,
@@ -44,6 +47,7 @@ import {
     removeWidget,
     renameView,
     setRotation,
+    setStartView,
     setViewLabel,
     undo,
     viewsOf,
@@ -250,9 +254,13 @@ window.addEventListener('message', (event: MessageEvent<
         selectedId = undefined;
         state = initialState(message.document);
         view.select(undefined);
-        // The design opens on its first view, which is the one the board starts on too. Set before the first
-        // state, so the first paint is already the right view and the design is drawn once.
-        activeViewTab = viewsOf(state.document)[0]?.id;
+        // Pictures before the first paint when they are already here; the redraw each one triggers is cheap and
+        // happens once, so the canvas is never left showing an asset placeholder over a file it did receive.
+        clearBitmaps();
+        loadBitmaps(message.images);
+        // The design opens on the view the board starts on, which is what the glass shows when it powers up.
+        // Set before the first state, so the first paint is already the right view and the design is drawn once.
+        activeViewTab = startViewId(state.document);
         view.setActiveView(currentView());
         view.setState(state);
         document.title = `${message.document.screenId} - ${canvasWidth}x${canvasHeight}`;
@@ -273,8 +281,8 @@ window.addEventListener('message', (event: MessageEvent<
         return;
     }
     if (message.type === 'report') {
-        // The declarations changed, so the pixels did: a font that was just named becomes drawable, and one
-        // that was renamed keeps its old entry only until the next paint.
+        // A picture the design has just started to use arrives with the report that mentions it.
+        loadBitmaps(message.images);
         if (message.fonts !== undefined) {
             for (const [name, pixels] of Object.entries(message.fonts)) {
                 registerDesignFont(name, {
@@ -491,13 +499,21 @@ function drop(tag: string): void {
 /** The view being edited. UI state, not document state: which tab you have open is not saved. */
 let activeViewTab: string | undefined;
 
-/** The view being edited, defaulting to the design's first one. */
+/**
+ * Whether the other views are drawn as outlines.
+ *
+ * Also UI state, and off to begin with: the point of a view is that what is on the glass is what is on the
+ * canvas, so the ghosts are something to ask for rather than something to explain away.
+ */
+let showOtherViews = false;
+
+/** The view being edited, defaulting to the one the board starts on. */
 function currentView(): string {
     const views = viewsOf(state.document);
     if (activeViewTab !== undefined && views.some((entry) => entry.id === activeViewTab)) {
         return activeViewTab;
     }
-    return views[0]?.id ?? DEFAULT_VIEW_ID;
+    return startViewId(state.document);
 }
 
 /** Switches the canvas to a view. */
@@ -507,17 +523,28 @@ function switchView(viewId: string): void {
     refreshProperties();
 }
 
-/** Rebuilds the tab strip: one tab per view, and the one that adds another. */
+/** Rebuilds the tab strip: one tab per view, the one that adds another, and the all-views overlay toggle. */
 function refreshViewTabs(): void {
     const views = viewsOf(state.document);
     const current = currentView();
+    const start = startViewId(state.document);
     viewTabs.replaceChildren();
     for (const entry of views) {
         const tab = document.createElement('button');
         tab.type = 'button';
-        tab.className = entry.id === current ? 'view-tab view-tab-active' : 'view-tab';
+        const classes = ['view-tab'];
+        if (entry.id === current) {
+            classes.push('view-tab-active');
+        }
+        if (start === entry.id && views.length > 1) {
+            classes.push('view-tab-start');
+        }
+        tab.className = classes.join(' ');
         tab.textContent = entry.label === '' ? entry.id : entry.label;
-        tab.title = `View "${entry.id}" -- right-click to rename or delete it`;
+        tab.title =
+            `View "${entry.id}"` +
+            (start === entry.id && views.length > 1 ? ' (the board starts here)' : '') +
+            ' -- right-click to rename, copy or delete it';
         tab.addEventListener('click', () => switchView(entry.id));
         tab.addEventListener('contextmenu', (event) => {
             event.preventDefault();
@@ -536,12 +563,47 @@ function refreshViewTabs(): void {
     add.title = 'Add a view: another screenful of widgets, one tap apart';
     add.addEventListener('click', addEmptyView);
     viewTabs.append(add);
+
+    // The overlay: the other views' widgets, as outlines. Off by default, because the design on the glass is
+    // the active view and nothing else.
+    const all = document.createElement('button');
+    all.type = 'button';
+    all.className = showOtherViews ? 'view-tab view-tab-overlay view-tab-active' : 'view-tab view-tab-overlay';
+    all.textContent = 'All';
+    all.title = showOtherViews
+        ? 'Drawing the other views as outlines -- click to show only this view'
+        : 'Draw the other views as outlines, to find a widget that is not on this one';
+    all.addEventListener('click', () => {
+        showOtherViews = !showOtherViews;
+        view.setOverlay(showOtherViews);
+        refreshViewTabs();
+    });
+    if (views.length > 1) {
+        viewTabs.append(all);
+    }
 }
 
 /** What a view tab's right-click offers. */
 function viewMenu(viewId: string): ContextMenuItem[] {
     const items: ContextMenuItem[] = [{ label: 'Rename view...', action: () => renameViewTab(viewId) }];
-    if (viewsOf(state.document).length > 1) {
+    const views = viewsOf(state.document);
+    if (views.length > 1 && startViewId(state.document) !== viewId) {
+        items.push({
+            label: 'Start the board on this view',
+            action: () => {
+                const next = setStartView(state, viewId);
+                if (next === state) {
+                    return;
+                }
+                state = next;
+                refreshProperties();
+                refreshViewTabs();
+                flushPost();
+            },
+        });
+    }
+    items.push({ label: 'Duplicate view', action: () => duplicateViewTab(viewId) });
+    if (views.length > 1) {
         items.push({
             label: 'Delete view',
             danger: true,
@@ -551,7 +613,9 @@ function viewMenu(viewId: string): ContextMenuItem[] {
                     return;
                 }
                 state = next;
-                activeViewTab = viewsOf(state.document)[0]?.id;
+                // The view that was on screen is gone, so go where the board would start rather than to
+                // whichever tab happens to be first.
+                activeViewTab = startViewId(state.document);
                 view.setActiveView(currentView());
                 view.setState(state);
                 refreshProperties();
@@ -561,6 +625,23 @@ function viewMenu(viewId: string): ContextMenuItem[] {
         });
     }
     return items;
+}
+
+/** Copies a view and everything on it, and goes to the copy -- which is how a variant gets made. */
+function duplicateViewTab(viewId: string): void {
+    const before = viewsOf(state.document).map((entry) => entry.id);
+    const next = duplicateView(state, viewId);
+    if (next === state) {
+        return;
+    }
+    state = next;
+    // The copy is inserted right after its original, so the one id that was not there before is it.
+    activeViewTab = viewsOf(state.document).find((entry) => !before.includes(entry.id))?.id;
+    view.setActiveView(currentView());
+    view.setState(state);
+    refreshProperties();
+    refreshViewTabs();
+    flushPost();
 }
 
 /** Adds a view, and goes to it: a tab nobody is looking at would make the button look broken. */
@@ -1008,3 +1089,32 @@ window.addEventListener('keydown', (event) => {
     refreshToolbar();
     flushPost();
 });
+
+// ---------------------------------------------------------------- pictures
+
+/**
+ * Decodes the image files the extension sent, and repaints as each one arrives.
+ *
+ * The bytes come in as a data URL, so the *browser* does the decoding: BMP, PNG, JPEG, GIF and WebP all arrive
+ * through the same door, and there is no image parser in this codebase to get wrong. A file the browser cannot
+ * read, or a panel with no `Image` (the test harness is one), simply leaves the asset placeholder in place.
+ */
+function loadBitmaps(assets: readonly DesignerImageAsset[] | undefined): void {
+    if (assets === undefined || assets.length === 0 || typeof Image !== 'function') {
+        return;
+    }
+    for (const asset of assets) {
+        const image = new Image();
+        image.src = `data:${asset.mime};base64,${asset.data}`;
+        const ready = typeof image.decode === 'function' ? image.decode() : Promise.resolve();
+        ready
+            .then(() => {
+                setBitmap(asset.src, image);
+                view.draw();
+            })
+            .catch(() => {
+                // A file the browser will not decode keeps its placeholder, which names it. The build would
+                // refuse it too, so this is a preview losing a picture, not a design losing a widget.
+            });
+    }
+}

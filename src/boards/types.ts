@@ -155,6 +155,17 @@ export interface EspDisplay {
      * Inverted)`; absent means the controller's own default (normal).
      */
     invertColors?: boolean;
+    /**
+     * How far into the controller's RAM the glass's first pixel sits, when it is not at (0, 0).
+     *
+     * A fact about the module's bonding, and only visible as a fault: the T-QT's newer GC9A01 revision shows the
+     * last row and column of the 128x128 as random pixels, because the window at (0, 0) leaves the glass's own
+     * last line unwritten. Emitted as `Builder::display_offset(x, y)`, which moves the address window and not the
+     * logical coordinates, so nothing in the design moves. The two axes are independent -- that glass is 2 across
+     * and 1 down -- and mipidsi swaps the pair itself for a vertical rotation, so a rotated project needs no
+     * second answer. Absent means the controller's default.
+     */
+    displayOffset?: { x: number; y: number };
     mirrorX: boolean;
     mirrorY: boolean;
     /** Panel clock in Hz. Lower it first if the image is unstable. */

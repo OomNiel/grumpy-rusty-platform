@@ -30,7 +30,7 @@ import { activeWifiEnv } from '../wifi/credentials';
 import { ensureWifiEnv } from '../wifi/wifiPrompt';
 import { ensureSmtpEnv } from '../smtp/wizard';
 import { activeSmtpEnv } from '../smtp/credentials';
-import { closeTerminal, defmtEnv, defmtPrefix, espEnv, openTerminalNames, runInTerminal } from './terminal';
+import { closeTerminal, defmtEnv, defmtPrefix, espEnv, killAllTerminals, openTerminalNames, runInTerminal } from './terminal';
 import { ensureEspToolchain } from './espToolchainCommands';
 import { rearmClockListener } from '../designer/editor';
 
@@ -127,6 +127,29 @@ export function registerProjectCommands(
     context: vscode.ExtensionContext,
 ): vscode.Disposable[] {
     const withProject = makeWithProject(state, output);
+
+    /**
+     * Closes every terminal the window has open, before a build or a flash.
+     *
+     * A terminal holds things: the clock listener keeps the serial port for the life of the Designer,
+     * Monitor and `probe-rs attach` keep the port or the probe until they are closed, and a shell where
+     * someone typed `espflash monitor` by hand holds it without the extension knowing. Each of those
+     * turns the next flash into "could not open the device". Rather than ask which terminal is in the
+     * way, the sweep takes them all (user's rule, 2026-10-24) and names what it closed, so the reason a
+     * tab disappeared from the panel is in the log.
+     */
+    async function clearTerminals(what: string): Promise<void> {
+        const names = killAllTerminals();
+        if (names.length === 0) {
+            return;
+        }
+        output.appendLine(
+            `${what}: closed ${names.length} open terminal${names.length === 1 ? '' : 's'} first ` +
+            `(${names.join(', ')}), so nothing is holding the port.`,
+        );
+        // A shell lets go of its serial handle as it exits, which is a moment after the dispose.
+        await new Promise((resolve) => setTimeout(resolve, 300));
+    }
 
     /**
      * The gate before a probe-less flash — the same rule as the probe firmware flow:
@@ -401,6 +424,9 @@ export function registerProjectCommands(
         project: ActiveProject,
         options: { choice: FlashProfileChoice; monitor?: boolean },
     ): Promise<void> {
+        // Every terminal goes first, before the route is even chosen: whichever one is holding the
+        // serial port or the probe, this is what makes the write able to open it.
+        await clearTerminals('flash');
         const profile = flashProfileFor(project.board, options.choice);
         // Ask for the network before anything is compiled: the wireless templates bake the credentials
         // in at compile time, so a prompt after the build would arrive too late.
@@ -459,6 +485,7 @@ export function registerProjectCommands(
         // with it in a keybinding; the controls run these two.
         vscode.commands.registerCommand('rustyPlatform.build', () =>
             withProject(async (project) => {
+                await clearTerminals('build');
                 await ensureSmtpEnv(context, project.folder, output);
                 closeWhenSucceeded(
                     'Rusty: build',
@@ -468,6 +495,7 @@ export function registerProjectCommands(
         ),
         vscode.commands.registerCommand('rustyPlatform.buildDebug', () =>
             withProject(async (project) => {
+                await clearTerminals('build');
                 await ensureSmtpEnv(context, project.folder, output);
                 closeWhenSucceeded(
                     'Rusty: build',
@@ -477,6 +505,7 @@ export function registerProjectCommands(
         ),
         vscode.commands.registerCommand('rustyPlatform.buildRelease', () =>
             withProject(async (project) => {
+                await clearTerminals('build');
                 await ensureSmtpEnv(context, project.folder, output);
                 closeWhenSucceeded(
                     'Rusty: build',
@@ -511,6 +540,7 @@ export function registerProjectCommands(
             withProject(async (project) => {
                 // On this route "USB" is not a choice to make on an ESP32: its upload *is* USB serial, and
                 // the board profile says which route this board takes, so Upload is the answer either way.
+                await clearTerminals('flash');
                 await ensureWifiEnv(context, project.folder, output);
                 await ensureSmtpEnv(context, project.folder, output);
                 const profile = flashProfileFor(project.board, configuredProfileChoice());
@@ -556,6 +586,7 @@ export function registerProjectCommands(
 
         vscode.commands.registerCommand('rustyPlatform.clean', () =>
             withProject(async (project) => {
+                await clearTerminals('clean');
                 closeWhenSucceeded('Rusty: build', runInTerminal('Rusty: build', 'cargo clean', project.folder));
             }),
         ),

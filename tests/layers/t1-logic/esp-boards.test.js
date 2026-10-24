@@ -1113,3 +1113,42 @@ test('a Designer project keeps the time in the RTC and asks a host when it has n
     const blinky = sourceOf(generateProjectFiles({ board: boardById('esp32-devkitc'), projectName: 'x', template: 'blinky' }));
     notContains(blinky, 'Rtc::new', 'a periodic-task project does not open the RTC');
 });
+
+test('the T-QT newer panel is also bonded one pixel into the controller RAM', () => {
+    // Reported on the bench 2026-10-24, after the colours were right: a complete row of noise pixels down the
+    // right edge and the bottom edge. A full-display clear to red did not reach them, so they are not merely
+    // unpainted by the design -- the glass's own last row and column lie outside the window `display_size`
+    // sets at (0, 0). Moving the window one pixel in covers exactly the 128x128 the glass shows; the offset
+    // moves the address window, not the logical coordinates, so nothing in the design moves with it.
+    const board = espBoard('lilygo-tqt');
+    equal(displayFor(board, { panel: 'gc9107' }).displayOffset, undefined, 'the older panel starts at the origin');
+
+    const newer = filesFor(board, 'display', { panel: 'gc9a01' }).get('src/main.rs');
+    contains(newer, '.display_offset(2, 1)', 'the newer one moves its window two pixels across, one down');
+    // With a comment of its own, the way the inversion has one, and before the colour order so the window is
+    // settled before anything is drawn into it.
+    contains(newer, 'the glass starts 2px/1px into the controller', 'the emitted code says why');
+    ok(
+        newer.indexOf('.display_offset(2, 1)') > newer.indexOf('.display_size(width, height)') &&
+        newer.indexOf('.display_offset(2, 1)') < newer.indexOf('.color_order('),
+        'between the size and the colour order',
+    );
+    // The axes are measured separately and this glass is not 1/1: with a symmetric offset the bottom went clean
+    // and the right kept its band of noise, and a frame drawn on the design's edges showed its right side one
+    // pixel inside that band. So across it is two and down it is one -- and mipidsi swaps the pair itself for a
+    // vertical rotation, which is why the catalogue can carry one answer for every orientation.
+    const offset = displayFor(board, { panel: 'gc9a01' }).displayOffset;
+    equal(offset.x, 2, 'two pixels across');
+    equal(offset.y, 1, 'one pixel down');
+    notContains(
+        filesFor(board, 'display', { panel: 'gc9107' }).get('src/main.rs'),
+        'display_offset',
+        'and the older panel is left alone',
+    );
+    // No other board asked for one: the DevKitC's modules and the CYD have nothing to move.
+    for (const id of ['esp32-devkitc', 'sunton-3248s035r']) {
+        for (const display of espBoard(id).displays) {
+            equal(display.displayOffset, undefined, `${id} ${display.label} starts at the origin`);
+        }
+    }
+});

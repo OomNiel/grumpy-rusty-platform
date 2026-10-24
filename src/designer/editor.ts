@@ -46,6 +46,7 @@ import {
 } from './model';
 import { runSmtpWizard } from '../smtp/wizard';
 import { loadDocument, missingAssets, planAssetImport, renderDesign } from './store';
+import { collectImageAssets, imageSourcesOf, type DesignerImageAsset } from './imageAssets';
 import { parseBdfFont, type DesignFontPixels } from './bitmapFont';
 import { bdfFromRaster, fontIdFromFile, isBitmapFontFile, type RasterisedFont } from './fontImport';
 import { emitUiRs, handlerName, syncHandlerStubs, designHasClock } from './generate';
@@ -862,7 +863,32 @@ class DesignerPanel {
             loadProblems: this.loadProblems,
             fonts: declared.fonts,
             fontNotes: declared.fontNotes,
+            images: await this.canvasImages(),
         });
+    }
+
+    /** What the canvas needs in order to draw the design's pictures, and the signature it was last sent under. */
+    private imageSignature = '';
+
+    /**
+     * The design's image files, so the canvas can draw them instead of an empty box.
+     *
+     * Read here rather than in the panel because the panel is a webview with no access to the project; decoded
+     * there rather than here because the browser already has every decoder that matters. Missing and oversized
+     * files are simply not sent -- the panel reports a missing asset in its own words, and a file too big to
+     * ship through a message is not a preview.
+     */
+    private async canvasImages(): Promise<DesignerImageAsset[]> {
+        const read = (relative: string): Uint8Array | undefined => {
+            try {
+                return fs.readFileSync(vscode.Uri.joinPath(this.folder, relative).fsPath);
+            } catch {
+                return undefined;
+            }
+        };
+        const assets = collectImageAssets(this.document, read);
+        this.imageSignature = imageSourcesOf(this.document).join('\n');
+        return assets;
     }
 
     /**
@@ -963,7 +989,15 @@ class DesignerPanel {
         }
         await this.syncRotation(document.rotation);
         await this.syncHandlers(document);
-        await this.syncModule(document);
+        // The markup is what `include_gui!` compiles, and it is only written for a design that validates -- so
+        // the Rust, which names the widgets that markup builds, may only be regenerated alongside it. Writing
+        // it from a document whose markup was refused is how a project ends up with a `ui.rs` that mentions a
+        // widget the compiled markup does not have: `E0609: no field image on type RustyPanelWidgets`, found on
+        // a real project on 2026-10-24 (an image widget whose asset had not been chosen yet). The last good pair
+        // stays, and the project keeps building while the design is finished.
+        if (rendered.kdl !== undefined) {
+            await this.syncModule(document);
+        }
         // A clock dropped into a design that is already open is the other moment the automatic
         // hand-over becomes relevant; the flag makes this a no-op after the first attempt.
         this.autoServeClock();
@@ -973,12 +1007,15 @@ class DesignerPanel {
         const declared = this.declaredFonts();
         const fontsChanged = declared.signature !== this.fontSignature;
         this.fontSignature = declared.signature;
+        // The same for pictures: a widget added, removed or re-pointed at another file changes the set.
+        const imagesChanged = imageSourcesOf(this.document).join('\n') !== this.imageSignature;
         const report: DesignerReport = {
             type: 'report',
             problems,
             kdl: rendered.kdl,
             wroteDocument: true,
             ...(fontsChanged ? { fonts: declared.fonts, fontNotes: declared.fontNotes } : {}),
+            ...(imagesChanged ? { images: await this.canvasImages() } : {}),
         };
         await this.panel.webview.postMessage(report);
     }

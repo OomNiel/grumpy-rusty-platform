@@ -129,6 +129,34 @@ export function closeTerminal(name: string): boolean {
     return closed;
 }
 
+/**
+ * Close *every* terminal the window has open, whoever started it, and answer with their names.
+ *
+ * A terminal is a thing that holds things: `espflash monitor` and `probe-rs attach` keep the port or
+ * the probe for as long as they run, the Designer's clock listener keeps the serial port open for
+ * the life of the panel, and a shell where someone typed `espflash monitor` by hand holds it with no
+ * record of ours at all. Each of those turns a flash into "could not open the device", which reads as
+ * a hardware fault and costs a session to chase.
+ *
+ * The rule (user, 2026-10-24): *kill all terminals open in the IDE before executing build or
+ * flashing.* So this is deliberately the whole list, not just ours - the user's own shells included -
+ * and it is why the flash no longer has to ask whether a Monitor terminal may be closed.
+ */
+export function killAllTerminals(): string[] {
+    const names: string[] = [];
+    for (const terminal of vscode.window.terminals) {
+        names.push(terminal.name);
+        terminal.dispose();
+    }
+    // Our records go with them: an entry whose terminal has exited would only be reused by name.
+    for (const [key, entry] of terminals) {
+        if (entry.terminal.exitStatus !== undefined) {
+            terminals.delete(key);
+        }
+    }
+    return names;
+}
+
 /** Prefix used when the user's DEFMT_LOG setting differs from the generated default. */
 export function defmtPrefix(): string {
     const level = defmtLogLevel();

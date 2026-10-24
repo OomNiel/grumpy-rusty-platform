@@ -143,6 +143,13 @@ export interface DesignerView {
     id: string;
     /** What the designer's tab shows; the id when empty. */
     label: string;
+    /**
+     * True for the view the board is on when it starts.
+     *
+     * At most one view has it, and a document that names none starts on the first -- which is what every design
+     * did before this flag existed, so an older file is not an incomplete design.
+     */
+    start?: boolean;
 }
 
 export interface DesignerDocument {
@@ -250,9 +257,15 @@ export function designViews(document: DesignerDocument): DesignerView[] {
     return views.length > 0 ? views : [{ id: DEFAULT_VIEW_ID, label: 'Main' }];
 }
 
-/** The view the board starts on: the first one, in the order the document lists them. */
+/**
+ * The view the board starts on.
+ *
+ * The one marked `start`, otherwise the first in the order the document lists them. Marking one rather than
+ * reordering the list keeps the tabs in the order the user arranged them: the start view can be anywhere.
+ */
 export function startViewId(document: DesignerDocument): string {
-    return designViews(document)[0]?.id ?? DEFAULT_VIEW_ID;
+    const views = designViews(document);
+    return views.find((view) => view.start === true)?.id ?? views[0]?.id ?? DEFAULT_VIEW_ID;
 }
 
 /** The view a widget belongs to: the one it names, or the first when it names none or a missing one. */
@@ -685,6 +698,7 @@ export function validateDocument(document: DesignerDocument): string[] {
     // read about widgets while the mistake is here.
     const viewIds = new Set<string>();
     const viewVariants = new Map<string, string>();
+    let startSeen: string | undefined;
     for (const view of document.views ?? []) {
         const where = view.id === '' ? '(unnamed view)' : `view "${view.id}"`;
         if (!isRustIdentifier(view.id)) {
@@ -708,6 +722,15 @@ export function validateDocument(document: DesignerDocument): string[] {
             );
         } else {
             viewVariants.set(variant, view.id);
+        }
+        // Two start views would make the generated `new()` pick one at random: the panel keeps a single flag,
+        // and this says so when a hand-edited file has two.
+        if (view.start === true) {
+            if (startSeen !== undefined) {
+                problems.push(`${where}: two views start the board, and "${startSeen}" already does`);
+            } else {
+                startSeen = view.id;
+            }
         }
     }
 

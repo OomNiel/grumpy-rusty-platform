@@ -7936,3 +7936,107 @@ DevKitC designer (ST7789), DevKitC designer (ILI9341 + touch), DevKitC-mirror of
 - Verified: two generated projects (ESP32-035 and DevKitC + ST7796), two views each plus a navigate button,
   `cargo check` clean and warning-free. Suite **1079** (t1 1000 · t2 75 · t3 4).
 
+
+### §157a — the Phase 1 leftovers (0.13.20, 2026-10-24)
+
+- **Start view is a flag, not a reordering.** `DesignerView.start` and `startViewId()` finds the marked one,
+  falling back to the first. Reordering the array would have moved a tab under the cursor; the flag leaves the
+  strip alone. `setStartView` clears the others in the same edit, and the validator reports a hand-edited file
+  with two of them — `new()` could only follow one.
+- **Duplicate view** copies a view and its widgets in place (no 8-pixel offset — a variant is the same layout).
+  The widget names come from the *root* name (`title` → `title_2` → `title_3`), not from the whole id, or a copy
+  of a copy would read `title_2_2`. The deep copy moved into `copyWidgetContents()` so `duplicateWidget` and
+  `duplicateView` cannot drift apart on a new child kind. The copy never inherits `start`.
+- **Overlay** draws other views' widgets as dashed outlines in `CanvasView.drawOtherViews`. Nothing else
+  changes: hit testing and snapping still filter by the active view, so the ghosts cannot be clicked, and the
+  t2 preview shape counts stay put because it is off by default.
+- **`navigate` beyond clicks.** `EVENT_SPECS.navigate.action.triggers` lists the events a switch may ride on
+  (`clicked`, `valueChanged`, `submitted`, in that order of preference), and `navigateTriggerFor(tag)` answers
+  which one a given widget uses. `widgetRaises(tag, 'navigate')` follows it, so the panel offers the row on a
+  dropdown or a keypad too; the emitter takes the *pattern* from that trigger's own spec, which is why a
+  dropdown emits `UiEvent::ValueChanged(id)` and a keypad `UiEvent::Submitted(id)`.
+  **Trap:** computing the trigger unconditionally dropped every ordinary arm — a button's own `clicked` arm was
+  skipped because it was mistaken for the borrowed one. The suite caught it as three failures plus a stray
+  `#[allow(dead_code)] pub widgets`; the trigger is only looked for when the widget actually navigates.
+
+### §157b — the T-QT's unwritten edge (0.13.20, 2026-10-24)
+
+- Reported after the colours were fixed: *"a blank row of pixels down the right edge and the bottom edge of the
+  panel"* — the LilyGo T-QT, newer panel. The Designer canvas was fine, so it was the glass.
+- **The experiment that settled it**: `display.clear(Rgb565::RED)` before the design, in the bench app. It
+  cleared the whole 128×128 the driver thinks it owns, and **the band stayed noisy** — so those pixels are not
+  merely unpainted by the design: nothing writes them at all. The band is random GRAM outside the window.
+- So the glass is bonded **into the controller's RAM off the origin**: `display_size(128, 128)` at offset (0, 0)
+  writes RAM 0..127 while the panel shows something further in. `Builder::display_offset(x, y)` moves the address
+  window (not the logical coordinates, so no design moves).
+- **(1, 1) was half right**, which is its own evidence: the bottom went clean and the right kept its band. A 1px
+  frame drawn on the design's own edges (plain `embedded-graphics`, so neither crate nor design is involved) then
+  measured the rest — frame present top/right/bottom, **missing on the left**, with the band sitting one pixel
+  outside the frame's right side. That reads exactly as glass = **RAM 2..129 across, 1..128 down**: the frame's
+  left side (RAM 1) falls outside, its right side (RAM 128) lands one column inside the band, and RAM 129 is the
+  band. So the pair is `{ x: 2, y: 1 }`.
+- mipidsi's `set_address_window` **swaps the offset pair itself** when the orientation swaps rows and columns (and
+  mirrors it when columns or rows are reversed), so one answer holds for every rotation — no per-rotation table.
+- Recorded as a panel fact, like `invertColors`/`colorOrder`: `EspDisplay.displayOffset`, emitted by
+  `offset(display)` in both `main.rs` builder sites. Only the GC9A01 revision declares one; the GC9107, the CYD
+  and the DevKitC modules are at the origin. Symmetric on purpose — a vertical rotation swaps the drawing area,
+  and an unequal offset would need a per-rotation answer.
+- **Why this was worth writing down**: mipidsi's GC9A01 model declares `FRAMEBUFFER_SIZE = (240, 240)`, so the
+  driver's clamp is against 240×240 and never against our 128×128. A write one pixel outside the window is
+  accepted silently, which is what makes an "unwritten edge" impossible to reason about from the code alone —
+  the red fill answered in one flash what no amount of reading could.
+- Verified: the emitted `.display_offset(2, 1)` compiles in a generated T-QT Designer project (`cargo check`,
+  esp toolchain), and the bench app `lilygo-test2` builds with it.
+
+### §157c — every terminal is closed before a build or a flash (0.13.21, 2026-10-24)
+
+- Asked for in the user's own words — *"Kill all terminals open in the IDE before executing build or flashing.
+  The open listener is blocking the port"* — after a flash died with "could not open the device", which reads as
+  a hardware fault.
+- A terminal **is** the port holder, and there are three kinds: the Designer's clock listener (kept for the life
+  of the panel), Monitor and `probe-rs attach` (the port or the probe), and a shell where the user typed
+  `espflash monitor` by hand (no record of ours at all). Only `vscode.window.terminals` covers the last one, so
+  the sweep is over that list rather than over terminals we started.
+- `killAllTerminals()` in `src/commands/terminal.ts`, called first in build, build-and-debug, build release,
+  clean, flash and flash-from-BOOTSEL (`clearTerminals(what)`), with a log line naming what was closed and why.
+  The flash no longer asks whether a Monitor terminal may be closed — it is already gone.
+- The clock listener comes back when the flash ends (as before) or when the panel is reopened; a plain build does
+  not restart it, because a build holds no port.
+
+### §158 — pictures on the canvas, a `ui.rs` that waited for its markup, and a clock that must not tick off-view (0.13.22–0.13.24, 2026-10-24)
+
+- **0.13.22 — the pair that must be written together.** `ui.kdl` is only written for a design that validates, but
+  `src/ui.rs` was regenerated from the document regardless, and it names the widgets the markup builds. A save
+  taken while the design was momentarily incomplete therefore left the project with an image widget in the Rust
+  and none in the markup — `E0609: no field image on type RustyPanelWidgets`, met on a real project whose image
+  asset had not been picked yet. `syncModule` now runs inside `if (rendered.kdl !== undefined)`, so the last good
+  pair survives; the design *document* is still written either way, because it is the user's work.
+- **0.13.23 — the canvas draws the project's pictures.** The webview cannot read files, so every image (and every
+  part of a composite icon) was painted as a plain widget face: an empty box, and a view holding only a picture
+  looked blank — reported as "the image does not load in the designer. Also, the view2 screen is not rendered at
+  all", which was two separate faults with one symptom.
+  - The extension reads what the design names and hands each file to the panel as a **data URL**;
+    `imageSourcesOf()` covers image widgets *and* icon parts and skips `sd:` (the board fetches those), and a file
+    over `MAX_CANVAS_IMAGE_BYTES` (1.5 MB) is not shipped through a message.
+  - The **browser** decodes (`new Image()` → `decode()`), so BMP/PNG/JPEG/GIF/WebP arrive through one door and
+    this codebase holds no image parser to get wrong. `webview/designer/bitmaps.ts` keeps the decoded bitmaps by
+    source, `theme.ts` draws them with `fit` honoured (`stretch` fills the cell, `center` uses the file's size),
+    and a source with no pixels yet draws a dashed frame in the selection colour **plus the file's own name**.
+  - Measured in a real browser (the bundle, a stub of the VS Code API, the bench design): the canvas went from
+    4 distinct colours on that view to 8 257 — the photograph, not a face. jsdom would not have caught either.
+- **0.13.24 — a view that is not showing must not be driven.** Reported as *"black blocks are drawn at intervals
+  of 1 second — could be the clock arm positions updating"*, which is exactly what it was.
+  - `tick_clocks()` advanced **every** clock, visible or not. A hidden clock still moves, and its move marks the
+    widget's subtree dirty; `paint_damage` then clears that damage to `SCREEN_BACKGROUND` and does not repaint a
+    hidden widget — so a black rectangle appeared on the view that *is* on the glass, once a second, at the
+    clock's own bounding box.
+  - Each clock's second tick and each hand-over of the wall clock are now emitted behind
+    `if self.view == View::<its own view>`, and only when `designViews(document).length > 1`, so a single-view
+    design emits no test at all and the golden `.rs` fixtures stay byte-identical. The guard inside the
+    `for _ in 0..elapsed` loop is placed *in* the loop, not around it — a long gap must still replay every tick.
+  - Verified: two t1 tests pin the pair (guarded for a two-view design, absent for one view), suite **1094**
+    (t1 1013 · t2 77 · t3 4), and the bench app `lilygo-test2` was regenerated from its design and `cargo check`s
+    clean.
+- **Trap, twice in one session:** a multi-line `replace_string_in_file` silently dropped a line of TypeScript
+  (the `widgetViewId` import, and earlier a field declaration). The edit reports success. Run
+  `npx tsc -p ./` immediately after any multi-line replacement — the missing name shows up as `TS2304` at once.
