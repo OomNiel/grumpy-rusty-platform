@@ -146,6 +146,15 @@ export interface EspDisplay {
     backlightActiveLow?: boolean;
     spi: EspSpiBus;
     colorOrder: 'rgb' | 'bgr';
+    /**
+     * Whether the glass draws with the opposite polarity, so white comes out black.
+     *
+     * A property of the panel, not of the driver, and the only way to know is to look at it: the T-QT's
+     * newer GC9A01 revision needs the inversion command, its older GC9107 does not, and the two are
+     * otherwise identical from the firmware's side. Emitted as `Builder::invert_colors(ColorInversion::
+     * Inverted)`; absent means the controller's own default (normal).
+     */
+    invertColors?: boolean;
     mirrorX: boolean;
     mirrorY: boolean;
     /** Panel clock in Hz. Lower it first if the image is unstable. */

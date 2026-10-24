@@ -120,6 +120,36 @@ test('the T-QT panel revisions share the same wiring', () => {
     equal(panels.find((p) => p.panelChoice === 'gc9a01').spiHz, 40_000_000);
 });
 
+test('the T-QT newer panel is the one whose glass draws inverted', () => {
+    // Reported on the bench 2026-10-24: with the newer GC9A01 revision white came out black. Colour
+    // polarity is a property of the glass -- no compile and no datasheet check can settle it -- so the
+    // catalogue carries it, and only that revision carries it.
+    const board = espBoard('lilygo-tqt');
+    equal(displayFor(board, { panel: 'gc9107' }).invertColors, undefined, 'the older panel is normal');
+    equal(displayFor(board, { panel: 'gc9a01' }).invertColors, true, 'the newer one inverts');
+
+    equal(
+        filesFor(board, 'display', { panel: 'gc9a01' }).get('src/main.rs').includes('.invert_colors(ColorInversion::Inverted)'),
+        true,
+        'the builder sends the inversion command',
+    );
+    contains(
+        filesFor(board, 'display', { panel: 'gc9a01' }).get('src/MainHeader.rs'),
+        'use mipidsi::options::{ColorInversion, ColorOrder, Orientation, Rotation};',
+        'and the type it names is imported',
+    );
+    notContains(
+        filesFor(board, 'display', { panel: 'gc9107' }).get('src/main.rs'),
+        'invert_colors',
+        'the older panel has nothing to invert',
+    );
+    notContains(
+        filesFor(board, 'display', { panel: 'gc9107' }).get('src/MainHeader.rs'),
+        'ColorInversion',
+        'and no import it would warn about',
+    );
+});
+
 test('the CYD panel matches the board schematic', () => {
     const panel = displayFor(espBoard('sunton-3248s035r'), {});
     equal(panel.label, '3.5" ST7796 320x480');
@@ -557,7 +587,12 @@ test('the panel orientation comes from the board data, for every panel', () => {
                 + `${panel.mirrorX ? '.flip_horizontal()' : ''}${panel.mirrorY ? '.flip_vertical()' : ''}`
                 + '.rotate(rotation))';
             contains(main, expected, `${board.id} ${panel.label}`);
-            contains(main, 'use mipidsi::options::{ColorOrder, Orientation, Rotation};');
+            // The options import names the inversion type only for a glass that draws inverted, so that
+            // every other project stays free of an unused import.
+            const imported = panel.invertColors === true
+                ? 'use mipidsi::options::{ColorInversion, ColorOrder, Orientation, Rotation};'
+                : 'use mipidsi::options::{ColorOrder, Orientation, Rotation};';
+            contains(main, imported, `${board.id} ${panel.label}: options`);
         }
     }
     // and the data itself still says what the hardware showed: the CYD's X axis is mirrored.
@@ -1050,7 +1085,7 @@ test('a Designer project keeps the time in the RTC and asks a host when it has n
         );
         ok(
             source.indexOf('parse_clock_datetime(&state.console_line[..filled])') <
-                source.indexOf('parse_clock_time(&state.console_line[..filled])'),
+            source.indexOf('parse_clock_time(&state.console_line[..filled])'),
             `${name}: the dated line is tried first`,
         );
     }

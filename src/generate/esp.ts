@@ -878,6 +878,18 @@ function backlightImports(display: EspDisplay | undefined): string[] {
     ];
 }
 
+/**
+ * The mipidsi options a panel needs, named in one import line.
+ *
+ * `ColorInversion` appears only for a glass that draws inverted: an unused import is a warning in every
+ * project the extension generates, and those are the ones a new user reads first.
+ */
+function mipidsiOptionImports(display: EspDisplay | undefined): string {
+    return display?.invertColors === true
+        ? 'use mipidsi::options::{ColorInversion, ColorOrder, Orientation, Rotation};'
+        : 'use mipidsi::options::{ColorOrder, Orientation, Rotation};';
+}
+
 function espImports(board: EspBoardProfile, template: AppTemplate, display: EspDisplay | undefined): string {
     if (template === 'wifi') {
         return [
@@ -998,7 +1010,7 @@ function espImports(board: EspBoardProfile, template: AppTemplate, display: EspD
             'use esp_hal::time::Rate;',
             'use esp_hal::timer::timg::TimerGroup;',
             'use esp_println as _;',
-            'use mipidsi::options::{ColorOrder, Orientation, Rotation};',
+            mipidsiOptionImports(display),
             'use mipidsi::{models, Builder};',
             'use mipidsi::interface::SpiInterface as SPIInterface;',
         ].join('\n');
@@ -1031,7 +1043,7 @@ function espImports(board: EspBoardProfile, template: AppTemplate, display: EspD
                 ? ['use esp_hal::usb::usb_serial_jtag::UsbSerialJtag;']
                 : ['use esp_hal::uart::{Config as UartConfig, Uart};']),
             'use esp_println as _;',
-            'use mipidsi::options::{ColorOrder, Orientation, Rotation};',
+            mipidsiOptionImports(display),
             'use mipidsi::{models, Builder};',
             'use mipidsi::interface::SpiInterface as SPIInterface;',
         ].join('\n');
@@ -1056,7 +1068,7 @@ function espImports(board: EspBoardProfile, template: AppTemplate, display: EspD
             'use esp_hal::time::Rate;',
             'use esp_hal::timer::timg::TimerGroup;',
             'use esp_println as _;',
-            'use mipidsi::options::{ColorOrder, Orientation, Rotation};',
+            mipidsiOptionImports(display),
             'use mipidsi::{models, Builder};',
             // The **buffered** interface, and it must be this one: the call below passes a batching buffer
             // (`SPIInterface::new(spi, dc, &mut buffer)`), which is mipidsi's own three-argument type.
@@ -2419,6 +2431,23 @@ function orientation(display: EspDisplay): string {
         : '';
     return `${note}
         .orientation(Orientation::new()${flips}.rotate(rotation))`;
+}
+
+/**
+ * The panel's colour polarity, when the glass draws inverted.
+ *
+ * "Inverted" here is the panel's own INVERTON setting, not the drawing: with the default polarity a T-QT of
+ * the newer GC9A01 revision paints white as black (reported 2026-10-24), and no other panel catalogued here
+ * does. Nothing in a compile can prove which way a glass is wired, so the catalogue carries the answer and a
+ * board that needs nothing emits nothing -- the controller's default is normal.
+ */
+function inversion(display: EspDisplay): string {
+    if (display.invertColors !== true) {
+        return '';
+    }
+    return `
+        // ${display.label}: this glass draws inverted, so normal colours come out as their negative.
+        .invert_colors(ColorInversion::Inverted)`;
 }
 
 /**
@@ -4064,7 +4093,7 @@ ${backlight}${resetSetup}
     let rotated = matches!(rotation, Rotation::Deg90 | Rotation::Deg270);
     let mut display = Builder::new(models::${display.controller}, di)
         .display_size(width, height)${reset}${orientation(display)}
-        .color_order(ColorOrder::${display.colorOrder === 'bgr' ? 'Bgr' : 'Rgb'})
+        .color_order(ColorOrder::${display.colorOrder === 'bgr' ? 'Bgr' : 'Rgb'})${inversion(display)}
         .init(&mut delay)
         .expect("panel initialisation");
 
@@ -4133,7 +4162,7 @@ ${backlight}${resetSetup}
     let rotated = matches!(rotation, Rotation::Deg90 | Rotation::Deg270);
     let mut display = Builder::new(models::${display.controller}, di)
         .display_size(width, height)${reset}${orientation(display)}
-        .color_order(ColorOrder::${display.colorOrder === 'bgr' ? 'Bgr' : 'Rgb'})
+        .color_order(ColorOrder::${display.colorOrder === 'bgr' ? 'Bgr' : 'Rgb'})${inversion(display)}
         .init(&mut delay)
         .expect("panel initialisation");
 
