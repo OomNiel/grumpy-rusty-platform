@@ -74,6 +74,459 @@ let storeFile: string | undefined;
 const surfaces = new Set<vscode.Webview>();
 let busy = false;
 
+/** Rust Assist mode: watch the active .rs editor for `//~ keyword` triggers. */
+let rustAssistDisposable: vscode.Disposable | undefined;
+
+function rustAssistExamples(keyword: string): string {
+    if (keyword === 'let') {
+        return [
+            'Example `let` bindings for every Rust data type:',
+            '```rust',
+            'let b: bool = true;',
+            'let i: i32 = 42;',
+            'let u: u32 = 42;',
+            'let f: f32 = 3.14;',
+            'let c: char = \'a\';',
+            'let s: &str = "hello";',
+            'let v: Vec<i32> = vec![1, 2, 3];',
+            'let o: Option<i32> = Some(1);',
+            'let r: Result<i32, &str> = Ok(1);',
+            '```',
+        ].join('\n');
+    }
+    if (keyword === 'loop') {
+        return [
+            'Loop variations:',
+            '```rust',
+            '// infinite loop',
+            'loop {',
+            '    // work',
+            '    if done { break; }',
+            '}',
+            '',
+            '// while loop',
+            'while condition {',
+            '    // work',
+            '}',
+            '',
+            '// for loop over a range (exclusive end)',
+            'for i in 0..10 {',
+            '    // work',
+            '}',
+            '',
+            '// for loop over an inclusive range (end included, =x)',
+            'for i in 0..=10 {',
+            '    // work',
+            '}',
+            '',
+            '// for loop over an iterator',
+            'for item in collection.iter() {',
+            '    // work',
+            '}',
+            '```',
+        ].join('\n');
+    }
+    if (keyword === 'if') {
+        return [
+            'If decision variations:',
+            '```rust',
+            '// simple if',
+            'if condition {',
+            '    // work',
+            '}',
+            '',
+            '// if / else',
+            'if condition {',
+            '    // work',
+            '} else {',
+            '    // otherwise',
+            '}',
+            '',
+            '// if / else if / else',
+            'if a {',
+            '    // a',
+            '} else if b {',
+            '    // b',
+            '} else {',
+            '    // neither',
+            '}',
+            '',
+            '// if as expression (let)',
+            'let x = if condition { 1 } else { 2 };',
+            '',
+            '// if let (pattern matching)',
+            'if let Some(v) = option {',
+            '    // use v',
+            '}',
+            '```',
+        ].join('\\n');
+    }
+    if (keyword === 'match') {
+        return [
+            'Match decision variations:',
+            '```rust',
+            '// basic match',
+            'match value {',
+            '    0 => { /* zero */ }',
+            '    1 | 2 => { /* one or two */ }',
+            '    3..=5 => { /* range */ }',
+            '    _ => { /* default */ }',
+            '}',
+            '',
+            '// match as expression',
+            'let result = match value {',
+            '    0 => "zero",',
+            '    _ => "other",',
+            '};',
+            '',
+            '// match with guards',
+            'match value {',
+            '    x if x > 0 => { /* positive */ }',
+            '    _ => { /* non-positive */ }',
+            '}',
+            '',
+            '// match on enum',
+            'match msg {',
+            '    Message::Quit => { /* quit */ }',
+            '    Message::Move { x, y } => { /* move */ }',
+            '    Message::Write(s) => { /* write */ }',
+            '}',
+            '```',
+        ].join('\\n');
+    }
+    if (keyword === 'fn') {
+        return [
+            'Function declaration variations:',
+            '```rust',
+            '// basic function',
+            'fn greet() {',
+            '    // work',
+            '}',
+            '',
+            '// function with parameters and return type',
+            'fn add(a: i32, b: i32) -> i32 {',
+            '    a + b',
+            '}',
+            '',
+            '// generic function',
+            'fn identity<T>(x: T) -> T {',
+            '    x',
+            '}',
+            '',
+            '// function with lifetime',
+            'fn longest<\'a>(x: &\'a str, y: &\'a str) -> &\'a str {',
+            '    if x.len() > y.len() { x } else { y }',
+            '}',
+            '',
+            '// async function',
+            'async fn fetch() -> Result<(), Error> {',
+            '    Ok(())',
+            '}',
+            '',
+            '// const fn',
+            'const fn square(x: i32) -> i32 {',
+            '    x * x',
+            '}',
+            '',
+            '// unsafe fn',
+            'unsafe fn raw_ptr() {',
+            '    // work',
+            '}',
+            '',
+            '// pub fn',
+            'pub fn public_api() {',
+            '    // work',
+            '}',
+            '```',
+        ].join('\\n');
+    }
+    if (keyword === 'array') {
+        return [
+            'Array declaration variations:',
+            '```rust',
+            '// fixed-size array',
+            'let a: [i32; 3] = [1, 2, 3];',
+            '',
+            '// array with default value',
+            'let b = [0; 5];',
+            '',
+            '// array of strings',
+            'let c: [&str; 2] = ["hi", "bye"];',
+            '',
+            '// mutable array',
+            'let mut d = [1, 2, 3];',
+            '',
+            '// array indexing',
+            'let first = a[0];',
+            '',
+            '// array slice from array',
+            'let s = &a[1..];',
+            '```',
+        ].join('\\n');
+    }
+    if (keyword === 'slice') {
+        return [
+            'Slice declaration variations:',
+            '```rust',
+            '// slice reference',
+            'let s: &[i32] = &[1, 2, 3];',
+            '',
+            '// mutable slice',
+            'let ms: &mut [i32] = &mut [1, 2, 3];',
+            '',
+            '// slice from array',
+            'let arr = [1, 2, 3, 4];',
+            'let sl = &arr[1..3];',
+            '',
+            '// inclusive slice range',
+            'let sl2 = &arr[1..=2];',
+            '',
+            '// open-ended slice',
+            'let tail = &arr[2..];',
+            'let head = &arr[..2];',
+            '',
+            '// empty slice',
+            'let empty: &[i32] = &[];',
+            '```',
+        ].join('\\n');
+    }
+    if (keyword === 'string') {
+        return [
+            'String declaration variations:',
+            '```rust',
+            '// string slice (&str)',
+            'let s: &str = "hello";',
+            '',
+            '// owned String',
+            'let owned: String = String::from("hello");',
+            'let owned2 = "hello".to_string();',
+            '',
+            '// mutable String',
+            'let mut m = String::from("hi");',
+            'm.push_str(" there");',
+            '',
+            '// empty strings',
+            'let empty_str: &str = "";',
+            'let empty_owned = String::new();',
+            '',
+            '// string with capacity',
+            'let mut cap = String::with_capacity(16);',
+            '',
+            '// raw string literal',
+            'let raw: &str = r#"line1\nline2"#;',
+            '',
+            '// byte string',
+            'let bytes: &[u8] = b"hello";',
+            '```',
+        ].join('\\n');
+    }
+    if (keyword === 'struct') {
+        return [
+            'Struct declaration variations:',
+            '```rust',
+            '// unit struct',
+            'struct Unit;',
+            '',
+            '// tuple struct',
+            'struct Point(i32, i32);',
+            '',
+            '// named-field struct',
+            'struct User {',
+            '    name: String,',
+            '    age: u32,',
+            '}',
+            '',
+            '// generic struct',
+            'struct Wrapper<T> {',
+            '    value: T,',
+            '}',
+            '',
+            '// struct with lifetime',
+            'struct Ref<\'a> {',
+            '    data: &\'a str,',
+            '}',
+            '',
+            '// public struct',
+            'pub struct Public {',
+            '    pub field: i32,',
+            '}',
+            '',
+            '// struct update syntax',
+            'let u2 = User { age: 30, ..u };',
+            '```',
+        ].join('\\n');
+    }
+    if (keyword === 'enum') {
+        return [
+            'Enum declaration variations:',
+            '```rust',
+            '// simple enum',
+            'enum Color { Red, Green, Blue }',
+            '',
+            '// enum with data',
+            'enum Message {',
+            '    Quit,',
+            '    Move { x: i32, y: i32 },',
+            '    Write(String),',
+            '    ChangeColor(i32, i32, i32),',
+            '}',
+            '',
+            '// generic enum',
+            'enum Option<T> {',
+            '    Some(T),',
+            '    None,',
+            '}',
+            '',
+            '// enum with discriminants',
+            'enum HttpStatus {',
+            '    Ok = 200,',
+            '    NotFound = 404,',
+            '}',
+            '',
+            '// public enum',
+            'pub enum Visibility { Public, Private }',
+            '```',
+        ].join('\\n');
+    }
+    if (keyword === 'option') {
+        return [
+            'Option variations:',
+            '```rust',
+            '// Some / None',
+            'let some: Option<i32> = Some(5);',
+            'let none: Option<i32> = None;',
+            '',
+            '// if let',
+            'if let Some(v) = some {',
+            '    // use v',
+            '}',
+            '',
+            '// match',
+            'match some {',
+            '    Some(v) => v,',
+            '    None => 0,',
+            '}',
+            '',
+            '// unwrap / expect',
+            'let v = some.unwrap();',
+            'let v2 = some.expect("missing");',
+            '',
+            '// unwrap_or / unwrap_or_else',
+            'let v3 = none.unwrap_or(0);',
+            'let v4 = none.unwrap_or_else(|| compute());',
+            '',
+            '// map / and_then',
+            'let doubled = some.map(|x| x * 2);',
+            'let chained = some.and_then(|x| Some(x + 1));',
+            '',
+            '// is_some / is_none',
+            'if some.is_some() { /* ... */ }',
+            '```',
+        ].join('\\n');
+    }
+    if (keyword === 'result') {
+        return [
+            'Result variations:',
+            '```rust',
+            '// Ok / Err',
+            'let ok: Result<i32, &str> = Ok(5);',
+            'let err: Result<i32, &str> = Err("fail");',
+            '',
+            '// match',
+            'match result {',
+            '    Ok(v) => v,',
+            '    Err(e) => { /* handle */ 0 },',
+            '}',
+            '',
+            '// ? operator',
+            'fn run() -> Result<i32, &str> {',
+            '    let v = parse()?;',
+            '    Ok(v + 1)',
+            '}',
+            '',
+            '// unwrap / expect',
+            'let v = result.unwrap();',
+            'let v2 = result.expect("failed");',
+            '',
+            '// unwrap_or / unwrap_or_else',
+            'let v3 = result.unwrap_or(0);',
+            'let v4 = result.unwrap_or_else(|e| recover(e));',
+            '',
+            '// map / map_err',
+            'let mapped = result.map(|x| x * 2);',
+            'let mapped_err = result.map_err(|e| format!("{}", e));',
+            '',
+            '// is_ok / is_err',
+            'if result.is_ok() { /* ... */ }',
+            '```',
+        ].join('\\n');
+    }
+    if (keyword === 'module' || keyword === 'mod') {
+        return [
+            'Module creation variations:',
+            '```rust',
+            '// inline module',
+            'mod utils {',
+            '    pub fn helper() {}',
+            '}',
+            '',
+            '// module in separate file (mod.rs or utils.rs)',
+            'mod utils;',
+            '',
+            '// public module',
+            'pub mod api;',
+            '',
+            '// nested module',
+            'mod outer {',
+            '    pub mod inner {',
+            '        pub fn f() {}',
+            '    }',
+            '}',
+            '',
+            '// module with re-export',
+            'mod inner;',
+            'pub use inner::Item;',
+            '',
+            '// crate root module (lib.rs / main.rs)',
+            '// (file itself is the crate root)',
+            '```',
+        ].join('\\n');
+    }
+    return `No examples yet for keyword "${keyword}".`;
+}
+
+function enableRustAssist(): void {
+    rustAssistDisposable?.dispose();
+    rustAssistDisposable = vscode.workspace.onDidChangeTextDocument((event) => {
+        const editor = vscode.window.activeTextEditor;
+        if (!editor || editor.document !== event.document) return;
+        if (!event.document.fileName.endsWith('.rs')) return;
+        for (const change of event.contentChanges) {
+            const startLine = change.range.start.line;
+            const lines = change.text.split('\n');
+            for (let i = 0; i < lines.length; i += 1) {
+                const lineNo = startLine + i;
+                if (lineNo >= event.document.lineCount) continue;
+                const text = event.document.lineAt(lineNo).text;
+                const match = text.match(/^\s*\/\/~\s*(\w+)\s*$/);
+                if (!match) continue;
+                const keyword = match[1] ?? '';
+                const chat = ensureActive();
+                const answer = rustAssistExamples(keyword);
+                chat.turns.push({ role: 'assistant', text: answer });
+                remember();
+                postChats();
+                post({ type: 'turn', role: 'assistant', text: answer, final: true, index: chat.turns.length - 1 });
+            }
+        }
+    });
+}
+
+function disableRustAssist(): void {
+    rustAssistDisposable?.dispose();
+    rustAssistDisposable = undefined;
+}
+
 /** Reads the chat file once, at registration. A missing or unreadable file is "no chats yet", not an error. */
 function loadChats(context: vscode.ExtensionContext): void {
     storeFile = path.join(context.globalStorageUri.fsPath, 'ai-chats.json');
@@ -499,7 +952,7 @@ function html(webview: vscode.Webview): string {
     .error { color: var(--vscode-errorForeground); white-space: pre-wrap; }
     textarea, input, select { width: 100%; box-sizing: border-box; background: var(--vscode-input-background);
         color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border, transparent); border-radius: 3px; padding: 4px; }
-    textarea { resize: vertical; min-height: 64px; }
+    textarea { resize: vertical; min-height: 64px; white-space: pre-wrap; overflow-wrap: break-word; word-break: break-word; }
     button { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none;
         border-radius: 3px; padding: 5px 10px; cursor: pointer; }
     button.secondary { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); }
@@ -522,6 +975,10 @@ function html(webview: vscode.Webview): string {
         <label title="Off unloads every local model and stops the llama-server; on starts what the settings say to start">
             <input id="assistOn" type="checkbox" style="width:auto"> <span id="assistOnLabel">AI assist is off</span>
         </label>
+    </div>
+    <div class="row" id="assistMode">
+        <label><input type="radio" name="assistMode" id="fullAssist" value="full" checked> Full Assist</label>
+        <label><input type="radio" name="assistMode" id="rustAssist" value="rust"> Rust Assist</label>
     </div>
     <div class="row" id="chatbar">
         <select id="chats" title="Earlier conversations in this project"></select>
@@ -756,6 +1213,11 @@ function html(webview: vscode.Webview): string {
         vscode.postMessage({ type: 'save', settings: { stopServersAtStartup: event.target.checked } });
     });
     document.getElementById('openEditorTab').addEventListener('click', () => vscode.postMessage({ type: 'command', command: 'rustyPlatform.assistant.openEditor' }));
+    document.querySelectorAll('input[name="assistMode"]').forEach((el) => {
+        el.addEventListener('change', (e) => {
+            vscode.postMessage({ type: 'setMode', mode: e.target.value });
+        });
+    });
     document.getElementById('save').addEventListener('click', () => {
         // A number box that was emptied must not become 0. For contextSize 0 is meaningful — it means "size the
         // window to fit the answer budget" — but for maxTokens it would clamp to 64 and quietly starve every
@@ -805,6 +1267,7 @@ export class AiChatViewProvider implements vscode.WebviewViewProvider {
         /** `applyCode`: which turn, and which of its code blocks. */
         index?: number;
         block?: number;
+        mode?: string;
     }): Promise<void> {
         switch (message.type) {
             case 'ready': {
@@ -871,6 +1334,20 @@ export class AiChatViewProvider implements vscode.WebviewViewProvider {
             case 'save':
                 await this.save(message.settings ?? {});
                 return;
+            case 'setMode': {
+                if (message.mode === 'rust') {
+                    if (!assistantEnabled(assistantConfig())) {
+                        post({ type: 'status', text: 'Rust Assist needs AI Assist enabled first.' });
+                        return;
+                    }
+                    enableRustAssist();
+                    post({ type: 'status', text: 'Rust Assist on — type //~ let or //~ loop in a .rs file' });
+                } else {
+                    disableRustAssist();
+                    post({ type: 'status', text: 'Full Assist on' });
+                }
+                return;
+            }
             default:
                 return;
         }

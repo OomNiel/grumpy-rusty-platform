@@ -9,7 +9,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+
+- Rust Assist mode in the AI Assist panel: radio buttons switch between Full Assist and Rust Assist; Rust
+  Assist watches `.rs` files for `//~ keyword` triggers and posts examples for `let`, `loop`, `if`, `match`,
+  `fn`, `array`, `slice`, `string`, `struct`, `enum`, `option`, `result`, `mod`/`module`.
+- Build and flash now close only running Build/Flash terminals, leaving other terminals (AI chats, shells)
+  untouched.
+
+### Changed
+
+- AI Assist chat textarea now wraps long lines.
 
 ## [0.13.24] - 2026-10-24
 

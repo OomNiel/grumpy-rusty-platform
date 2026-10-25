@@ -130,21 +130,22 @@ export function closeTerminal(name: string): boolean {
 }
 
 /**
- * Close *every* terminal the window has open, whoever started it, and answer with their names.
+ * Close the running terminal sessions that are *Build* or *Flash* terminals, and answer with their
+ * names. Other terminals the window has open -- an AI chat, a plain shell, Monitor, the clock
+ * listener -- are left alone, so closing a build or flash never tears down unrelated work.
  *
- * A terminal is a thing that holds things: `espflash monitor` and `probe-rs attach` keep the port or
- * the probe for as long as they run, the Designer's clock listener keeps the serial port open for
- * the life of the panel, and a shell where someone typed `espflash monitor` by hand holds it with no
- * record of ours at all. Each of those turns a flash into "could not open the device", which reads as
- * a hardware fault and costs a session to chase.
- *
- * The rule (user, 2026-10-24): *kill all terminals open in the IDE before executing build or
- * flashing.* So this is deliberately the whole list, not just ours - the user's own shells included -
- * and it is why the flash no longer has to ask whether a Monitor terminal may be closed.
+ * Only terminals whose name identifies them as a build or a flash (the `Rusty: build` and
+ * `Rusty: flash` sessions, and any terminal named for a build/flash) are touched; everything else
+ * stays open. This is deliberate: a terminal is a thing that holds things, but only the build and
+ * flash terminals are ours to take down here -- a Monitor terminal or the clock listener are handled
+ * by their own release paths, and a terminal that belongs to an AI chat is never ours to close.
  */
 export function killAllTerminals(): string[] {
     const names: string[] = [];
     for (const terminal of vscode.window.terminals) {
+        if (!/build|flash/i.test(terminal.name)) {
+            continue;
+        }
         names.push(terminal.name);
         terminal.dispose();
     }
