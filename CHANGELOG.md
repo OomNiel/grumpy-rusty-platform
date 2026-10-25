@@ -9,17 +9,39 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.13.30] - 2026-10-25
+
 ### Added
 
-- Rust Assist mode in the AI Assist panel: radio buttons switch between Full Assist and Rust Assist; Rust
-  Assist watches `.rs` files for `//~ keyword` triggers and posts examples for `let`, `loop`, `if`, `match`,
-  `fn`, `array`, `slice`, `string`, `struct`, `enum`, `option`, `result`, `mod`/`module`.
-- Build and flash now close only running Build/Flash terminals, leaving other terminals (AI chats, shells)
-  untouched.
+- **Rust Assist**, beside Full Assist in the AI Assist panel: the radio buttons choose the mode. Rust Assist
+  watches the active `.rs` file for a `//~ keyword` line and posts worked examples of that construct as the
+  answer — `let`, `loop`, `if`, `match`, `fn`, `array`, `slice`, `string`, `struct`, `enum`, `option`,
+  `result`, and `mod`/`module` — with every data type spelled out for `let` and the variations beside each other
+  for `loop`. It needs AI Assist enabled, and says so instead of doing nothing when it is not.
 
 ### Changed
 
-- AI Assist chat textarea now wraps long lines.
+- **Build and flash close only the Build and Flash terminals**, leaving every other terminal alone — the
+  shells you are working in and the AI chats you have open survive a build. The sweep of *every* terminal (added
+  in 0.13.21 for the port-holder that was flashed over) is what this narrows: Monitor and `probe-rs attach` are
+  still closed, because they are ours and they hold the port.
+
+- **The chat is readable at any width.** Long lines wrap in the panel instead of scrolling sideways: the prose
+  of a turn, an unbroken token or URL, a compiler message carrying a long path — and now the **code blocks**
+  too, which were the last thing that widened the box (`pre` kept `white-space: pre` and `overflow-x: auto`, so
+  one long Rust line scrolled the conversation). Wrapped code lines keep their indentation. Measured in a
+  browser at 709 px and 320 px: the log, every turn and every block end at `scrollWidth === clientWidth`.
+
+- **Each mode radio carries its name centred directly under it.** `Full Assist` and `Rust Assist` used to sit
+  to the right of a radio stretched across half the row — the text field rule gives every `input` the full
+  width, so the button ended up alone on its line and its name at the far left. The button is now sized to
+  itself with the label centred beneath it.
+
+### Notes
+
+- Test suite: **1095** hermetic (t1 1014 · t2 77 · t3 4).
 
 ## [0.13.24] - 2026-10-24
 

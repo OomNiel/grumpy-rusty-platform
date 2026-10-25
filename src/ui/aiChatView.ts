@@ -943,13 +943,13 @@ function html(webview: vscode.Webview): string {
     body { font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); color: var(--vscode-foreground);
            padding: 8px; margin: 0; display: flex; flex-direction: column; height: 100vh; box-sizing: border-box; gap: 8px; }
     h2 { font-size: 0.95em; margin: 0 0 4px; text-transform: uppercase; letter-spacing: .06em; opacity: .8; }
-    #status { opacity: .85; font-size: .92em; }
-    #log { flex: 1 1 auto; overflow-y: auto; border: 1px solid var(--vscode-panel-border); border-radius: 4px; padding: 6px; min-height: 120px; }
-    .turn { margin: 0 0 10px; white-space: pre-wrap; word-break: break-word; }
+    #status { opacity: .85; font-size: .92em; overflow-wrap: anywhere; }
+    #log { flex: 1 1 auto; overflow-y: auto; border: 1px solid var(--vscode-panel-border); border-radius: 4px; padding: 6px; min-height: 120px; overflow-wrap: anywhere; word-break: break-word; }
+    .turn { margin: 0 0 10px; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
     .turn.user { color: var(--vscode-textLink-foreground); }
-    .turn pre { background: var(--vscode-textCodeBlock-background); padding: 6px; border-radius: 4px; overflow-x: auto; }
+    .turn pre { background: var(--vscode-textCodeBlock-background); padding: 6px; border-radius: 4px; overflow-x: hidden; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
     .busy { opacity: .8; font-style: italic; }
-    .error { color: var(--vscode-errorForeground); white-space: pre-wrap; }
+    .error { color: var(--vscode-errorForeground); white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
     textarea, input, select { width: 100%; box-sizing: border-box; background: var(--vscode-input-background);
         color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border, transparent); border-radius: 3px; padding: 4px; }
     textarea { resize: vertical; min-height: 64px; white-space: pre-wrap; overflow-wrap: break-word; word-break: break-word; }
@@ -959,6 +959,10 @@ function html(webview: vscode.Webview): string {
     .row { display: flex; gap: 6px; align-items: center; }
     .row > * { flex: 1 1 auto; }
     .row > button { flex: 0 0 auto; }
+    /* The mode radios: the button on top, its name centred directly beneath it (measured in a browser --
+       the input width rule above put the radio alone on its own line and left the text at the far left). */
+    #assistMode label { display: flex; flex-direction: column; align-items: center; gap: 2px; margin: 0; text-align: center; }
+    #assistMode input { width: auto; }
     .codeActions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
     .codeActions button.applyCode { font-size: .9em; padding: 3px 8px; }
     details { border: 1px solid var(--vscode-panel-border); border-radius: 4px; padding: 6px; }
@@ -977,8 +981,8 @@ function html(webview: vscode.Webview): string {
         </label>
     </div>
     <div class="row" id="assistMode">
-        <label><input type="radio" name="assistMode" id="fullAssist" value="full" checked> Full Assist</label>
-        <label><input type="radio" name="assistMode" id="rustAssist" value="rust"> Rust Assist</label>
+        <label><input type="radio" name="assistMode" id="fullAssist" value="full" checked><span>Full Assist</span></label>
+        <label><input type="radio" name="assistMode" id="rustAssist" value="rust"><span>Rust Assist</span></label>
     </div>
     <div class="row" id="chatbar">
         <select id="chats" title="Earlier conversations in this project"></select>

@@ -8040,3 +8040,37 @@ DevKitC designer (ST7789), DevKitC designer (ILI9341 + touch), DevKitC-mirror of
 - **Trap, twice in one session:** a multi-line `replace_string_in_file` silently dropped a line of TypeScript
   (the `widgetViewId` import, and earlier a field declaration). The edit reports success. Run
   `npx tsc -p ./` immediately after any multi-line replacement — the missing name shows up as `TS2304` at once.
+
+### §159 — Rust Assist, a chat that wraps, and a radio button that keeps its name (0.13.25–0.13.30, 2026-10-25)
+
+- **Rust Assist is a second way to *ask*, not a second assistant.** A radio pair above the log posts
+  `setMode`, and `enableRustAssist()` installs one `onDidChangeTextDocument` listener. On every change it looks
+  at the lines the edit touched, in the **active** editor only, in a `.rs` file only, for
+  `/^\s*\/\/~\s*(\w+)\s*$/`; a match turns into an ordinary assistant turn — `remember()`, `postChats()`,
+  `post({ type: 'turn', … })` — so the conversation, the chat file, the restored history and the
+  *Implement … in the project…* button under the answer all work because nothing about the turn is special.
+  - The trigger is **a comment you type at the caret**: no panel focus, no keybinding, and `//~` is inert to
+    `rustc`. `rustAssistExamples(keyword)` is a plain function returning markdown with one fenced block, so the
+    examples are data, not generated text — `let` spells out every data type, `loop` puts the four loop shapes
+    side by side.
+  - Rust Assist refuses to arm while AI Assist is off and says why in `#status`; a mode that silently does
+    nothing reads as a broken editor. **Known gap:** the chosen mode is not part of the settings snapshot, so a
+    reloaded window comes back on Full Assist.
+- **The terminal sweep was too wide (0.13.21 → 0.13.29).** Closing *every* terminal before a build also killed
+  the user's own shells and the AI chat terminals. Only the port-holders matter, and they name themselves:
+  build/flash now close the Build and Flash terminals (and still Monitor and `probe-rs attach`), and a hand-run
+  `espflash monitor` shell is the user's to close.
+- **The chat wraps because `pre` was the last thing that did not.** Measured in a browser with the real CSS and
+  DOM: prose, long URLs and unbroken tokens already ended at `scrollWidth === clientWidth`, but a fenced block
+  kept `white-space: pre` plus `overflow-x: auto`, so one long Rust line scrolled the whole conversation
+  sideways. `.turn pre` is now `pre-wrap` + `overflow-wrap: anywhere` (wrapped lines keep their indentation),
+  `.error` and `#status` carry `anywhere` as well, and every turn, every block and the log itself meet
+  `scrollWidth === clientWidth` at 709 px **and** at 320 px.
+- **The mode radios were a width rule away from being right.** `textarea, input, select { width: 100% }` gave
+  each radio the whole row, so the button sat alone on its own line and its name started at the far left.
+  `#assistMode input { width: auto }` plus a column-flex label (`align-items: center`) puts the name centred
+  directly beneath its own button — measured: centre offset 0 px (rounded), 2 px gap, row height unchanged.
+- **Trap: the `<style>` block is inside a TypeScript template literal.** A backtick inside a CSS comment ends
+  the literal; `tsc` then reports `TS1005: ';' expected` and a second error on the same line, which reads like a
+  CSS syntax error in a file that has none. Write CSS comments without backticks, and quote selectors in plain
+  words instead.

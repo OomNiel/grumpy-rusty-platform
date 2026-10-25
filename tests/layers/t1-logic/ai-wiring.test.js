@@ -227,3 +227,26 @@ test('the side panel itself can move the chat into an editor pane', () => {
     ok(titles.some((m) => m.command === 'rustyPlatform.assistant.openEditor' && m.when === 'view == rustyPlatform.assistant'),
         'the view title bar offers it too');
 });
+
+test('a long line in the chat wraps instead of scrolling sideways', () => {
+    // Asked 2026-10-25: "change the chat box in the AI ASSIST section to do auto-wrapping of long text lines."
+    // A fenced block is what widened the log: `pre` keeps `white-space: pre` and `overflow-x: auto`, so one
+    // long Rust line scrolled the chat box rather than wrapping in it. Plain prose already wrapped (a browser
+    // measurement showed `scrollWidth === clientWidth` for every turn), which is why only these rules change.
+    // Measured in a real browser at 709 px and at 320 px: the log, every turn and the `pre` all end at
+    // `scrollWidth === clientWidth` once these are in place.
+    const chat = fs.readFileSync(path.join(repoRoot(), 'src/ui/aiChatView.ts'), 'utf8');
+    const rule = (selector) => {
+        const at = chat.indexOf(selector + ' {');
+        ok(at >= 0, `${selector} is styled`);
+        return chat.slice(at, chat.indexOf('}', at));
+    };
+    for (const selector of ['#log', '.turn']) {
+        ok(rule(selector).includes('overflow-wrap: anywhere'), `${selector} breaks a long word`);
+    }
+    const pre = rule('.turn pre');
+    ok(pre.includes('white-space: pre-wrap'), 'a fenced block wraps its own lines');
+    ok(pre.includes('overflow-wrap: anywhere'), 'even a token with no space in it');
+    ok(!pre.includes('overflow-x: auto'), 'and the sideways scrollbar is gone');
+    ok(rule('.error').includes('overflow-wrap: anywhere'), 'a compiler message carrying a long path wraps too');
+});
