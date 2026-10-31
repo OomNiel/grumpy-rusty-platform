@@ -519,6 +519,16 @@ export function registerDebugCommand(
         // because a project that cannot be debugged at all still needs the diagnosis.
         vscode.commands.registerCommand('rustyPlatform.checkLaunchConfig', () =>
             withProject(async (project) => {
+                if (project.language === 'arduino') {
+                    // There is no launch.json to check for a sketch: the Rust debugger's configurations are what
+                    // this command inspects, and a C++ project has none by design (no DAP, see the plan's
+                    // non-goals).
+                    void vscode.window.showInformationMessage(
+                        'A sketch has no launch.json to check: C++ projects are built, written and monitored with ' +
+                            'arduino-cli, and this build has no debugger for them.',
+                    );
+                    return;
+                }
                 const report = await inspectLaunchConfigurations(project);
                 if (report.unchecked !== undefined) {
                     output.appendLine(`launch.json: nothing to check - ${report.unchecked}`);

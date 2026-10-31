@@ -114,12 +114,15 @@ export function makeWithProject(
         // probe-rs session, the library manager -- land on this message, and what it says depends on which.
         if (project.language !== 'rust') {
             const what = project.language === 'arduino' ? 'Arduino (C++)' : project.language;
+            // In the log too, with the purpose: the notification names the route, and the log is what says which
+            // kind of command tried to take it when a button is wired to the wrong one.
+            output.appendLine(`[project] refusing a Rust-route command (${purpose}) for an ${what} project`);
             void vscode.window.showWarningMessage(
                 purpose === 'edit'
                     ? `That command edits Cargo.toml, and this is an ${what} project. Build, Flash and Monitor ` +
-                          "work; a sketch's libraries are installed with `arduino-cli lib install`."
+                    "work; a sketch's libraries are installed with `arduino-cli lib install`."
                     : `That command is the Rust route (cargo, probe-rs, espflash) and this is an ${what} ` +
-                          'project. Build, Flash and Monitor run arduino-cli instead.',
+                    'project. Build, Flash and Monitor run arduino-cli instead.',
             );
             return;
         }

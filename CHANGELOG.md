@@ -11,6 +11,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.18.9] - 2026-10-31
+
+### Fixed
+
+- **`rustyPlatform.checkLaunchConfig` says the right thing for a sketch.** It inspects the Rust debugger's
+  `launch.json`, which a C++ project has none of; it now says so instead of claiming the project is on the wrong
+  route. The refusals are also written to the Rusty Platform log with the kind of command that hit them, so a
+  button wired to the wrong command names itself.
+
 ## [0.18.8] - 2026-10-31
 
 ### Added
