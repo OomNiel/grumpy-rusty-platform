@@ -170,17 +170,32 @@ export function parseBoardList(stdout: string): ArduinoPort[] {
             if (entry === null || typeof entry !== 'object') {
                 continue;
             }
-            const port = entry as {
+            // arduino-cli 1.x wraps the port in its own object and puts the boards it might be beside it:
+            // `{"port":{"address","protocol","label"},"matching_boards":[{"name","fqbn"}]}`. Reading the
+            // address from the entry itself found nothing, so *every* upload stopped at "No board found on any
+            // port" — on a bench with two boards plugged in (2026-10-31). Both shapes are accepted, because the
+            // flat one is what arduino-cli itself documented first.
+            const entryRecord = entry as {
+                port?: unknown;
+                matching_boards?: unknown;
                 address?: unknown;
                 protocol?: unknown;
                 protocol_label?: unknown;
                 label?: unknown;
                 boards?: unknown;
             };
+            const port =
+                entryRecord.port !== null && typeof entryRecord.port === 'object'
+                    ? (entryRecord.port as typeof entryRecord)
+                    : entryRecord;
             if (typeof port.address !== 'string' || typeof port.protocol !== 'string') {
                 continue;
             }
-            const boards = Array.isArray(port.boards) ? port.boards : [];
+            const boards = Array.isArray(entryRecord.matching_boards)
+                ? entryRecord.matching_boards
+                : Array.isArray(entryRecord.boards)
+                    ? entryRecord.boards
+                    : [];
             const first = boards[0] as { name?: unknown; fqbn?: unknown } | undefined;
             ports.push({
                 address: port.address,
@@ -200,10 +215,59 @@ export function parseBoardList(stdout: string): ArduinoPort[] {
     }
 }
 
+/**
+ * The ways this board can be programmed, from the core's own menu.
+ *
+ * arduino-pico's boards.txt has `menu.uploadmethod` with `default` (UF2 over USB), `picotool` and
+ * `picoprobe_cmsis_dap` (a debug probe over SWD), and `arduino-cli board details` reports it. Reading it here
+ * means a choice the core offers is a choice the extension can offer, without a table of its own to go stale.
+ * Returns the option name (`uploadmethod`) and its values, or `undefined` when the board has no such menu.
+ */
+export function parseUploadMethodMenu(stdout: string): { option: string; values: string[] } | undefined {
+    try {
+        const parsed = JSON.parse(stdout) as { config_options?: unknown };
+        if (!Array.isArray(parsed.config_options)) {
+            return undefined;
+        }
+        for (const entry of parsed.config_options) {
+            const option = (entry as { option?: unknown }).option;
+            const values = (entry as { values?: unknown }).values;
+            if (typeof option !== 'string' || !Array.isArray(values) || !/^upload/i.test(option)) {
+                continue;
+            }
+            const names = values
+                .map((value) => (value as { value?: unknown }).value)
+                .filter((value): value is string => typeof value === 'string');
+            if (names.length > 0) {
+                return { option, values: names };
+            }
+        }
+        return undefined;
+    } catch {
+        return undefined;
+    }
+}
+
 /** Asks the CLI which ports are there now. */
 export async function listArduinoPorts(run: ExecFn, cliPath: string): Promise<ArduinoPort[]> {
     const result = await run(cliPath, ['board', 'list', '--format', 'json'], { timeoutMs: 30_000 });
     return result.code === 0 ? parseBoardList(result.stdout) : [];
+}
+
+/**
+ * Records a different FQBN in the project's own manifest.
+ *
+ * Only the `fqbn:` line is rewritten; the comments around it are the project's documentation of *why* the board
+ * is what it is, and a rewrite of the whole file would throw that away. Everything else in the file is left
+ * byte for byte.
+ */
+export function setSketchFqbn(folder: string, fqbn: string): void {
+    const file = path.join(folder, 'sketch.yaml');
+    const text = fs.readFileSync(file, 'utf8');
+    const next = /^\s*fqbn:.*$/m.test(text)
+        ? text.replace(/^(\s*fqbn:).*$/m, `$1 ${fqbn}`)
+        : `${text.trimEnd()}\n\nfqbn: ${fqbn}\n`;
+    fs.writeFileSync(file, next, 'utf8');
 }
 
 /** The sketch's board, which is the project's own record and the only thing upload and compile need. */

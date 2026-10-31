@@ -40,7 +40,15 @@ export const INTELLISENSE_CONFIG_PATH = '.vscode/c_cpp_properties.json';
 export function fqbnFromSketchYaml(text: string): string | undefined {
     // Unquoted or quoted, and tolerant of trailing comments: the file is written by this extension, but a
     // person may edit it by hand and a stray quote must not silently produce a broken command line.
-    const match = /^\s*fqbn:\s*["']?([A-Za-z0-9_]+:[A-Za-z0-9_]+:[A-Za-z0-9_-]+)["']?\s*$/m.exec(text);
+    //
+    // The options tail is part of the FQBN, not decoration: `rp2040:rp2040:rpipico2w:uploadmethod=picoprobe_cmsis_dap`
+    // is how a project says it is flashed through a debug probe over SWD, and `arduino-cli` needs that on
+    // `compile` as well -- the method sets `upload.maximum_data_size` and the debug script. Refusing it here
+    // meant a project could not record the one thing that decides how it is programmed.
+    const match =
+        /^\s*fqbn:\s*["']?([A-Za-z0-9_-]+:[A-Za-z0-9_-]+:[A-Za-z0-9_-]+(?::[A-Za-z0-9_.,=-]+)?)["']?\s*$/m.exec(
+            text,
+        );
     return match === null ? undefined : match[1];
 }
 

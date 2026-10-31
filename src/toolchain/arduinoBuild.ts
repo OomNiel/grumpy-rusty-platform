@@ -83,8 +83,64 @@ export function projectPathOf(file: string, projectDir: string): string {
     return normalised;
 }
 
-export function uploadArgs(fqbn: string, port: string): string[] {
-    return ['upload', '--fqbn', fqbn, '-p', port, '--input-dir', ARDUINO_ARTIFACT_DIR];
+export function uploadArgs(fqbn: string, port?: string): string[] {
+    // No `-p` when there is no port: a debug probe programs over SWD and the core's recipe never uses the
+    // serial port. arduino-cli accepts that, and `uploadmethod=default` (UF2) still needs one.
+    const middle = port === undefined ? [] : ['-p', port];
+    return ['upload', '--fqbn', fqbn, ...middle, '--input-dir', ARDUINO_ARTIFACT_DIR];
+}
+
+/**
+ * The value of one FQBN option, e.g. `uploadmethod` in `rp2040:rp2040:rpipico2w:uploadmethod=picotool`.
+ *
+ * `arduino-cli` reads the tail of the board spec as `opt=value,opt=value`; the default when there is no tail is
+ * the first value the core lists, and for arduino-pico that is `default` (UF2 over USB).
+ */
+export function fqbnOption(fqbn: string, key: string): string | undefined {
+    const tail = fqbn.split(':').slice(3).join(':');
+    for (const pair of tail.split(',')) {
+        const [name, value] = pair.split('=');
+        if (name?.trim() === key && value !== undefined && value.trim() !== '') {
+            return value.trim();
+        }
+    }
+    return undefined;
+}
+
+/** The same FQBN with one option set, replacing any value it already had. */
+export function withFqbnOption(fqbn: string, key: string, value: string): string {
+    const parts = fqbn.split(':');
+    const head = parts.slice(0, 3).join(':');
+    const others = parts
+        .slice(3)
+        .join(':')
+        .split(',')
+        .filter((pair) => pair.trim() !== '' && pair.split('=')[0]?.trim() !== key);
+    return [head, ...others, `${key}=${value}`].join(':');
+}
+
+/** The same FQBN with one option removed, which is how "back to the core's default" is spelled. */
+export function withoutFqbnOption(fqbn: string, key: string): string {
+    const parts = fqbn.split(':');
+    const head = parts.slice(0, 3).join(':');
+    const others = parts
+        .slice(3)
+        .join(':')
+        .split(',')
+        .filter((pair) => pair.trim() !== '' && pair.split('=')[0]?.trim() !== key);
+    return [head, ...others].join(':');
+}
+
+/**
+ * Whether the core's upload recipe wants a serial port at all.
+ *
+ * Only UF2-over-USB does. `picoprobe_cmsis_dap` programs through OpenOCD on SWD, and `picotool` talks to the
+ * bootloader — neither takes `-p`. Asking for a port first, as this did, means a probe user is told "no board
+ * found" and never reaches a flash that would have worked (bench, 2026-10-31).
+ */
+export function uploadNeedsPort(fqbn: string): boolean {
+    const method = fqbnOption(fqbn, 'uploadmethod');
+    return method === undefined || method === 'default';
 }
 
 export function monitorArgs(port: string): string[] {

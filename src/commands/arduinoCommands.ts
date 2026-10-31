@@ -7,10 +7,14 @@ import {
     ARDUINO_ARTIFACT_DIR,
     collectDiagnostics,
     compileArgs,
+    fqbnOption,
     lastLineOf,
     monitorArgs,
     projectPathOf,
     uploadArgs,
+    uploadNeedsPort,
+    withFqbnOption,
+    withoutFqbnOption,
 } from '../toolchain/arduinoBuild';
 import {
     ArduinoPort,
@@ -18,7 +22,9 @@ import {
     detectArduino,
     hasCoreFor,
     listArduinoPorts,
+    parseUploadMethodMenu,
     readSketchYaml,
+    setSketchFqbn,
 } from '../toolchain/arduinoCli';
 import { configuredArduinoCliPath, writeArduinoIntelliSense } from '../toolchain/arduinoIntelliSense';
 import { execFileFn } from '../util/exec';
@@ -249,9 +255,10 @@ async function pickPort(cli: string, fqbn: string): Promise<ArduinoPort | undefi
     if (ports.length === 0) {
         const hint = fqbn.startsWith('rp2040:')
             ? ' Hold BOOTSEL while plugging the board in (or press it while RESET is held) so it appears as a ' +
-            'drive, then try again.'
+              'drive, then try again. A **debug probe** does not appear as a port at all — use "Rusty: Upload ' +
+              'Method" to flash over SWD instead.'
             : '';
-        void vscode.window.showErrorMessage(`No board found on any port.${hint}`);
+        void vscode.window.showErrorMessage(`No board found on any port.${hint.replace(/\*\*/g, '')}`);
         return undefined;
     }
     if (ports.length === 1) {
@@ -300,15 +307,21 @@ export async function arduinoUpload(
     if (!building) {
         return;
     }
-    const port = await pickPort(cli, fqbn);
-    if (port === undefined) {
+    // A probe programs over SWD and a bootloader upload takes the UF2; neither has a serial port to pick, and
+    // asking for one is what stopped a probe user at "No board found" before flashing anything (2026-10-31).
+    const port = uploadNeedsPort(fqbn) ? await pickPort(cli, fqbn) : undefined;
+    if (uploadNeedsPort(fqbn) && port === undefined) {
         return;
     }
 
     output.show(true);
     const result = await vscode.window.withProgress(
-        { location: vscode.ProgressLocation.Notification, title: `Uploading to ${port.address}`, cancellable: false },
-        () => runCaptured(cli, uploadArgs(fqbn, port.address), project.folder.fsPath, output),
+        {
+            location: vscode.ProgressLocation.Notification,
+            title: port === undefined ? 'Uploading over the debug probe' : `Uploading to ${port.address}`,
+            cancellable: false,
+        },
+        () => runCaptured(cli, uploadArgs(fqbn, port?.address), project.folder.fsPath, output),
     );
     if (result.code !== 0) {
         void vscode.window.showErrorMessage(
@@ -316,8 +329,10 @@ export async function arduinoUpload(
         );
         return;
     }
-    void vscode.window.showInformationMessage(`Uploaded to ${port.address}.`);
-    if (options.monitor === true) {
+    void vscode.window.showInformationMessage(
+        port === undefined ? 'Uploaded over the debug probe.' : `Uploaded to ${port.address}.`,
+    );
+    if (options.monitor === true && port !== undefined) {
         runInTerminal('Rusty: monitor', `${quote(cli)} ${monitorArgs(port.address).join(' ')}`, project.folder);
     }
 }
@@ -344,6 +359,68 @@ export async function arduinoMonitor(
     output.appendLine(`[arduino] monitor on ${port.address}`);
     runInTerminal('Rusty: monitor', `${quote(cli)} ${monitorArgs(port.address).join(' ')}`, project.folder);
 }
+
+/**
+ * Chooses how this board is programmed, from the core's own menu.
+ *
+ * arduino-pico offers `default` (UF2 over USB), `picotool` and `picoprobe_cmsis_dap` (a debug probe over SWD),
+ * and the difference is not cosmetic: the method decides the debug script and `upload.maximum_data_size`, so the
+ * *build* has to carry the same option as the flash. That is why the answer is written into the project's
+ * `sketch.yaml` and not held in a setting -- it belongs to the project, next to the board it is about.
+ *
+ * This is the way out of "No board found on any port" for a probe user: a CMSIS-DAP probe never appears as a
+ * port, because it programs over SWD rather than through a serial link.
+ */
+export async function arduinoUploadMethod(project: ActiveProject, output: vscode.OutputChannel): Promise<void> {
+    const cli = configuredArduinoCliPath();
+    if (cli === undefined) {
+        noCli();
+        return;
+    }
+    const fqbn = sketchFqbn(project);
+    if (fqbn === undefined) {
+        noFqbn();
+        return;
+    }
+    const details = await execFileFn(cli, ['board', 'details', '--fqbn', fqbn.split(':').slice(0, 3).join(':'), '--format', 'json'], {
+        timeoutMs: 60_000,
+    });
+    const menu = details.code === 0 ? parseUploadMethodMenu(details.stdout) : undefined;
+    if (menu === undefined) {
+        void vscode.window.showInformationMessage(
+            `The ${fqbn.split(':').slice(0, 2).join(':')} core offers no upload-method menu for this board, so there is ` +
+                'nothing to choose: it is flashed over USB.',
+        );
+        return;
+    }
+    const current = fqbnOption(fqbn, menu.option) ?? menu.values[0];
+    const described = menu.values.map((value) => ({
+        label: value,
+        description: value === current ? 'current' : undefined,
+        detail: UPLOAD_METHOD_NOTES[value],
+        value,
+    }));
+    const picked = await vscode.window.showQuickPick(described, {
+        title: 'How should this board be programmed?',
+        placeHolder: 'Upload method',
+    });
+    if (picked === undefined || picked.value === current) {
+        return;
+    }
+    const next = menu.values[0] === picked.value ? withoutFqbnOption(fqbn, menu.option) : withFqbnOption(fqbn, menu.option, picked.value);
+    setSketchFqbn(project.folder.fsPath, next);
+    output.appendLine(`[arduino] upload method: ${next}`);
+    void vscode.window.showInformationMessage(
+        `Upload method is now ${picked.value}. Build and Upload start from scratch with it.`,
+    );
+}
+
+/** What each arduino-pico upload method means, for the picker. Keys are the core's own value names. */
+const UPLOAD_METHOD_NOTES: Record<string, string> = {
+    default: 'UF2 over USB — the board appears as a drive when you hold BOOTSEL',
+    picotool: 'picotool talks to the bootloader directly',
+    picoprobe_cmsis_dap: 'A debug probe (Pico Probe / CMSIS-DAP) over SWD — no serial port involved',
+};
 
 /**
  * Removes the build output, which is what `cargo clean` means on this side.
@@ -373,7 +450,7 @@ export async function arduinoClean(project: ActiveProject, output: vscode.Output
         } catch (error) {
             void vscode.window.showErrorMessage(
                 `Could not remove ${path.relative(folder, target)}: ` +
-                    (error instanceof Error ? error.message : String(error)),
+                (error instanceof Error ? error.message : String(error)),
             );
             return;
         }

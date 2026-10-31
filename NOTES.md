@@ -8569,3 +8569,30 @@ IntelliSense stays correct without the database. Regenerating the database in Cl
 is a *build* with a wiped cache; wrapping it and calling it Clean gave a person a rebuild they did not ask for,
 plus a failure. And any command line the extension builds for arduino-cli has to come from the same helper as the
 build, or it will drift out of range of the project's own headers.
+
+### 174. "No board found on any port" -- a probe has no port, and the list was empty anyway
+
+Two faults, and the second explains why nothing ever appeared.
+
+1. **The port list was empty for every project.** `parseBoardList` read `address`/`protocol`/`boards` from each
+   `detected_ports` entry, but arduino-cli 1.x wraps the port:
+   `{"port":{"address":"/dev/ttyACM0","protocol":"serial",...},"matching_boards":[...]}`. Every entry failed the
+   `typeof port.address !== 'string'` test and the function returned `[]`. So *any* upload said "No board found
+   on any port", UF2 included. Both shapes are accepted now (the flat one is what the JSON looked like first),
+   and a port with no recognised board keeps its device name instead of vanishing.
+2. **A debug probe has no port by design.** A CMSIS-DAP probe programs over SWD; arduino-pico's recipe is
+   `tools.picoprobe_cmsis_dap.upload.pattern` -> OpenOCD, and it never uses `-p`. `arduinoUpload` insisted on a
+   port first. Now `uploadNeedsPort(fqbn)` answers from the method (`default` = UF2 needs one, `picotool` and
+   `picoprobe_cmsis_dap` do not), and `uploadArgs(fqbn, port?)` omits `-p` when there is none.
+
+**Where the answer lives.** The method is part of the FQBN, and it must be on the *build* as well: the menu sets
+`build.debugscript` and `upload.maximum_data_size`, so an ELF built for UF2 is not the ELF a probe should flash.
+So `fqbnFromSketchYaml` now accepts an options tail, `withFqbnOption`/`withoutFqbnOption` edit it, `boardForFqbn`
+compares only the first three parts, and **Rusty Platform: Upload Method…** writes the answer into the project's
+own `sketch.yaml` (the `fqbn:` line only -- the comments around it are the project's documentation of why).
+
+Verified on the bench: `fqbn: rp2040:rp2040:rpipico2w:uploadmethod=picoprobe_cmsis_dap`, build 550868 bytes,
+`arduino-cli upload --input-dir build` -> `** Verified OK **`, no port anywhere in the command.
+
+**Lesson:** "device not found" and "I never looked properly" look identical from the UI. When a list is empty,
+print what the tool actually said before writing a hint about BOOTSEL.

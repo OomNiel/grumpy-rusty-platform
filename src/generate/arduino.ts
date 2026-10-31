@@ -71,7 +71,9 @@ export const CPP_FQBN: Readonly<Record<string, string>> = {
  * whether there is a panel to draw -- refuses to open.
  */
 export function boardForFqbn(fqbn: string): BoardProfile | undefined {
-    const wanted = fqbn.trim();
+    // The options tail (`:uploadmethod=picoprobe_cmsis_dap`) says how to program the board, not which board it
+    // is, so the comparison is on the first three parts only.
+    const wanted = fqbn.trim().split(':').slice(0, 3).join(':');
     if (wanted === '') {
         return undefined;
     }

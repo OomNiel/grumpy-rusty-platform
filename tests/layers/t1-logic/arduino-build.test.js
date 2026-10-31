@@ -12,7 +12,11 @@ const { test, ok, equal, contains, notContains, compiled } = require('../../lib/
 const {
     ARDUINO_ARTIFACT_DIR,
     compileArgs,
+    fqbnOption,
     uploadArgs,
+    uploadNeedsPort,
+    withFqbnOption,
+    withoutFqbnOption,
     monitorArgs,
     collectDiagnostics,
     parseCompileJson,
@@ -20,7 +24,14 @@ const {
     projectPathOf,
     lastLineOf,
 } = compiled('toolchain/arduinoBuild');
-const { parseCoreList, parseBoardList, coreIdFor, hasCoreFor, arduinoCliPath } = compiled('toolchain/arduinoCli');
+const {
+    parseCoreList,
+    parseBoardList,
+    parseUploadMethodMenu,
+    coreIdFor,
+    hasCoreFor,
+    arduinoCliPath,
+} = compiled('toolchain/arduinoCli');
 const { ARDUINO_BUILD_DIR } = compiled('generate/arduinoIntelliSense');
 
 // ------------------------------------------------------------------- command lines
@@ -191,4 +202,61 @@ test('Clean removes the output instead of asking arduino-cli to clean and rebuil
     notContains(clean, 'runInTerminal', 'and nothing to watch in a terminal');
     contains(clean, 'ARDUINO_ARTIFACT_DIR', 'the artifacts Upload uses');
     contains(clean, 'ARDUINO_BUILD_DIR', 'and arduino-cli\'s own objects');
+});
+
+// ------------------------------------------- flashing through a debug probe
+
+test('a port list is read in the shape arduino-cli 1.x actually sends', () => {
+    // `{"port":{"address",...},"matching_boards":[...]}` -- the address is one level down. Reading it from the
+    // entry itself found no ports at all, so every upload said "No board found on any port" on a bench with two
+    // boards plugged in (2026-10-31).
+    const ports = parseBoardList(
+        JSON.stringify({
+            detected_ports: [
+                {
+                    port: { address: '/dev/ttyACM1', protocol: 'serial', label: '/dev/ttyACM1' },
+                    matching_boards: [{ name: 'Raspberry Pi Pico 2W', fqbn: 'rp2040:rp2040:rpipico2w' }],
+                },
+                { port: { address: '/dev/ttyACM0', protocol: 'serial', label: '/dev/ttyACM0' } },
+            ],
+        }),
+    );
+    equal(ports.length, 2, 'both ports');
+    equal(ports[0].address, '/dev/ttyACM1', 'the nested address');
+    equal(ports[0].fqbn, 'rp2040:rp2040:rpipico2w', 'and the board beside it');
+    equal(ports[0].label, 'Raspberry Pi Pico 2W', 'named by its board');
+    equal(ports[1].fqbn, undefined, 'a port with no recognised board keeps its own label');
+    equal(ports[1].label, '/dev/ttyACM0', 'which is the address');
+});
+
+test('the core\'s upload methods are read from its own menu', () => {
+    const menu = parseUploadMethodMenu(
+        JSON.stringify({
+            config_options: [
+                { option: 'freq', values: [{ value: '133' }] },
+                { option: 'uploadmethod', values: [{ value: 'default' }, { value: 'picotool' }, { value: 'picoprobe_cmsis_dap' }] },
+            ],
+        }),
+    );
+    equal(menu.option, 'uploadmethod', 'the board\'s own option name');
+    equal(menu.values.join(' '), 'default picotool picoprobe_cmsis_dap', 'and its values');
+    equal(parseUploadMethodMenu('{}'), undefined, 'a board without one says nothing');
+});
+
+test('an fqbn carries how the board is programmed, not only which board it is', () => {
+    const probe = 'rp2040:rp2040:rpipico2w:uploadmethod=picoprobe_cmsis_dap';
+    equal(fqbnOption(probe, 'uploadmethod'), 'picoprobe_cmsis_dap', 'the option is readable');
+    equal(fqbnOption('rp2040:rp2040:rpipico2w', 'uploadmethod'), undefined, 'and absent when unset');
+    equal(withFqbnOption('rp2040:rp2040:rpipico2w', 'uploadmethod', 'picotool'), 'rp2040:rp2040:rpipico2w:uploadmethod=picotool', 'setting one');
+    equal(withFqbnOption(probe, 'uploadmethod', 'picotool'), 'rp2040:rp2040:rpipico2w:uploadmethod=picotool', 'replaces, never repeats');
+    equal(withoutFqbnOption(probe, 'uploadmethod'), 'rp2040:rp2040:rpipico2w', 'and it can be taken away again');
+});
+
+test('a probe upload asks for no port, and a UF2 upload still does', () => {
+    const probe = 'rp2040:rp2040:rpipico2w:uploadmethod=picoprobe_cmsis_dap';
+    equal(uploadNeedsPort('rp2040:rp2040:rpipico2w'), true, 'UF2 over USB needs one');
+    equal(uploadNeedsPort(probe), false, 'a CMSIS-DAP probe never has one');
+    equal(uploadNeedsPort('rp2040:rp2040:rpipico2w:uploadmethod=picotool'), false, 'nor does picotool');
+    equal(uploadArgs(probe).join(' '), `upload --fqbn ${probe} --input-dir ${ARDUINO_ARTIFACT_DIR}`, 'no -p at all');
+    contains(uploadArgs('rp2040:rp2040:rpipico2w', '/dev/ttyACM0').join(' '), '-p /dev/ttyACM0', 'but a port is passed when there is one');
 });

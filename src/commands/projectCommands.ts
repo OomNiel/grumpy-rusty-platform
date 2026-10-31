@@ -29,7 +29,13 @@ import { BuildProfile, LAST_FLASHED_KEY } from '../project/launchConfig';
 import { activeWifiEnv } from '../wifi/credentials';
 import { ensureWifiEnv } from '../wifi/wifiPrompt';
 import { closeTerminal, defmtEnv, defmtPrefix, espEnv, killAllTerminals, openTerminalNames, runInTerminal } from './terminal';
-import { arduinoBuild, arduinoClean, arduinoMonitor, arduinoUpload } from './arduinoCommands';
+import {
+    arduinoBuild,
+    arduinoClean,
+    arduinoMonitor,
+    arduinoUpload,
+    arduinoUploadMethod,
+} from './arduinoCommands';
 import { ensureEspToolchain } from './espToolchainCommands';
 import { rearmClockListener } from '../designer/editor';
 import { configHasBuildEpoch, configHasEpochSecond, setBuildEpochInConfig } from '../display/buildEpoch';
@@ -657,6 +663,19 @@ export function registerProjectCommands(
                 }
                 await clearTerminals('clean');
                 closeWhenSucceeded('Rusty: build', runInTerminal('Rusty: build', 'cargo clean', project.folder));
+            }),
+        ),
+
+        vscode.commands.registerCommand('rustyPlatform.uploadMethod', () =>
+            withProject(async (project) => {
+                if (project.language === 'arduino') {
+                    await arduinoUploadMethod(project, output);
+                    return;
+                }
+                void vscode.window.showInformationMessage(
+                    'A Rust project is flashed by `probe-rs run`, which is the Flash button. There is no upload ' +
+                        'method to choose.',
+                );
             }),
         ),
     ];

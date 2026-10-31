@@ -11,6 +11,25 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.18.16] - 2026-10-31
+
+### Fixed
+
+- **Upload can flash through a debug probe (Pico Probe / CMSIS-DAP).** A probe programs over SWD and never
+  appears as a serial port, so Flash stopped at *No board found on any port* before doing anything. There is now
+  **Rusty Platform: Upload Method…**, which lists the methods the core itself offers (`default` = UF2 over USB,
+  `picotool`, `picoprobe_cmsis_dap`) and writes the choice into the project's `sketch.yaml` as an FQBN option
+  (`rp2040:rp2040:rpipico2w:uploadmethod=picoprobe_cmsis_dap`) — the option has to be on the *build* too, since
+  it decides the debug script and the maximum data size. An upload whose method needs no port no longer asks for
+  one.
+
+### Also
+
+- **The port list was always empty.** `arduino-cli board list` wraps each port in its own object
+  (`{"port":{"address",…},"matching_boards":[…]}`) and the parser read `address` from the outer entry, so no
+  board was ever found on any port — not on this bench, not for UF2 uploads either. Both shapes are read now, and
+  a port with no recognised board keeps its device name instead of being dropped.
+
 ## [0.18.15] - 2026-10-31
 
 ### Fixed
