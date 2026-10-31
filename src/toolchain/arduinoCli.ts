@@ -40,7 +40,13 @@ function isExecutable(candidate: string): boolean {
  * PATH first (so a version manager's choice wins), then the usual install locations: VS Code started from a
  * desktop launcher does not always inherit the PATH a terminal has.
  */
-export function arduinoCliPath(): string | undefined {
+export function arduinoCliPath(explicitPath?: string): string | undefined {
+    // An explicit path wins, exactly as `cargoPath` and `probeRsPath` do: a machine with two arduino-cli builds
+    // (an Arduino IDE one and an apt one) must be able to say which. The setting is read by the caller, in
+    // `configuredArduinoCliPath`, because this module has to stay importable from a test with no editor.
+    if (explicitPath !== undefined && explicitPath.trim() !== '') {
+        return findExecutable(explicitPath.trim());
+    }
     const onPath = findExecutable('arduino-cli');
     if (onPath !== undefined) {
         return onPath;

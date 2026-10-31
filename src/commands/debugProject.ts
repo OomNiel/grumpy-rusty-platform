@@ -34,6 +34,7 @@ import { activeWifiEnv } from '../wifi/credentials';
 import { ensureWifiEnv } from '../wifi/wifiPrompt';
 import { defmtEnv, espEnv } from './terminal';
 import { makeWithProject } from './withProject';
+import { arduinoUpload } from './arduinoCommands';
 
 /**
  * Debug: build the project, then start the probe-rs debug session the wizard generated.
@@ -372,6 +373,17 @@ export function registerDebugCommand(
     return [
         vscode.commands.registerCommand('rustyPlatform.debug', () =>
             withProject(async (project) => {
+                if (project.language === 'arduino') {
+                    // There is no debugger for a sketch in this build: arduino-cli has no DAP session, and the
+                    // useful half of "debug" -- see the log while it runs -- is what Flash + Monitor give. Doing
+                    // that is better than a dialog saying no.
+                    void vscode.window.showInformationMessage(
+                        'A sketch is debugged the Arduino way: no breakpoints, but the sketch is built, written ' +
+                            'and its serial log opened.',
+                    );
+                    await arduinoUpload(context, project, output, { monitor: true });
+                    return;
+                }
                 // An ESP32 has no SWD, so there is no session to start and no breakpoint to bind.
                 // Rather than refusing, Debug does the useful thing for that chip: build, write the
                 // image, and follow the log in one terminal.

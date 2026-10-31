@@ -13,14 +13,13 @@ import {
 } from '../toolchain/arduinoBuild';
 import {
     ArduinoPort,
-    arduinoCliPath,
     coreIdFor,
     detectArduino,
     hasCoreFor,
     listArduinoPorts,
     readSketchYaml,
 } from '../toolchain/arduinoCli';
-import { writeArduinoIntelliSense } from '../toolchain/arduinoIntelliSense';
+import { configuredArduinoCliPath, writeArduinoIntelliSense } from '../toolchain/arduinoIntelliSense';
 import { execFileFn } from '../util/exec';
 import { runInTerminal } from './terminal';
 
@@ -198,7 +197,7 @@ export async function arduinoBuild(
     project: ActiveProject,
     output: vscode.OutputChannel,
 ): Promise<boolean> {
-    const cli = arduinoCliPath();
+    const cli = configuredArduinoCliPath();
     if (cli === undefined) {
         noCli();
         return false;
@@ -282,7 +281,7 @@ export async function arduinoUpload(
     output: vscode.OutputChannel,
     options: { monitor?: boolean } = {},
 ): Promise<void> {
-    const cli = arduinoCliPath();
+    const cli = configuredArduinoCliPath();
     if (cli === undefined) {
         noCli();
         return;
@@ -327,7 +326,7 @@ export async function arduinoMonitor(
     project: ActiveProject,
     output: vscode.OutputChannel,
 ): Promise<void> {
-    const cli = arduinoCliPath();
+    const cli = configuredArduinoCliPath();
     if (cli === undefined) {
         noCli();
         return;
@@ -347,7 +346,7 @@ export async function arduinoMonitor(
 
 /** Removes the artifacts, which is what `cargo clean` means on this side. */
 export async function arduinoClean(project: ActiveProject, output: vscode.OutputChannel): Promise<void> {
-    const cli = arduinoCliPath();
+    const cli = configuredArduinoCliPath();
     if (cli === undefined) {
         noCli();
         return;

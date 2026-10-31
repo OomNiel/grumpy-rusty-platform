@@ -11,6 +11,22 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.18.8] - 2026-10-31
+
+### Added
+
+- **`rustyPlatform.arduinoCliPath`**, beside `cargoPath` and `probeRsPath`: a machine with two arduino-cli
+  installs can say which one builds. Empty means auto-detect (`PATH`, `~/.local/bin`, `~/bin`, `~/.arduino15/bin`,
+  `/usr/local/bin`, `/opt/homebrew/bin`). The **cores** are installed by arduino-cli itself
+  (`arduino-cli core install rp2040:rp2040`, `esp32:esp32`); PlatformIO is not used and not needed.
+- **Start Debugging (F5) does something useful on a sketch**: there is no debugger for a C++ project in this
+  build, so it builds, writes the board and opens the serial log — instead of refusing.
+
+### Fixed
+
+- The "edits Cargo.toml" warning no longer appears for **Build** on a C++ project: it now only fires for the
+  commands that really are the Rust route, and says which route it is.
+
 ## [0.18.7] - 2026-10-31
 
 ### Fixed

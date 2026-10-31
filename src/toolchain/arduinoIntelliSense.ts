@@ -3,6 +3,16 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { ExecFn, execFileFn } from '../util/exec';
 import { arduinoCliPath } from './arduinoCli';
+
+/**
+ * The arduino-cli this window should use, honouring `rustyPlatform.arduinoCliPath`.
+ *
+ * The setting is read here rather than inside `arduinoCliPath` so that module stays importable without an
+ * editor -- the t1 layer loads it directly.
+ */
+export function configuredArduinoCliPath(): string | undefined {
+    return arduinoCliPath(vscode.workspace.getConfiguration('rustyPlatform').get<string>('arduinoCliPath'));
+}
 import {
     ARDUINO_BUILD_DIR,
     INTELLISENSE_CONFIG_PATH,
@@ -55,7 +65,7 @@ export async function writeArduinoIntelliSense(options: {
         return 'no-fqbn';
     }
 
-    const cli = arduinoCliPath();
+    const cli = configuredArduinoCliPath();
     if (cli === undefined) {
         output.appendLine('[intellisense] arduino-cli not found; the editor config was written without a database');
         writeConfig(folder, fqbn, false);

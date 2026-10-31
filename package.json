@@ -3,7 +3,7 @@
     "displayName": "Grumpy's Rusty Platform for VS Code",
     "description": "PlatformIO-style embedded development for RP2040/RP2350 (Raspberry Pi Pico) and ESP32/ESP32-S3 boards in Rust (Embassy, esp-hal, probe-rs, espflash).",
     "icon": "resources/grumpy.png",
-    "version": "0.18.7",
+    "version": "0.18.8",
     "publisher": "grumpy",
     "license": "MIT OR Apache-2.0",
     "repository": {
@@ -491,6 +491,11 @@
                     "type": "string",
                     "default": "",
                     "markdownDescription": "Explicit path to `espflash`. Leave empty to auto-detect (`~/.cargo/bin`, then `PATH`)."
+                },
+                "rustyPlatform.arduinoCliPath": {
+                    "type": "string",
+                    "default": "",
+                    "markdownDescription": "Explicit path to `arduino-cli`, the tool an Arduino (C++) project builds with. Leave empty to auto-detect (`PATH`, then `~/.local/bin`, `~/bin`, `~/.arduino15/bin`, `/usr/local/bin`, `/opt/homebrew/bin`). The *cores* (arduino-pico, arduino-esp32) are installed by arduino-cli itself \u2014 `arduino-cli core install rp2040:rp2040` \u2014 and PlatformIO is not used."
                 },
                 "rustyPlatform.lcdRotation": {
                     "type": "number",

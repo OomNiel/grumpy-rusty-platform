@@ -20,7 +20,7 @@ const {
     projectPathOf,
     lastLineOf,
 } = compiled('toolchain/arduinoBuild');
-const { parseCoreList, parseBoardList, coreIdFor, hasCoreFor } = compiled('toolchain/arduinoCli');
+const { parseCoreList, parseBoardList, coreIdFor, hasCoreFor, arduinoCliPath } = compiled('toolchain/arduinoCli');
 const { ARDUINO_BUILD_DIR } = compiled('generate/arduinoIntelliSense');
 
 // ------------------------------------------------------------------- command lines
@@ -154,4 +154,11 @@ test('the ports are the ones the CLI can talk to, with the board it recognised',
     equal(ports[0].fqbn, 'rp2040:rp2040:rpipico2w', 'with the FQBN');
     equal(ports[1].label, 'esp', 'or by its own label when it does not');
     equal(parseBoardList('nonsense').length, 0, 'and garbage is no ports, not a crash');
+});
+
+test('the CLI path can be named by a setting, and an empty one falls back to detection', () => {
+    // No editor here: the module takes the configured value as an argument, which is what keeps it testable.
+    equal(arduinoCliPath('/definitely/not/here'), undefined, 'an explicit path that is not there is not a guess');
+    // Whether a PATH lookup finds anything is the machine's business; what matters is that it does not throw.
+    ok(arduinoCliPath() === undefined || arduinoCliPath().endsWith('arduino-cli'), 'and detection still works');
 });
