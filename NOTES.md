@@ -8418,3 +8418,20 @@ status_bar, ...) are *reported* rather than drawn; the Designer does not yet rew
 canvas's own load path has not been exercised on a C++ project on the bench yet (the save path has).
 
 t1 **1164** (10 new in `designer-lvgl.test.js`), t2 87, t3 7.
+
+## §168 — The C++ panel follows the Hardware panel (0.18.3, 2026-10-31)
+
+`emitArduinoPanel(wiring, rotation)` in `generate/arduino.ts` is the C++ twin of the Designer's `emitPanelRs`, and
+`syncPanelRs()` now writes `src/panel.{h,cpp}` for a sketch from `designer/panel.hardware.json`. **One source of
+pins for both languages**: the Hardware panel edits the wiring file, and whatever it says is what the sketch
+compiles. Before this, a pin moved in the canvas stayed at its old GPIO in `panel.cpp` — the exact class of bug
+the Rust side hit on 2026-10-24 (NOTES §158) and now cannot happen on either.
+
+t1 1164, t3 7. 0.18.3 packaged and installed.
+
+**Still open for C++ parity, in the order they block a real design:** fonts as `lv_font_t` and images as
+`lv_image_dsc_t` (today a design's custom font falls back to Montserrat and an image is *reported*); the `clock`
+widget and the extension's own drawing widgets (chart, plotter, mesh, path, icon, status_bar, content_indicator,
+crumbs, carousel, dialog, table, busy_wheel, scale, spinbox, number_picker, time_picker) which are reported
+rather than drawn; then phase 5 (C++ AI prompts and answer guards, the `//~` example set) and phase 6 (clock
+parity, `.deb`, the user docs).
