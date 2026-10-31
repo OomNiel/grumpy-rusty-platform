@@ -3,6 +3,9 @@ import { detectBoardFromProject } from '../boards/detect';
 import { BoardProfile } from '../boards/types';
 import { DESIGNER_DOCUMENT_PATH } from '../designer/model';
 import { backendOrDefault } from '../generate/backends';
+import { boardForFqbn } from '../generate/arduino';
+import { BOARDS } from '../boards/catalog';
+import { fqbnFromSketchYaml } from '../generate/arduinoIntelliSense';
 import { LANGUAGE_MARKER, SketchLanguage, isDesignerProject, readProjectLanguage } from './language';
 
 export interface ActiveProject {
@@ -79,7 +82,31 @@ export async function readProjectAt(folder: vscode.Uri): Promise<ActiveProject |
     }
     const cargoToml = backend.markerFile === 'Cargo.toml' ? marker : '';
     const cargoConfigToml = (await readFileIfPresent(vscode.Uri.joinPath(folder, CONFIG_RELATIVE))) ?? '';
-    const board = detectBoardFromProject({ cargoToml, cargoConfigToml });
+    // A crate carries its board in Cargo.toml; a sketch carries it in sketch.yaml as the FQBN it is built for.
+    // Both end at the same board record, which is what every command after this reads.
+    const said = detectBoardFromProject({ cargoToml, cargoConfigToml });
+    const sketchYaml = backend.id === 'arduino'
+        ? await readFileIfPresent(vscode.Uri.joinPath(folder, 'sketch.yaml'))
+        : undefined;
+    const fqbn = sketchYaml === undefined ? undefined : fqbnFromSketchYaml(sketchYaml);
+    // The design document names the board it was drawn for, and that is the most precise answer a project can
+    // give: two boards share the generic `esp32:esp32:esp32` definition, so the FQBN alone cannot tell a
+    // DevKitC from a Sunton panel.
+    const designText = await readFileIfPresent(vscode.Uri.joinPath(folder, DESIGNER_DOCUMENT_PATH));
+    let designedFor: unknown;
+    if (designText !== undefined) {
+        try {
+            designedFor = (JSON.parse(designText) as { boardId?: unknown }).boardId;
+        } catch {
+            // A document nobody can parse must not make the project unreadable: the FQBN below still says which
+            // board it is, and the Designer will refuse the file with a message of its own.
+            designedFor = undefined;
+        }
+    }
+    const board =
+        said ??
+        (typeof designedFor === 'string' ? BOARDS.find((candidate) => candidate.id === designedFor) : undefined) ??
+        (fqbn === undefined ? undefined : boardForFqbn(fqbn));
     const chip =
         (board === undefined ? undefined : board.kind === 'rp' ? board.probeChip : board.espChip) ??
         /probe-rs\s+run\s+--chip\s+["']?([^\s"']+)["']?/.exec(cargoConfigToml)?.[1];

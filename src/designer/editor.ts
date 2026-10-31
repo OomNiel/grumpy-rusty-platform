@@ -234,7 +234,11 @@ class DesignerPanel {
         // The project's `codegen/` copy is what its Cargo.toml builds against, and a copy from an older version
         // may not know the markup this designer writes -- a triangle's six points, for one -- and would render
         // something else without complaining. Asked here, once, before anything is drawn on that promise.
-        await ensureVendoredCrates(context, project.folder, output);
+        // A sketch builds with arduino-cli and has no `codegen/`: the crates are Rust's answer to a problem LVGL
+        // does not have.
+        if (project.language === 'rust') {
+            await ensureVendoredCrates(context, project.folder, output);
+        }
 
         // --- where this project's compile-time settings live.
         //

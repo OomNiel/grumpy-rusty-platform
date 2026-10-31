@@ -11,6 +11,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.18.6] - 2026-10-31
+
+### Fixed
+
+- **"The designer needs a board with a panel" on a C++ project.** A sketch carries its board in `sketch.yaml`
+  as an FQBN, while the board detector only knew how to read `Cargo.toml` — so every C++ project had *no board
+  at all*, and the Designer (which decides from the board whether there is a panel to draw) refused to open one
+  even when `designer/panel.hardware.json` named a 2.8" module. The board is now resolved from the design
+  document's own `boardId` first (two boards can share one FQBN), then from the FQBN, then from `Cargo.toml`.
+- Opening the Designer on a sketch no longer offers to update the Rust vendored crates: a C++ project has no
+  `codegen/` and does not build with cargo.
+
 ## [0.18.5] - 2026-10-31
 
 ### Fixed

@@ -20,6 +20,7 @@
  * phase 4 of `plans/arduino-backend.md`, and it replaces the body of `ui.cpp` rather than the file's shape.
  */
 
+import { BOARDS } from '../boards/catalog';
 import { BoardProfile, EspDisplay, isEspBoard } from '../boards/types';
 import { displayFor } from '../boards/esp';
 import { panelModuleOrDefault, wiringFile, type PanelWiring } from '../boards/panels';
@@ -55,6 +56,27 @@ export const CPP_FQBN: Readonly<Record<string, string>> = {
     'lilygo-tqt': 'esp32:esp32:esp32s3',
     'sunton-3248s035r': 'esp32:esp32:esp32',
 };
+
+/**
+ * The catalogue board a sketch is built for, read back out of its FQBN.
+ *
+ * A crate carries its board in `Cargo.toml`, which is what `detectBoardFromProject` reads. A sketch carries it in
+ * `sketch.yaml` instead, and this is the other half of that: the same board record, found by the definition the
+ * project names. Without it a C++ project has no board at all, and the Designer -- which decides from the board
+ * whether there is a panel to draw -- refuses to open.
+ */
+export function boardForFqbn(fqbn: string): BoardProfile | undefined {
+    const wanted = fqbn.trim();
+    if (wanted === '') {
+        return undefined;
+    }
+    for (const board of BOARDS) {
+        if (CPP_FQBN[board.id] === wanted) {
+            return board;
+        }
+    }
+    return undefined;
+}
 
 /** The core package each FQBN belongs to, for the "is the core installed?" answer and the README. */
 export function corePackageFor(fqbn: string): string {
