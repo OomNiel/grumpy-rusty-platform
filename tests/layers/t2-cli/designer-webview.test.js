@@ -980,63 +980,6 @@ test('naming a font changes nothing for the widgets whose base already uses it',
     }
 });
 
-test('the toolbar offers SD and SMTP as switches, and posts what was flipped', () => {
-    // Two project settings are cargo features -- the card's FAT filesystem and the SMTP keep-alive client --
-    // so they are on/off switches, not a menu of values. The bundle is driven for real: the switch's
-    // `<input>` is the control, and the message it posts is the contract with the extension.
-    const env = dom.install();
-    delete require.cache[require.resolve(BUNDLE)];
-    require(BUNDLE);
-    env.window.emit('message', {
-        data: {
-            type: 'init',
-            document: starterDocument({ boardId: 'sunton-3248s035r', panelWidth: 320, panelHeight: 480, rotation: 3 }),
-            canvas: { width: 480, height: 320 },
-            paths: { document: 'designer/panel.ui.json', kdl: 'src/ui.kdl' },
-            touchBoard: true,
-            touchEnabled: false,
-            sdBoard: true,
-            sdEnabled: true,
-            smtpAvailable: true,
-            smtpEnabled: false,
-        },
-    });
-
-    const labelFor = (name) => env.root
-        .descendants()
-        .find((element) => element.className.split(' ').includes('tool-toggle')
-            && element.descendants().some((child) => child.textContent === name && child.className.includes('tool-toggle-label')));
-    const inputOf = (label) => label.descendants().find((element) => element.tagName === 'INPUT');
-
-    const sd = labelFor('SD');
-    const smtp = labelFor('SMTP');
-    ok(sd !== undefined, 'the SD setting is a switch');
-    ok(smtp !== undefined, 'and so is SMTP');
-    ok(sd.descendants().some((element) => element.className.includes('tool-toggle-track')),
-        'the switch is drawn as a track and thumb, not a checkbox glyph');
-    equal(inputOf(sd).checked, true, 'SD starts from the manifest: on');
-    equal(inputOf(smtp).checked, false, 'SMTP starts from the manifest: off');
-    equal(inputOf(smtp).disabled, false, 'and is usable because src/smtp.rs exists');
-
-    env.messages.length = 0;
-    const smtpInput = inputOf(smtp);
-    smtpInput.checked = true;
-    smtpInput.emit('change');
-    equal(env.messages.at(-1).type, 'setSmtp', 'flipping SMTP asks the extension to write the feature');
-    equal(env.messages.at(-1).enabled, true);
-
-    const sdInput = inputOf(labelFor('SD'));
-    sdInput.checked = false;
-    sdInput.emit('change');
-    equal(env.messages.at(-1).type, 'setSd');
-    equal(env.messages.at(-1).enabled, false);
-
-    // Without src/smtp.rs there is nothing for the feature to compile in, so the switch is refused by the
-    // extension and comes back disabled -- the report is what the toolbar follows.
-    env.window.emit('message', { data: { type: 'report', problems: [], smtpAvailable: false, smtpEnabled: false } });
-    equal(inputOf(labelFor('SMTP')).disabled, true, 'no module means no switch to flip');
-});
-
 test('the toolbar offers a brightness slider only for a panel with a backlight pin', () => {
     // Brightness is a range, not a switch, and it is a project setting like touch and SD. Two rules are
     // asserted: the control exists only when the panel has a BL pin, and it posts a message only when the
@@ -1353,4 +1296,746 @@ test('an image widget names its file on the canvas, and draws the picture once t
     messages.length = 0;
     window.emit('message', { data: { type: 'report', problems: [], wroteDocument: true, images: [] } });
     equal(messages.length, 0, 'and an empty asset list asks the extension for nothing');
+});
+
+/**
+ * The Hardware section, on a Pico document.
+ *
+ * Regression (2026-10-27): the wiring arrived in the `init` message but the panel only ever took it from a
+ * *report*, so the section the whole Pico feature exists for never appeared — the fields were unreachable
+ * and the wiring could not be changed at all. The extension half was right (board detected, wiring parsed,
+ * no problems); nothing on the panel side looked at the message.
+ *
+ * Asserted through the DOM the panel builds, because the failure was invisible to every other layer: the
+ * bundle compiled, `renderProperties` accepted a `hardware` argument, and the message was sent.
+ */
+test('a Pico document shows its GPIO wiring, and a field posts the whole wiring back', () => {
+    const { root, messages, window } = dom.install();
+    delete require.cache[require.resolve(BUNDLE)];
+    require(BUNDLE);
+    messages.length = 0;
+
+    const wiring = {
+        panel: 'ili9341',
+        bus: 0,
+        alt: false,
+        sclk: 18,
+        mosi: 19,
+        miso: 16,
+        cs: 17,
+        dc: 20,
+        rst: 21,
+        backlight: 22,
+        backlightActiveLow: false,
+        touchCs: 14,
+        touchIrq: 15,
+        sdSclk: 10,
+        sdMosi: 11,
+        sdMiso: 12,
+        sdCs: 13,
+        timeSource: 'wifi',
+    };
+    window.emit('message', {
+        data: {
+            type: 'init',
+            document: starterDocument({
+                boardId: 'pico2w',
+                panelWidth: 240,
+                panelHeight: 320,
+                rotation: 0,
+            }),
+            canvas: { width: 240, height: 320 },
+            paths: { document: 'designer/panel.ui.json', kdl: 'src/ui.kdl' },
+            touchBoard: true,
+            touchEnabled: true,
+            sdBoard: true,
+            sdEnabled: true,
+            backlight: true,
+            backlightPwm: true,
+            brightness: 100,
+            hardware: {
+                wiring,
+                problems: [],
+                board: 'Raspberry Pi Pico 2 W',
+                wireless: true,
+                reserved: [23, 24, 25, 29],
+            },
+        },
+    });
+
+    const all = () => root.descendants();
+    ok(
+        all().some((element) => element.textContent === 'Hardware'),
+        'the Hardware section is on screen',
+    );
+
+    // Every signal has its box, holding the number the project was generated with.
+    const numberInputs = all().filter((element) => element.tagName === 'INPUT' && element.type === 'number');
+    ok(numberInputs.length >= 13, `the GPIO boxes are there, got ${numberInputs.length}`);
+    ok(numberInputs.some((input) => input.value === '18'), 'SCK shows GPIO18');
+    ok(numberInputs.some((input) => input.value === '13'), 'the card CS shows GPIO13');
+
+    // A module picker listing the three modules, with the wired one selected.
+    const select = all().find(
+        (element) => element.tagName === 'SELECT' && element.descendants().some((option) => option.value === 'st7796'),
+    );
+    ok(select !== undefined, 'the module picker lists the modules');
+    ok(
+        select.descendants().some((option) => option.value === 'ili9341' && option.selected === true),
+        'and starts on the module the project was made for',
+    );
+
+    // Committing a field sends the *whole* wiring: the extension validates it and writes both files, so a
+    // partial update would let the panel and `src/panel.rs` drift apart.
+    messages.length = 0;
+    const dc = numberInputs.find((input) => input.value === '20');
+    dc.value = '26';
+    dc.emit('change');
+    const sent = messages.find((message) => message.type === 'setWiring');
+    ok(sent !== undefined, 'changing a pin posts the wiring');
+    equal(sent.wiring.dc, 26);
+    equal(sent.wiring.sclk, 18);
+    equal(sent.wiring.panel, 'ili9341');
+    equal(sent.wiring.timeSource, 'wifi');
+});
+
+test('an ESP document shows no Hardware section: its panel is not wired', () => {
+    const { root, window } = dom.install();
+    delete require.cache[require.resolve(BUNDLE)];
+    require(BUNDLE);
+
+    window.emit('message', {
+        data: {
+            type: 'init',
+            document: starterDocument({
+                boardId: 'sunton-3248s035r',
+                panelWidth: 320,
+                panelHeight: 480,
+                rotation: 3,
+            }),
+            canvas: { width: 480, height: 320 },
+            paths: { document: 'designer/panel.ui.json', kdl: 'src/ui.kdl' },
+            touchBoard: true,
+            touchEnabled: true,
+        },
+    });
+
+    notOk(
+        root.descendants().some((element) => element.textContent === 'Hardware'),
+        'no wiring section without a wiring',
+    );
+});
+
+/**
+ * The bus selector.
+ *
+ * The whole point of the planner: choosing a peripheral moves the block of four, takes the control lines and
+ * the touch pair to the nearest free pins, and gives the card the other bus -- and the panel says which pins
+ * moved, because a number that changes by itself has to explain itself.
+ */
+test('choosing a bus posts every pin planned for it, with a note saying what moved', () => {
+    const { root, messages, window } = dom.install();
+    delete require.cache[require.resolve(BUNDLE)];
+    require(BUNDLE);
+    messages.length = 0;
+
+    window.emit('message', {
+        data: {
+            type: 'init',
+            document: starterDocument({ boardId: 'pico2w', panelWidth: 240, panelHeight: 320, rotation: 0 }),
+            canvas: { width: 240, height: 320 },
+            paths: { document: 'designer/panel.ui.json', kdl: 'src/ui.kdl' },
+            touchBoard: true,
+            touchEnabled: true,
+            sdBoard: true,
+            sdEnabled: true,
+            backlight: true,
+            backlightPwm: true,
+            brightness: 100,
+            hardware: {
+                wiring: {
+                    panel: 'ili9341',
+                    bus: 0,
+                    alt: false,
+                    sclk: 18,
+                    mosi: 19,
+                    miso: 16,
+                    cs: 17,
+                    dc: 20,
+                    rst: 21,
+                    backlight: 22,
+                    backlightActiveLow: false,
+                    touchCs: 14,
+                    touchIrq: 15,
+                    sdSclk: 10,
+                    sdMosi: 11,
+                    sdMiso: 12,
+                    sdCs: 13,
+                    timeSource: 'wifi',
+                },
+                problems: [],
+                board: 'Raspberry Pi Pico 2 W',
+                wireless: true,
+                reserved: [23, 24, 25, 29],
+            },
+        },
+    });
+
+    const all = root.descendants();
+    const busSelect = all.find(
+        (element) =>
+            element.tagName === 'SELECT' &&
+            element.descendants().some((option) => (option.textContent ?? '').includes('SPI1')),
+    );
+    ok(busSelect !== undefined, 'the bus selector is on screen');
+    ok(
+        busSelect.descendants().some((option) => option.value === '0' && option.selected === true),
+        'and starts on the bus the project is wired to',
+    );
+
+    messages.length = 0;
+    busSelect.value = '1';
+    busSelect.emit('change');
+
+    const sent = messages.find((message) => message.type === 'setWiring');
+    ok(sent !== undefined, 'choosing a bus posts the wiring');
+    equal(sent.wiring.bus, 1);
+    equal([sent.wiring.sclk, sent.wiring.mosi, sent.wiring.miso, sent.wiring.cs], [10, 11, 12, 13]);
+    // The control lines take the nearest free pins above the block; BL steps past 16-19 because the card took
+    // them, which is what "plan the card before the control lines" means.
+    equal([sent.wiring.dc, sent.wiring.rst, sent.wiring.backlight], [14, 15, 20]);
+    // The touch controller stays beside its glass, and the card moves to the peripheral the panel left.
+    equal([sent.wiring.touchCs, sent.wiring.touchIrq], [8, 9]);
+    equal(
+        [sent.wiring.sdSclk, sent.wiring.sdMosi, sent.wiring.sdMiso, sent.wiring.sdCs],
+        [18, 19, 16, 17],
+    );
+    ok(
+        typeof sent.note === 'string' && sent.note.includes('SCK moved from GPIO18 to GPIO10'),
+        `the note says what moved, got ${sent.note}`,
+    );
+
+    // And the form itself has to move, before any answer comes back: the fields hold the pins of the bus the
+    // project just left, so a panel that only remembered the plan would keep showing them.
+    // Regression (2026-10-27): that is exactly what it did -- the wiring was written to both files and the
+    // numbers on screen never changed.
+    const values = () =>
+        root
+            .descendants()
+            .filter((element) => element.tagName === 'INPUT' && element.type === 'number')
+            .map((input) => input.value);
+    ok(values().includes('8'), `the touch pair is redrawn, got ${values().join(',')}`);
+    ok(values().includes('9'), 'both touch pins are redrawn');
+    notOk(values().includes('21'), 'the SPI0 RESET pin is gone from the form');
+    notOk(values().includes('22'), 'and so is the SPI0 backlight pin');
+    const redrawn = root
+        .descendants()
+        .find(
+            (element) =>
+                element.tagName === 'SELECT' &&
+                element.descendants().some((option) => (option.textContent ?? '').includes('SPI1')),
+        );
+    ok(
+        redrawn.descendants().some((option) => option.value === '1' && option.selected === true),
+        'and the selector stays on the bus that was chosen',
+    );
+});
+
+/** The SPI1 plan for the wiring below: what the bus selector asks for, and what comes back. */
+function spi1Wiring() {
+    return {
+        panel: 'ili9341',
+        bus: 1,
+        alt: false,
+        sclk: 10,
+        mosi: 11,
+        miso: 12,
+        cs: 13,
+        dc: 14,
+        rst: 15,
+        backlight: 20,
+        backlightActiveLow: false,
+        touchCs: 8,
+        touchIrq: 9,
+        sdSclk: 18,
+        sdMosi: 19,
+        sdMiso: 16,
+        sdCs: 17,
+        timeSource: 'wifi',
+    };
+}
+
+/**
+ * Regression (2026-10-27): the bus selector planned the pins and posted them, the extension wrote them -- and
+ * the numbers on screen never changed, because the panel only took `hardware` from a report that *also* changed
+ * a switch. A plain wiring answer was dropped on the floor, so the Hardware form kept showing the old bus.
+ */
+test('a wiring that comes back in a report repaints the Hardware fields', () => {
+    const { root, messages, window } = dom.install();
+    delete require.cache[require.resolve(BUNDLE)];
+    require(BUNDLE);
+
+    window.emit('message', {
+        data: {
+            type: 'init',
+            document: starterDocument({ boardId: 'pico2w', panelWidth: 240, panelHeight: 320, rotation: 0 }),
+            canvas: { width: 240, height: 320 },
+            paths: { document: 'designer/panel.ui.json', kdl: 'src/ui.kdl' },
+            touchBoard: true,
+            touchEnabled: true,
+            sdBoard: true,
+            sdEnabled: true,
+            backlight: true,
+            backlightPwm: true,
+            brightness: 100,
+            hardware: {
+                wiring: { ...spi1Wiring(), bus: 0, alt: false, sclk: 18, mosi: 19, miso: 16, cs: 17, dc: 20, rst: 21, backlight: 22, touchCs: 14, touchIrq: 15, sdSclk: 10, sdMosi: 11, sdMiso: 12, sdCs: 13 },
+                problems: [],
+                board: 'Raspberry Pi Pico 2 W',
+                wireless: true,
+                reserved: [23, 24, 25, 29],
+            },
+        },
+    });
+
+    const values = () =>
+        root
+            .descendants()
+            .filter((element) => element.tagName === 'INPUT' && element.type === 'number')
+            .map((input) => input.value);
+    // The two plans share most of their numbers -- the card takes the block the panel left -- so the proof is in
+    // the ones only one of them uses: RESET/BL on 21/22 belong to the SPI0 layout, the touch pair on 8/9 to the
+    // SPI1 one.
+    ok(values().includes('21'), 'the form starts on the pins the project has');
+    ok(values().includes('22'), 'and the SPI0 pair is there');
+
+    // The extension's answer to a bus change: new wiring, no switch touched. That is the message that used to be
+    // ignored, so this is the whole regression.
+    window.emit('message', {
+        data: {
+            type: 'report',
+            problems: [],
+            kdl: undefined,
+            hardware: {
+                wiring: spi1Wiring(),
+                problems: [],
+                board: 'Raspberry Pi Pico 2 W',
+                wireless: true,
+                reserved: [23, 24, 25, 29],
+            },
+        },
+    });
+
+    equal(values().length, 13, 'every signal still has its box');
+    ok(values().includes('8'), `the touch pair moved below the block, got ${values().join(',')}`);
+    ok(values().includes('9'), 'both touch pins are the SPI1 ones');
+    notOk(values().includes('21'), 'the old RESET pin is gone from the form');
+    notOk(values().includes('22'), 'and so is the old backlight pin');
+
+    // And the *next* edit has to build on the new wiring. A form left showing the old bus does not merely look
+    // stale: every box in it holds the old wiring, so the first pin typed afterwards silently reverts the bus.
+    const dc = root
+        .descendants()
+        .filter((element) => element.tagName === 'INPUT' && element.type === 'number')
+        .find((input) => input.value === '14');
+    ok(dc !== undefined, 'the DC box shows the SPI1 pin');
+    messages.length = 0;
+    dc.value = '26';
+    dc.emit('change');
+    const edit = messages.find((message) => message.type === 'setWiring');
+    equal(edit.wiring.bus, 1, 'the edit keeps the bus the report brought');
+    equal(edit.wiring.sclk, 10, 'and the pins that go with it');
+    equal(edit.wiring.dc, 26);
+});
+
+test('an echo of the wiring the panel just sent does not repaint the form', () => {
+    // The field being typed in must keep the caret, so identical hardware is not treated as news -- the verdict
+    // is what a report adds, and only a changed verdict or a changed wiring reaches back to the DOM.
+    const { root, messages, window } = dom.install();
+    delete require.cache[require.resolve(BUNDLE)];
+    require(BUNDLE);
+    messages.length = 0;
+
+    const wiring = { ...spi1Wiring(), bus: 0, sclk: 18, mosi: 19, miso: 16, cs: 17, dc: 20, rst: 21, backlight: 22, touchCs: 14, touchIrq: 15, sdSclk: 10, sdMosi: 11, sdMiso: 12, sdCs: 13 };
+    const hardwareMessage = (problems) => ({
+        type: 'report',
+        problems,
+        kdl: undefined,
+        hardware: {
+            wiring,
+            problems,
+            board: 'Raspberry Pi Pico 2 W',
+            wireless: true,
+            reserved: [23, 24, 25, 29],
+        },
+    });
+
+    window.emit('message', {
+        data: {
+            type: 'init',
+            document: starterDocument({ boardId: 'pico2w', panelWidth: 240, panelHeight: 320, rotation: 0 }),
+            canvas: { width: 240, height: 320 },
+            paths: { document: 'designer/panel.ui.json', kdl: 'src/ui.kdl' },
+            touchBoard: true,
+            touchEnabled: true,
+            sdBoard: true,
+            sdEnabled: true,
+            backlight: true,
+            backlightPwm: true,
+            brightness: 100,
+            hardware: {
+                wiring,
+                problems: [],
+                board: 'Raspberry Pi Pico 2 W',
+                wireless: true,
+                reserved: [23, 24, 25, 29],
+            },
+        },
+    });
+
+    const scks = () =>
+        root.descendants().filter((element) => element.tagName === 'INPUT' && element.type === 'number' && element.value === '18');
+    const before = scks();
+    equal(before.length, 1);
+
+    // The same wiring back, with nothing wrong: the very same input element survives, so the caret does too.
+    window.emit('message', { data: hardwareMessage([]) });
+    equal(scks()[0], before[0], 'the form was rebuilt for an unchanged echo');
+
+    // A verdict, though, is news: the numbers stay and the sentence appears.
+    window.emit('message', {
+        data: hardwareMessage([
+            { field: 'sclk', severity: 'error', message: 'GPIO18 is not a clock pin for this bus.' },
+        ]),
+    });
+    ok(
+        root.descendants().some((element) => element.textContent === 'GPIO18 is not a clock pin for this bus.'),
+        'the verdict is on screen',
+    );
+});
+
+/**
+ * SPI0's third option in the bus list.
+ *
+ * "SPI0-Alt" is the low group -- clock 2, data out 3, data in 4, chip select 5, with 6/7/8 beside them. It is a
+ * third entry rather than something inferred from the clock pin, because moving the panel to another group of
+ * pins is a wiring decision and the list is where wiring decisions are made.
+ */
+test('the bus list offers SPI0, SPI0-Alt and SPI1, and SPI0-Alt plans the low group', () => {
+    const { root, messages, window } = dom.install();
+    delete require.cache[require.resolve(BUNDLE)];
+    require(BUNDLE);
+    messages.length = 0;
+
+    window.emit('message', {
+        data: {
+            type: 'init',
+            document: starterDocument({ boardId: 'pico2w', panelWidth: 240, panelHeight: 320, rotation: 0 }),
+            canvas: { width: 240, height: 320 },
+            paths: { document: 'designer/panel.ui.json', kdl: 'src/ui.kdl' },
+            touchBoard: true,
+            touchEnabled: true,
+            sdBoard: true,
+            sdEnabled: true,
+            backlight: true,
+            backlightPwm: true,
+            brightness: 100,
+            hardware: {
+                wiring: {
+                    panel: 'ili9341',
+                    bus: 0,
+                    alt: false,
+                    sclk: 18,
+                    mosi: 19,
+                    miso: 16,
+                    cs: 17,
+                    dc: 20,
+                    rst: 21,
+                    backlight: 22,
+                    backlightActiveLow: false,
+                    touchCs: 14,
+                    touchIrq: 15,
+                    sdSclk: 10,
+                    sdMosi: 11,
+                    sdMiso: 12,
+                    sdCs: 13,
+                    timeSource: 'wifi',
+                },
+                problems: [],
+                board: 'Raspberry Pi Pico 2 W',
+                wireless: true,
+                reserved: [23, 24, 25, 29],
+            },
+        },
+    });
+
+    const busSelect = () =>
+        root
+            .descendants()
+            .find(
+                (element) =>
+                    element.tagName === 'SELECT' &&
+                    element.descendants().some((option) => (option.textContent ?? '').includes('SPI0-Alt')),
+            );
+    const labels = () => (busSelect() ?? { descendants: () => [] }).descendants().map((option) => option.textContent);
+    equal(labels(), [
+        'SPI0 (GPIO 18/19/16/17)',
+        'SPI0-Alt (GPIO 2/3/4/5)',
+        'SPI1 (GPIO 10/11/12/13)',
+    ]);
+    ok(
+        busSelect().descendants().some((option) => option.value === '0' && option.selected === true),
+        'the project starts on SPI0',
+    );
+
+    messages.length = 0;
+    busSelect().value = '0-alt';
+    busSelect().emit('change');
+
+    const sent = messages.find((message) => message.type === 'setWiring');
+    ok(sent !== undefined, 'picking the alternative group posts the wiring');
+    equal(sent.wiring.alt, true);
+    equal(sent.wiring.bus, 0, 'the peripheral is still SPI0');
+    equal(
+        [sent.wiring.sclk, sent.wiring.mosi, sent.wiring.miso, sent.wiring.cs],
+        [2, 3, 4, 5],
+        'the four SPI pins move to the low group',
+    );
+    equal([sent.wiring.dc, sent.wiring.rst, sent.wiring.backlight], [6, 7, 8]);
+    equal([sent.wiring.touchCs, sent.wiring.touchIrq], [0, 1]);
+    // SPI1 is untouched: the card is on the other peripheral and has no business moving.
+    equal(
+        [sent.wiring.sdSclk, sent.wiring.sdMosi, sent.wiring.sdMiso, sent.wiring.sdCs],
+        [10, 11, 12, 13],
+    );
+    ok(
+        typeof sent.note === 'string' && sent.note.includes('MOSI moved from GPIO19 to GPIO3'),
+        `the note says what moved, got ${sent.note}`,
+    );
+
+    // The form is redrawn on the new group, and the list still shows the choice.
+    const numbers = () =>
+        root.descendants().filter((element) => element.tagName === 'INPUT' && element.type === 'number');
+    ok(numbers().some((input) => input.value === '6'), 'DC is redrawn on GPIO6');
+    notOk(numbers().some((input) => input.value === '20'), 'the old DC pin is gone');
+    ok(
+        busSelect().descendants().some((option) => option.value === '0-alt' && option.selected === true),
+        'the list stays on SPI0-Alt',
+    );
+
+    // And picking SPI0 again puts the high group back.
+    messages.length = 0;
+    busSelect().value = '0';
+    busSelect().emit('change');
+    const back = messages.find((message) => message.type === 'setWiring');
+    equal(back.wiring.alt, false);
+    equal([back.wiring.sclk, back.wiring.dc, back.wiring.backlight], [18, 20, 22]);
+});
+
+test('editing the clock pin alone is one number, not a change of group', () => {
+    // The list is the trigger, so a hand-typed clock pin is just a pin: it is posted as typed and the validator
+    // decides whether the group is mixed (a warning naming SPI0-Alt).
+    const { root, messages, window } = dom.install();
+    delete require.cache[require.resolve(BUNDLE)];
+    require(BUNDLE);
+    messages.length = 0;
+
+    window.emit('message', {
+        data: {
+            type: 'init',
+            document: starterDocument({ boardId: 'pico2w', panelWidth: 240, panelHeight: 320, rotation: 0 }),
+            canvas: { width: 240, height: 320 },
+            paths: { document: 'designer/panel.ui.json', kdl: 'src/ui.kdl' },
+            touchBoard: true,
+            touchEnabled: true,
+            sdBoard: true,
+            sdEnabled: true,
+            backlight: true,
+            backlightPwm: true,
+            brightness: 100,
+            hardware: {
+                wiring: {
+                    panel: 'ili9341',
+                    bus: 0,
+                    alt: false,
+                    sclk: 18,
+                    mosi: 19,
+                    miso: 16,
+                    cs: 17,
+                    dc: 20,
+                    rst: 21,
+                    backlight: 22,
+                    backlightActiveLow: false,
+                    touchCs: 14,
+                    touchIrq: 15,
+                    sdSclk: 10,
+                    sdMosi: 11,
+                    sdMiso: 12,
+                    sdCs: 13,
+                    timeSource: 'wifi',
+                },
+                problems: [],
+                board: 'Raspberry Pi Pico 2 W',
+                wireless: true,
+                reserved: [23, 24, 25, 29],
+            },
+        },
+    });
+
+    const sck = root
+        .descendants()
+        .find((element) => element.tagName === 'INPUT' && element.type === 'number' && element.value === '18');
+    messages.length = 0;
+    sck.value = '2';
+    sck.emit('change');
+
+    const sent = messages.find((message) => message.type === 'setWiring');
+    equal(sent.wiring.sclk, 2);
+    equal(sent.wiring.mosi, 19, 'nothing else moved');
+    equal(sent.wiring.alt, false, 'and the list still says SPI0');
+    equal(sent.note, undefined, 'no plan was made, so there is nothing to report');
+});
+
+test('an overridden pin that the new bus cannot use is replanned rather than kept', () => {
+    // MOSI 3 is one of SPI0's data-out pins. On SPI1 it is not one of the peripheral's pins at all, so keeping
+    // it would be a project that does not compile.
+    const { root, messages, window } = dom.install();
+    delete require.cache[require.resolve(BUNDLE)];
+    require(BUNDLE);
+    messages.length = 0;
+
+    window.emit('message', {
+        data: {
+            type: 'init',
+            document: starterDocument({ boardId: 'pico', panelWidth: 240, panelHeight: 320, rotation: 0 }),
+            canvas: { width: 240, height: 320 },
+            paths: { document: 'designer/panel.ui.json', kdl: 'src/ui.kdl' },
+            touchBoard: true,
+            touchEnabled: true,
+            sdBoard: true,
+            sdEnabled: true,
+            backlight: true,
+            backlightPwm: true,
+            brightness: 100,
+            hardware: {
+                wiring: {
+                    panel: 'ili9341',
+                    bus: 0,
+                    alt: false,
+                    sclk: 18,
+                    mosi: 3,
+                    miso: 16,
+                    cs: 17,
+                    dc: 26,
+                    rst: 21,
+                    backlight: 22,
+                    backlightActiveLow: false,
+                    touchCs: 14,
+                    touchIrq: 15,
+                    sdSclk: 10,
+                    sdMosi: 11,
+                    sdMiso: 12,
+                    sdCs: 13,
+                    timeSource: 'flash',
+                },
+                problems: [],
+                board: 'Raspberry Pi Pico',
+                wireless: false,
+                reserved: [25],
+            },
+        },
+    });
+
+    const all = root.descendants();
+    const busSelect = all.find(
+        (element) =>
+            element.tagName === 'SELECT' &&
+            element.descendants().some((option) => (option.textContent ?? '').includes('SPI1')),
+    );
+    messages.length = 0;
+    busSelect.value = '1';
+    busSelect.emit('change');
+
+    const sent = messages.find((message) => message.type === 'setWiring');
+    equal(sent.wiring.mosi, 11, 'the SPI0-only override is replanned');
+    // 26 is free on either bus, so the override that can survive does: only what has to move, moves.
+    equal(sent.wiring.dc, 26);
+    ok(sent.note.includes('MOSI moved from GPIO3 to GPIO11'), sent.note);
+    notOk(sent.note.includes('DC'), 'an override that was kept is not reported as moved');
+});
+
+/**
+ * The Hardware form's pin rows.
+ *
+ * A GPIO number is what the firmware names; the module's own pin number is what a soldering iron finds. Each
+ * row shows both, the box is narrow because a GPIO is one or two digits, and the spinner arrows that used to
+ * fill it are gone.
+ */
+test('each pin row says GPIO, shows the module pin, and a dash where there is none', () => {
+    const { root, window } = dom.install();
+    delete require.cache[require.resolve(BUNDLE)];
+    require(BUNDLE);
+
+    window.emit('message', {
+        data: {
+            type: 'init',
+            document: starterDocument({ boardId: 'pico', panelWidth: 240, panelHeight: 320, rotation: 0 }),
+            canvas: { width: 240, height: 320 },
+            paths: { document: 'designer/panel.ui.json', kdl: 'src/ui.kdl' },
+            touchBoard: true,
+            touchEnabled: true,
+            sdBoard: true,
+            sdEnabled: true,
+            backlight: true,
+            backlightPwm: true,
+            brightness: 100,
+            hardware: {
+                wiring: {
+                    panel: 'ili9341',
+                    bus: 0,
+                    alt: false,
+                    sclk: 18,
+                    mosi: 19,
+                    miso: 16,
+                    cs: 17,
+                    dc: 25,
+                    rst: 21,
+                    backlight: 22,
+                    backlightActiveLow: false,
+                    touchCs: 14,
+                    touchIrq: 15,
+                    sdSclk: 10,
+                    sdMosi: 11,
+                    sdMiso: 12,
+                    sdCs: 13,
+                    timeSource: 'flash',
+                },
+                problems: [],
+                board: 'Raspberry Pi Pico',
+                wireless: false,
+                reserved: [25],
+            },
+        },
+    });
+
+    const all = root.descendants();
+    const labels = all.filter((element) => element.classList?.contains('field-label')).map((e) => e.textContent);
+    ok(labels.includes('SCK GPIO'), `the clock row says GPIO, got ${labels.slice(0, 4).join(',')}`);
+    ok(labels.includes('CS GPIO'));
+    ok(labels.includes('Card SCK GPIO'), 'the card rows say it too');
+    notOk(labels.includes('SCK'), 'and not the bare signal name');
+
+    const badges = all
+        .filter((element) => element.classList?.contains('pin-header'))
+        .map((element) => element.textContent);
+    ok(badges.includes('PIN 24'), `GPIO 18 is the module's pin 24, got ${badges.join(',')}`);
+    ok(badges.includes('PIN 25'), 'GPIO 19 is pin 25');
+    ok(badges.includes('PIN 21'), 'GPIO 16 is pin 21');
+    // DC is on GPIO 25 here, which is the LED: on the module that is no pin at all.
+    ok(badges.includes('—'), 'a GPIO that is not brought out shows a dash');
+
+    // And the box is the narrow kind -- the width and the missing spinner are the `pin-input` class's job.
+    const pins = all.filter((element) => element.classList?.contains('pin-input'));
+    equal(pins.length, 13, 'every signal has one');
+    ok(pins.every((input) => input.type === 'number'), 'still a numeric box, just without arrows');
 });

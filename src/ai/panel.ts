@@ -15,7 +15,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { normalizeAssistantConfig, looksLikeEmbeddingModel, probeServer } from './assistant';
+import { normalizeAssistantConfig, looksLikeEmbeddingModel, probeServer, answeredHere } from './assistant';
 import { log, logError, mirrorLogTo } from './log';
 import {
     chatModels,
@@ -420,7 +420,14 @@ function describePin(
     }
     if (model) {
         const inMemory = found.loaded.some((id) => id === model || id.endsWith(model));
-        return `Pinned: ${model} on ${endpoint}${inMemory ? ' (in memory)' : ' — not in memory yet; the next request loads it'}`;
+        // Discovery is LM Studio's list, and it knows nothing about a `llama-server`, a server another window
+        // started, or any OpenAI-compatible endpoint the user runs — so it answered "not in memory yet" for a
+        // model that had just written a whole reply, and kept saying it for the rest of the conversation
+        // (reported 2026-10-31). An answer from this model at this address is the stronger fact, and it is the
+        // one the user can see, so the line says what happened instead of what a registry guessed.
+        return inMemory || answeredHere(endpoint, model)
+            ? `Pinned: ${model} on ${endpoint} — Model loaded and active`
+            : `Pinned: ${model} on ${endpoint} — not in memory yet; the next request loads it`;
     }
     const loaded = found.loaded.filter((id) => !looksLikeEmbeddingModel(id));
     return loaded.length

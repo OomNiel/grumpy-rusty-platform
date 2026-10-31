@@ -273,7 +273,7 @@ test('an ESP board offers only templates that are implemented', () => {
         ['blinky', 'designer', 'display', 'sdcard', 'board', 'peripherals', 'touch', 'wifi', 'bluetooth'],
         'the card sits with the panel templates, board is everything, and wireless comes after the hardware',
     );
-    equal(defaultTemplateFor(espBoard('lilygo-tqt')), 'display', 'a panel board is bought for its panel');
+    equal(defaultTemplateFor(espBoard('lilygo-tqt')), 'designer', 'the T-QT now defaults to the designer');
     equal(
         defaultTemplateFor(espBoard('sunton-3248s035r')),
         'designer',
@@ -292,11 +292,11 @@ test('the ESP32-035 board option offers the WYSIWYG designer alone', () => {
         templatesFor(cyd).some((info) => info.id === 'display'),
         'the diagnostic is still generatable for this board',
     );
-    // The allowlist is that board's, not a global narrowing.
+    // The T-QT's option list drops the periodic task and the panel diagnostic screen.
     equal(
         templatesOfferedFor(espBoard('lilygo-tqt')).map((info) => info.id),
-        templatesFor(espBoard('lilygo-tqt')).map((info) => info.id),
-        'the T-QT still offers every supported template',
+        ['designer', 'wifi', 'bluetooth'],
+        'the T-QT now offers the designer, Wi-Fi and Bluetooth only',
     );
 });
 

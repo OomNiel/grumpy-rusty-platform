@@ -14,6 +14,7 @@ import type { DesignFontPixels } from './bitmapFont';
 import type { RasterisedFont } from './fontImport';
 import type { DesignerImageAsset } from './imageAssets';
 import type { DesignerDocument } from './model';
+import type { PanelWiring, WiringProblem } from '../boards/panels';
 
 /** Everything the panel needs to draw itself, sent once when it is ready and again on every change. */
 export interface DesignerInit {
@@ -35,14 +36,6 @@ export interface DesignerInit {
      */
     sdEnabled: boolean;
     /**
-     * Whether the project has an `src/smtp.rs`, i.e. whether the SMTP wizard has been run.
-     *
-     * The switch is offered disabled until it does: there is no module for the feature to compile in.
-     */
-    smtpAvailable: boolean;
-    /** Whether the project is built with the `smtp` cargo feature -- the keep-alive client is complied in. */
-    smtpEnabled: boolean;
-    /**
      * True when the chosen panel has a backlight pin wired, which is what makes a Brightness setting possible.
      *
      * Optional like the load fields: the panel tests build `init` messages by hand, and a missing flag has to
@@ -57,8 +50,15 @@ export interface DesignerInit {
      * can act on it, rather than appearing to work.
      */
     backlightPwm?: boolean;
-    /** The brightness the project's `.cargo/esp-config.toml` asks for, 0-100. */
+    /** The brightness the project's `.cargo/config.toml` or `.cargo/esp-config.toml` asks for, 0-100. */
     brightness?: number;
+    /**
+     * The panel's GPIO wiring, on a Pico project.
+     *
+     * Absent on an ESP board, whose panel is a property of the board rather than a set of pins somebody
+     * chose -- which is also the signal that tells the Hardware panel whether to draw itself at all.
+     */
+    hardware?: DesignerHardware;
     /** The document as it was read, when it could not be parsed -- shown instead of a blank canvas. */
     loadError?: string;
     /**
@@ -134,12 +134,33 @@ export interface DesignerReport {
      * there is refused instead of pretending to have written it.
      */
     sdEnabled?: boolean;
-    /** The project's authoritative `smtp` feature state after this report, for the same reason as above. */
-    smtpEnabled?: boolean;
-    /** Whether `src/smtp.rs` exists -- the switch is enabled by it as soon as the wizard has run. */
-    smtpAvailable?: boolean;
     /** The brightness the project's config carries after this report, so the slider follows the file. */
     brightness?: number;
+    /**
+     * The wiring after an edit, as the extension judged it.
+     *
+     * The panel recomputes its own verdict for the fields, but this is the answer that reached disk: a
+     * wiring with an error is refused, and the numbers come back as the file holds them.
+     */
+    hardware?: DesignerHardware;
+}
+
+/** What the Hardware panel draws: the wiring, what is wrong with it, and where it is going. */
+export interface DesignerHardware {
+    wiring: PanelWiring;
+    /** Errors and warnings as the extension sees them; the panel recomputes them as the user types. */
+    problems: WiringProblem[];
+    /** The board's name, for the panel's heading. */
+    board: string;
+    /** Whether the board has a radio, which is what makes a Wi-Fi time source possible. */
+    wireless: boolean;
+    /**
+     * The GPIOs the board itself needs: the radio's, and the on-board LED.
+     *
+     * Sent so the panel can run the same planner the extension does when the bus changes -- "nearest free"
+     * means free on *this* board, and the panel has no board record of its own.
+     */
+    reserved: number[];
 }
 
 /** The panel has finished loading and is ready for its document. */
@@ -211,6 +232,26 @@ export interface DesignerSetBrightness {
 }
 
 /**
+ * The panel sending the Hardware panel's answers back: which module is wired, and to which GPIOs.
+ *
+ * A Pico-only message, because only a Pico has pins to answer for. The extension validates the wiring
+ * against the board, writes `designer/panel.hardware.json` and regenerates `src/panel.rs` from it -- so the
+ * one place the firmware's pin numbers come from is the one place the user edited them.
+ */
+export interface DesignerSetWiring {
+    type: 'setWiring';
+    wiring: PanelWiring;
+    /**
+     * What the planner did, in words -- "SCK moved from GPIO18 to GPIO10."
+     *
+     * The panel plans locally (it has to: the selector has to answer before a round trip), so it is the panel
+     * that knows which pins moved. Sent along rather than recomputed here, because the extension cannot tell a
+     * re-plan from an override.
+     */
+    note?: string;
+}
+
+/**
  * The panel asking the extension to switch the SD card on or off for the project.
  *
  * Like touch it is a *project* setting rather than part of the design -- flipping it changes the firmware, not
@@ -220,17 +261,6 @@ export interface DesignerSetBrightness {
  */
 export interface DesignerSetSd {
     type: 'setSd';
-    enabled: boolean;
-}
-
-/**
- * The panel asking the extension to switch the SMTP keep-alive client on or off.
- *
- * It is the `smtp` cargo feature, which gates both `mod smtp;` and its task, so switching it off takes the
- * client out of the build without deleting `src/smtp.rs` -- and the switch can turn it back on later.
- */
-export interface DesignerSetSmtp {
-    type: 'setSmtp';
     enabled: boolean;
 }
 
@@ -279,8 +309,8 @@ export type DesignerToHost =
     | DesignerPickAsset
     | DesignerSetTouch
     | DesignerSetSd
-    | DesignerSetSmtp
     | DesignerSetBrightness
+    | DesignerSetWiring
     | DesignerFontRasterised;
 export type HostToDesigner =
     | DesignerInit
@@ -300,7 +330,6 @@ export type DesignerActionId =
     | 'revealDocument'
     | 'build'
     | 'revealProject'
-    | 'setupSmtp'
     /**
      * Set the module's RTC to this PC's time, over the console.
      *

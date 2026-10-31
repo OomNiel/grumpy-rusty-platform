@@ -49,8 +49,11 @@ import {
     buildFixPrompt,
     buildGeneratePrompt,
     buildImplementPrompt,
+    buildLineFixPrompt,
     changeSummary,
     chatCodeProblem,
+    retryQuestion,
+    unbalancedAnswer,
     crateList,
     detectEol,
     enclosingFnSpan,
@@ -58,10 +61,13 @@ import {
     fnSignatures,
     itemOffsets,
     insertChatCode,
+    itemReplacementRisk,
     looksLikeWholeFile,
     moduleHeader,
+    oneLineAnswer,
     parseNewItemAnswer,
     preserveSignature,
+    replacementLine,
     spliceItem,
     unwrapItem,
     type ItemSpan,
@@ -453,7 +459,17 @@ export async function chatWithRescue(
             opts.onStep
         );
         if (!endpoint) throw error;
-        return await chatDetailed(await configWithEndpoint(assistantConfig()), messages, tracked);
+        // The retry re-reads the settings for the *address* — the rescue has just written the endpoint and model
+        // it started — but the answer's shape stays the caller's: `maxTokens` and `temperature` are part of the
+        // request, not of the settings. Without this, a line fix that needed a rescued server would be asked
+        // again with the 5120-token budget the settings hold, which is the whole thing `LINE_FIX_TOKENS` exists
+        // to prevent (2026-10-31).
+        const fresh = await configWithEndpoint(assistantConfig());
+        return await chatDetailed(
+            { ...fresh, maxTokens: cfg.maxTokens, temperature: cfg.temperature },
+            messages,
+            tracked
+        );
     }
 }
 
@@ -759,7 +775,15 @@ async function chatCodeTarget(): Promise<vscode.Uri | undefined> {
  * the change and presses Apply; with it off the edit is written and a check is offered. Either way the write is
  * a normal undoable edit, and the diff names the file — which is why choosing the target can be quiet.
  */
-export async function applyChatCode(code: string, opts: { label?: string } = {}): Promise<boolean> {
+export async function applyChatCode(
+    code: string,
+    opts: {
+        label?: string;
+        alternative?: { code: string; label: string };
+        /** Ask the chat again, in full — the way out of a refusal (see `retryQuestion`). */
+        retry?: (question: string) => Promise<void>;
+    } = {}
+): Promise<boolean> {
     const snippet = String(code ?? '').replace(/\s+$/, '');
     if (!snippet.trim()) return false;
     const target = await chatCodeTarget();
@@ -773,9 +797,59 @@ export async function applyChatCode(code: string, opts: { label?: string } = {})
         // dropped items from it, is refused here rather than shown and applied (2026-10-12).
         const problem = chatCodeProblem(text, `${snippet}\n`);
         if (problem !== undefined) {
+            // A quote is not a change to apply — but the answer it came from usually holds the change, so it is
+            // offered by name instead of a modal whose only button is OK (reported 2026-10-31: "when clicking on
+            // 'Ok' nothing happens", which was true: a refusal is a dead end when the fix is one block away).
+            const alternative = unbalancedAnswer(`${snippet}\n`) !== undefined ? opts.alternative : undefined;
+            if (alternative) {
+                const what = alternative.label.trim() || 'the complete block';
+                const take = `Apply ${what}`;
+                const pick = await vscode.window.showWarningMessage(
+                    `That block is a quote, not a function — it stops in the middle of the code, which is why ` +
+                    `it cannot be applied. The same answer also carries the complete one. Apply that instead?`,
+                    { modal: true },
+                    take,
+                    'Cancel'
+                );
+                if (pick !== take) return false;
+                log(`assistant: the quoted block was replaced by the complete one (${what})`);
+                return applyChatCode(alternative.code, { label: alternative.label, retry: opts.retry });
+            }
             log(`assistant: refused a chat answer — ${problem}`);
-            void vscode.window.showWarningMessage(problem, { modal: true }, 'OK');
+            // Refusing is not the end of the road. Two ways out, both offered by name: ask the chat again for the
+            // whole function, or fix the line the compiler points at — which never needs the function reproduced.
+            const lineFix = firstErrorIn(target);
+            const again = 'Ask for it in full';
+            const justLine = 'Fix just that line';
+            const buttons = [...(lineFix ? [justLine] : []), ...(opts.retry ? [again] : []), 'Cancel'];
+            if (buttons.length === 1) {
+                void vscode.window.showWarningMessage(problem, { modal: true }, 'OK');
+                return false;
+            }
+            const pick = await vscode.window.showWarningMessage(problem, { modal: true }, ...buttons);
+            if (pick === justLine && lineFix) {
+                log(`assistant: the chat answer was set aside for a one-line fix at ${lineFix.line}`);
+                await fixLineWithAI(target, lineFix.line, lineFix.message);
+                return false;
+            }
+            if (pick === again && opts.retry) await opts.retry(retryQuestion(opts.label, problem));
             return false;
+        }
+        // A replacement that would take most of a function away is asked about by name, before the diff is
+        // even opened (reported 2026-10-31: a stray character in `main()` was answered with a two-line `main`,
+        // and the diff — an honest diff — was a deletion of the body nobody asked for).
+        const risk = itemReplacementRisk(text, `${snippet}\n`);
+        if (risk !== undefined) {
+            log(`assistant: the answer would replace ${risk.before} lines of ${risk.name} with ${risk.after}`);
+            const pick = await vscode.window.showWarningMessage(
+                `This answer replaces ${risk.before} lines of ${risk.name} with ${risk.after} — ${risk.lost} of ` +
+                'them would be deleted. A model that does not reproduce a body has usually left the rest out. ' +
+                'Ask again for the change only, or open the diff and decide there.',
+                { modal: true },
+                'Show the diff',
+                'Cancel'
+            );
+            if (pick !== 'Show the diff') return false;
         }
         proposed = insertChatCode(text, `${snippet}\n`);
         if (proposed === text) {
@@ -821,6 +895,113 @@ export async function applyChatCode(code: string, opts: { label?: string } = {})
     }
     await showProposal(target, proposed, title);
     return true;
+}
+
+/**
+ * The answer budget of a line fix, and why it is enforced rather than asked for.
+ *
+ * `maxTokens` defaults to 4096 and `temperature` to 0.2, and both were being sent to the line fix as they were
+ * — so a model that felt like answering with the whole function had four thousand tokens and a bit of sampling
+ * noise to do it with (2026-10-31, from "why will the model not just replace a single line"). 200 tokens is
+ * fifteen lines at most: a hundred-line `main` cannot come back, and greedy decoding cannot wander into one.
+ */
+const LINE_FIX_TOKENS = 200;
+
+/**
+ * `AI: Fix This Line` — replaces the one line a diagnostic points at, and shows the proposal.
+ *
+ * THE POINT OF ITS EXISTENCE (2026-10-31). `fixWithAI` above asks for the whole function, and a small model
+ * answers that by writing the change and `// ... rest of the function remains unchanged` for the rest — an
+ * answer that cannot be applied at all. A line fix cannot have that failure: the answer is one line, it is
+ * substituted for the diagnosed line, and nothing else in the file is within its reach. What it cannot do it
+ * says so about (`CANNOT_FIX`), and the function-level fix is then the one to use.
+ */
+export async function fixLineWithAI(uri: vscode.Uri, line: number, message: string): Promise<boolean> {
+    const cfg = await ready('fix one line');
+    if (!cfg) return false;
+    const document = await vscode.workspace.openTextDocument(uri);
+    if (document.languageId !== 'rust') {
+        void vscode.window.showWarningMessage(`The AI assist edits Rust files; this one is "${document.languageId}".`);
+        return false;
+    }
+    const text = document.getText();
+    const lines = text.split(/\r?\n/);
+    const at = Math.min(Math.max(1, Math.round(line)), Math.max(1, lines.length));
+    const original = lines[at - 1] ?? '';
+    if (!original.trim()) {
+        void vscode.window.showWarningMessage('The problem points at a blank line, so there is no line to fix.');
+        return false;
+    }
+    // The enclosing function is deliberately NOT sent. A model shown a whole function rewrites it — that is what
+    // the chat path is for, and it is exactly the behaviour this path exists to avoid. Two lines either side are
+    // enough to know what the line belongs to, and they are labelled "context; do not change them".
+    const span = enclosingFnSpan(text, at);
+    const project = await readActiveProject();
+    const room = Math.max(0, cfg.contextSize - cfg.maxTokens - PROMPT_SLACK);
+    const { messages } = fitMessages(
+        (f) => buildLineFixPrompt({
+            line: original,
+            problem: message,
+            before: [lines[at - 3], lines[at - 2]].filter((l) => l !== undefined).join('\n'),
+            after: [lines[at], lines[at + 1]].filter((l) => l !== undefined).join('\n'),
+            target: f.target,
+            crates: f.crates,
+            rules: f.rules
+        }),
+        promptFacts({ document, text, project }, span),
+        room
+    );
+
+    let answer: ChatOutcome;
+    try {
+        // Greedy, and short: the budget is part of the instruction (see LINE_FIX_TOKENS).
+        answer = await runChat(
+            { ...cfg, maxTokens: Math.min(cfg.maxTokens, LINE_FIX_TOKENS), temperature: 0 },
+            messages,
+            `Fixing line ${at}…`
+        );
+    } catch (error) {
+        logError(error);
+        void vscode.window.showErrorMessage(unreachable(error));
+        return false;
+    }
+    const fixed = oneLineAnswer(answer.text);
+    if ('problem' in fixed) {
+        log(`assistant: line ${at} was not fixed — ${fixed.problem}`);
+        void vscode.window.showWarningMessage(
+            `${capitalise(fixed.problem)}. "Fix with the AI assist" rewrites the whole function, which is what ` +
+            'a change of more than one line needs.',
+            { modal: true },
+            'OK'
+        );
+        return false;
+    }
+    const checked = replacementLine(original, fixed.line);
+    if ('problem' in checked) {
+        log(`assistant: the line fix for line ${at} was refused — ${checked.problem}`);
+        void vscode.window.showWarningMessage(checked.problem + '.', { modal: true }, 'OK');
+        return false;
+    }
+    const proposed = [...lines.slice(0, at - 1), checked.line, ...lines.slice(at)].join(detectEol(text));
+    await showProposal(uri, proposed, `AI: line ${at}`);
+    return true;
+}
+
+/** `the answer is empty` → `The answer is empty` — the sentence starts a dialog here. */
+function capitalise(text: string): string {
+    return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+/**
+ * The first error the Problems pane holds for this file — the line a chat answer can be set aside in favour of.
+ *
+ * It is read from the diagnostics rather than from the answer, because the answer is what could not be trusted;
+ * the compiler is the one thing in this flow that has already agreed on where the problem is.
+ */
+function firstErrorIn(uri: vscode.Uri): { line: number; message: string } | undefined {
+    const found = vscode.languages.getDiagnostics(uri)
+        .find((diagnostic) => diagnostic.severity === vscode.DiagnosticSeverity.Error);
+    return found ? { line: found.range.start.line + 1, message: found.message } : undefined;
 }
 
 /**
@@ -1169,7 +1350,7 @@ export class PromptBlockLensProvider implements vscode.CodeLensProvider {
     }
 }
 
-/** Offers "Fix with AI" on the compiler's own diagnostics. */
+/** Offers the two fixes on the compiler's own diagnostics: the whole function, and the one line it points at. */
 export class AssistantCodeActionProvider implements vscode.CodeActionProvider {
     provideCodeActions(
         document: vscode.TextDocument,
@@ -1179,6 +1360,18 @@ export class AssistantCodeActionProvider implements vscode.CodeActionProvider {
         if (document.languageId !== 'rust') return [];
         const actions: vscode.CodeAction[] = [];
         for (const diagnostic of context.diagnostics) {
+            // The line fix first: it is the smaller change, the only one that cannot delete anything else, and
+            // it is what a stray character or a missing `;` needs. The function rewrite stays below it for the
+            // problems that really do need more than one line (2026-10-31).
+            const line = new vscode.CodeAction('Fix this line with the AI assist', vscode.CodeActionKind.QuickFix);
+            line.command = {
+                command: 'rustyPlatform.assistant.fixLine',
+                title: 'Fix this line with the AI assist',
+                arguments: [document.uri, diagnostic.range.start.line + 1, diagnostic.message]
+            };
+            line.diagnostics = [diagnostic];
+            actions.push(line);
+
             const action = new vscode.CodeAction('Fix with the AI assist', vscode.CodeActionKind.QuickFix);
             action.command = {
                 command: 'rustyPlatform.assistant.fixFinding',
@@ -1214,6 +1407,9 @@ export function registerAssistantEditorCommands(): vscode.Disposable[] {
         vscode.commands.registerCommand('rustyPlatform.assistant.discardProposal', () => discardProposal()),
         vscode.commands.registerCommand('rustyPlatform.assistant.fixFinding', (uri: vscode.Uri, line: number, message: string) =>
             fixWithAI(uri, line, message)
+        ),
+        vscode.commands.registerCommand('rustyPlatform.assistant.fixLine', (uri: vscode.Uri, line: number, message: string) =>
+            fixLineWithAI(uri, line, message)
         ),
         vscode.commands.registerCommand('rustyPlatform.assistant.repair', () => repairProjectWithAI()),
         vscode.commands.registerCommand('rustyPlatform.assistant.check', () => checkProject()),

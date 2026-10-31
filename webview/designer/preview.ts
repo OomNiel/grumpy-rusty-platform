@@ -1430,8 +1430,53 @@ function previewLabel(context: CanvasRenderingContext2D, widget: DesignerWidget,
     drawTextIn(context, blockInner(rect, style), stringProp(widget.props, 'text', 'label', 'title'), style.font, style.text);
 }
 
-/** Button (spec 4.3, `widgets/mod.rs:1346-1368`): block, then centred/middle text. */
-function previewButton(context: CanvasRenderingContext2D, widget: DesignerWidget, state: VisualState): void {
+/**
+ * Text panel (`widgets/mod.rs::render_text_lines`): block, then each entry folded to the panel's width.
+ *
+ * An entry is stacked under the last by the rows it actually took, which is the point of the widget -- a
+ * folded entry pushes the one below it down. An entry that would not fit whole is not drawn, and three dots
+ * in the last visible row say that something is hidden, exactly as the firmware marks it.
+ */
+function previewTextLines(context: CanvasRenderingContext2D, widget: DesignerWidget, _state: VisualState): void {
+    // Read-only, so the live state never changes its face -- the same rule the label follows (§4.2).
+    const style = resolveVisual(labelOrCarouselStyle(widget, styleNew()), 'normal');
+    const rect = rectOf(widget);
+    drawBlock(context, rect, style);
+    const inner = blockInner(rect, style);
+    if (rectEmpty(inner)) {
+        return;
+    }
+    const entries = widget.children?.kind === 'lines' ? widget.children.values : [];
+    const metrics = glyphMetrics(style.font);
+    // `TextStyle`'s own default (`render/text_style.rs`): one blank pixel per wrapped row.
+    const spacing = 1;
+    const gap = numberProp(widget.props, 'gap', 0);
+
+    let y = inner.y;
+    let hidden = false;
+    for (const entry of entries) {
+        const rows = wrapLines(entry, 'word', inner.w, metrics.advance).length;
+        const height = rows * metrics.lineHeight + Math.max(0, rows - 1) * spacing;
+        if (y + height > inner.y + inner.h) {
+            hidden = true;
+            break;
+        }
+        drawTextIn(context, { x: inner.x, y, w: inner.w, h: height }, entry, style.font, style.text, {
+            wrap: 'word',
+        });
+        y += height + gap;
+    }
+    if (hidden) {
+        // Three one-pixel dots, right-aligned in the last row the panel can show: `inner.right() - 6`.
+        const dotY = inner.y + inner.h - 1;
+        const startX = inner.x + inner.w - 6;
+        for (let dot = 0; dot < 3; dot += 1) {
+            fillSolid(context, { x: startX + dot * 2, y: dotY, w: 1, h: 1 }, 0, style.text, 255);
+        }
+    }
+}
+
+/** Button (spec 4.3, `widgets/mod.rs:1346-1368`): block, then centred/middle text. */function previewButton(context: CanvasRenderingContext2D, widget: DesignerWidget, state: VisualState): void {
     const style = resolveVisual(buttonStyle(widget), state);
     const rect = rectOf(widget);
     drawBlock(context, rect, style);
@@ -2950,7 +2995,7 @@ const KEYPAD_TEXT_ROWS: readonly (readonly KeypadKeySpec[])[] = [
     letterRow('zxcvbnm,./'),
     // Shift and the mode key are wide enough to hit with a thumb; the space bar takes the middle.
     // The keys that act are labelled with words, not single letters that read as alphabet keys.
-    [['SHIFT', 2], [KEYPAD_MODE_KEY, 2], [' ', 4], ['BKSP', 2]],
+    [['SHIFT', 2], [KEYPAD_MODE_KEY, 2], ['Space', 4], ['BKSP', 2]],
     // The cursor keys sit left of Enter in every mode (2026-10-21).
     [['CLR', 3], [KEYPAD_CURSOR_LEFT, 1], [KEYPAD_CURSOR_RIGHT, 1], ['ENT', 5]],
 ];
@@ -2969,7 +3014,7 @@ const KEYPAD_SYMBOL_ROWS: readonly (readonly KeypadKeySpec[])[] = [
     letterRow('*()-_=+['),
     letterRow("]\\{}|;':"),
     letterRow('",./<>?'),
-    [[KEYPAD_MODE_KEY, 2], [' ', 4], ['BKSP', 2]],
+    [[KEYPAD_MODE_KEY, 2], ['Space', 4], ['BKSP', 2]],
     [['CLR', 2], [KEYPAD_CURSOR_LEFT, 1], [KEYPAD_CURSOR_RIGHT, 1], ['ENT', 4]],
 ];
 
@@ -3093,13 +3138,13 @@ function previewKeypad(
                             : shifted
                                 ? legend.toUpperCase()
                                 : legend;
-            if (label !== ' ') {
-                const colour = control ? textColour : legendColour;
-                drawTextIn(context, inner, label, style.font, colour, {
-                    align: 'center',
-                    verticalAlign: 'middle',
-                });
-            }
+            // Every key carries a readable legend now -- the space bar says "Space", not a blank
+            // glyph -- so each face is labelled in its own colour.
+            const colour = control ? textColour : legendColour;
+            drawTextIn(context, inner, label, style.font, colour, {
+                align: 'center',
+                verticalAlign: 'middle',
+            });
         });
     });
 }
@@ -3312,6 +3357,9 @@ export function previewWidget(
         case 'label':
         case 'banner':
             previewLabel(context, widget, state);
+            return true;
+        case 'text_lines':
+            previewTextLines(context, widget, state);
             return true;
         case 'button':
             previewButton(context, widget, state);

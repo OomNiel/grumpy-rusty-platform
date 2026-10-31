@@ -28,11 +28,10 @@ import { UsbFlashConfirmation, buildElf, flashProjectOverUsb } from '../flash/us
 import { BuildProfile, LAST_FLASHED_KEY } from '../project/launchConfig';
 import { activeWifiEnv } from '../wifi/credentials';
 import { ensureWifiEnv } from '../wifi/wifiPrompt';
-import { ensureSmtpEnv } from '../smtp/wizard';
-import { activeSmtpEnv } from '../smtp/credentials';
 import { closeTerminal, defmtEnv, defmtPrefix, espEnv, killAllTerminals, openTerminalNames, runInTerminal } from './terminal';
 import { ensureEspToolchain } from './espToolchainCommands';
 import { rearmClockListener } from '../designer/editor';
+import { configHasBuildEpoch, configHasEpochSecond, setBuildEpochInConfig } from '../display/buildEpoch';
 
 const PROBE_CHECK_NOTICE_DELAY_MS = 500;
 
@@ -248,7 +247,7 @@ export function registerProjectCommands(
     function buildEnv(): NodeJS.ProcessEnv {
         // espEnv() is empty unless espup has run: for an ESP project it is what puts the Xtensa
         // linker on PATH, for an RP project it changes nothing.
-        return augmentedEnv({ ...activeWifiEnv(), ...activeSmtpEnv(), ...defmtEnv(), ...espEnv() });
+        return augmentedEnv({ ...activeWifiEnv(), ...defmtEnv(), ...espEnv() });
     }
 
     /**
@@ -420,6 +419,40 @@ export function registerProjectCommands(
      * Extracted so the profile controls are exactly the Flash button with one argument changed: three
      * entry points that each re-implemented the routing would be three places to forget a fix.
      */
+    /**
+     * Stamps the current time into the project's build environment.
+     *
+     * A Pico has no RTC on the chip, so the user's answer for its clock was "set it when flashing". The
+     * firmware reads `RUSTY_EPOCH` at compile time; writing it here, immediately before the build that a
+     * Flash starts, is what makes that true. A project with no such key -- every non-panel project, and every
+     * ESP one -- is left alone, and so is a rebuild in the same second, which keeps a no-op build from
+     * showing up as a modified file.
+     */
+    async function stampBuildTime(project: ActiveProject): Promise<void> {
+        if (project.board?.kind !== 'rp') {
+            return;
+        }
+        const uri = vscode.Uri.joinPath(project.folder, '.cargo', 'config.toml');
+        let existing: string;
+        try {
+            existing = Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf8');
+        } catch {
+            return;
+        }
+        if (!configHasBuildEpoch(existing)) {
+            return;
+        }
+        const seconds = Math.floor(Date.now() / 1000);
+        if (configHasEpochSecond(existing, seconds)) {
+            return;
+        }
+        await vscode.workspace.fs.writeFile(
+            uri,
+            Buffer.from(setBuildEpochInConfig(existing, seconds), 'utf8'),
+        );
+        output.appendLine(`build: the clock will start at ${new Date(seconds * 1000).toLocaleString()}`);
+    }
+
     async function flashProject(
         project: ActiveProject,
         options: { choice: FlashProfileChoice; monitor?: boolean },
@@ -427,13 +460,11 @@ export function registerProjectCommands(
         // Every terminal goes first, before the route is even chosen: whichever one is holding the
         // serial port or the probe, this is what makes the write able to open it.
         await clearTerminals('flash');
+        await stampBuildTime(project);
         const profile = flashProfileFor(project.board, options.choice);
         // Ask for the network before anything is compiled: the wireless templates bake the credentials
         // in at compile time, so a prompt after the build would arrive too late.
         await ensureWifiEnv(context, project.folder, output);
-        // The SMTP connection info is baked in the same way, and lives in the keyring only -- without
-        // this a reload would silently build the placeholder (an empty relay).
-        await ensureSmtpEnv(context, project.folder, output);
         output.appendLine(
             `flash: profile ${profile}` +
             `${options.choice === 'auto' ? ' (auto, from the board)' : ' (chosen)'}` +
@@ -486,7 +517,7 @@ export function registerProjectCommands(
         vscode.commands.registerCommand('rustyPlatform.build', () =>
             withProject(async (project) => {
                 await clearTerminals('build');
-                await ensureSmtpEnv(context, project.folder, output);
+                await stampBuildTime(project);
                 closeWhenSucceeded(
                     'Rusty: build',
                     runInTerminal('Rusty: build', `${defmtPrefix()}cargo build`, project.folder),
@@ -496,7 +527,7 @@ export function registerProjectCommands(
         vscode.commands.registerCommand('rustyPlatform.buildDebug', () =>
             withProject(async (project) => {
                 await clearTerminals('build');
-                await ensureSmtpEnv(context, project.folder, output);
+                await stampBuildTime(project);
                 closeWhenSucceeded(
                     'Rusty: build',
                     runInTerminal('Rusty: build', `${defmtPrefix()}cargo build`, project.folder),
@@ -506,7 +537,7 @@ export function registerProjectCommands(
         vscode.commands.registerCommand('rustyPlatform.buildRelease', () =>
             withProject(async (project) => {
                 await clearTerminals('build');
-                await ensureSmtpEnv(context, project.folder, output);
+                await stampBuildTime(project);
                 closeWhenSucceeded(
                     'Rusty: build',
                     runInTerminal('Rusty: build', `${defmtPrefix()}cargo build --release`, project.folder),
@@ -542,7 +573,6 @@ export function registerProjectCommands(
                 // the board profile says which route this board takes, so Upload is the answer either way.
                 await clearTerminals('flash');
                 await ensureWifiEnv(context, project.folder, output);
-                await ensureSmtpEnv(context, project.folder, output);
                 const profile = flashProfileFor(project.board, configuredProfileChoice());
                 if (usesSerialFlash(project.board)) {
                     // The explicit "USB" route: for an ESP that is espflash over serial, not a UF2 copy.

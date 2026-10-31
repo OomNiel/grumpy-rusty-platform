@@ -11,7 +11,7 @@ use crate::{
         WidgetFlags, WidgetId,
     },
     widgets::{
-        ClockWidget, KeyboardLayout, KeypadMode, SurfaceState, WidgetKind, WidgetNode,
+        ClockWidget, KeyboardLayout, KeypadMode, SurfaceState, TextLines, WidgetKind, WidgetNode,
         TEXTAREA_CAPACITY,
     },
 };
@@ -1128,6 +1128,246 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
             } => Some(textarea_text(text_buf, *text_len)),
             _ => None,
         }
+    }
+
+    // ---- text line panels ----------------------------------------------------------------
+    //
+    // A panel folds each entry to its own width and stacks the entries by how far each one folded, so
+    // every question about it ("does this fit", "how many rows is this") is answered against the font
+    // and the rect rather than against a fixed count. `text_lines_metrics` is that answer, and the
+    // same numbers the renderer uses, so a line the caller was allowed to add is a line that is drawn.
+
+    /// Characters per row, the font's line height, the style's line spacing, and the panel's inside
+    /// height -- or `None` when `id` is not a text-line panel.
+    #[cfg(feature = "rich-widgets")]
+    fn text_lines_metrics(&self, id: WidgetId) -> Option<(usize, u32, u32, u32)> {
+        let node = self.node(id)?;
+        if !matches!(node.kind, WidgetKind::TextLines { .. }) {
+            return None;
+        }
+        let rect = self.absolute_rect(id)?;
+        let style = node.style.resolve(crate::style::VisualState::Normal);
+        let inner = crate::block::Block::styled(style).inner(rect);
+        Some(crate::widgets::text_lines_metrics(style, inner))
+    }
+
+    /// Replaces every line of a panel, keeping its spacing.
+    #[cfg(feature = "rich-widgets")]
+    pub fn set_text_lines(&mut self, id: WidgetId, lines: &[&'a str]) -> Result<(), GuiError> {
+        let rect = self.absolute_rect(id).ok_or(GuiError::NotFound)?;
+        let node = self.node_mut(id).ok_or(GuiError::NotFound)?;
+        if let WidgetKind::TextLines { lines: panel } = &mut node.kind {
+            let gap = panel.gap;
+            *panel = TextLines::from_slice(lines).gap(gap);
+            self.dirty.add(rect)?;
+            Ok(())
+        } else {
+            Err(GuiError::NotFound)
+        }
+    }
+
+    /// Appends a borrowed line. See [`GuiError::LinesFull`].
+    #[cfg(feature = "rich-widgets")]
+    pub fn push_text_line(&mut self, id: WidgetId, text: &'a str) -> Result<(), GuiError> {
+        let (max_chars, line_h, spacing, available) =
+            self.text_lines_metrics(id).ok_or(GuiError::NotFound)?;
+        let rect = self.absolute_rect(id).ok_or(GuiError::NotFound)?;
+        let node = self.node_mut(id).ok_or(GuiError::NotFound)?;
+        if let WidgetKind::TextLines { lines } = &mut node.kind {
+            // Pushed into a copy first: a line that would not fit must leave the panel exactly as it
+            // was, or a caller looping until it is refused would end up with a half-written entry.
+            let mut next = *lines;
+            if !next.push(text) {
+                return Err(GuiError::LinesFull);
+            }
+            if next
+                .first_hidden(max_chars, line_h, spacing, available)
+                .is_some()
+            {
+                return Err(GuiError::LinesFull);
+            }
+            *lines = next;
+        } else {
+            return Err(GuiError::NotFound);
+        }
+        self.dirty.add(rect)?;
+        Ok(())
+    }
+
+    /// Appends a copy of `text`, so a line built at runtime can reach the panel without a heap.
+    #[cfg(feature = "rich-widgets")]
+    pub fn push_text_line_owned(&mut self, id: WidgetId, text: &str) -> Result<(), GuiError> {
+        let (max_chars, line_h, spacing, available) =
+            self.text_lines_metrics(id).ok_or(GuiError::NotFound)?;
+        let rect = self.absolute_rect(id).ok_or(GuiError::NotFound)?;
+        let node = self.node_mut(id).ok_or(GuiError::NotFound)?;
+        if let WidgetKind::TextLines { lines } = &mut node.kind {
+            let mut next = *lines;
+            if !next.push_owned(text) {
+                return Err(GuiError::LinesFull);
+            }
+            if next
+                .first_hidden(max_chars, line_h, spacing, available)
+                .is_some()
+            {
+                return Err(GuiError::LinesFull);
+            }
+            *lines = next;
+        } else {
+            return Err(GuiError::NotFound);
+        }
+        self.dirty.add(rect)?;
+        Ok(())
+    }
+
+    /// Inserts a borrowed line at `index`, moving the lines after it down.
+    #[cfg(feature = "rich-widgets")]
+    pub fn insert_text_line(
+        &mut self,
+        id: WidgetId,
+        index: usize,
+        text: &'a str,
+    ) -> Result<(), GuiError> {
+        let rect = self.absolute_rect(id).ok_or(GuiError::NotFound)?;
+        let node = self.node_mut(id).ok_or(GuiError::NotFound)?;
+        if let WidgetKind::TextLines { lines } = &mut node.kind {
+            if !lines.insert(index, text) {
+                return Err(GuiError::LinesFull);
+            }
+        } else {
+            return Err(GuiError::NotFound);
+        }
+        self.dirty.add(rect)?;
+        Ok(())
+    }
+
+    /// Inserts a copy of `text` at `index`, moving the lines after it down.
+    ///
+    /// The copying twin of [`Self::insert_text_line`], for a line built at runtime: the borrowed form needs
+    /// a string that lives as long as the design does, which a line pasted together from a few numbers does
+    /// not.
+    #[cfg(feature = "rich-widgets")]
+    pub fn insert_text_line_owned(
+        &mut self,
+        id: WidgetId,
+        index: usize,
+        text: &str,
+    ) -> Result<(), GuiError> {
+        let rect = self.absolute_rect(id).ok_or(GuiError::NotFound)?;
+        let node = self.node_mut(id).ok_or(GuiError::NotFound)?;
+        if let WidgetKind::TextLines { lines } = &mut node.kind {
+            if !lines.insert_owned(index, text) {
+                return Err(GuiError::LinesFull);
+            }
+        } else {
+            return Err(GuiError::NotFound);
+        }
+        self.dirty.add(rect)?;
+        Ok(())
+    }
+
+    /// Replaces one line with a borrowed string.
+    #[cfg(feature = "rich-widgets")]
+    pub fn set_text_line(
+        &mut self,
+        id: WidgetId,
+        index: usize,
+        text: &'a str,
+    ) -> Result<(), GuiError> {
+        let rect = self.absolute_rect(id).ok_or(GuiError::NotFound)?;
+        let node = self.node_mut(id).ok_or(GuiError::NotFound)?;
+        if let WidgetKind::TextLines { lines } = &mut node.kind {
+            if !lines.set(index, text) {
+                return Err(GuiError::NotFound);
+            }
+        } else {
+            return Err(GuiError::NotFound);
+        }
+        self.dirty.add(rect)?;
+        Ok(())
+    }
+
+    /// Replaces one line with a copy of `text`, truncated to `TEXT_LINE_BYTES`.
+    #[cfg(feature = "rich-widgets")]
+    pub fn set_text_line_owned(
+        &mut self,
+        id: WidgetId,
+        index: usize,
+        text: &str,
+    ) -> Result<(), GuiError> {
+        let rect = self.absolute_rect(id).ok_or(GuiError::NotFound)?;
+        let node = self.node_mut(id).ok_or(GuiError::NotFound)?;
+        if let WidgetKind::TextLines { lines } = &mut node.kind {
+            if !lines.set_owned(index, text) {
+                return Err(GuiError::NotFound);
+            }
+        } else {
+            return Err(GuiError::NotFound);
+        }
+        self.dirty.add(rect)?;
+        Ok(())
+    }
+
+    /// Removes one line by index, moving the rest up -- `remove_text_line(id, 0)` drops the oldest,
+    /// which is the whole point of addressing a line rather than replacing the panel's text.
+    #[cfg(feature = "rich-widgets")]
+    pub fn remove_text_line(&mut self, id: WidgetId, index: usize) -> Result<(), GuiError> {
+        let rect = self.absolute_rect(id).ok_or(GuiError::NotFound)?;
+        let node = self.node_mut(id).ok_or(GuiError::NotFound)?;
+        if let WidgetKind::TextLines { lines } = &mut node.kind {
+            if !lines.remove(index) {
+                return Err(GuiError::NotFound);
+            }
+        } else {
+            return Err(GuiError::NotFound);
+        }
+        self.dirty.add(rect)?;
+        Ok(())
+    }
+
+    #[cfg(feature = "rich-widgets")]
+    pub fn clear_text_lines(&mut self, id: WidgetId) -> Result<(), GuiError> {
+        self.set_text_lines(id, &[])
+    }
+
+    /// How many lines the panel holds, whether or not they are all on the glass.
+    #[cfg(feature = "rich-widgets")]
+    pub fn text_line_count(&self, id: WidgetId) -> Option<usize> {
+        match &self.node(id)?.kind {
+            WidgetKind::TextLines { lines } => Some(lines.len()),
+            _ => None,
+        }
+    }
+
+    #[cfg(feature = "rich-widgets")]
+    pub fn text_line(&self, id: WidgetId, index: usize) -> Option<&str> {
+        match &self.node(id)?.kind {
+            WidgetKind::TextLines { lines } => lines.get(index),
+            _ => None,
+        }
+    }
+
+    /// Sets the font a widget draws its text in.
+    ///
+    /// The font lives in the widget's style, so until now only the builder could choose it -- which made
+    /// "pick the font, then write the text" impossible from code. The rect does not move: a widget that
+    /// folds text re-folds against the new font's advance and re-stacks against its line height.
+    pub fn set_widget_font(
+        &mut self,
+        id: WidgetId,
+        font: impl Into<crate::font::FontId>,
+    ) -> Result<(), GuiError> {
+        let rect = self.absolute_rect(id).ok_or(GuiError::NotFound)?;
+        let node = self.node_mut(id).ok_or(GuiError::NotFound)?;
+        let font = font.into();
+        // Every state, not just `normal`: the resolved font of a focused or pressed widget would
+        // otherwise still be the old face, so a panel would change typeface the moment it was touched.
+        node.style.normal.font = font;
+        node.style.focused.font = font;
+        node.style.pressed.font = font;
+        node.style.disabled.font = font;
+        self.dirty.add(rect)?;
+        Ok(())
     }
 
     #[cfg(feature = "rich-widgets")]

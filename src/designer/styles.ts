@@ -72,7 +72,7 @@ body {
     padding: 2px 4px;
 }
 
-/* A switch for a two-state project setting (SD, SMTP). The checkbox is the control -- focusable and
+/* A switch for a two-state project setting (SD). The checkbox is the control -- focusable and
    toggled by its label -- and the track/thumb are the drawing. The label names its own colour for the
    same reason every button does: a webview element does not inherit one, and the default would be
    black on a dark toolbar. */
@@ -371,6 +371,34 @@ body {
 .field > input[type="checkbox"] { flex: 0 0 auto; width: auto; }
 
 .field-input { flex: 1 1 0; width: 100%; min-width: 0; }
+
+/* A GPIO box and the module pin it comes out on, sharing one row. The box is narrow because a GPIO is one or
+   two digits, and the pin number sits beside it rather than at the far edge, so the eye reads '18 ... PIN 24'
+   as one thing. */
+/* The pair is pushed to the right edge, so the boxes line up in a column even though the labels are ragged:
+   "Touch IRQ GPIO" is wider than "DC GPIO", and a column of numbers that starts at a different x on every row
+   is harder to read than one that starts at the same place. */
+.pin-field { display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-width: 0; }
+.pin-input { flex: 0 0 auto; width: 5ch; text-align: center; }
+.pin-header {
+    flex: 0 0 auto;
+    min-width: 5.5ch;
+    opacity: 0.7;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+/* No spinner: a GPIO is typed, not nudged, and the arrows take half of a two-digit box. The appearance
+   property covers Firefox, the two pseudo-elements Chromium -- which is what a VS Code webview runs. */
+.pin-input::-webkit-outer-spin-button,
+.pin-input::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+.pin-input {
+    -moz-appearance: textfield;
+    appearance: textfield;
+}
 
 /* A path field is an input and its '...' button sharing one row. Without a flex row of its own, the input's
    default width and the button sit on a single unbreakable line -- there is no whitespace between them -- and

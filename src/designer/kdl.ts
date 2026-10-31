@@ -169,6 +169,11 @@ function childLines(widget: DesignerWidget, indent: string): string[] | undefine
         }
         return lines;
     }
+    if (children.kind === 'lines') {
+        // One `line` child per entry, not a newline-joined `text` attribute: an entry may itself contain a
+        // quote or a backslash, and the attribute spelling would need those escaped twice over.
+        return children.values.map((value) => `${indent}line ${quote(value)}`);
+    }
     return children.parts.map((part) => iconPartLine(part, indent));
 }
 

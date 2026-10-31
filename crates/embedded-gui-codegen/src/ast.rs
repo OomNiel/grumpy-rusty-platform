@@ -111,6 +111,20 @@ pub enum WidgetDef {
         /// Name of a `font` declared on the screen, e.g. a BDF import.
         font: Option<String>,
     },
+    /// A read-only panel of text lines, each folded to the widget's own width.
+    ///
+    /// The lines are a list rather than one string because code addresses them by index: a log drops
+    /// its oldest entry, and `remove_line(0)` is only meaningful if the panel knows what a line is.
+    TextLines {
+        id: Option<String>,
+        /// The entries, in order, before any folding.
+        lines: Vec<String>,
+        /// Blank pixels between two entries, on top of the font's own line spacing.
+        gap: u8,
+        style: Option<String>,
+        /// Name of a `font` declared on the screen.
+        font: Option<String>,
+    },
     Button {
         id: Option<String>,
         text: String,
@@ -466,6 +480,7 @@ impl WidgetDef {
         match self {
             WidgetDef::Label { id, .. }
             | WidgetDef::Button { id, .. }
+            | WidgetDef::TextLines { id, .. }
             | WidgetDef::Toggle { id, .. }
             | WidgetDef::Checkbox { id, .. }
             | WidgetDef::Slider { id, .. }

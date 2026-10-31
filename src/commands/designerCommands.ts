@@ -7,9 +7,7 @@
  */
 
 import * as vscode from 'vscode';
-import { readActiveProject } from '../project/activeProject';
-import { importFontIntoDesigner, refreshDesignerSmtp, showDesigner } from '../designer/editor';
-import { runSmtpWizard } from '../smtp/wizard';
+import { importFontIntoDesigner, showDesigner } from '../designer/editor';
 
 export function registerDesignerCommands(
     context: vscode.ExtensionContext,
@@ -23,26 +21,6 @@ export function registerDesignerCommands(
         // is open -- so it is a rejection with a reason rather than a command that quietly does nothing.
         vscode.commands.registerCommand('rustyPlatform.importFont', async () => {
             await importFontIntoDesigner();
-        }),
-        // The SMTP wizard is offered from the Designer control bar and here. It is the palette entry for a
-        // project that is not the one open in a panel, and is gated the same way the panel is: an ESP board
-        // with a display, which is the only design the generated smtp_task is written for.
-        vscode.commands.registerCommand('rustyPlatform.setupSmtp', async () => {
-            const project = await readActiveProject();
-            if (project === undefined) {
-                void vscode.window.showWarningMessage('Open a Rusty Platform project before setting up SMTP.');
-                return;
-            }
-            const board = project.board;
-            if (board === undefined || board.kind !== 'esp' || board.displays.length === 0 || !project.designer) {
-                void vscode.window.showWarningMessage(
-                    'SMTP setup needs a Designer project on an ESP board with a display.',
-                );
-                return;
-            }
-            await runSmtpWizard(project.folder, context, output);
-            // The panel, if one is open, has to learn that the module and the feature now exist.
-            await refreshDesignerSmtp();
         }),
     ];
 }

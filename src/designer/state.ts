@@ -307,11 +307,13 @@ function copyWidgetContents(
                     ? { kind: 'parts', parts: source.children.parts.map((part) => ({ ...part })) }
                     : source.children.kind === 'options'
                         ? { kind: 'options', values: [...source.children.values] }
-                        : {
-                            kind: 'table',
-                            headers: [...source.children.headers],
-                            rows: source.children.rows.map((row) => [...row]),
-                        },
+                        : source.children.kind === 'lines'
+                            ? { kind: 'lines', values: [...source.children.values] }
+                            : {
+                                kind: 'table',
+                                headers: [...source.children.headers],
+                                rows: source.children.rows.map((row: readonly string[]) => [...row]),
+                            },
     };
 }
 

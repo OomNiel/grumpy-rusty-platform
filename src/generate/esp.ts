@@ -11,7 +11,7 @@
  * cannot build Xtensa code to find out.
  */
 
-import type { AppTemplate, AppTemplateInfo, GeneratedFile } from './files';
+import { DEBUG_PROFILE, type AppTemplate, type AppTemplateInfo, type GeneratedFile } from './files';
 import { crateNameFrom } from './naming';
 import {
     SKETCH_HEADER_PATH,
@@ -139,6 +139,7 @@ export interface EspGenerateOptions {
 const OFFERED_TEMPLATES: Record<string, readonly AppTemplate[]> = {
     'sunton-3248s035r': ['designer'],
     'esp32-devkitc': ['designer', 'bluetooth'],
+    'lilygo-tqt': ['designer', 'wifi', 'bluetooth'],
 };
 
 /**
@@ -362,8 +363,8 @@ export function generateEspProjectFiles(options: EspGenerateOptions): GeneratedF
  * generated; the Designer toolbar is what flips it later. Keeping the feature in `default` is what lets the
  * setting be changed without regenerating `src/main.rs`, in the same way the panel-revision switch already does.
  */
-function espFeaturesSection(panelChoice: string | undefined, sdFeature: boolean, smtpFeature: boolean, board?: EspBoardProfile): string {
-    if (panelChoice === undefined && !sdFeature && !smtpFeature) {
+function espFeaturesSection(panelChoice: string | undefined, sdFeature: boolean, board?: EspBoardProfile): string {
+    if (panelChoice === undefined && !sdFeature) {
         return '';
     }
     const defaultItems: string[] = [];
@@ -399,16 +400,6 @@ function espFeaturesSection(panelChoice: string | undefined, sdFeature: boolean,
             'sd = ["dep:embedded-sdmmc", "dep:critical-section"]',
         );
     }
-    if (smtpFeature) {
-        lines.push(
-            '',
-            '# The SMTP keep-alive client. `src/smtp.rs` is written by the SMTP wizard and left in the',
-            '# project; this feature is what compiles it in and spawns its task (the wizard puts "smtp"',
-            '# in `default`). Switching it off in the Designer toolbar drops the module and the task from',
-            '# the build without deleting the file, which is what makes the toggle reversible.',
-            'smtp = []',
-        );
-    }
     return `${lines.join('\n')}\n`;
 }
 
@@ -422,11 +413,7 @@ function espCargoToml(
     const display = templateUsesPanel(template) ? displayFor(board, choices) : undefined;
     const panelChoice = display?.panelChoice;
     const sdFeature = template === 'designer' && board.sd !== undefined;
-    // Every Designer project carries the SMTP feature, off by default: the wizard writes `src/smtp.rs` and
-    // switches it on, and a project that never sets SMTP up still needs the definition for the toggle to
-    // have something to move.
-    const smtpFeature = template === 'designer';
-    const features = espFeaturesSection(panelChoice, sdFeature, smtpFeature, board);
+    const features = espFeaturesSection(panelChoice, sdFeature, board);
     const espRtosFeatures = ['embassy', board.espChip];
 
     // The radio templates: Wi-Fi on `wifi`, the Bluetooth LE controller on `bluetooth`. A Designer
@@ -613,7 +600,7 @@ publish = false
 ${features}
 [dependencies]
 ${dependencies.join('\n')}
-${vendored}
+${vendored}${DEBUG_PROFILE}
 [profile.release]
 opt-level = "s"
 lto = true
@@ -1589,15 +1576,6 @@ function espClockSetupDecls(board: EspBoardProfile): string {
     // is built on the first calibrated frame, so the value is kept here until there is one to tell.
     let mut wall_clock: Option<(u8, u8, u8)> = rtc_time;
     let mut wall_clock_applied = false;
-    // One task owns the radio. With the SMTP client compiled in that task also does the clock's time
-    // query -- peripherals.WIFI can be moved once per boot, so the two jobs share one task instead of
-    // competing for the peripheral (the previous shape spawned SMTP only when the clock did not need it).
-    #[cfg(feature = "smtp")]
-    spawner.spawn(
-        crate::smtp::smtp_task(peripherals.WIFI, ui::HAS_CLOCK && needs_time)
-            .expect("the SMTP task is spawned exactly once"),
-    );
-    #[cfg(not(feature = "smtp"))]
     if ui::HAS_CLOCK && needs_time {
         spawner.spawn(
             crate::net::time_task(peripherals.WIFI).expect("the network time task is spawned exactly once"),
@@ -2147,11 +2125,8 @@ function emitNetRs(): string {
 // covers a board plugged into a charger: join the network the build was given, ask an NTP server,
 // and publish the local time of day. main.rs puts it in the RTC exactly as it does a console line.
 
-// The radio can only be moved once per boot. With the SMTP client compiled in (the smtp cargo
-// feature) its task is the one that owns the peripheral -- and it does this file's time query itself,
-// publishing through SYNCED_TIME -- so this module's task is not spawned in that build. The items are
-// not dead code; they are the other half of the switch, which has to bring the clock back when SMTP
-// is turned off without regenerating a project file.
+// The radio can only be moved once per boot, so this module's task is only spawned when the clock
+// needs the time. The items stay compiled in either way.
 #![allow(dead_code)]
 
 use embassy_executor::Spawner;

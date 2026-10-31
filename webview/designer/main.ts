@@ -58,11 +58,13 @@ import type {
     DesignerAssetKind,
     DesignerAssetPicked,
     DesignerDeclareFont,
+    DesignerHardware,
     DesignerInbound,
     DesignerInit,
     DesignerRasteriseFont,
     DesignerReport,
 } from '../../src/designer/protocol';
+import type { PanelWiring } from '../../src/boards/panels';
 import type { LcdRotation } from '../../src/display/rotation';
 
 interface VsCodeApi {
@@ -103,14 +105,17 @@ let touchEnabled = true;
 let sdBoard = false;
 /** Whether the project is built with the `sd` cargo feature, which the toolbar shows and writes. */
 let sdEnabled = true;
-/** Whether the SMTP wizard has written `src/smtp.rs` -- without it the SMTP switch has nothing to compile. */
-let smtpAvailable = false;
-/** Whether the project is built with the `smtp` cargo feature (the keep-alive client). */
-let smtpEnabled = false;
 /** Whether the chosen panel has a backlight pin wired, which is what makes a Brightness setting possible. */
 let backlightBoard = false;
 /** Whether the project's `src/main.rs` already dims the backlight by PWM, i.e. whether a change can reach it. */
 let backlightPwm = false;
+/**
+ * The panel's GPIO wiring, on a Pico project.
+ *
+ * Absent on an ESP board, where the panel is a property of the board; its presence is what makes the
+ * Hardware section of the properties panel appear at all.
+ */
+let hardware: DesignerHardware | undefined;
 /** The brightness the project asks for, 0-100. */
 let brightness = 100;
 let postTimer: number | undefined;
@@ -213,6 +218,22 @@ const panels = {
         root.addEventListener('click', () => hideContextMenu(root), { once: true });
         showContextMenu(root, x, y, fontMenu(state, fontId, panels));
     },
+    onWiring(wiring: PanelWiring, note?: string, replanned = false) {
+        // Remembered as well as sent: the extension writes what it is given (the planner here is the same
+        // function the validator and `src/panel.rs` use), so its echo says nothing new. What it can add is the
+        // *verdict*, which is why a report with different problems still repaints.
+        if (hardware !== undefined) {
+            hardware = { ...hardware, wiring };
+        }
+        host.postMessage({ type: 'setWiring', wiring, note });
+        if (replanned) {
+            // A bus change, a new module or the assign button: the numbers in the fields are the *old* ones, so
+            // remembering the new wiring is not enough -- the form has to be drawn again or it keeps showing the
+            // pins of the bus the project just left. Regression (2026-10-27): without this the selector wrote
+            // the files and the screen never moved.
+            refreshProperties();
+        }
+    },
 };
 
 window.addEventListener('message', (event: MessageEvent<
@@ -230,13 +251,15 @@ window.addEventListener('message', (event: MessageEvent<
         touchEnabled = message.touchEnabled;
         sdBoard = message.sdBoard;
         sdEnabled = message.sdEnabled;
-        smtpAvailable = message.smtpAvailable;
-        smtpEnabled = message.smtpEnabled;
         // Optional on purpose: the panel tests build init messages by hand, and a missing flag has to read as
         // "no backlight" rather than leave a control that writes a setting the panel cannot honour.
         backlightBoard = message.backlight === true;
         backlightPwm = message.backlightPwm === true;
         brightness = message.brightness ?? 100;
+        // A Pico's wiring arrives with the document and nowhere else: it is what makes the Hardware section
+        // of the properties panel exist at all, so it has to be in hand before the first render. On an ESP
+        // board the extension sends none, and the panel shows no Hardware section.
+        hardware = message.hardware;
         // Before the first paint: a declared font's glyphs are not in the design, so they arrive with the
         // document and the canvas has to know them before it draws a widget that uses one.
         for (const [name, pixels] of Object.entries(message.fonts ?? {})) {
@@ -299,19 +322,31 @@ window.addEventListener('message', (event: MessageEvent<
             view.setState(state);
             refreshProperties();
         }
+        if (message.hardware !== undefined) {
+            // The wiring is a project fact and the extension has the last word: a bus change, a new module or a
+            // pin it refused come back here, and the fields have to show what it settled on rather than what
+            // the panel asked for. Repainted only when something actually differs -- an ordinary edit echoes
+            // itself, and repainting the form would take the caret out of the box being typed in.
+            const changed =
+                hardware === undefined
+                || JSON.stringify(message.hardware.wiring) !== JSON.stringify(hardware.wiring)
+                || JSON.stringify(message.hardware.problems) !== JSON.stringify(hardware.problems);
+            hardware = message.hardware;
+            if (changed) {
+                refreshProperties();
+            }
+        }
         if (
             (message.sdEnabled !== undefined && message.sdEnabled !== sdEnabled)
-            || (message.smtpEnabled !== undefined && message.smtpEnabled !== smtpEnabled)
-            || (message.smtpAvailable !== undefined && message.smtpAvailable !== smtpAvailable)
             || (message.brightness !== undefined && message.brightness !== brightness)
         ) {
             // The switches are reported as the manifest actually is, not as the click assumed: a project
             // whose Cargo.toml cannot carry the feature refuses it, and the toolbar goes back to the truth.
             sdEnabled = message.sdEnabled ?? sdEnabled;
-            smtpEnabled = message.smtpEnabled ?? smtpEnabled;
-            smtpAvailable = message.smtpAvailable ?? smtpAvailable;
             brightness = message.brightness ?? brightness;
+            hardware = message.hardware ?? hardware;
             refreshToolbar();
+            refreshProperties();
         }
         report(message);
     }
@@ -435,22 +470,6 @@ function setSd(enabled: boolean, why?: string): void {
     status(why ?? (enabled ? 'SD enabled. Rebuild for it to take effect.' : 'SD disabled. Rebuild for it to take effect.'), false);
 }
 
-/**
- * Switches the SMTP keep-alive client on or off for the project.
- *
- * It is the `smtp` cargo feature: switching it off takes `src/smtp.rs` and its radio work out of the build
- * without deleting the file, and switching it back on returns them. Like touch and SD, the firmware reads it
- * at compile time, so a rebuild is what makes it real.
- */
-function setSmtp(enabled: boolean, why?: string): void {
-    if (enabled === smtpEnabled) {
-        return;
-    }
-    smtpEnabled = enabled;
-    host.postMessage({ type: 'setSmtp', enabled });
-    refreshToolbar();
-    status(why ?? (enabled ? 'SMTP enabled. Rebuild for it to take effect.' : 'SMTP disabled. Rebuild for it to take effect.'), false);
-}
 
 /**
  * Asks for a new backlight brightness.
@@ -716,7 +735,7 @@ function renameViewTab(viewId: string): void {
 }
 
 function refreshProperties(): void {
-    renderProperties(properties, state, selectedId, panels);
+    renderProperties(properties, state, selectedId, panels, hardware);
     // The tabs are rebuilt with the panel because every path that can change the design -- a drop, a property,
     // an undo -- comes through here, and adding or deleting a view is one of those edits.
     refreshViewTabs();
@@ -807,7 +826,7 @@ function refreshToolbar(): void {
         : 'This board has no touch controller, so there is nothing to drive.';
     touch.addEventListener('change', () => setTouch(touch.value === 'true'));
 
-    // SD and SMTP, beside touch: all are project settings the firmware reads at compile time. Both are
+    // SD, beside touch: all are project settings the firmware reads at compile time. Both are
     // cargo features rather than env keys, because enabling them is what adds code -- the FAT filesystem
     // (embedded-sdmmc) and the keep-alive client -- so they are switches: on and off are both real states,
     // not a menu of values like the rotation.
@@ -821,16 +840,6 @@ function refreshToolbar(): void {
         onChange: (on) => setSd(on),
     });
 
-    const smtpSwitch = toggleSwitch({
-        label: 'SMTP',
-        checked: smtpEnabled,
-        disabled: !smtpAvailable,
-        title: smtpAvailable
-            ? 'Compile the SMTP keep-alive client (src/smtp.rs) in and send its posts. Changing it needs a rebuild.'
-            : 'Run SMTP… first: the switch compiles the client the wizard writes, and there is none yet.',
-        onChange: (on) => setSmtp(on),
-    });
-
     // Brightness is a range rather than a switch, and it is only offered when the panel has a BL pin: a
     // module that leaves it unconnected has nothing to dim. The number in the project is the brightness a
     // person sees -- the firmware inverts it for an active-low transistor.
@@ -839,9 +848,6 @@ function refreshToolbar(): void {
     const revealKdl = toolButton('Markup', () => host.postMessage({ type: 'action', action: 'revealKdl' }));
     const revealDocument = toolButton('Design file', () => host.postMessage({ type: 'action', action: 'revealDocument' }));
     const build = toolButton('Build', () => host.postMessage({ type: 'action', action: 'build' }));
-    const smtp = toolButton('SMTP…', () => host.postMessage({ type: 'action', action: 'setupSmtp' }));
-    smtp.title = 'Set up an SMTP client over Wi-Fi (keep-alive posts)';
-
     const spacer = document.createElement('span');
     spacer.className = 'toolbar-spacer';
 
@@ -859,13 +865,11 @@ function refreshToolbar(): void {
         rotation,
         touch,
         sd,
-        smtpSwitch,
         ...(brightnessControl === undefined ? [] : [brightnessControl]),
         separator(),
         revealDocument,
         revealKdl,
         build,
-        smtp,
         spacer,
         size,
     );

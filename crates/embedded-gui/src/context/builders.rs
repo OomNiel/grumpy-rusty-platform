@@ -156,6 +156,31 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
         self.add_label(rect, text, self.theme.label)
     }
 
+    /// A read-only panel of text lines, each folded to the panel's own width.
+    ///
+    /// `gap` is blank pixels between one entry and the next; the folding and the stacking are the
+    /// widget's, so nothing here has to know the font. Lines are borrowed, which is the cheap case --
+    /// a runtime-built line goes in through `push_text_line_owned` afterwards.
+    #[cfg(feature = "rich-widgets")]
+    pub fn add_text_lines<S>(
+        &mut self,
+        rect: impl Into<Rect>,
+        lines: &[&'a str],
+        gap: u8,
+        style: S,
+    ) -> Result<WidgetId, GuiError>
+    where
+        S: Into<WidgetStyle>,
+    {
+        self.add_widget(
+            rect,
+            WidgetKind::TextLines {
+                lines: crate::widgets::TextLines::from_slice(lines).gap(gap),
+            },
+            style,
+        )
+    }
+
     pub fn add_button<S>(
         &mut self,
         rect: impl Into<Rect>,

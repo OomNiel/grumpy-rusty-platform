@@ -3,11 +3,10 @@
  *
  * Two project settings are features rather than `.cargo/esp-config.toml` keys, for the same reason: the
  * requirement is that *enabling* them adds code to the build. `sd` brings in the FAT filesystem
- * (`embedded-sdmmc` + `critical-section`, both optional); `smtp` brings in the keep-alive client the wizard
- * wrote into `src/smtp.rs`. Only a feature can switch a dependency or a module in or out.
+ * (`embedded-sdmmc` + `critical-section`, both optional). Only a feature can switch a dependency or a module in or out.
  *
- * Both are in `default` when they are on -- the card starts on for a board with a socket, the SMTP client is
- * put there by the wizard that wrote it -- and the toolbar's switches are what move them in and out. That is
+ * It is in `default` when it is on -- the card starts on for a board with a socket -- and the toolbar's switch
+ * is what moves it in and out. That is
  * a local edit to the generated manifest, which a regeneration will overwrite; the manifest's `[features]`
  * and `default = [...]` are owned by the generator, so this editor touches those lines and leaves every other
  * table, key and comment alone.
@@ -120,10 +119,8 @@ export function setFeatureInDefault(
 /**
  * Makes sure the manifest *defines* `name = [...]`, adding the table if it has none.
  *
- * A project generated before a feature existed has no definition to switch, and `default = ["smtp"]` naming
- * an undefined feature is a cargo error -- so the definition is written first, by whoever needs it (the SMTP
- * wizard, on a project from an older release). Appending a new `[features]` table is valid TOML wherever the
- * last table ended, and every existing byte is left alone.
+ * A project generated before a feature existed has no definition to switch. Appending a new `[features]` table is
+ * valid TOML wherever the last table ended, and every existing byte is left alone.
  */
 export function ensureFeatureDefinition(
     cargoToml: string,

@@ -156,7 +156,7 @@ test('the generated README explains the brightness setting and the PWM pin', () 
 // ---------------------------------------------------------------------------
 
 test('the panel a project was generated for is read back from its manifest', () => {
-    equal(panelChoiceFromCargo('[features]\ndefault = ["panel-ili9341", "smtp"]\n'), 'ili9341');
+    equal(panelChoiceFromCargo('[features]\ndefault = ["panel-ili9341"]\n'), 'ili9341');
     equal(panelChoiceFromCargo('[features]\ndefault = ["panel-st7789"]\n'), 'st7789');
     equal(panelChoiceFromCargo('[features]\ndefault = ["sd"]\n'), undefined, 'a board with one panel says nothing');
     equal(panelChoiceFromCargo(''), undefined);

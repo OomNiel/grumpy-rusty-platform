@@ -11,6 +11,89 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.17.13] - 2026-10-31
+
+Everything since 0.13.30 in one release. Versions 0.14–0.17 were built and tested locally; this is the
+release that carries them.
+
+### Added — the WYSIWYG Designer on the four Raspberry Pi Pico boards
+
+- **A Pico has no soldered panel, so the panel became a *project* fact**: which module, and which GPIOs it is
+  wired to. Three modules — a 1.54" ST7789 (240×240), a 2.8" ILI9341 with XPT2046 touch (240×320) and a 4"
+  ST7796 with XPT2046 touch (320×480) — under the same ids the ESP32-DevKitC option already uses, so the facts
+  nobody can read off a datasheet (colour order, mirroring, the ST7796's slower clock) are the ones verified on
+  real glass. `src/boards/panels.ts` is the single place that knows a legal wiring, and the Designer's panel of
+  pin inputs is a *view* of its `validateWiring` rather than a second set of rules.
+- **The card socket is its own four pins**, separate from the panel's bus (sharing stays allowed), with an `sd`
+  cargo feature and the Designer's switch, as on the CYD.
+- **Time on a board with no RTC**: `pico` and `pico2` start from **the time they were flashed** and `picow` /
+  `pico2w` use Wi-Fi SNTP, so a clock design works on both without a battery-backed module.
+- **Three templates** — `designer`, `display` (panel diagnostic) and `sdcard` — sharing one contract:
+  `let (mut hardware, rest) = panel::init(p);`.
+- **The pins live in a generated `src/panel.rs`**, which the Designer rewrites when the wiring changes, so
+  `src/main.rs` is written once and never rewritten.
+- **A `text_lines` widget**: read-only lines of text that fold to the panel width, written by your code — used
+  by the test app as a log panel.
+
+### Added — AI Assist reads the evidence the editor already has
+
+- **The selected text is what a question is about.** With a selection in the active Rust file the prompt carries
+  the selection, numbered, with a marked window either side — instead of the whole file clipped at 12 000
+  characters, which used to cut off the very lines being asked about. Works from the side-bar view *and* from
+  the editor-tab chat, which remembers the last Rust editor while it holds the focus.
+- **The Problems pane** is in every prompt: errors first, then warnings, deduplicated across providers, rustc's
+  explanation cut to its headline, and the cut stated out loud (`… 27 more are not shown`). Hints are left in
+  the pane where they belong.
+- **The Debug Console** is read through a debug adapter tracker (there is no pane API): output, `[stopped]` and
+  `[exited]` kept in order, the tail sent (the end of a console is the failure), the buffer cleared when a new
+  session starts.
+- **Console only** — a checkbox beside the prompt that sends just the Debug Console, for "what does this output
+  mean?" when a defmt stream would otherwise be crowded out.
+- **Enter sends, Shift+Enter starts a new line** (`Ctrl`/`Cmd+Enter` still sends); the box says so on its
+  tooltip.
+- **The chat follows the newest row** while you are at the bottom, and stops the moment you scroll up to read
+  something earlier; asking a question starts following again.
+- **Abort** stops the answer in flight. It is enabled only while one is running, the partial answer is not kept
+  (half a function is what the next question would be answered against), and stopping is reported as a stop, not
+  as a failure.
+- **The status line stops lying.** It said `not in memory yet; the next request loads it` for a model that had
+  just written a whole answer, because "loaded" was only LM Studio's registry. An answer at that address now
+  counts, and the line is redrawn when the reply arrives.
+
+### Added — "Fix this line"
+
+- **A quick fix on any diagnostic** — *Fix this line with the AI assist* — that asks the model for **one line**
+  and substitutes it for the diagnosed line. It cannot delete anything else: the answer is parsed as exactly one
+  line, the replacement must not change the file's bracket balance, and a stripped indentation is put back.
+- The prompt is a **patcher**, not a rewriter, and the request is greedy and capped at **200 tokens** so a
+  whole function cannot come back. `Longest answer` in the settings still governs every other request.
+- Where it cannot work, it says so (`CANNOT FIX`) and points at the function-level fix.
+
+### Fixed
+
+- **A quoted line can no longer replace a function.** Asking about a stray character in a 100-line `main()`
+  came back as `async fn main(spawner: Spawner) {9`, and applying it replaced the function with that line and
+  left an unclosed brace. An answer that does not close what it opens is now refused outright, and the block is
+  labelled `fn main (excerpt)` so the two blocks of a before/after answer can be told apart.
+- **A refusal is no longer a dead end**: it offers *Apply the complete block* when the answer has one, *Fix just
+  that line* when the compiler points at one, and *Ask for it in full* (which sends the question that asks for
+  the whole function) otherwise.
+- **An answer that replaces a function with a fraction of it asks first**, by name and with the numbers
+  (`replaces 11 lines of fn main with 3 — 6 of them would be deleted`).
+- **A fragment is refused**: statements with no item around them have nowhere to go, and used to be pasted
+  between `#![no_std]` and `#![no_main]`.
+- **A `use`-only answer no longer inserts three blank lines** into the file's header.
+- **The answer's shape survives a rescued server**: `chatWithRescue` re-reads the settings for the address but
+  keeps the request's own `maxTokens` and `temperature`, so the one-line budget is not replaced by 5120 tokens
+  when a llama-server has just been started.
+
+### Known gaps
+
+- The chosen **Full Assist / Rust Assist** mode is not part of the settings snapshot, so a reloaded window comes
+  back on Full Assist.
+- The Terminal pane is **not** readable through any API; the AI is given captured build output instead, and the
+  shell-integration route needs a higher `engines.vscode` than 1.90.
+
 ## [0.13.30] - 2026-10-25
 
 ### Added

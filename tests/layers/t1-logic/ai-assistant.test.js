@@ -14,6 +14,9 @@ const { compiled } = require('../../lib/harness');
 const {
     normalizeAssistantConfig,
     normalizeEndpoint,
+    noteModelAnswered,
+    answeredHere,
+    selectionContext,
     assistantEnabled,
     looksLikeEmbeddingModel,
     parseSseChunk,
@@ -564,5 +567,71 @@ test('two blocks in one answer are two offers, and prose alone is none', () => {
     equal(assistant.rustCodeBlocks('The loop is blocking because the timer future is not awaited.').length, 0);
     equal(assistant.rustCodeBlocks('').length, 0);
     equal(assistant.rustCodeBlocks('```\n\n```').length, 0, 'an empty block is not code');
+});
+
+test('a model that answered is remembered as loaded at that address', () => {
+    // Reported 2026-10-31: the AI Assist line still said "not in memory yet; the next request loads it" after
+    // a whole working conversation. "Loaded" was read from LM Studio's own list, which says nothing about a
+    // `llama-server`, a server another window started, or any other OpenAI-compatible endpoint — so a reply is
+    // the fact the line should trust, and this is the record of it.
+    noteModelAnswered('http://127.0.0.1:1234', 'qwen2.5-coder-7b-instruct');
+    ok(answeredHere('http://127.0.0.1:1234/v1', 'qwen2.5-coder-7b-instruct'), 'the same address, written either way');
+    ok(answeredHere('http://127.0.0.1:1234/v1/', 'qwen2.5-coder-7b-instruct'), 'and with a trailing slash');
+    ok(!answeredHere('http://127.0.0.1:8080/v1', 'qwen2.5-coder-7b-instruct'), 'another port knows nothing');
+    ok(!answeredHere('http://127.0.0.1:1234/v1', 'a-different-model'), 'and neither does another model');
+    noteModelAnswered('http://127.0.0.1:1234/v1', '');
+    ok(answeredHere('http://127.0.0.1:1234/v1', 'qwen2.5-coder-7b-instruct'),
+        'an empty pin ("let the server decide") records nothing, so the earlier answer still stands');
+    ok(!answeredHere('http://127.0.0.1:1234/v1', ''), 'and no pin is never a claim');
+    // The id a server reports can carry a qualifier the settings do not: the pinned short name is still the one
+    // that answered, so the match tolerates it (the same shape `Discovery.loaded` is compared with).
+    noteModelAnswered('http://127.0.0.1:9999/v1', 'lmstudio-community/qwen2.5-coder-7b-instruct');
+    ok(answeredHere('http://127.0.0.1:9999/v1', 'qwen2.5-coder-7b-instruct'), 'a qualified id counts as the pinned model');
+});
+
+test('a selected passage is what the prompt leads with', () => {
+    // Asked 2026-10-31: "enable the AI Assist model to be able to read selected text in the active editor tab".
+    // The chat sent the active file and nothing else, clipped at 12 000 characters — so "why is this line
+    // wrong?" was answered about the top of the file, and the line in question was what the clip removed.
+    const lines = [
+        'use embassy_time::Timer;',
+        '',
+        'fn main() {',
+        '    let mut x = 0;',
+        '    loop {',
+        '        // this never awaits',
+        '    }',
+        '}',
+        ''
+    ];
+    const block = selectionContext('src/main.rs', lines, 5, 7);
+    contains(block, 'src/main.rs', 'the file is named');
+    contains(block, '(5–7)', 'and the selected range is stated');
+    contains(block, '    loop {\n        // this never awaits\n    }', 'the selection itself is sent verbatim');
+    contains(block, '»    5:     loop {', 'the selected lines are numbered and marked');
+    contains(block, '»    7:     }', 'including the last one');
+    ok(block.indexOf('»') > block.indexOf('// this never awaits') - 200, 'the window carries the marked lines');
+    ok(!block.includes('»    1:'), 'lines outside the selection are not marked');
+    contains(block, '  1: use embassy_time::Timer;', 'and the context window still shows them, numbered');
+
+    const single = selectionContext('src/main.rs', lines, 4, 4);
+    contains(single, '(4)', 'a one-line selection is named by its own line');
+    ok(!single.includes('4–4'), 'not as a range');
+
+    const clipped = selectionContext('src/main.rs', lines, 1, 9, { selectionLimit: 20, contextLimit: 40 });
+    contains(clipped, 'selection clipped at 20 characters', 'a long selection says it was clipped');
+    contains(clipped, 'context clipped at 40 characters', 'and so does a long window');
+});
+
+test('a selection that runs past the end of the file is clamped, not dropped', () => {
+    // The caller turns a VS Code selection into line numbers; an off-by-one there must not throw or silently
+    // send nothing, because the answer would then be about the wrong lines — the exact failure this block is
+    // meant to prevent.
+    const lines = ['fn a() {}', 'fn b() {}', ''];
+    const block = selectionContext('src/lib.rs', lines, 2, 99);
+    contains(block, '(2–3)', 'the range ends at the last line');
+    contains(block, '»    2: fn b() {}', 'with the selected line marked');
+    const stale = selectionContext('src/lib.rs', lines, 40, 50);
+    contains(stale, '(3)', 'a range that no longer exists lands on the last line');
 });
 

@@ -131,7 +131,9 @@ test('.cargo/config.toml selects the target triple and probe-rs runner', () => {
     const pico = filesFor('pico').get('.cargo/config.toml');
     contains(pico, 'target = "thumbv6m-none-eabi"');
     contains(pico, 'runner = "probe-rs run --chip RP2040"');
-    contains(pico, 'DEFMT_LOG = "debug"');
+    // 'info', not 'debug': the libraries' own debug chatter costs the target time it would rather spend on
+    // the panel, and the extension's diagnostics are info lines.
+    contains(pico, 'DEFMT_LOG = "info"');
 
     const pico2 = filesFor('pico2').get('.cargo/config.toml');
     contains(pico2, 'target = "thumbv8m.main-none-eabihf"');

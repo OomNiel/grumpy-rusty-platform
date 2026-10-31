@@ -167,6 +167,23 @@ pub fn generate_rust_code(screen: &ScreenDef) -> String {
                     var_name, idx, text, st
                 );
             }
+            WidgetDef::TextLines {
+                lines, gap, style, ..
+            } => {
+                let st = style_expr(style.as_deref(), "Style::default()");
+                let entries = lines
+                    .iter()
+                    .map(|line| format!("\"{}\"", escape_rust_string(line)))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                // An empty list still builds: `&[]` is a panel with nothing in it yet, which is what a
+                // log that its code fills at runtime starts as.
+                let _ = writeln!(
+                    &mut out,
+                    "        let {} = gui.add_text_lines(cells[{}], &[{}], {}, {})?;",
+                    var_name, idx, entries, gap, st
+                );
+            }
             WidgetDef::Button {
                 text,
                 style,
@@ -1114,6 +1131,26 @@ pub fn generate_rust_code(screen: &ScreenDef) -> String {
     out
 }
 
+/// Escapes a line of text so it can sit inside a Rust string literal in the generated code.
+///
+/// A panel's entries reach the builder as `&["...", "..."]`, and a line holding a quote, a backslash
+/// or a tab would otherwise end the literal early and produce a file that does not compile. Only the
+/// characters that break a literal are escaped, so the common line is emitted exactly as written.
+fn escape_rust_string(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
 fn easing_expr(easing: &str) -> &'static str {
     match easing {
         "in_sine" => "Easing::InSine",
@@ -1432,7 +1469,9 @@ pub fn generate_rust_code_with_assets(screen: &ScreenDef, assets: &ProjectAssets
     // Fonts referenced by labels and carousels replace the default style font.
     for (idx, (_, widget)) in screen.grid.children.iter().enumerate() {
         let (font_name, var_name) = match widget {
-            WidgetDef::Label { font: Some(f), .. } | WidgetDef::Carousel { font: Some(f), .. } => (
+            WidgetDef::Label { font: Some(f), .. }
+            | WidgetDef::Carousel { font: Some(f), .. }
+            | WidgetDef::TextLines { font: Some(f), .. } => (
                 f,
                 widget
                     .id()

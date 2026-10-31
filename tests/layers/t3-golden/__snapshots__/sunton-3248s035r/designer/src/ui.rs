@@ -9,6 +9,7 @@
 // Through embedded_graphics, not embedded_graphics_core: the project declares the former, which re-exports
 // the latter's types, and naming the core crate directly does not resolve (found by building a generated
 // project).
+use core::cell::{Ref, RefCell, RefMut};
 use embedded_graphics::draw_target::DrawTarget;
 use embedded_graphics::pixelcolor::Rgb565;
 use embedded_gui::prelude::*;
@@ -40,9 +41,86 @@ pub const DIRTY: usize = 8;
 /// RgbColor trait, which this file does not pull in.
 pub const SCREEN_BACKGROUND: Rgb565 = Rgb565::new(0, 0, 0);
 
+
+/// Any widget, by the name the design gave it.
+///
+/// A handle borrows the design, not the GUI, so several can be alive at once and the app never holds a
+/// WidgetId of its own: design.title().set_text("Ready"), design.panel().set_background(Some(Rgb565::new(2, 4, 2))).
+#[allow(dead_code)]
+pub struct WidgetHandle<'a> {
+    design: &'a Designer,
+    id: WidgetId,
+}
+
+#[allow(dead_code)]
+impl WidgetHandle<'_> {
+    pub fn id(&self) -> WidgetId {
+        self.id
+    }
+
+    /// The text of a label, button, toggle or checkbox. Borrowed for the life of the program, so nothing is
+    /// copied: a line put together at runtime needs a text panel, not a label.
+    pub fn set_text(&self, text: &'static str) {
+        let _ = self.design.gui.borrow_mut().set_text(self.id, text);
+    }
+
+    /// Whether it is drawn, and whether it can be pointed at.
+    pub fn set_visible(&self, visible: bool) {
+        let _ = self.design.gui.borrow_mut().set_visible(self.id, visible);
+    }
+
+    /// Whether it answers the pointer at all -- a disabled button still draws, and does nothing.
+    pub fn set_enabled(&self, enabled: bool) {
+        let _ = self.design.gui.borrow_mut().set_enabled(self.id, enabled);
+    }
+
+    /// Moves and resizes it in one go, in the design's own pixels.
+    pub fn set_rect(&self, rect: Rect) {
+        let _ = self.design.gui.borrow_mut().set_widget_rect(self.id, rect);
+    }
+
+    pub fn set_position(&self, x: i32, y: i32) {
+        let mut gui = self.design.gui.borrow_mut();
+        let _ = gui.set_widget_x(self.id, x);
+        let _ = gui.set_widget_y(self.id, y);
+    }
+
+    pub fn set_size(&self, width: u32, height: u32) {
+        let mut gui = self.design.gui.borrow_mut();
+        let _ = gui.set_widget_width(self.id, width);
+        let _ = gui.set_widget_height(self.id, height);
+    }
+
+    pub fn set_opacity(&self, opacity: u8) {
+        let _ = self.design.gui.borrow_mut().set_widget_opacity(self.id, opacity);
+    }
+
+    pub fn set_corner_radius(&self, radius: u8) {
+        let _ = self.design.gui.borrow_mut().set_widget_corner_radius(self.id, radius);
+    }
+
+    pub fn set_accent(&self, colour: Rgb565) {
+        let _ = self.design.gui.borrow_mut().set_widget_accent(self.id, colour);
+    }
+
+    pub fn set_text_colour(&self, colour: Rgb565) {
+        let _ = self.design.gui.borrow_mut().set_widget_text_color(self.id, colour);
+    }
+
+    /// None makes it transparent again.
+    pub fn set_background(&self, colour: Option<Rgb565>) {
+        let _ = self.design.gui.borrow_mut().set_widget_background(self.id, colour);
+    }
+}
 /// The screen, and the pointer state the widgets need to see a press and a release as a pair.
 pub struct Designer {
-    gui: GuiContext<'static, NODES, EVENTS, DIRTY>,
+    /// The design's context, in a RefCell so a widget handle can hold the design rather than the GUI.
+    ///
+    /// That is what makes design.log().add_line(design.keypad().text) possible at all: two handles hold
+    /// shared borrows of the design, and the mutation goes through this cell. What it cannot do is panic on
+    /// a nested borrow -- the outer borrow checker refuses to hold a handle across anything taking the
+    /// design mutably (render, pump), so the only borrows that can overlap are our own, and they do not.
+    gui: RefCell<GuiContext<'static, NODES, EVENTS, DIRTY>>,
     /// The widget ids, named the way the design names them.
     pub widgets: RustyPanelWidgets,
     down: bool,
@@ -60,7 +138,7 @@ impl Designer {
         let mut gui = GuiContext::new(Rect::new(0, 0, width, height));
         let app = design::RustyPanelApp::build(&mut gui).expect("the design fits its node budget");
         Self {
-            gui,
+            gui: RefCell::new(gui),
             widgets: app.widgets,
             down: false,
             painted: false,
@@ -80,14 +158,18 @@ impl Designer {
     // the app's business, and the warning would otherwise appear in every project that does not. (No
     // backticks in this file's Rust template: they would end the JavaScript string it lives in.)
     #[allow(dead_code)]
-    pub fn gui(&self) -> &GuiContext<'static, NODES, EVENTS, DIRTY> {
-        &self.gui
+    pub fn gui(&self) -> Ref<'_, GuiContext<'static, NODES, EVENTS, DIRTY>> {
+        self.gui.borrow()
     }
 
     /// The same, mutably: the setters all take &mut self.
+    ///
+    /// A borrow, not a reference: the design keeps its context behind a RefCell so the widget handles below
+    /// can hold the design and still write to it. The guard behaves like the reference it replaces -- it
+    /// derefs to the context and is dropped at the end of the statement.
     #[allow(dead_code)]
-    pub fn gui_mut(&mut self) -> &mut GuiContext<'static, NODES, EVENTS, DIRTY> {
-        &mut self.gui
+    pub fn gui_mut(&mut self) -> RefMut<'_, GuiContext<'static, NODES, EVENTS, DIRTY>> {
+        self.gui.borrow_mut()
     }
 
     /// A touch sample.
@@ -113,12 +195,17 @@ impl Designer {
         } else {
             return;
         };
-        let _ = self.gui.handle_input(event);
+        let _ = self.gui.borrow_mut().handle_input(event);
     }
 
     /// Hands whatever the widgets raised to the code-behind.
     pub fn pump(&mut self) {
-        while let Some(event) = self.gui.pop_event() {
+        loop {
+            // Out of the loop condition and into a block of its own: a temporary borrow of the cell lives
+            // until the end of the statement it is written in, so asking for the next event inside while-let
+            // would keep the design borrowed for the whole body -- and the arms below borrow it again.
+            let next = { self.gui.borrow_mut().pop_event() };
+            let Some(event) = next else { break };
             match event {
                 UiEvent::Clicked(id) if id == self.widgets.go => crate::ui_handlers::on_go_clicked(),
                 _ => {}
@@ -128,7 +215,7 @@ impl Designer {
 
     /// True when something changed and the panel needs repainting.
     pub fn is_dirty(&self) -> bool {
-        !self.gui.dirty_regions().is_empty()
+        !self.gui.borrow().dirty_regions().is_empty()
     }
 
     /// Paints the whole screen whatever the damage says.
@@ -150,19 +237,19 @@ impl Designer {
     where
         D: DrawTarget<Color = Rgb565>,
     {
+        let mut gui = self.gui.borrow_mut();
         let result = if self.painted {
             // A partial repaint paints the damaged regions and nothing else, and the design paints
             // no screen background of its own -- so the regions are cleared to the colour the panel
             // started as first. Without this a moving clock drew each new hand and left the old one
             // on the glass (reported 2026-10-17).
-            self.gui
-                .paint_damage(target, SCREEN_BACKGROUND)
-                .and_then(|()| self.gui.render_dirty(target))
+            gui.paint_damage(target, SCREEN_BACKGROUND)
+                .and_then(|()| gui.render_dirty(target))
         } else {
-            self.gui.render(target)
+            gui.render(target)
         };
         self.painted = true;
-        self.gui.clear_dirty();
+        gui.clear_dirty();
         result
     }
 
@@ -179,5 +266,23 @@ impl Designer {
         let start = hour.min(23) as u32 * 3600 + minute.min(59) as u32 * 60 + second.min(59) as u32;
         self.wall_base = Some((now, start % 86_400));
 
+    }
+
+    /// The label named title.
+    #[allow(dead_code)]
+    pub fn title(&self) -> WidgetHandle<'_> {
+        WidgetHandle {
+            design: self,
+            id: self.widgets.title,
+        }
+    }
+
+    /// The button named go.
+    #[allow(dead_code)]
+    pub fn go(&self) -> WidgetHandle<'_> {
+        WidgetHandle {
+            design: self,
+            id: self.widgets.go,
+        }
     }
 }

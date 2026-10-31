@@ -138,6 +138,41 @@ export function normalizeEndpoint(endpoint: string): string {
 }
 
 /**
+ * The last model that actually answered, and where — the fact that lets the panel stop claiming the weights
+ * are not loaded (reported 2026-10-31: after a whole working conversation the status line still read *"not in
+ * memory yet; the next request loads it"*).
+ *
+ * WHY A RECORD RATHER THAN THE DISCOVERY. `Discovery.loaded` is what LM Studio says it holds, and nothing
+ * else knows about it: a `llama-server`, a server another window started, or any OpenAI-compatible endpoint
+ * the user runs themselves can be answering perfectly while that list is empty — and even LM Studio's own list
+ * is read through a 15 s cache. An answer from the pinned model at the pinned address is the stronger fact,
+ * and it costs nothing to keep.
+ */
+export interface AnsweredModel {
+    /** Normalised, so `http://127.0.0.1:1234` and `.../v1` are the same server. */
+    endpoint: string;
+    model: string;
+}
+
+let lastAnswered: AnsweredModel | undefined;
+
+/** Records that `model` answered a request at `endpoint`. Called by `chatDetailed` for every reply. */
+export function noteModelAnswered(endpoint: string, model: string): void {
+    const id = String(model ?? '').trim();
+    // No pinned id means "the server decides", and then there is no name to make a claim about.
+    if (!id) return;
+    lastAnswered = { endpoint: normalizeEndpoint(endpoint), model: id };
+}
+
+/** Whether `model` has answered at `endpoint` in this session. Matching tolerates the qualifier suffixes. */
+export function answeredHere(endpoint: string, model: string): boolean {
+    const id = String(model ?? '').trim();
+    if (!lastAnswered || !id) return false;
+    if (lastAnswered.endpoint !== normalizeEndpoint(endpoint)) return false;
+    return lastAnswered.model === id || lastAnswered.model.endsWith(id) || id.endsWith(lastAnswered.model);
+}
+
+/**
  * Turns whatever the settings hold into a usable configuration. Pure on purpose: the manifest, the
  * UI and the tests all funnel through here, so "what does backend X mean" has one answer.
  */
@@ -724,6 +759,9 @@ export async function chatDetailed(
             throw new Error(`The server answered HTTP ${res.status}${detail ? `: ${detail.slice(0, 300)}` : ''}`);
         }
         connected = true;
+        // The server took the request and is answering, so this model is the one in memory at this address —
+        // whatever the model registry says (see `answeredHere`, and the status line it feeds).
+        noteModelAnswered(cfg.endpoint, cfg.model);
 
         // The response is an SSE stream; read it chunk by chunk and hand every delta to the caller.
         const body = res.body as { getReader?: () => { read(): Promise<{ done: boolean; value?: Uint8Array }> } } | undefined;
@@ -782,6 +820,49 @@ export async function chat(
     opts: ChatOptions = {}
 ): Promise<string> {
     return (await chatDetailed(cfg, messages, opts)).text;
+}
+
+/**
+ * The prompt block for a passage the developer selected (asked 2026-10-31: *"enable the AI Assist model to be
+ * able to read selected text in the active editor tab"*).
+ *
+ * WHY THE SELECTION LEADS AND THE WHOLE FILE DOES NOT FOLLOW. The chat sent the active file and nothing else,
+ * clipped at 12 000 characters — so "why is this line wrong?" was answered about the top of the file, and the
+ * line in question was exactly what the clip removed. A selection says what the question is about far more
+ * precisely than a file does, so it comes first, with a numbered window either side for context.
+ *
+ * Numbers are kept because "the loop on line 14 never awaits" is an answer the developer can act on, and `»`
+ * marks the selected lines so the model cannot mistake the window for the thing being asked about. Pure: the
+ * caller passes the document's lines, which is what lets this be pinned by a test with no editor.
+ */
+export function selectionContext(
+    path: string,
+    lines: string[],
+    selectedFrom: number,
+    selectedTo: number,
+    options: { around?: number; selectionLimit?: number; contextLimit?: number } = {}
+): string {
+    const around = options.around ?? 20;
+    const selectionLimit = options.selectionLimit ?? 4000;
+    const contextLimit = options.contextLimit ?? 2000;
+    const total = Math.max(1, lines.length);
+    const first = Math.min(Math.max(1, Math.trunc(selectedFrom)), total);
+    const last = Math.min(Math.max(first, Math.trunc(selectedTo)), total);
+    const clip = (text: string, limit: number, what: string): string =>
+        text.length > limit ? `${text.slice(0, limit)}\n// … (${what} clipped at ${limit} characters)` : text;
+    const from = Math.max(1, first - around);
+    const to = Math.min(lines.length, last + around);
+    const numbered: string[] = [];
+    for (let line = from; line <= to; line += 1) {
+        const marked = line >= first && line <= last;
+        numbered.push(`${marked ? '»' : ' '} ${String(line).padStart(4, ' ')}: ${lines[line - 1] ?? ''}`);
+    }
+    const range = first === last ? `${first}` : `${first}–${last}`;
+    return `The file the developer is looking at is ${path}, and the question is about the lines they selected`
+        + ` (${range}). The selection is:\n`
+        + '```rust\n' + clip(lines.slice(first - 1, last).join('\n'), selectionLimit, 'selection') + '\n```\n\n'
+        + `Lines ${from}–${to} of the same file, with line numbers (» marks the selected lines):\n`
+        + '```rust\n' + clip(numbered.join('\n'), contextLimit, 'context') + '\n```';
 }
 
 // ---------------- prompts and parsing ----------------

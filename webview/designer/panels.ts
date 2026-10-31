@@ -27,7 +27,16 @@ import {
     widgetRaises,
     widgetSpec,
 } from '../../src/designer/catalog';
-import type { DesignerActionId, DesignerAssetKind } from '../../src/designer/protocol';
+import type { DesignerActionId, DesignerAssetKind, DesignerHardware } from '../../src/designer/protocol';
+import {
+    PANEL_MODULES,
+    busLabel,
+    headerPin,
+    panelModule,
+    panelModuleOrDefault,
+    planWiring,
+    type PanelWiring,
+} from '../../src/boards/panels';
 import {
     type DesignerFont,
     type DesignerWidget,
@@ -90,6 +99,20 @@ export interface PanelCallbacks {
      * as a report, the same channel a save uses.
      */
     onAction(action: DesignerActionId): void;
+
+    /**
+     * The Hardware panel's wiring changed.
+     *
+     * Sent on every committed field, because the extension is the only validator: its rules are the same ones
+     * embassy-rp's typed pins enforce, and a second copy of them here would drift. The answer comes back as a
+     * report carrying the verdict.
+     *
+     * `note` is set when the panel planned the pins itself -- a bus change, a new module, the assign button --
+     * and says which of them moved. A plain edit sends none, because the field that was typed *is* the change.
+     * `replanned` tells the two apart: a planned wiring is not in the fields yet, so the panel has to redraw
+     * itself, while an edit already is and redrawing would take the caret out of the box being typed in.
+     */
+    onWiring(wiring: PanelWiring, note?: string, replanned?: boolean): void;
 }
 
 /** A short element factory, because the DOM API is otherwise nine lines per control. */
@@ -262,12 +285,18 @@ export function renderProperties(
     state: DesignerState,
     selectedId: string | undefined,
     callbacks: PanelCallbacks,
+    hardware?: DesignerHardware,
 ): void {
     root.replaceChildren();
 
     if (selectedId === undefined) {
         root.append(element('h2', 'panel-title', 'Screen'));
         root.append(screenForm(state, callbacks));
+        // A Pico's panel is wired rather than soldered, so its pins are part of the screen. An ESP board has
+        // no `hardware` and shows nothing here.
+        if (hardware !== undefined) {
+            root.append(hardwareForm(hardware, callbacks));
+        }
         root.append(layerList(state, undefined, callbacks));
         return;
     }
@@ -723,6 +752,34 @@ function childrenForm(state: DesignerState, widget: DesignerWidget, callbacks: P
         return node;
     }
 
+    if (children?.kind === 'lines') {
+        node.append(
+            element(
+                'p',
+                'panel-note',
+                'One entry per line. Each folds to the panel width when it is drawn, so a long entry needs no '
+                + 'manual break; code addresses them by index, oldest first.',
+            ),
+        );
+        const area = element('textarea', 'field-input');
+        area.rows = 6;
+        area.value = children.values.join('\n');
+        area.addEventListener('change', () =>
+            callbacks.onEdit(
+                setChildren(state, widget.id, {
+                    kind: 'lines',
+                    // Blank entries are dropped rather than kept: a blank line is a real gap in the middle of
+                    // a panel (the widget honours it), but a trailing one is almost always the newline the
+                    // textarea leaves behind, and keeping it would make the panel look one line longer than
+                    // the user typed.
+                    values: area.value.split('\n').filter((line, index, all) => line !== '' || index < all.length - 1),
+                }),
+            ),
+        );
+        node.append(area);
+        return node;
+    }
+
     if (children?.kind === 'parts') {
         node.append(
             element(
@@ -972,4 +1029,245 @@ export function widgetMenu(
             },
         },
     ];
+}
+
+/**
+ * The Hardware panel: which module is wired to the board, and to which GPIOs.
+ *
+ * A Pico has no soldered panel, so these numbers *are* the display as far as the firmware is concerned: they
+ * are compiled into `src/panel.rs` and every one of them is checked against the chip's own pin functions. The
+ * panel offers them as plain number boxes rather than a list of legal pins per signal, because the wiring is
+ * what somebody did with a soldering iron and a wrong number has to be *said* rather than made untypeable --
+ * the extension's verdict appears under the fields as soon as a number is committed.
+ */
+function hardwareForm(hardware: DesignerHardware, callbacks: PanelCallbacks): HTMLElement {
+    const node = section('Hardware');
+    const wiring = hardware.wiring;
+    const module = panelModule(wiring.panel);
+
+    /**
+     * Plans the pins for a change, here in the panel.
+     *
+     * The same `planWiring` the extension uses, imported rather than reimplemented: a selector that guessed
+     * differently from the validator would be worse than no selector at all. `fresh` throws the current pins
+     * away and plans from the block, which is what the assign button offers after a few overrides have left
+     * the wiring somewhere odd.
+     */
+    const replan = (change: { panel?: string; bus?: 0 | 1; alt?: boolean; fresh?: boolean }): void => {
+        const chosen = panelModuleOrDefault(change.panel ?? wiring.panel);
+        const { wiring: planned, notes } = planWiring({
+            panel: chosen.id,
+            bus: change.bus ?? wiring.bus,
+            alt: change.alt ?? wiring.alt,
+            // The socket is in use when it has pins: the toolbar switch is a cargo feature and this is the
+            // wiring, and planning the card back in because the *module* has a socket would argue with it.
+            sd: chosen.sd && wiring.sdCs !== null,
+            reserved: hardware.reserved,
+            timeSource: wiring.timeSource,
+            backlightActiveLow: wiring.backlightActiveLow,
+            keep: change.fresh === true ? undefined : wiring,
+        });
+        callbacks.onWiring(planned, notes.length > 0 ? `${notes.join('. ')}.` : undefined, true);
+    };
+
+    node.append(
+        element(
+            'p',
+            'panel-note',
+            `Wired to ${hardware.board}. These GPIOs are compiled into src/panel.rs; the Designer rewrites it ` +
+            'whenever one of them changes.',
+        ),
+    );
+
+    // The module decides the glass: its size, its colour order, whether it has a touch controller and whether
+    // it has a card socket. Picking another one re-lays the canvas the next time the Designer is opened.
+    const moduleSelect = element('select', 'field-input');
+    for (const candidate of PANEL_MODULES) {
+        const option = element('option');
+        option.value = candidate.id;
+        option.textContent = candidate.label;
+        if (candidate.id === wiring.panel) {
+            option.selected = true;
+        }
+        moduleSelect.append(option);
+    }
+    moduleSelect.addEventListener('change', () => {
+        // Re-planned, not just renamed: the module decides whether there is a touch pair to assign and whether
+        // a socket's four pins are needed at all.
+        replan({ panel: moduleSelect.value });
+    });
+    node.append(field('Module', moduleSelect, 'field', 'A different module is a different size and may have touch or a card socket.'));
+
+    // The bus is the choice the pins hang off, so it comes before them. Choosing one moves the block of four,
+    // takes the control lines and the touch pair to the nearest free pins, and gives the card the other bus.
+    // Three entries, because SPI0 has two groups of pins and the choice between them is a wiring decision
+    // rather than something to infer from a number. The value is `<bus>` or `<bus>-alt`.
+    const busOptions: Array<{ value: string; bus: 0 | 1; alt: boolean }> = [
+        { value: '0', bus: 0, alt: false },
+        { value: '0-alt', bus: 0, alt: true },
+        { value: '1', bus: 1, alt: false },
+    ];
+    const busSelect = element('select', 'field-input');
+    for (const candidate of busOptions) {
+        const option = element('option');
+        option.value = candidate.value;
+        option.textContent = busLabel(candidate.bus, candidate.alt);
+        if (candidate.bus === wiring.bus && candidate.alt === (wiring.alt === true)) {
+            option.selected = true;
+        }
+        busSelect.append(option);
+    }
+    busSelect.addEventListener('change', () => {
+        const picked = busOptions.find((candidate) => candidate.value === busSelect.value);
+        if (picked !== undefined) {
+            replan({ bus: picked.bus, alt: picked.alt });
+        }
+    });
+    node.append(
+        field(
+            'Bus',
+            busSelect,
+            'field',
+            'Which SPI bus the panel is on. The four SPI pins are assigned for you, DC, RESET and BL take the ' +
+            'nearest free pins, and the card gets the other bus. Any pin can still be overridden below.',
+        ),
+    );
+
+    const assignButton = element('button', 'secondary-button', 'Assign the pins');
+    assignButton.addEventListener('click', () => replan({ fresh: true }));
+    node.append(
+        field(
+            'Automatic',
+            assignButton,
+            'field',
+            'Plan the pins again from the bus: discards the overrides below and puts every pin back where the ' +
+            'planner would choose it.',
+        ),
+    );
+
+    /**
+     * One pin, and the module pin it comes out on.
+     *
+     * The GPIO is what the firmware names and the header pin is what a soldering iron finds, so the two sit
+     * together: a narrow box (a GPIO is one or two digits, and the spinner arrows that used to fill it are
+     * gone -- they halved the box and nobody nudges a GPIO one click at a time) with the module's own pin
+     * number beside it. `—` is a real answer: GPIO 23, 24, 25 and 29 are the radio's and the LED's, and are
+     * not on the header at all.
+     */
+    const pinRow = (label: string, key: keyof PanelWiring, help: string): HTMLElement => {
+        const current = wiring[key];
+        const input = element('input', 'field-input pin-input');
+        input.type = 'number';
+        input.min = '0';
+        input.max = '29';
+        input.value = current === null ? '' : String(current);
+        input.addEventListener('change', () => {
+            const text = input.value.trim();
+            const value = text === '' ? null : Number(text);
+            // One number at a time, as typed. Moving the panel to another group of pins is what the bus list is
+            // for, so a clock pin that belongs to the other group is a pin the validator judges, not a re-plan.
+            callbacks.onWiring({ ...wiring, [key]: Number.isFinite(value as number) ? value : null });
+        });
+        const pin = headerPin(typeof current === 'number' ? current : null);
+        const badge = element(
+            'span',
+            'pin-header',
+            current === null ? '' : pin === null ? '—' : `PIN ${pin}`,
+        );
+        if (current !== null && pin === null) {
+            badge.title = 'Not brought out on the module: the wireless chip and the on-board LED own this GPIO.';
+        }
+        const pair = element('span', 'pin-field');
+        pair.append(input);
+        pair.append(badge);
+        return field(`${label} GPIO`, pair, 'field', help);
+    };
+
+    // One row per signal. `null` is a real answer -- "not wired" -- so an empty box means exactly that.
+    const rows: Array<{ key: keyof PanelWiring; label: string; help?: string }> = [
+        {
+            key: 'sclk',
+            label: 'SCK',
+            help:
+                'Panel SPI clock: 18 or 2 on SPI0, 10 or 14 on SPI1. The bus list above plans it together with ' +
+                'the rest of its group.',
+        },
+        { key: 'mosi', label: 'MOSI', help: 'Panel SPI data out.' },
+        { key: 'miso', label: 'MISO', help: 'Panel SPI data in. Needed by touch, and by a card on this bus.' },
+        { key: 'cs', label: 'CS', help: 'Panel chip select.' },
+        { key: 'dc', label: 'DC', help: 'Panel data/command.' },
+        { key: 'rst', label: 'RESET', help: 'Panel reset. Leave empty when the module ties it to the board reset.' },
+        { key: 'backlight', label: 'BL', help: 'Backlight pin. Leave empty when the module leaves BL unconnected.' },
+        { key: 'touchCs', label: 'Touch CS', help: 'XPT2046 chip select.' },
+        { key: 'touchIrq', label: 'Touch IRQ', help: 'XPT2046 interrupt, pulled up.' },
+        { key: 'sdSclk', label: 'Card SCK', help: 'The socket\'s own clock, when it has its own pins.' },
+        { key: 'sdMosi', label: 'Card MOSI', help: 'The socket\'s data out.' },
+        { key: 'sdMiso', label: 'Card MISO', help: 'The socket\'s data in.' },
+        { key: 'sdCs', label: 'Card CS', help: 'Empty means no card is used.' },
+    ];
+    for (const row of rows) {
+        node.append(pinRow(row.label, row.key, row.help ?? ''));
+    }
+
+    const activeLow = element('input');
+    activeLow.type = 'checkbox';
+    activeLow.checked = wiring.backlightActiveLow;
+    activeLow.addEventListener('change', () => {
+        callbacks.onWiring({ ...wiring, backlightActiveLow: activeLow.checked });
+    });
+    node.append(field('BL active low', activeLow, 'field', 'Tick when the backlight transistor switches on with a LOW level.'));
+
+    // The time source is a project setting rather than a pin, but it is the other thing the firmware is
+    // compiled for. A battery-backed module is not implemented yet, so it is not offered.
+    if (hardware.wireless) {
+        const timeSelect = element('select', 'field-input');
+        for (const [value, label] of [
+            ['wifi', 'Wi-Fi (SNTP at boot)'],
+            ['flash', 'The time it was flashed'],
+        ] as const) {
+            const option = element('option');
+            option.value = value;
+            option.textContent = label;
+            if (value === wiring.timeSource) {
+                option.selected = true;
+            }
+            timeSelect.append(option);
+        }
+        timeSelect.addEventListener('change', () => {
+            const value = timeSelect.value === 'flash' ? 'flash' : 'wifi';
+            callbacks.onWiring({ ...wiring, timeSource: value });
+        });
+        node.append(field('Clock', timeSelect, 'field', 'Where a clock design gets its time.'));
+    } else {
+        node.append(field('Clock', element('span', 'field-static', 'set when the board is flashed'), 'field'));
+    }
+
+    if (module !== undefined) {
+        node.append(
+            field('Glass', element('span', 'field-static', `${module.width}x${module.height}, ${module.colorOrder.toUpperCase()}`), 'field'),
+        );
+    }
+
+    const errors = hardware.problems.filter((problem) => problem.severity === 'error');
+    const warnings = hardware.problems.filter((problem) => problem.severity === 'warning');
+    for (const problem of [...errors, ...warnings]) {
+        node.append(
+            element(
+                'p',
+                problem.severity === 'error' ? 'panel-note panel-note-blocked' : 'panel-note',
+                problem.message,
+            ),
+        );
+    }
+    if (errors.length > 0) {
+        node.append(
+            element(
+                'p',
+                'panel-note',
+                'While a pin above is wrong, src/panel.rs keeps the last wiring that worked -- fix the number and ' +
+                'the firmware follows.',
+            ),
+        );
+    }
+    return node;
 }

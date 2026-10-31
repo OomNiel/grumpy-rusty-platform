@@ -6,4 +6,7 @@ runner = "probe-rs run --chip RP235x"
 target = "thumbv8m.main-none-eabihf"
 
 [env]
-DEFMT_LOG = "debug"
+# 'info', not 'debug': the extension's own diagnostics are info lines, and 'debug' switches on every library's
+# chatter -- embassy's executor and timer logs are the chatty ones, and every line costs the target time and
+# RTT bandwidth it would rather spend on the panel.
+DEFMT_LOG = "info"

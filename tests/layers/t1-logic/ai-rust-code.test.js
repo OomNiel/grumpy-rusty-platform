@@ -598,3 +598,250 @@ test('the file\'s own signature and attributes outrank the model\'s', () => {
     contains(out, 'new();');
     notContains(out, 'old();');
 });
+
+test('an answer that replaces a function with a fraction of it is questioned first', () => {
+    // Reported 2026-10-31: a stray character in `main()` came back answered with a two-line `main` — the model
+    // wrote the change and not the body. Nothing refused it: no placeholder to catch, not a whole file, and
+    // `changeSummary().lossy` wants twenty lines gone, which a firmware `main` never reaches. The diff was the
+    // only warning it got, and the diff was a deletion nobody asked for.
+    const rc = compiled('ai/rustCode');
+    const pico = [
+        '#[embassy_executor::main]',
+        'async fn main(_spawner: Spawner) {',
+        '    let p = embassy_rp::init(Default::default());',
+        '    let mut led = Output::new(p.PIN_25, Level::Low);',
+        '    loop {',
+        '        9',
+        '        led.set_high();',
+        '        Timer::after_millis(500).await;',
+        '        led.set_low();',
+        '        Timer::after_millis(500).await;',
+        '    }',
+        '}'
+    ].join('\n');
+    const stripped = 'async fn main(_spawner: Spawner) {\n    let p = embassy_rp::init(Default::default());\n}\n';
+
+    const risk = rc.itemReplacementRisk(pico, stripped);
+    ok(risk !== undefined, 'the answer would empty the body, so it is a question');
+    equal(risk.name, 'fn main', 'named the way the button names it');
+    equal(risk.before, 11, 'with the size of the function the file has');
+    equal(risk.after, 3, 'and the size of the answer');
+    ok(risk.lost >= 4, 'and how much of it would go');
+
+    // The shapes that must stay quiet, or every answer becomes a dialog.
+    const faithful = stripped.replace(
+        'let p = embassy_rp::init(Default::default());\n}',
+        'let p = embassy_rp::init(Default::default());\n    let mut led = Output::new(p.PIN_25, Level::Low);\n' +
+        '    loop {\n        led.set_high();\n        Timer::after_millis(500).await;\n' +
+        '        led.set_low();\n        Timer::after_millis(500).await;\n    }\n}'
+    );
+    equal(rc.itemReplacementRisk(pico, faithful), undefined, 'a faithful copy is not questioned');
+    const oneLine = faithful.replace('led.set_high();', 'led.set_low();');
+    equal(rc.itemReplacementRisk(pico, oneLine), undefined, 'a one-line fix is not questioned');
+    equal(rc.itemReplacementRisk(pico, 'fn helper() {\n    a();\n    b();\n}\n'), undefined,
+        'a new function replaces nothing, so it cannot delete anything');
+    equal(rc.itemReplacementRisk(pico, 'fn main() {\n    // ...\n}\n'), undefined,
+        'and an answer with a placeholder is refused outright elsewhere, not questioned here');
+});
+
+test('an answer with no top-level form is refused, and an import is not', () => {
+    // Found 2026-10-31 while checking the "Implement in fn main" report: an answer that quotes the *inside* of a
+    // function has no `fn` around it, and `addItemToFile` put it after the caret line — between `#![no_std]` and
+    // `#![no_main]`, which is not legal Rust. A `use` line alone is the other shape of the same question and
+    // must keep working: adding an import from an answer is a real request.
+    const rc = compiled('ai/rustCode');
+    const file = [
+        '#![no_std]',
+        '#![no_main]',
+        '',
+        'use defmt::*;',
+        '',
+        'fn main() {',
+        '    let p = init();',
+        '    9',
+        '}',
+        ''
+    ].join('\n');
+
+    ok(!rc.placeableAnswer('    let p = init();'), 'a statement is not a top-level form');
+    ok(!rc.placeableAnswer(''), 'nor is nothing');
+    ok(!rc.placeableAnswer('// just a comment'), 'nor is a comment');
+    ok(rc.placeableAnswer('fn helper() {}'), 'a function is');
+    ok(rc.placeableAnswer('impl Foo { fn a() {} }'), 'an impl is');
+    ok(rc.placeableAnswer('macro_rules! twice { () => {} }'), 'a macro is');
+    ok(rc.placeableAnswer('use embassy_time::Timer;'), 'and so is a `use` line, on its own');
+
+    ok(rc.chatCodeProblem(file, '    let p = init();\n') !== undefined, 'a fragment is refused with a reason');
+    contains(rc.chatCodeProblem(file, '    let p = init();\n'), 'fragment', 'naming what it is');
+    equal(rc.insertChatCode(file, '    let p = init();\n'), file, 'and the file is untouched even if a caller forgets');
+    equal(rc.chatCodeProblem(file, 'use embassy_time::Timer;\n'), undefined, 'an import is not refused');
+
+    // The import goes after the file's own imports, and the header keeps its shape (it used to gain three blank
+    // lines between the two inner attributes).
+    const imported = rc.insertChatCode(file, 'use embassy_time::Timer;\n');
+    const lines = imported.split('\n');
+    equal(lines[0], '#![no_std]', 'the first attribute is still first');
+    equal(lines[1], '#![no_main]', 'the second is still second');
+    equal(lines[3], 'use defmt::*;', 'the existing import is still there');
+    equal(lines[4], 'use embassy_time::Timer;', 'and the new one follows it');
+    contains(imported, '    9', 'the stray character is still where it was — this answer asked for no change to main');
+});
+
+test('an answer that does not close what it opens is refused, not applied', () => {
+    // Reported 2026-10-31, with the real answer from the user's own test app: asked about a stray `9` in a
+    // 102-line `main()`, the model answered with a *before* block — `async fn main(spawner: Spawner) {9` — and a
+    // complete *after* block. Applying the first replaced the whole function with that one line and left an
+    // unclosed brace behind; the second applied perfectly. "Does it close what it opens" is the whole
+    // difference between the two, so that is what is checked.
+    const rc = compiled('ai/rustCode');
+    equal(rc.unbalancedAnswer('async fn main(spawner: Spawner) {9'), 'a `{` is opened and never closed');
+    equal(rc.unbalancedAnswer('fn a() {}'), undefined, 'a whole function balances');
+    equal(rc.unbalancedAnswer('fn a() {}\n}'), 'a closing bracket comes before the one it closes');
+    equal(rc.unbalancedAnswer('fn a() { let s = "}"; }'), undefined, 'a brace inside a string is not a brace');
+    equal(rc.unbalancedAnswer('fn a() { /* } */ }'), undefined, 'nor is one in a comment');
+    equal(rc.unbalancedAnswer('fn a(x: u32 {'), 'a `{` is opened and never closed', 'a paren closed wrongly still shows up');
+
+    const file = [
+        'async fn main(spawner: Spawner) {',
+        '    let mut state = setup(spawner).await;',
+        '    loop {',
+        '        work(&mut state).await;',
+        '    }',
+        '}',
+        '',
+        'async fn setup(spawner: Spawner) -> State {',
+        '    State::new()',
+        '}',
+        ''
+    ].join('\n');
+    const excerpt = 'async fn main(spawner: Spawner) {9\n';
+    ok(rc.chatCodeProblem(file, excerpt) !== undefined, 'the quoted line is refused');
+    contains(rc.chatCodeProblem(file, excerpt), 'not a complete piece of Rust', 'and says why');
+    equal(rc.insertChatCode(file, excerpt), file, 'the file is untouched even if a caller forgets to ask');
+    ok(rc.chatCodeProblem(file, excerpt) !== undefined, 'and `setup()` is never in reach of it');
+
+    // The complete version of the same function is applied, and loses nothing.
+    const whole = [
+        'async fn main(spawner: Spawner) {',
+        '    let mut state = setup(spawner).await;',
+        '    loop {',
+        '        work(&mut state).await;',
+        '        Timer::after_millis(20).await;',
+        '    }',
+        '}',
+        ''
+    ].join('\n');
+    equal(rc.chatCodeProblem(file, whole), undefined, 'the complete function is accepted');
+    contains(rc.insertChatCode(file, whole), 'Timer::after_millis(20).await;', 'and the change lands');
+
+    // The button says which of the two blocks it is.
+    equal(rc.codeBlockLabel(excerpt), 'fn main (excerpt)', 'the quote is labelled as one');
+    equal(rc.codeBlockLabel(whole), 'fn main', 'the change keeps its plain label');
+});
+
+test('clicking the quote offers the complete block from the same answer', () => {
+    // Reported 2026-10-31: "when clicking on 'Ok' nothing happens". True — the refusal was a dead end even
+    // though the change the user wanted was the next block of the same answer. The quote is not silently
+    // upgraded (that would apply something they did not click); it is *offered*, by name, in the modal.
+    const rc = compiled('ai/rustCode');
+    const quote = 'async fn main(spawner: Spawner) {9\n';
+    const fix = [
+        'async fn main(spawner: Spawner) {',
+        '    let mut state = setup(spawner).await;',
+        '    loop {',
+        '        work(&mut state).await;',
+        '    }',
+        '}'
+    ].join('\n');
+    const other = 'fn helper() {\n    a();\n}\n';
+
+    const offered = rc.completeAlternative([quote, fix], 0);
+    ok(offered !== undefined, 'the quote has a stand-in');
+    equal(offered.label, 'fn main', 'named the way the button names it');
+    equal(offered.code, fix, 'and it is the complete block itself');
+    equal(rc.completeAlternative([quote, fix], 1), undefined, 'the complete block is applied as it is');
+    equal(rc.completeAlternative([quote], 0), undefined, 'no complete block, no offer');
+    equal(rc.completeAlternative([quote, other], 0), undefined, 'another item is not a stand-in for this one');
+    equal(rc.completeAlternative([quote, 'async fn main() {\n    // ...\n}\n'], 0), undefined,
+        'and neither is a block that leaves code out — that is refused on its own terms');
+
+    // A before/after pair puts the fix second, so the *last* complete block wins when one answer carries several.
+    const first = 'async fn main() {\n    one();\n}\n';
+    const second = 'async fn main() {\n    two();\n}\n';
+    equal(rc.completeAlternative([quote, first, second], 0).code, second, 'the newest complete block is offered');
+});
+
+test('a refusal asks the chat for the whole function, by name', () => {
+    // Reported 2026-10-31: "i dont see any changes". True — the model answered a stray character in `main()` with
+    // thirteen lines ending `// ... rest of the function remains unchanged`, which cannot be applied, and the
+    // modal that said so had no way out. The question the refusal now sends is the fix, so its wording is
+    // pinned: name the item, say the whole of it, and say what leaving code out costs.
+    const rc = compiled('ai/rustCode');
+    const file = 'async fn main() {\n' + Array.from({ length: 12 }, (_, i) => `    step_${i}();`).join('\n') + '\n}\n';
+    const answer = 'async fn main() {\n    let mut state = setup().await;\n    // ... rest of the function remains unchanged\n}\n';
+
+    const elided = rc.chatCodeProblem(file, answer);
+    ok(elided !== undefined, 'the answer is refused');
+    const question = rc.retryQuestion('fn main (excerpt)', elided);
+    contains(question, 'could not be applied', 'the question says why it is happening');
+    contains(question, 'it left code out where `// ...` stands', 'in the refusal\'s own terms');
+    contains(question, 'the WHOLE `fn main`', 'it names the item the button named');
+    contains(question, 'no `// ...` or any other placeholder', 'and forbids the placeholder that caused it');
+    contains(question, 'anything left out is deleted', 'and says what leaving code out costs');
+    notContains(question, '(excerpt)', 'the label is read as the item, not as the button');
+
+    const incomplete = rc.chatCodeProblem(file, 'async fn main(spawner: Spawner) {7\n');
+    contains(rc.retryQuestion('fn main', incomplete), 'it stopped in the middle', 'a quote is described as one');
+    const unrecognised = rc.retryQuestion(undefined, 'something else entirely');
+    contains(unrecognised, 'the WHOLE `the code`', 'an unknown label still yields a usable question');
+});
+
+test('a line fix may only answer with one line, and may not change the file\'s shape', () => {
+    // Asked 2026-10-31: a "Fix this line" that does not depend on the model reproducing a function. The safety is
+    // structural — the answer is one line and it replaces one line — so the parser has to be strict about it.
+    const rc = compiled('ai/rustCode');
+
+    equal(rc.oneLineAnswer('async fn main(spawner: Spawner) {').line, 'async fn main(spawner: Spawner) {',
+        'a plain line is the answer');
+    equal(rc.oneLineAnswer('```rust\nasync fn main() {\n```').line, 'async fn main() {', 'a fenced one is unwrapped');
+    equal(rc.oneLineAnswer('```\nasync fn main() {\n```').line, 'async fn main() {', 'with or without a language');
+    contains(rc.oneLineAnswer('one();\ntwo();').problem, '2 lines', 'two lines are refused, not trimmed');
+    contains(rc.oneLineAnswer('').problem, 'nothing', 'an empty answer is refused');
+    contains(rc.oneLineAnswer('CANNOT FIX').problem, 'cannot be fixed on its own', 'and so is the model saying no');
+    contains(rc.oneLineAnswer('// ... rest of it').problem, 'leaves code out', 'a placeholder is not a line');
+
+    const broken = 'async fn main(spawner: Spawner) {7';
+    equal(rc.replacementLine(broken, 'async fn main(spawner: Spawner) {').line, 'async fn main(spawner: Spawner) {',
+        'the stray character goes');
+    contains(rc.replacementLine(broken, '}').problem, 'bracket', 'a replacement that moves a brace is refused');
+    contains(rc.replacementLine(broken, broken).problem, 'already has', 'an unchanged line is not a fix');
+    contains(rc.replacementLine('    let x = 1;', '   ').problem, 'empty line', 'nor is deleting the line');
+    equal(rc.replacementLine('    let x = 1;', 'let x = 2;').line, '    let x = 2;',
+        'and a stripped indentation is put back');
+
+    // The prompt says what the answer may be, in the terms the parser enforces.
+    const prompt = rc.buildLineFixPrompt({ line: broken, problem: 'expected `;`', before: 'fn a() {', after: '}' })
+        .map((m) => m.content).join('\n');
+    contains(prompt, '>> async fn main(spawner: Spawner) {7', 'the line to fix is marked in the context');
+    contains(prompt, 'ONE line and nothing else', 'the contract is one line');
+    contains(prompt, rc.CANNOT_FIX, 'and the way out is named');
+});
+
+test('the line fix is asked for in the voice of a patcher, not a rewriter', () => {
+    // Asked 2026-10-31: "Why will the model not just replace a single line containing the error. It is rewriting
+    // the complete function." The first version of this prompt reused the whole-item system message, which says
+    // "You return complete, compilable Rust … You keep the function's attributes, signature and indentation
+    // exactly as they are" — a system-level instruction to answer with a function, contradicted only by the user
+    // message below it. A model follows the system message, so it rewrote the function.
+    const rc = compiled('ai/rustCode');
+    const [system, user] = rc.buildLineFixPrompt({ line: 'let x = 1', problem: 'expected `;`' });
+    const sys = system.content;
+    contains(sys, 'one-line patcher', 'the role is a patcher');
+    contains(sys, 'nothing else', 'with one line as the answer');
+    contains(sys, 'no second line', 'and the length stated');
+    notContains(sys, 'complete, compilable Rust', 'it must not ask for a whole item');
+    notContains(sys, 'signature', 'nor mention signatures, which is what invites one');
+    notContains(sys, 'attributes', 'nor attributes');
+    contains(user.content, 'Reply with the corrected version of that ONE line', 'and the user message agrees with it');
+    contains(user.content, '```\n', 'the context fence is closed properly, so the model knows where it ends');
+});

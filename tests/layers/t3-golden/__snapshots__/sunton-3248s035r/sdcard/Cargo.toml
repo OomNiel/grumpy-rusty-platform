@@ -24,6 +24,17 @@ embassy-time = { version = "0.5.0", features = ["log"] }
 embedded-hal-bus = "0.3.0"
 embedded-sdmmc = "0.8.2"
 
+# The debug profile is what the Debug button builds, and a design repaints a whole panel every frame: at
+# opt-level 0, embedded-graphics spends most of that frame in iterator plumbing it is not allowed to inline.
+# Level 1 keeps the variables a breakpoint can show, and the libraries are built as released -- which is where
+# the pixels are actually drawn. Debugging is unaffected: the lines and the locals are still there.
+[profile.dev]
+opt-level = 1
+debug = 2
+
+[profile.dev.package."*"]
+opt-level = 3
+
 [profile.release]
 opt-level = "s"
 lto = true

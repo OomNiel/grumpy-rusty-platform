@@ -148,6 +148,7 @@ const PARSER_TAGS = [
     'circle',
     'triangle',
     'table',
+    'text_lines',
 ];
 
 // ---------------------------------------------------------------- the catalogue
@@ -1176,7 +1177,10 @@ test('a keypad is emitted with its mode and colours, and its Enter hands the lin
     // id only, and submitting clears the live line.
     const ui = emitUiRs(design);
     contains(ui, 'UiEvent::Submitted(id) if id == self.widgets.pad');
-    contains(ui, 'crate::ui_handlers::on_pad_submitted(self.gui.keypad_submitted(id).unwrap_or(""))');
+    // The line is read through the design's own borrow, which has to outlive the handler call -- so the
+    // arm is a block and the guard lives for it.
+    contains(ui, 'let pad = self.gui.borrow();', 'the keypad is read through a borrow');
+    contains(ui, 'crate::ui_handlers::on_pad_submitted(pad.keypad_submitted(id).unwrap_or(""));');
     const handlers = emitHandlersRs(design);
     contains(handlers, 'pub fn on_pad_submitted(text: &str)', 'the handler is given the line');
     contains(handlers, '{}", text', 'and its stub logs it, so a fresh project has no warnings');
@@ -1783,7 +1787,7 @@ test('the generated code-behind runs a clock whose Run is on, from a one-second 
     contains(ui, 'use embassy_time::{Duration, Instant};', 'the timer it reads');
     contains(ui, 'last_tick: Option<Instant>,');
     contains(ui, 'fn clock_due(&self) -> bool', 'when a second has passed');
-    contains(ui, 'self.gui.advance_clock(self.widgets.clk)', 'one second on the clock, by its own id');
+    contains(ui, 'self.gui.borrow_mut().advance_clock(self.widgets.clk)', 'one second on the clock, by its own id');
     contains(ui, '|| self.clock_due()', 'and the app is told to paint when it is due');
     contains(ui, 'self.tick_clocks();', 'render advances it');
     // Three hands are one time, so the widget -- not the code-behind -- owns the arithmetic.
@@ -1800,12 +1804,12 @@ test('a clock on a view that is not showing is not ticked', () => {
     // without being repainted -- black blocks once a second on the view that is showing.
     contains(
         ui,
-        'if self.view == View::V1 {\n                let _ = self.gui.advance_clock(self.widgets.clk);\n            }',
+        'if self.view == View::V1 {\n                let _ = self.gui.borrow_mut().advance_clock(self.widgets.clk);\n            }',
         'the movement waits for its own view',
     );
     contains(
         ui,
-        'if self.view == View::V1 {\n                let _ = self.gui.set_clock_time(self.widgets.clk, hour, minute, second);\n            }',
+        'if self.view == View::V1 {\n                let _ = self.gui.borrow_mut().set_clock_time(self.widgets.clk, hour, minute, second);\n            }',
         'and so does the wall clock it is handed',
     );
 });
@@ -1868,9 +1872,9 @@ test('a running clock follows the wall clock when the board has been told the ti
     contains(ui, 'pub fn set_wall_clock(&mut self, hour: u8, minute: u8, second: u8)', 'and is set by the app');
     contains(ui, 'pub fn wall_clock(&self) -> Option<(u8, u8, u8)>', 'read back as a time');
     contains(ui, 'let shown = self.wall_clock();', 'the movement asks it first');
-    contains(ui, 'self.gui.set_clock_time(self.widgets.clk, hour, minute, second)', 'and sets the hands');
+    contains(ui, 'self.gui.borrow_mut().set_clock_time(self.widgets.clk, hour, minute, second)', 'and sets the hands');
     // The fallback is still there, for a board with no RTC and for the first frame of any board.
-    contains(ui, 'let _ = self.gui.advance_clock(self.widgets.clk);', 'the timer steps in without one');
+    contains(ui, 'let _ = self.gui.borrow_mut().advance_clock(self.widgets.clk);', 'the timer steps in without one');
     notOk(ui.includes('minute = minute + 1'), 'the carries stay the crate\'s');
 });
 
@@ -1879,8 +1883,8 @@ test('two clocks, one running: only the attached one is advanced', () => {
     const stopped = widget('stopped', 'clock', { x: 100, y: 0, width: 96, height: 96 });
     stopped.props.movement = false;
     const ui = emitUiRs(document(0, [running, stopped]));
-    contains(ui, 'self.gui.advance_clock(self.widgets.clk);');
-    notOk(ui.includes('self.gui.advance_clock(self.widgets.stopped);'), 'the stopped clock is left alone');
+    contains(ui, 'self.gui.borrow_mut().advance_clock(self.widgets.clk);');
+    notOk(ui.includes('advance_clock(self.widgets.stopped)'), 'the stopped clock is left alone');
 });
 
 test('the design says whether it draws a clock, so the firmware can decide whether a time matters', () => {

@@ -1989,15 +1989,30 @@ where
             }
             // The rasterised faces are `BitmapFont`s, so they draw through the same arm: one glyph
             // implementation, reached by two names.
-            FontId::Medium5x7 => {
-                self.draw_char_with_font(x, y, ch, color, opacity, FontId::Bitmap(&crate::font::ASCII_5X7_FONT))?
-            }
-            FontId::Mono6x10 => {
-                self.draw_char_with_font(x, y, ch, color, opacity, FontId::Bitmap(&crate::font::ASCII_6X10_FONT))?
-            }
-            FontId::Mono8x16 => {
-                self.draw_char_with_font(x, y, ch, color, opacity, FontId::Bitmap(&crate::font::ASCII_8X16_FONT))?
-            }
+            FontId::Medium5x7 => self.draw_char_with_font(
+                x,
+                y,
+                ch,
+                color,
+                opacity,
+                FontId::Bitmap(&crate::font::ASCII_5X7_FONT),
+            )?,
+            FontId::Mono6x10 => self.draw_char_with_font(
+                x,
+                y,
+                ch,
+                color,
+                opacity,
+                FontId::Bitmap(&crate::font::ASCII_6X10_FONT),
+            )?,
+            FontId::Mono8x16 => self.draw_char_with_font(
+                x,
+                y,
+                ch,
+                color,
+                opacity,
+                FontId::Bitmap(&crate::font::ASCII_8X16_FONT),
+            )?,
             FontId::Bitmap(bitmap_font) => {
                 use crate::font::GlyphOp;
                 let mut draw_err = Ok(());
@@ -2637,7 +2652,12 @@ fn line_len_at(text: &str, start: usize, max_chars: usize, wrap: TextWrap) -> (u
     (len, false)
 }
 
-fn count_lines(text: &str, max_chars: usize, wrap: TextWrap) -> usize {
+/// How many visual rows `text` occupies in a box `max_chars` wide.
+///
+/// `pub(crate)` because a widget that stacks several strings has to predict the height of each one
+/// *before* it draws it -- the exact number `draw_text_in_with_font` will lay out, walked over the
+/// same boundaries, so a panel of folded lines does not drift a row at a time.
+pub(crate) fn count_lines(text: &str, max_chars: usize, wrap: TextWrap) -> usize {
     if text.is_empty() {
         return 1;
     }
@@ -2776,7 +2796,8 @@ mod tests {
         let ink = |font: crate::font::FontId| {
             let mut buf = crate::test_buffer::TestBuffer::new(60, 30);
             let mut ctx = RenderCtx::new(&mut buf, Rect::new(0, 0, 60, 30));
-            ctx.draw_text_with_font(2, 2, "Hg", Rgb565::WHITE, font).unwrap();
+            ctx.draw_text_with_font(2, 2, "Hg", Rgb565::WHITE, font)
+                .unwrap();
             let mut top = i32::MAX;
             let mut bottom = i32::MIN;
             for y in 0..30i32 {
@@ -2792,8 +2813,14 @@ mod tests {
         };
         // A 3x5 capital is five rows; the rasterised ones leave that behind, which is the point.
         assert_eq!(ink(crate::font::FontId::Tiny3x5), 5);
-        assert!(ink(crate::font::FontId::Mono6x10) >= 7, "the 6x10 face draws taller than 3x5");
-        assert!(ink(crate::font::FontId::Mono8x16) >= 12, "and the 8x16 face taller again");
+        assert!(
+            ink(crate::font::FontId::Mono6x10) >= 7,
+            "the 6x10 face draws taller than 3x5"
+        );
+        assert!(
+            ink(crate::font::FontId::Mono8x16) >= 12,
+            "and the 8x16 face taller again"
+        );
     }
 
     #[test]

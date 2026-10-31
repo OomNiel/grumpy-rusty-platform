@@ -1,5 +1,30 @@
 import { BoardProfile, RpBoardProfile, isEspBoard } from '../boards/types';
+import {
+    cardSharesPanelBus,
+    defaultWiring,
+    panelModuleOrDefault,
+    rpPinUsage,
+    validateWiring,
+    wiringFile,
+    wiringHasErrors,
+    type PanelWiring,
+} from '../boards/panels';
 import { binaryNameFrom, crateNameFrom } from './naming';
+import { emitPanelRs } from './rp-panel';
+import { emitRpSdRs } from './rp-sd';
+import { emitRpNetRs, isRpPanelTemplate, rpPanelMainFiles, type RpPanelTemplate } from './rp-designer';
+import {
+    DESIGNER_FILES,
+    RP_LOG_MACRO,
+    emitHandlersRs,
+    emitProjectKdl,
+    emitStarterKdl,
+    emitUiRs,
+    starterDocument,
+} from '../designer/generate';
+import { DESIGNER_HARDWARE_PATH } from '../designer/model';
+import { DEFAULT_BRIGHTNESS, clampBrightness } from '../display/backlight';
+import { asLcdRotation, type LcdRotation } from '../display/rotation';
 import {
     SKETCH_HEADER_PATH,
     SketchFiles,
@@ -86,6 +111,32 @@ export function templatesFor(board: BoardProfile): AppTemplateInfo[] {
     if (isEspBoard(board)) {
         return templatesForEsp(board);
     }
+    // Every Pico can drive a panel somebody wired to it, so the three panel templates are offered on all
+    // four boards. What differs per board is only which GPIOs are free, and the Designer's Hardware panel
+    // is where that is checked -- not a per-board template list.
+    const panelTemplates: AppTemplateInfo[] = [
+        {
+            id: 'designer',
+            label: 'WYSIWYG designer',
+            description:
+                'A project whose screen is a design rather than Rust: the extension opens the designer, the '
+                + 'design is written to src/ui.kdl, and the widgets\' events land in src/ui_handlers.rs for you '
+                + 'to fill in. Asks which display module is wired and starts from a working set of GPIOs.',
+        },
+        {
+            id: 'display',
+            label: 'Panel diagnostic screen',
+            description:
+                'Initialises the wired module and draws a screen to read: frame, corner markers, colour bars '
+                + 'and a blinking square, with the paint time in the log.',
+        },
+        {
+            id: 'sdcard',
+            label: 'SD card test',
+            description:
+                'Mounts the card in the module\'s socket and reports its capacity, on the glass and in the log.',
+        },
+    ];
     if (board.wireless === 'none') {
         return [
             {
@@ -93,6 +144,7 @@ export function templatesFor(board: BoardProfile): AppTemplateInfo[] {
                 label: 'LED blinky',
                 description: 'Blinks the on-board LED. The classic starting point.',
             },
+            ...panelTemplates,
         ];
     }
     return [
@@ -112,6 +164,7 @@ export function templatesFor(board: BoardProfile): AppTemplateInfo[] {
             description:
                 'Wi-Fi as above, plus the Bluetooth dependency and a commented starting point (no BLE demo yet).',
         },
+        ...panelTemplates,
     ];
 }
 
@@ -206,6 +259,71 @@ export interface GenerateOptions {
      * The panel backlight's brightness in percent, for a panel with a backlight pin. Defaults to fully on.
      */
     brightness?: number;
+    /**
+     * The GPIO wiring of a Pico panel project.
+     *
+     * Omitted for a project that drives no panel, and defaulted for one that does: the wizard always passes
+     * what its Hardware step started from, so a generated project and the Designer agree about every pin.
+     */
+    wiring?: PanelWiring;
+}
+
+/**
+ * A Pico panel project, resolved: which template, which module, which GPIOs, and the two settings the
+ * firmware reads at compile time.
+ */
+interface RpPanelProject {
+    template: RpPanelTemplate;
+    wiring: PanelWiring;
+    touch: boolean;
+    sd: boolean;
+    rotation: LcdRotation;
+    brightness: number;
+    clockOffsetMinutes: number;
+}
+
+/**
+ * Resolves the panel side of an RP generation, or `undefined` for a template that drives no panel.
+ *
+ * A wiring with an error is refused here rather than written out: every rule in `validateWiring` is also a
+ * rule embassy-rp's typed pins enforce, so the alternative is a project that fails to compile with a
+ * trait-bound error naming a type instead of a GPIO. The message is the validator's own, which names the
+ * pin and says what else it could be.
+ */
+function rpPanelProject(
+    board: RpBoardProfile,
+    template: AppTemplate,
+    options: GenerateOptions,
+): RpPanelProject | undefined {
+    if (!isRpPanelTemplate(template)) {
+        return undefined;
+    }
+    const wiring = options.wiring ?? defaultWiring(board);
+    const problems = validateWiring(board, wiring);
+    if (wiringHasErrors(problems)) {
+        throw new Error(
+            `The panel wiring for ${board.name} is not usable: ` +
+            problems
+                .filter((problem) => problem.severity === 'error')
+                .map((problem) => problem.message)
+                .join(' '),
+        );
+    }
+    const module = panelModuleOrDefault(wiring.panel);
+    return {
+        template,
+        wiring,
+        // Touch follows the module: a controller that is not on the glass has nothing to drive, and one
+        // that is has no reason to be switched off.
+        touch: module.touch && wiring.touchCs !== null && wiring.touchIrq !== null,
+        // The card is mounted by the Designer (a design can name `sd:` images) and by the card test, whose
+        // whole purpose it is. The diagnostic screen is about the glass, so it does not mount a filesystem
+        // it never reads -- which also keeps `embedded-sdmmc` out of that project.
+        sd: template !== 'display' && wiring.sdCs !== null,
+        rotation: asLcdRotation(options.rotation ?? 0),
+        brightness: clampBrightness(options.brightness ?? DEFAULT_BRIGHTNESS),
+        clockOffsetMinutes: options.clockOffsetMinutes ?? 0,
+    };
 }
 
 // The naming helpers (crateNameFrom, binaryNameFrom, isAcceptableProjectName) now live in
@@ -242,19 +360,66 @@ export function generateProjectFiles(options: GenerateOptions): GeneratedFile[] 
 
     const crateName = crateNameFrom(projectName);
     const binaryName = binaryNameFrom(projectName);
+    const panel = rpPanelProject(board, template, options);
 
     const files: GeneratedFile[] = [
-        { path: 'Cargo.toml', content: cargoToml(board, crateName, template) },
-        { path: '.cargo/config.toml', content: cargoConfigToml(board) },
+        { path: 'Cargo.toml', content: cargoToml(board, crateName, template, panel) },
+        { path: '.cargo/config.toml', content: cargoConfigToml(board, panel) },
         { path: 'rust-toolchain.toml', content: rustToolchainToml(board) },
         { path: 'memory.x', content: memoryX(board) },
         { path: 'build.rs', content: buildRs(board) },
-        ...rpMainFiles(board, template),
+        ...rpMainFiles(board, template, panel),
         { path: '.vscode/settings.json', content: vscodeSettings(board) },
         { path: '.vscode/launch.json', content: launchJson(board, binaryName) },
         { path: '.gitignore', content: gitignore() },
-        { path: 'README.md', content: readme(board, crateName, template) },
+        { path: 'README.md', content: readme(board, crateName, template, panel) },
     ];
+
+    if (panel !== undefined) {
+        // The hardware the whole project is wired to. The Designer rewrites this file on every save, so it
+        // is generated from the same wiring the wizard started from -- there is no second source of pins.
+        files.push({
+            path: 'src/panel.rs',
+            content: emitPanelRs({ board, wiring: panel.wiring, touch: panel.touch, sd: panel.sd }),
+        });
+        if (panel.sd) {
+            files.push({
+                path: 'src/sd.rs',
+                content: emitRpSdRs({
+                    sharedBus: cardSharesPanelBus(panel.wiring),
+                    // Only a design reads files from the card; the card test just mounts it.
+                    imageReader: panel.template === 'designer',
+                }),
+            });
+        }
+        if (panel.template === 'designer' && board.wireless === 'cyw43') {
+            // The clock's second source. Its task is only spawned with the `time-wifi` feature on, and the
+            // feature is only defined on a board that has a radio.
+            files.push({ path: 'src/net.rs', content: emitRpNetRs(board) });
+        }
+        if (panel.template === 'designer') {
+            // The wiring, beside the design document: what the screen is plugged into, as opposed to what
+            // it looks like. The Designer reads it back and offers every number in it for editing.
+            files.push({ path: DESIGNER_HARDWARE_PATH, content: wiringFile(panel.wiring) });
+
+            // The four files a Designer project is born with: the design, the markup it compiles to, the Rust
+            // that drives it and the code-behind the user fills in. The module's touch controller decides
+            // whether the generated Rust carries the pointer plumbing at all.
+            const starter = starterDocument({
+                boardId: board.id,
+                panelWidth: panelModuleOrDefault(panel.wiring.panel).width,
+                panelHeight: panelModuleOrDefault(panel.wiring.panel).height,
+                rotation: panel.rotation,
+            });
+            files.push(
+                { path: DESIGNER_FILES.markup, content: emitStarterKdl(starter) },
+                { path: DESIGNER_FILES.rust, content: emitUiRs(starter, panel.touch) },
+                { path: DESIGNER_FILES.handlers, content: emitHandlersRs(starter, panel.touch, RP_LOG_MACRO) },
+                { path: DESIGNER_FILES.document, content: `${JSON.stringify(starter, null, 2)}\n` },
+                { path: DESIGNER_FILES.manifest, content: emitProjectKdl(starter) },
+            );
+        }
+    }
 
     if (board.wireless !== 'none') {
         files.push({ path: 'firmware/README.md', content: firmwareReadme(board, template) });
@@ -270,9 +435,19 @@ function embassyDependencyLine(board: RpBoardProfile): string {
     return `embassy-rp = { version = "${CRATE_VERSIONS.embassyRp}", features = [${features}] }`;
 }
 
-function cargoToml(board: RpBoardProfile, crateName: string, template: AppTemplate): string {
+function cargoToml(
+    board: RpBoardProfile,
+    crateName: string,
+    template: AppTemplate,
+    panel?: RpPanelProject,
+): string {
     const wireless = board.wireless === 'cyw43';
     const bluetooth = template === 'wifi-bluetooth';
+    // The SNTP module needs DNS and a UDP socket, and a designer project on a W board is the only thing
+    // that asks for them: the plain Wi-Fi templates never resolve a name.
+    const netFeatures = panel?.template === 'designer'
+        ? '"defmt", "dhcpv4", "medium-ethernet", "proto-ipv4", "dns", "udp"'
+        : '"defmt", "dhcpv4", "medium-ethernet", "proto-ipv4"';
 
     const wirelessBlock = wireless
         ? `
@@ -280,11 +455,70 @@ function cargoToml(board: RpBoardProfile, crateName: string, template: AppTempla
 # ./firmware and are baked into the image with \`aligned_bytes!\`.
 cyw43 = { version = "${CRATE_VERSIONS.cyw43}", features = [${bluetooth ? '"defmt", "bluetooth"' : '"defmt"'}] }
 cyw43-pio = { version = "${CRATE_VERSIONS.cyw43Pio}", features = ["defmt"] }
-embassy-net = { version = "${CRATE_VERSIONS.embassyNet}", features = ["defmt", "dhcpv4", "medium-ethernet", "proto-ipv4"] }
+embassy-net = { version = "${CRATE_VERSIONS.embassyNet}", features = [${netFeatures}] }
 static_cell = "${CRATE_VERSIONS.staticCell}"
 # static_cell performs an atomic compare-exchange. The Cortex-M0+ has no atomic CAS,
 # so portable-atomic provides one via critical-section (as Embassy's examples do).
 portable-atomic = { version = "${CRATE_VERSIONS.portableAtomic}", features = ["critical-section"] }
+${panel?.template === 'designer' ? 'embassy-sync = "0.8"\n' : ''}`
+        : '';
+
+    const panelBlock = panel === undefined
+        ? ''
+        : `
+# --- the panel ------------------------------------------------------------
+# mipidsi drives the controller. embedded-hal-bus is what shares one SPI peripheral between the panel, its
+# touch controller and (when the socket shares the bus) the card, each with its own chip select.
+mipidsi = "0.10.0"
+embedded-hal = "1.0.0"
+embedded-hal-bus = "0.3.0"
+embedded-graphics = "0.8"
+${wireless
+            ? ''
+            : `static_cell = "${CRATE_VERSIONS.staticCell}"
+# static_cell performs an atomic compare-exchange. The Cortex-M0+ has no atomic CAS, so portable-atomic
+# provides one via critical-section (as Embassy's examples do).
+portable-atomic = { version = "${CRATE_VERSIONS.portableAtomic}", features = ["critical-section"] }
+`
+        }${panel.sd
+            ? '# The card, pulled in by the `sd` feature the Designer switches.\nembedded-sdmmc = { version = "0.8.2", optional = true }\n'
+            : ''
+        }${panel.template === 'designer'
+            ? '# The runtime the design compiles against, vendored into codegen/ by the project wizard.\nembedded-gui = { version = "0.2.7", default-features = false, features = ["rich-widgets", "embedded-graphics", "macros", "micromath"] }\nrusty-gui-widgets = { path = "codegen/rusty-gui-widgets", default-features = false }\n'
+            : ''
+        }`;
+
+    // Both settings are cargo features rather than keys, because enabling them is what adds code to the
+    // build: a feature can pull in a dependency or a module, and a config value cannot. `default` carries
+    // them so a project generated today is complete; the Designer's switches move them afterwards.
+    const featureLines: string[] = [];
+    if (panel?.sd) {
+        featureLines.push('sd = ["dep:embedded-sdmmc"]');
+    }
+    if (panel?.template === 'designer' && wireless) {
+        featureLines.push('# The clock taken from the network instead of the build time.');
+        featureLines.push('time-wifi = []');
+    }
+    const defaults = [panel?.sd ? '"sd"' : '', panel?.template === 'designer' && wireless ? '"time-wifi"' : '']
+        .filter((entry) => entry !== '')
+        .join(', ');
+    const featureBlock = featureLines.length === 0
+        ? ''
+        : `
+[features]
+${featureLines.join('\n')}
+default = [${defaults}]
+`;
+
+    // `[patch.crates-io]` is resolved even when nothing depends on the patched crate, so a dangling one
+    // stops every other template dead -- it is written for the Designer template only, as on the ESP side.
+    const vendored = panel?.template === 'designer'
+        ? `
+# Vendored alongside every Designer project (see crates/ in this extension): the shapes widget crate, the
+# codegen fork that emits add_custom_widget calls for shapes, and the runtime fork a design can name.
+[patch.crates-io]
+embedded-gui-codegen = { path = "codegen/embedded-gui-codegen" }
+embedded-gui = { path = "codegen/embedded-gui" }
 `
         : '';
 
@@ -318,14 +552,14 @@ publish = false
 embassy-executor = { version = "${CRATE_VERSIONS.embassyExecutor}", features = ["defmt"] }
 embassy-time = { version = "${CRATE_VERSIONS.embassyTime}", features = ["defmt"] }
 ${embassyDependencyLine(board)}
-${wirelessBlock}${bluetoothBlock}
+${wirelessBlock}${bluetoothBlock}${panelBlock}
 defmt = "${CRATE_VERSIONS.defmt}"
 defmt-rtt = "${CRATE_VERSIONS.defmtRtt}"
 panic-probe = { version = "${CRATE_VERSIONS.panicProbe}", features = ["print-defmt"] }
 cortex-m = { version = "${CRATE_VERSIONS.cortexM}", features = ["inline-asm"] }
 cortex-m-rt = "${CRATE_VERSIONS.cortexMRt}"
 critical-section = "${CRATE_VERSIONS.criticalSection}"
-
+${featureBlock}${vendored}${DEBUG_PROFILE}
 [profile.release]
 debug = true
 lto = true
@@ -333,7 +567,26 @@ opt-level = "s"
 `;
 }
 
-function cargoConfigToml(board: RpBoardProfile): string {
+function cargoConfigToml(board: RpBoardProfile, panel?: RpPanelProject): string {
+    // The panel project's settings are environment variables rather than lines in `main.rs`, for the same
+    // reason the ESP side uses `esp-config`: `panel.rs` reads them with `option_env!` at compile time, so
+    // turning the glass or dimming the backlight is a rebuild and never an edit of a file the Designer owns.
+    const panelEnv = panel === undefined
+        ? ''
+        : `# The panel's rotation: 0 none, 1 = 90, 2 = 180, 3 = 270 degrees clockwise. The Designer writes
+# this when the design is turned, and src/panel.rs reads it.
+LCD_ROTATION = "${panel.rotation}"
+# Backlight brightness in percent; a module with no BL pin ignores it. The Designer's Brightness slider
+# writes it.
+BACKLIGHT_BRIGHTNESS = "${panel.brightness}"
+# The time this project is built at, in Unix seconds. A Pico has no RTC on the chip, so a clock design
+# starts from here; the extension refreshes it before every build, which is what makes "set when it was
+# flashed" true.
+RUSTY_EPOCH = "0"
+# Minutes to add to UTC for the clock on the glass. A no_std image has no timezone database, so the
+# offset is a build-time number; edit it when the clocks change.
+RUSTY_UTC_OFFSET = "${panel.clockOffsetMinutes}"
+`;
     return `# Generated by Grumpy's Rusty Platform for VS Code.
 [target.'cfg(all(target_arch = "arm", target_os = "none"))']
 runner = "probe-rs run --chip ${board.probeChip}"
@@ -342,9 +595,34 @@ runner = "probe-rs run --chip ${board.probeChip}"
 target = "${board.target}"
 
 [env]
-DEFMT_LOG = "debug"
-`;
+# 'info', not 'debug': the extension's own diagnostics are info lines, and 'debug' switches on every library's
+# chatter -- embassy's executor and timer logs are the chatty ones, and every line costs the target time and
+# RTT bandwidth it would rather spend on the panel.
+DEFMT_LOG = "info"
+${panelEnv}`;
 }
+
+/**
+ * The debug profile, tuned for a panel rather than for a breakpoint.
+ *
+ * Rust's dev profile builds *everything* at opt-level 0 -- the project's own crate and every library under it
+ * -- so a debug build spends most of a frame inside `embedded-graphics`' iterator plumbing, unable to inline
+ * any of it. A C++ project does not feel this the same way because its libraries are usually shipped compiled.
+ * Giving the libraries `opt-level = 3` is the fix; `opt-level = 1` for the project's own crate keeps the locals
+ * a breakpoint can show.
+ */
+export const DEBUG_PROFILE = `
+# The debug profile is what the Debug button builds, and a design repaints a whole panel every frame: at
+# opt-level 0, embedded-graphics spends most of that frame in iterator plumbing it is not allowed to inline.
+# Level 1 keeps the variables a breakpoint can show, and the libraries are built as released -- which is where
+# the pixels are actually drawn. Debugging is unaffected: the lines and the locals are still there.
+[profile.dev]
+opt-level = 1
+debug = 2
+
+[profile.dev.package."*"]
+opt-level = 3
+`;
 
 function rustToolchainToml(board: RpBoardProfile): string {
     return `# Pins the toolchain channel and makes rustup fetch the embedded target on first build.
@@ -462,7 +740,24 @@ function mainRs(board: RpBoardProfile, template: AppTemplate): string {
 }
 
 /** The two files a template's sketch is written to: `src/main.rs` and `src/MainHeader.rs`. */
-function rpMainFiles(board: RpBoardProfile, template: AppTemplate): GeneratedFile[] {
+function rpMainFiles(board: RpBoardProfile, template: AppTemplate, panel?: RpPanelProject): GeneratedFile[] {
+    // A panel template's two files are written whole rather than assembled from sketch markers: every line
+    // of them is about the hardware `panel.rs` brought up, and there is no second family variant to share a
+    // marker language with.
+    if (panel !== undefined) {
+        const files = rpPanelMainFiles({
+            board,
+            template: panel.template,
+            wiring: panel.wiring,
+            touch: panel.touch,
+            sd: panel.sd,
+            clockOffsetMinutes: panel.clockOffsetMinutes,
+        });
+        return [
+            { path: 'src/main.rs', content: files.main },
+            { path: SKETCH_HEADER_PATH, content: files.header },
+        ];
+    }
     const sketch = rpSketch(board, template);
     return [
         { path: 'src/main.rs', content: sketch.main },
@@ -1026,11 +1321,52 @@ These blobs are **not** covered by this project's licence. See
 `;
 }
 
-function readme(board: RpBoardProfile, crateName: string, template: AppTemplate): string {
+function readme(
+    board: RpBoardProfile,
+    crateName: string,
+    template: AppTemplate,
+    panel?: RpPanelProject,
+): string {
     const wireless = board.wireless === 'cyw43';
     const ledLine = wireless
         ? 'The on-board LED is connected to the CYW43 wireless chip, not to GPIO25.'
         : `The on-board LED is on \`${board.led.kind === 'gpio' ? board.led.pin : 'PIN_25'}\`.`;
+    const panelSection = panel === undefined
+        ? ''
+        : `
+## Panel wiring
+
+${panelModuleOrDefault(panel.wiring.panel).label}, on the GPIOs below. The numbers live in
+\`src/panel.rs\`, which the Designer rewrites: change them there from the Designer's **Hardware** panel
+rather than by hand, or the next save will put them back.
+
+| GPIO (module pin) | Signal |
+|---|---|
+${rpPinUsage(panel.wiring).map((line) => {
+            const [pin, ...rest] = line.split(': ');
+            return `| ${pin} | ${rest.join(': ')} |`;
+        }).join('\n')}
+${panel.template === 'designer'
+            ? `
+The design itself is \`designer/panel.ui.json\`; the markup it compiles to (\`src/ui.kdl\`) and the Rust
+that drives it (\`src/ui.rs\`) are written by the Designer on every save. Put your own code in
+\`src/ui_handlers.rs\`, where a stub is added for each event you ask the Designer for.
+`
+            : ''}
+${panel.template === 'designer' && wireless
+            ? `
+A design with a clock starts from the time this project was built and is corrected over Wi-Fi when the
+board is on a network. The **Time source** switch in the Designer chooses between that and a
+battery-backed module (not supported yet).
+`
+            : ''}
+${panel.sd
+            ? `
+The card socket is mounted at boot; a design reads \`sd:/NAME.BMP\` images from it. The **SD** switch in
+the Designer's control bar turns the filesystem off without deleting \`src/sd.rs\`.
+`
+            : ''}
+`;
     const wifiNote =
         template === 'wifi' || template === 'wifi-bluetooth'
             ? `
@@ -1067,7 +1403,7 @@ Grumpy's Rusty Platform for VS Code.
 - template: \`${template}\`
 
 ${ledLine}
-${wifiNote}
+${panelSection}${wifiNote}
 ## Build / flash
 
 \`\`\`sh

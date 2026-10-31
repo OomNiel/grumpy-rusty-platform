@@ -20,6 +20,7 @@ import {
     templateUsesPanel,
 } from '../display/rotation';
 import { needsPanelChoice, panelChoices, displayFor, touchFor } from '../boards/esp';
+import { PANEL_MODULES, defaultWiring, type PanelWiring } from '../boards/panels';
 import type { BoardChoices } from '../boards/esp';
 import { installFirmwareIntoProject } from '../toolchain/cyw43FirmwareRunner';
 import { samePath } from '../project/workspaceFolders';
@@ -192,6 +193,36 @@ async function pickPanel(board: BoardProfile, template: AppTemplate): Promise<Bo
     return { panel: picked.choice.id };
 }
 
+/**
+ * Which display module is wired to this Pico, for a template that drives one.
+ *
+ * The ESP side asks the same question and records the answer as a cargo feature; a Pico has no soldered
+ * panel at all, so the answer becomes the starting wiring in `designer/panel.hardware.json` -- every GPIO
+ * of which is editable in the Designer afterwards. The three modules are the ones the ESP32-DevKitC
+ * option lists, so a module bought for one board works on the other.
+ */
+async function pickPanelModule(
+    board: BoardProfile,
+    template: AppTemplate,
+): Promise<string | null | undefined> {
+    if (!templateUsesPanel(template) || board.kind !== 'rp') {
+        return undefined;
+    }
+    const picked = await vscode.window.showQuickPick(
+        PANEL_MODULES.map((module) => ({
+            label: module.label,
+            description: module.touch ? 'with XPT2046 touch' : 'no touch controller',
+            detail: module.description,
+            module,
+        })),
+        {
+            title: `${board.name} — which display module is wired?`,
+            placeHolder: 'Display module',
+        },
+    );
+    return picked?.module.id ?? null;
+}
+
 async function pickParentFolder(): Promise<vscode.Uri | undefined> {
     const folders = vscode.workspace.workspaceFolders ?? [];
     if (folders.length === 0) {
@@ -267,6 +298,17 @@ export function registerNewProjectCommand(
             return;
         }
 
+        // A Pico's panel is wired, not soldered: the module is the first half of the answer and the GPIOs
+        // (every one of which is editable in the Designer) are the other.
+        const panelModule = await pickPanelModule(board, template);
+        if (panelModule === null) {
+            return;
+        }
+        const wiring: PanelWiring | undefined =
+            board.kind === 'rp' && templateUsesPanel(template)
+                ? defaultWiring(board, panelModule === undefined ? undefined : panelModule)
+                : undefined;
+
         // The panel first: which display module is attached decides whether there is a touch controller at
         // all, so the touch question cannot come before it.
         const panelChoicesAnswer = await pickPanel(board, template);
@@ -309,6 +351,7 @@ export function registerNewProjectCommand(
             rotation,
             touch,
             choices: panelChoicesAnswer,
+            wiring,
             // The Wi-Fi clock shows local time; the machine that creates the project is the only
             // thing here that knows the offset. getTimezoneOffset counts minutes west of UTC.
             clockOffsetMinutes: -new Date().getTimezoneOffset(),

@@ -19,8 +19,21 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import type { BoardProfile, EspDisplay, EspTouch } from '../boards/types';
+import type { BoardProfile, EspBoardProfile, EspDisplay, EspTouch, RpBoardProfile } from '../boards/types';
 import { displayForProject, hasBacklight, touchFor } from '../boards/esp';
+import {
+    panelModule,
+    parseWiring,
+    panelModuleOrDefault,
+    planWiring,
+    reservedPins,
+    validateWiring,
+    wiringFile,
+    wiringHasErrors,
+    type PanelWiring,
+    type WiringProblem,
+} from '../boards/panels';
+import { emitPanelRs } from '../generate/rp-panel';
 import { readActiveProject, readProjectAt } from '../project/activeProject';
 import { pickSerialPort, serialPortCandidates, serialPortEntriesForPlatform } from '../flash/espFlash';
 import { runShellCommand, updateClock } from '../flash/clockSync';
@@ -36,6 +49,7 @@ import {
 import {
     DESIGNER_DOCUMENT_PATH,
     DESIGNER_HANDLERS_PATH,
+    DESIGNER_HARDWARE_PATH,
     DESIGNER_KDL_PATH,
     DESIGNER_MODULE_PATH,
     createDocument,
@@ -44,12 +58,11 @@ import {
     screenIdFrom,
     type DesignerDocument,
 } from './model';
-import { runSmtpWizard } from '../smtp/wizard';
 import { loadDocument, missingAssets, planAssetImport, renderDesign } from './store';
 import { collectImageAssets, imageSourcesOf, type DesignerImageAsset } from './imageAssets';
 import { parseBdfFont, type DesignFontPixels } from './bitmapFont';
 import { bdfFromRaster, fontIdFromFile, isBitmapFontFile, type RasterisedFont } from './fontImport';
-import { emitUiRs, handlerName, syncHandlerStubs, designHasClock } from './generate';
+import { emitUiRs, handlerName, syncHandlerStubs, designHasClock, ESP_LOG_MACRO, RP_LOG_MACRO } from './generate';
 import { sdImagesNeedingCard } from './model';
 import { isFeatureInDefault, setFeatureInDefault } from './features';
 import {
@@ -60,7 +73,13 @@ import {
     vendoredState,
     vendoredUpdateNeeded,
 } from './vendored';
-import type { DesignerActionId, DesignerAssetKind, DesignerInbound, DesignerReport } from './protocol';
+import type {
+    DesignerActionId,
+    DesignerAssetKind,
+    DesignerHardware,
+    DesignerInbound,
+    DesignerReport,
+} from './protocol';
 import { designerStyles } from './styles';
 
 /**
@@ -124,14 +143,23 @@ class DesignerPanel {
         document: DesignerDocument,
         private touchEnabled: boolean,
         private sdEnabled: boolean,
-        private smtpAvailable: boolean,
-        private smtpEnabled: boolean,
         private brightness: number,
-        private readonly backlightPwm: boolean,
+        private backlightPwm: boolean,
         private readonly loadError: string | undefined,
         private readonly loadNotes: string[],
         private readonly loadProblems: string[],
         written: string,
+        /**
+         * The GPIO wiring, on a Pico project, and `undefined` on an ESP one.
+         *
+         * A Pico's panel is wired to the board, so its module and its pins are project facts the Hardware
+         * panel edits. On an ESP board the panel is a property of the board and there is nothing to wire.
+         */
+        private wiring: PanelWiring | undefined,
+        /** Everything wrong with `wiring`, as the panel shows it. */
+        private wiringProblems: WiringProblem[],
+        /** The file the project's compile-time settings live in, relative to the project root. */
+        private readonly configRelative: string,
     ) {
         this.document = document;
         this.lastWritten = written;
@@ -151,6 +179,20 @@ class DesignerPanel {
      * some of those bring an XPT2046. A board with no controller has no touch code to compile and no switch.
      */
     private get touchController(): EspTouch | undefined {
+        if (this.wiring !== undefined) {
+            // A Pico's XPT2046 is part of the module, so the wiring is the authority: a module with a
+            // controller and both of its pins is a touchscreen, whatever the shape of any board record.
+            const module = panelModule(this.wiring.panel);
+            if (module?.touch !== true || this.wiring.touchCs === null || this.wiring.touchIrq === null) {
+                return undefined;
+            }
+            return {
+                controller: 'XPT2046',
+                cs: this.wiring.touchCs,
+                irq: this.wiring.touchIrq,
+                spiHz: 1_000_000,
+            };
+        }
         return this.board?.kind === 'esp' ? touchFor(this.board, this.display) : undefined;
     }
 
@@ -171,7 +213,11 @@ class DesignerPanel {
             return;
         }
         const board = project.board;
-        if (board === undefined || board.kind !== 'esp' || board.displays.length === 0) {
+        const isEspWithPanel = board !== undefined && board.kind === 'esp' && board.displays.length > 0;
+        // A Pico always *can* drive a panel, so the marker is the project's own document: a blinky project
+        // has no design to draw, and opening a canvas over it would write files its `main.rs` never calls.
+        const isRp = board !== undefined && board.kind === 'rp' && project.designer;
+        if (board === undefined || (!isEspWithPanel && !isRp)) {
             void vscode.window.showWarningMessage(
                 `The designer needs a board with a panel, and ${board?.name ?? 'this project'} has none.`,
             );
@@ -188,41 +234,70 @@ class DesignerPanel {
         // something else without complaining. Asked here, once, before anything is drawn on that promise.
         await ensureVendoredCrates(context, project.folder, output);
 
-        const configPath = vscode.Uri.joinPath(project.folder, '.cargo', 'esp-config.toml');
+        // --- where this project's compile-time settings live.
+        //
+        // The two families keep them in different files for the same reason: each already has a file that is
+        // read at build time. An ESP project has `.cargo/esp-config.toml` (esp-hal's own mechanism); a Pico has
+        // cargo's `[env]` table in `.cargo/config.toml`, which is what `option_env!` sees.
+        const configRelative = isEspWithPanel ? '.cargo/esp-config.toml' : '.cargo/config.toml';
+        const configPath = vscode.Uri.joinPath(project.folder, ...configRelative.split('/'));
         const config = (await readText(configPath)) ?? '';
         const rotation = lcdRotationFromConfig(config);
 
         // SD is a cargo feature rather than an env key, so it is read out of `Cargo.toml`'s `default` rather
-        // than out of `.cargo/esp-config.toml`.
+        // than out of the config file.
         const cargoToml = (await readText(vscode.Uri.joinPath(project.folder, 'Cargo.toml'))) ?? '';
         const sdEnabled = isFeatureInDefault(cargoToml, 'sd');
-        // SMTP is a feature too, and the wizard is what creates the module: without `src/smtp.rs` there is
-        // nothing for the switch to compile in, so it is shown disabled rather than lying about being off.
-        const smtpAvailable = fs.existsSync(path.join(project.folder.fsPath, 'src', 'smtp.rs'));
-        const smtpEnabled = isFeatureInDefault(cargoToml, 'smtp');
         const stored = await readText(vscode.Uri.joinPath(project.folder, DESIGNER_DOCUMENT_PATH));
         const loaded = loadDocument(stored ?? '');
         const folderName = project.folder.path.split('/').pop() ?? 'Panel';
+
+        // --- the panel.
+        //
+        // An ESP board's panel is a property of the board (or of the module in its `panel-<id>` feature); a
+        // Pico's is a wiring the project itself records, which is what the Hardware panel edits.
+        let wiring: PanelWiring | undefined;
+        let wiringProblems: WiringProblem[] = [];
+        if (isRp) {
+            const hardwareText = await readText(vscode.Uri.joinPath(project.folder, DESIGNER_HARDWARE_PATH));
+            const parsed = parseWiring(
+                hardwareText === undefined ? {} : safeJson(hardwareText),
+                board as RpBoardProfile,
+            );
+            wiring = parsed.wiring;
+            wiringProblems = validateWiring(board as RpBoardProfile, wiring);
+            if (parsed.notes.length > 0) {
+                output.appendLine(`[designer] ${folderName}: ${parsed.notes.join('; ')}`);
+            }
+        }
+        const module = wiring === undefined ? undefined : panelModule(wiring.panel);
         // The panel this project was generated for. A board like the DevKitC takes any module plugged into it,
         // and the modules differ in size and in whether they bring a touch controller, so the manifest's own
         // `panel-<id>` feature is what settles it -- the generated `main.rs` is not something this can read
         // back. An older project with no such feature falls back to the board's own first panel.
-        const display = displayForProject(board, cargoToml);
+        const display = isEspWithPanel ? displayForProject(board as EspBoardProfile, cargoToml) : undefined;
+        const panelSize = module === undefined ? undefined : { width: module.width, height: module.height };
         // A panel with no controller has no touch code, whatever the config says: reading the key alone
         // generated pointer plumbing that nothing could call -- and a warning in the user's own project.
-        const touchEnabled = touchFor(board, display) === undefined ? false : touchFromConfig(config);
+        const hasController = wiring === undefined
+            ? touchFor(board as EspBoardProfile, display) !== undefined
+            : module?.touch === true && wiring.touchCs !== null && wiring.touchIrq !== null;
+        const touchEnabled = hasController ? touchFromConfig(config) : false;
         // The backlight is PWM in the firmware this version generates: a project from before that holds the
         // pin on, and the setting cannot reach it. Detected rather than assumed, because a slider that writes
-        // a line nothing reads is worse than a disabled slider that says why.
+        // a line nothing reads is worse than a disabled slider that says why. A Pico project generated by this
+        // version always dims by PWM when BL is wired, which the wiring says.
         const mainRs = (await readText(vscode.Uri.joinPath(project.folder, 'src', 'main.rs'))) ?? '';
-        const backlightPwm = mainRs.includes('BACKLIGHT_DUTY_PCT');
+        const backlightPwm = wiring === undefined
+            ? mainRs.includes('BACKLIGHT_DUTY_PCT')
+            : wiring.backlight !== null;
         const brightness = brightnessFromConfig(config);
         const document =
             loaded.document ??
             createDocument({
                 boardId: board.id,
-                panelWidth: display?.width ?? 320,
-                panelHeight: display?.height ?? 480,
+                panelWidth: display?.width ?? panelSize?.width ?? 320,
+                panelHeight: display?.height ?? panelSize?.height ?? 480,
                 rotation,
                 screenId: screenIdFrom(folderName),
             });
@@ -275,8 +350,6 @@ class DesignerPanel {
             document,
             touchEnabled,
             sdEnabled,
-            smtpAvailable,
-            smtpEnabled,
             brightness,
             backlightPwm,
             loaded.error,
@@ -284,7 +357,18 @@ class DesignerPanel {
             rendered.problems,
             // The cleaned design has just been written, so the first edit is a change rather than a rewrite.
             loaded.notes === undefined ? '' : rendered.documentJson,
+            wiring,
+            wiringProblems,
+            configRelative,
         );
+        // The code-behind is tidied on *opening* as well as on every save.
+        //
+        // A stub for an event the design no longer raises is a `dead_code` warning in the user's own crate,
+        // and waiting for the next edit to remove it means the project keeps warning about a function whose
+        // reason has already gone. Same rule as the document's own cleanup a few lines up: the file is put
+        // right the moment the Designer looks at it, rather than on the user's first accidental nudge.
+        await current.syncHandlers(document);
+
         output.appendLine(
             `[designer] ${folderName}: canvas ${designCanvasSize(document.panelWidth, document.panelHeight, document.rotation).width}x` +
             `${designCanvasSize(document.panelWidth, document.panelHeight, document.rotation).height} at rotation ${document.rotation}`,
@@ -296,9 +380,18 @@ class DesignerPanel {
 
     /** The webview document: a shell with the bundle and the styles, and a strict policy. */
     private shell(): string {
-        const script = this.panel.webview.asWebviewUri(
-            vscode.Uri.joinPath(this.context.extensionUri, 'out', 'webview', 'designer.js'),
-        );
+        // The bundle's URL is stable across extension updates, and a webview resource at an unchanged URL can
+        // be served from the panel's cache -- which looks exactly like a fix that never shipped. The stamp is
+        // the version plus the file's mtime, so it changes on every install and reads as `0.15.0-1761…`.
+        const bundle = vscode.Uri.joinPath(this.context.extensionUri, 'out', 'webview', 'designer.js');
+        const version = (this.context.extension.packageJSON as { version?: string }).version ?? '0';
+        let stamp = version;
+        try {
+            stamp = `${version}-${Math.round(fs.statSync(bundle.fsPath).mtimeMs)}`;
+        } catch {
+            // No bundle on disk: the URI is left as it is and the panel reports the missing script itself.
+        }
+        const script = this.panel.webview.asWebviewUri(bundle).with({ query: `v=${stamp}` });
         const source = this.panel.webview.cspSource;
         return `<!DOCTYPE html>
 <html lang="en">
@@ -324,6 +417,10 @@ class DesignerPanel {
             await this.save(message.document);
             return;
         }
+        if (message.type === 'setWiring') {
+            await this.setWiring(message.wiring, message.note);
+            return;
+        }
         if (message.type === 'action') {
             if (message.action === 'revealHandler') {
                 await this.revealHandler(message.widgetId);
@@ -339,9 +436,6 @@ class DesignerPanel {
         }
         if (message.type === 'setSd') {
             await this.setSd(message.enabled);
-        }
-        if (message.type === 'setSmtp') {
-            await this.setSmtp(message.enabled);
         }
         if (message.type === 'setBrightness') {
             await this.setBrightness(message.percent);
@@ -624,11 +718,11 @@ class DesignerPanel {
      */
     private async setBrightness(percent: number): Promise<void> {
         const value = clampBrightness(percent);
-        const configUri = vscode.Uri.joinPath(this.folder, '.cargo', 'esp-config.toml');
+        const configUri = vscode.Uri.joinPath(this.folder, ...this.configRelative.split('/'));
         const existing = (await readText(configUri)) ?? '';
         const updated = setBrightnessInConfig(existing, value);
         if (updated !== existing) {
-            await writeProjectFile(this.folder, '.cargo/esp-config.toml', updated);
+            await writeProjectFile(this.folder, this.configRelative, updated);
         }
         this.brightness = value;
         this.output.appendLine(`[designer] backlight brightness ${value}% for this project`);
@@ -673,8 +767,12 @@ class DesignerPanel {
             this.output.appendLine(`[designer] SD ${enabled ? 'enabled' : 'disabled'} for this project`);
         }
         this.sdEnabled = enabled;
+        // The pins follow the switch: on, the card is given the other bus's four; off, they are left free for
+        // whatever comes next. Planned here rather than in the panel so that flipping the toolbar switch with
+        // nothing else open still leaves the Hardware panel's numbers true.
+        const moved = await this.planCardPins(enabled);
         const problems =
-            !enabled && (this.board?.kind === 'esp' && this.board.sd !== undefined)
+            !enabled && this.hasCardSocket
                 ? sdImagesNeedingCard(this.document.widgets).map((id) =>
                     `"${id}": this image comes from the SD card, and SD is switched off -- turn it on in the toolbar and rebuild.`,
                 )
@@ -683,94 +781,56 @@ class DesignerPanel {
             type: 'report',
             problems,
             sdEnabled: this.sdEnabled,
-            smtpEnabled: this.smtpEnabled,
-            smtpAvailable: this.smtpAvailable,
-            note: enabled
-                ? 'SD card enabled. The FAT filesystem (embedded-sdmmc) is now compiled in; rebuild for it to take effect.'
-                : 'SD card disabled. The FAT filesystem (embedded-sdmmc) is no longer compiled in; rebuild for it to take effect.',
+            hardware: this.hardwareReport(),
+            note:
+                (enabled
+                    ? 'SD card enabled. The FAT filesystem (embedded-sdmmc) is now compiled in; rebuild for it to take effect.'
+                    : 'SD card disabled. The FAT filesystem (embedded-sdmmc) is no longer compiled in; rebuild for it to take effect.') +
+                (moved.length > 0 ? ` ${moved.join('. ')}.` : ''),
             kdl: undefined,
         });
     }
 
     /**
-     * Switches the SMTP keep-alive client on or off for the project.
+     * Re-plans the card's pins for the SD switch, and rewrites the hardware file when they changed.
      *
-     * The client is the `smtp` cargo feature, which gates both `mod smtp;` and its task -- so switching it
-     * off drops the module and the radio work from the build while leaving `src/smtp.rs` in the project,
-     * and switching it back on is enough to return. The module itself is the wizard's: without one there is
-     * nothing to compile in, which is why the switch is offered disabled until it has run.
+     * Turning the card on gives it the bus the panel is *not* on; turning it off frees those four pins so the
+     * panes read "Free" rather than showing a socket nothing is compiled against. Everything else keeps the
+     * pin it already had -- the bus did not change, so nothing else should move.
+     *
+     * Returns the planner's notes, so the caller can say what moved.
      */
-    private async setSmtp(enabled: boolean): Promise<void> {
-        if (enabled && !fs.existsSync(path.join(this.folder.fsPath, 'src', 'smtp.rs'))) {
-            await this.refuseFeature(
-                'smtp',
-                'There is no `src/smtp.rs` yet -- run the SMTP… button first; it writes the client and turns ' +
-                'this switch on.',
-            );
-            return;
+    private async planCardPins(enabled: boolean): Promise<string[]> {
+        const board = this.board;
+        if (this.wiring === undefined || board === undefined || board.kind !== 'rp') {
+            return [];
         }
-        const cargoTomlUri = vscode.Uri.joinPath(this.folder, 'Cargo.toml');
-        const existing = (await readText(cargoTomlUri)) ?? '';
-        const { text, note } = setFeatureInDefault(existing, 'smtp', enabled);
-        if (note === 'none' && isFeatureInDefault(existing, 'smtp') !== enabled) {
-            await this.refuseFeature(
-                'smtp',
-                'This Cargo.toml has no `smtp` feature to switch -- run the SMTP… button again, which writes ' +
-                'the definition, or add `smtp = []` to `[features]` by hand.',
-            );
-            return;
-        }
-        if (note !== 'none') {
-            await writeProjectFile(this.folder, 'Cargo.toml', text);
-            this.output.appendLine(`[designer] SMTP ${enabled ? 'enabled' : 'disabled'} for this project`);
-        }
-        this.smtpEnabled = enabled;
-        await this.panel.webview.postMessage({
-            type: 'report',
-            problems: [],
-            sdEnabled: this.sdEnabled,
-            smtpEnabled: this.smtpEnabled,
-            smtpAvailable: this.smtpAvailable,
-            note: enabled
-                ? 'SMTP keep-alive posts enabled. The radio task now sends them; rebuild for it to take effect.'
-                : 'SMTP keep-alive posts disabled. The client is no longer compiled in; rebuild for it to take effect.',
-            kdl: undefined,
+        const { wiring, notes } = planWiring({
+            panel: this.wiring.panel,
+            bus: this.wiring.bus,
+            alt: this.wiring.alt,
+            sd: enabled,
+            reserved: reservedPins(board),
+            timeSource: this.wiring.timeSource,
+            backlightActiveLow: this.wiring.backlightActiveLow,
+            keep: this.wiring,
         });
+        const changed = notes.length > 0 || wiringFile(wiring) !== wiringFile(this.wiring);
+        this.wiring = wiring;
+        this.wiringProblems = validateWiring(board, wiring);
+        if (changed) {
+            await writeProjectFile(this.folder, DESIGNER_HARDWARE_PATH, wiringFile(wiring));
+            await this.syncPanelRs();
+        }
+        return notes;
     }
 
-    /** Re-reads what the SMTP wizard may have changed, and tells the panel. */
-    async refreshSmtp(): Promise<void> {
-        const cargoToml = (await readText(vscode.Uri.joinPath(this.folder, 'Cargo.toml'))) ?? '';
-        this.smtpAvailable = fs.existsSync(path.join(this.folder.fsPath, 'src', 'smtp.rs'));
-        this.smtpEnabled = isFeatureInDefault(cargoToml, 'smtp');
-        await this.panel.webview.postMessage({
-            type: 'report',
-            problems: [],
-            sdEnabled: this.sdEnabled,
-            smtpEnabled: this.smtpEnabled,
-            smtpAvailable: this.smtpAvailable,
-            note: this.smtpAvailable
-                ? 'SMTP client written. Rebuild to compile its task in; the switch turns it on and off.'
-                : undefined,
-            kdl: undefined,
-        });
-    }
-
-    /**
-     * Refuses a switch that the manifest cannot carry, and hands the panel the manifest's own state.
-     *
-     * A project generated before a feature existed has no `[features]` table, and `default = [...]` naming an
-     * undefined feature is a cargo error -- so the toggle is refused out loud instead of pretending to have
-     * written something.
-     */
-    private async refuseFeature(_name: 'sd' | 'smtp', reason: string): Promise<void> {
+    private async refuseFeature(_name: 'sd', reason: string): Promise<void> {
         this.output.appendLine(`[designer] ${this.folder.fsPath}: ${reason}`);
         await this.panel.webview.postMessage({
             type: 'report',
             problems: [reason],
             sdEnabled: this.sdEnabled,
-            smtpEnabled: this.smtpEnabled,
-            smtpAvailable: this.smtpAvailable,
             kdl: undefined,
         });
     }
@@ -837,6 +897,118 @@ class DesignerPanel {
         }
     }
 
+    /** What the Hardware panel draws, and what a report sends back after an edit. */
+    private hardwareReport(): DesignerHardware | undefined {
+        if (this.wiring === undefined) {
+            return undefined;
+        }
+        return {
+            wiring: this.wiring,
+            problems: this.wiringProblems,
+            board: this.board?.name ?? '',
+            wireless: this.board?.kind === 'rp' && this.board.wireless === 'cyw43',
+            reserved: this.board?.kind === 'rp' ? reservedPins(this.board) : [],
+        };
+    }
+
+    /**
+     * Applies the Hardware panel's wiring.
+     *
+     * The wiring is a *project* fact, not part of the design: it says what the panel is plugged into, and the
+     * firmware compiles it. So this writes two files -- `designer/panel.hardware.json`, which the Designer
+     * reads back, and `src/panel.rs`, which the build reads -- and refuses to write the second while the
+     * first has an error. The rules in the validator are the same rules embassy-rp's typed pins enforce; a
+     * file written past them would be a project that cannot compile for a reason nothing on screen explains.
+     */
+    private async setWiring(wiring: PanelWiring, planned?: string): Promise<void> {
+        const board = this.board;
+        if (wiring === undefined || board?.kind !== 'rp') {
+            return;
+        }
+        const previousPanel = this.wiring?.panel;
+        this.wiring = wiring;
+        this.wiringProblems = validateWiring(board, wiring);
+        await writeProjectFile(this.folder, DESIGNER_HARDWARE_PATH, wiringFile(wiring));
+        await this.syncPanelRs();
+
+        // Touch and the backlight are facts of the module, so they follow the wiring rather than the other way
+        // round: a module with a controller is a touchscreen, and one that wires BL is dimmable.
+        this.touchEnabled = this.touchController === undefined ? false : this.touchEnabled;
+        this.backlightPwm = wiring.backlight !== null;
+
+        // A different module is a different size, which is a canvas change. The document carries the size, so
+        // it is written here and the panel is told: reopening the Designer re-lays the canvas against it.
+        const module = panelModuleOrDefault(wiring.panel);
+        if (previousPanel !== wiring.panel && (this.document.panelWidth !== module.width || this.document.panelHeight !== module.height)) {
+            this.document = { ...this.document, panelWidth: module.width, panelHeight: module.height };
+            await writeProjectFile(
+                this.folder,
+                DESIGNER_DOCUMENT_PATH,
+                `${JSON.stringify(this.document, null, 2)}\n`,
+            );
+            this.output.appendLine(
+                `[designer] the module is now ${module.label}: the canvas is ${module.width}x${module.height} ` +
+                'when the Designer is reopened',
+            );
+        }
+
+        const notes = this.wiringProblems.map((problem) => `${problem.severity}: ${problem.message}`);
+        if (notes.length > 0) {
+            this.output.appendLine(`[designer] wiring: ${notes.join('; ')}`);
+        }
+        await this.panel.webview.postMessage({
+            type: 'report',
+            problems: [],
+            kdl: undefined,
+            hardware: this.hardwareReport(),
+            note:
+                previousPanel !== wiring.panel
+                    ? `Module changed to ${module.label}. Reopen the Designer to lay the canvas out for it.`
+                    : planned,
+        });
+    }
+
+    /**
+     * Regenerates `src/panel.rs` from the wiring.
+     *
+     * The file is the Designer's, like `src/ui.rs`: the firmware's pins come from here and nowhere else. A
+     * wiring with an error leaves the previous file in place, because the alternative is a project that stops
+     * building while the user is half way through typing a GPIO number.
+     */
+    private async syncPanelRs(): Promise<void> {
+        const board = this.board;
+        if (this.wiring === undefined || board?.kind !== 'rp') {
+            return;
+        }
+        if (wiringHasErrors(this.wiringProblems)) {
+            this.output.appendLine('[designer] the wiring has errors, so src/panel.rs was left as it was');
+            return;
+        }
+        const module = panelModuleOrDefault(this.wiring.panel);
+        const touch = module.touch && this.wiring.touchCs !== null && this.wiring.touchIrq !== null;
+        // The card module only exists in a project generated with a socket: a wiring that adds one afterwards
+        // would otherwise name `crate::sd` in a crate that has no such module.
+        const cardModule = this.wiring.sdCs !== null && fs.existsSync(path.join(this.folder.fsPath, 'src', 'sd.rs'));
+        if (this.wiring.sdCs !== null && !cardModule) {
+            this.wiringProblems = [
+                ...this.wiringProblems,
+                {
+                    field: 'sdCs',
+                    severity: 'warning',
+                    message:
+                        'This project was generated without a card module (no src/sd.rs), so the socket pins ' +
+                        'are recorded but nothing mounts the card. Recreate the project to get src/sd.rs.',
+                },
+            ];
+        }
+        const next = emitPanelRs({ board, wiring: this.wiring, touch, sd: cardModule });
+        const uri = vscode.Uri.joinPath(this.folder, 'src', 'panel.rs');
+        if ((await readText(uri)) !== next) {
+            await writeProjectFile(this.folder, 'src/panel.rs', next);
+            this.output.appendLine('[designer] src/panel.rs rewritten from the Hardware panel');
+        }
+    }
+
     private async sendInit(): Promise<void> {
         const canvas = designCanvasSize(this.document.panelWidth, this.document.panelHeight, this.document.rotation);
         // A keypad is pinned to the bottom strip, and a design saved under another rotation has the
@@ -851,13 +1023,20 @@ class DesignerPanel {
             paths: { document: DESIGNER_DOCUMENT_PATH, kdl: DESIGNER_KDL_PATH },
             touchBoard: this.touchController !== undefined,
             touchEnabled: this.touchEnabled,
-            sdBoard: (this.board?.kind === 'esp' && this.board.sd !== undefined) || false,
+            sdBoard: this.sdEnabled || this.hasCardSocket,
             sdEnabled: this.sdEnabled,
-            smtpAvailable: this.smtpAvailable,
-            smtpEnabled: this.smtpEnabled,
-            backlight: hasBacklight(this.display),
+            backlight: this.wiring === undefined ? hasBacklight(this.display) : this.wiring.backlight !== null,
             backlightPwm: this.backlightPwm,
             brightness: this.brightness,
+            hardware: this.wiring === undefined
+                ? undefined
+                : {
+                    wiring: this.wiring,
+                    problems: this.wiringProblems,
+                    board: this.board?.name ?? '',
+                    wireless: this.board?.kind === 'rp' && this.board.wireless === 'cyw43',
+                    reserved: this.board?.kind === 'rp' ? reservedPins(this.board) : [],
+                },
             loadError: this.loadError,
             loadNotes: this.loadNotes,
             loadProblems: this.loadProblems,
@@ -869,6 +1048,16 @@ class DesignerPanel {
 
     /** What the canvas needs in order to draw the design's pictures, and the signature it was last sent under. */
     private imageSignature = '';
+
+    /** Whether the board/module combination has a card socket at all -- the reason `sd` is offered. */
+    private get hasCardSocket(): boolean {
+        if (this.wiring !== undefined) {
+            // The *socket*, not the pins: with the SD switch off the four pins are left free, and judging the
+            // socket by them would make the switch impossible to turn back on.
+            return panelModule(this.wiring.panel)?.sd === true;
+        }
+        return this.board?.kind === 'esp' && this.board.sd !== undefined;
+    }
 
     /**
      * The design's image files, so the canvas can draw them instead of an empty box.
@@ -957,8 +1146,7 @@ class DesignerPanel {
         // time otherwise -- `crate::sd::with_file` is named by the generated markup, so a project without it does
         // not compile, which is a much worse way to find out than a line in the panel.
         const sd = sdImagesNeedingCard(document.widgets).flatMap((id) => {
-            // `sd` is a property of an ESP board profile, like `touch`, so the union has to be narrowed first.
-            if (this.board?.kind !== 'esp' || this.board.sd === undefined) {
+            if (!this.hasCardSocket) {
                 return [
                     `"${id}": this image comes from the SD card, and ${this.board?.name ?? 'this board'
                     } has no card socket`,
@@ -1037,9 +1225,16 @@ class DesignerPanel {
         if (existing === undefined) {
             return;
         }
-        const next = syncHandlerStubs(existing, document, this.touchEnabled);
+        // The macro is what tells a stub from the user's own code: the pruner only removes a body that is
+        // still exactly the line this extension wrote. A Pico project's stubs say `defmt::info!`, so judging
+        // them by the ESP spelling kept every stub of every event the design had ever asked for -- found on
+        // a real project (2026-10-27) as "function on_go_clicked is never used", after the button's event
+        // had been unticked and the call had left src/ui.rs.
+        const log = this.wiring === undefined ? ESP_LOG_MACRO : RP_LOG_MACRO;
+        const next = syncHandlerStubs(existing, document, this.touchEnabled, log);
         if (next !== existing) {
             await writeProjectFile(this.folder, DESIGNER_HANDLERS_PATH, next);
+            this.output.appendLine('[designer] src/ui_handlers.rs tidied: a stub the design no longer asks for');
         }
     }
 
@@ -1063,11 +1258,11 @@ class DesignerPanel {
 
     /** Keeps the project's own rotation setting in step with the design it was drawn for. */
     private async syncRotation(rotation: LcdRotation): Promise<void> {
-        const configUri = vscode.Uri.joinPath(this.folder, '.cargo', 'esp-config.toml');
+        const configUri = vscode.Uri.joinPath(this.folder, ...this.configRelative.split('/'));
         const existing = (await readText(configUri)) ?? '';
         const updated = setLcdRotationInConfig(existing, rotation);
         if (updated !== existing) {
-            await writeProjectFile(this.folder, '.cargo/esp-config.toml', updated);
+            await writeProjectFile(this.folder, this.configRelative, updated);
             this.output.appendLine(`[designer] LCD_ROTATION set to ${rotation}`);
         }
     }
@@ -1094,11 +1289,6 @@ class DesignerPanel {
             await this.updateClockTime();
         } else if (action === 'serveClockTime') {
             await this.serveClockTime();
-        } else if (action === 'setupSmtp') {
-            await runSmtpWizard(this.folder, this.context, this.output);
-            // The wizard may have just written `src/smtp.rs` and switched the feature on: the panel's
-            // toggle has to learn both before the user reaches for it.
-            await this.refreshSmtp();
         } else {
             await vscode.commands.executeCommand('revealInExplorer', this.folder);
         }
@@ -1174,6 +1364,12 @@ class DesignerPanel {
      */
     private autoServeClock(): void {
         if (this.clockServed || !designHasClock(this.document)) {
+            return;
+        }
+        // A Pico has no serial hand-over: its clock starts from the build's own time and is corrected over
+        // Wi-Fi (the `time-wifi` feature), so there is no port to listen on and nothing to start.
+        if (this.wiring !== undefined) {
+            this.clockServed = true;
             return;
         }
         this.clockServed = true;
@@ -1347,16 +1543,6 @@ export async function importFontIntoDesigner(): Promise<void> {
     await current.importFont();
 }
 
-/**
- * Tells an open designer panel what the SMTP wizard just changed.
- *
- * The wizard runs from the palette as well as from the panel's own button. Only the panel that asked knows
- * to refresh, so the palette route calls this -- otherwise the switch would stay disabled (there was no
- * `src/smtp.rs` when the panel opened) until the design was closed and reopened.
- */
-export async function refreshDesignerSmtp(): Promise<void> {
-    await current?.refreshSmtp();
-}
 
 async function readText(uri: vscode.Uri): Promise<string | undefined> {
     try {
@@ -1379,4 +1565,19 @@ async function writeProjectFile(folder: vscode.Uri, relative: string, content: s
         await vscode.workspace.fs.createDirectory(vscode.Uri.file(parent));
     }
     await vscode.workspace.fs.writeFile(uri, Buffer.from(content, 'utf8'));
+}
+
+/**
+ * Reads a JSON file the Designer owns, or nothing when a hand edit broke it.
+ *
+ * A hardware file that cannot be parsed must not take the Designer down: it is read as "no wiring yet" and
+ * the defaults take over, which the panel then shows as the starting point. The alternative -- an exception
+ * out of `show()` -- leaves the user with a command that does nothing and no reason written anywhere.
+ */
+function safeJson(text: string): unknown {
+    try {
+        return JSON.parse(text);
+    } catch {
+        return undefined;
+    }
 }

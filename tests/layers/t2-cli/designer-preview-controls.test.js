@@ -1045,4 +1045,89 @@ test('the keypad is drawn: an entry box, keys in the design colours, and the mod
     // A digit is one third of the row, where ten letters share it.
     const width = numericFills[0].args[2];
     ok(width > 60, `a digit key is wide, not a tenth of the row: ${width}`);
+
+    // The space bar types a space, but a space on the glass is nothing to read, so the bar wears the
+    // word "Space". Its cell (row 4, the four-wide third of the 10-weight control row) is dark, so the
+    // only 1x1 ink in it is the rendered word -- where a blank used to be drawn.
+    const spaceBox = { x: 128, y: 428, width: 126, height: 23 };
+    ok(
+        inkPixels(calls, spaceBox).length > 0,
+        'the space bar shows the word Space, not a blank',
+    );
+});
+
+// ---------------------------------------------------------------------------
+// The text panel
+// ---------------------------------------------------------------------------
+
+/** The one-pixel glyph pixels inside a box, which is how a packed font paints. */
+function inkPixels(calls, box) {
+    return calls.filter(
+        (call) =>
+            call.method === 'fillRect' &&
+            call.args[2] === 1 &&
+            call.args[3] === 1 &&
+            call.args[0] >= box.x &&
+            call.args[0] < box.x + box.width &&
+            call.args[1] >= box.y &&
+            call.args[1] < box.y + box.height,
+    );
+}
+
+test('a text panel folds a long entry, so the next one starts below the rows it took', () => {
+    // 160 pixels at the default 3-pixel advance is 53 characters a row; this entry is far wider than that, so
+    // it folds. The entry after it has to start below the fold rather than beside it.
+    const long = `${'word '.repeat(20)}end`;
+    const panel = (values) => {
+        const widget = widgetOf('text_lines', { gap: 2 });
+        widget.width = 160;
+        widget.height = 96;
+        widget.children = { kind: 'lines', values };
+        return widget;
+    };
+
+    const folded = boot(documentWith(panel([long, 'after'])));
+    const flat = boot(documentWith(panel(['after'])));
+
+    const box = { x: 40, y: 60, width: 160, height: 96 };
+    const foldedInk = inkPixels(folded.calls, box);
+    const flatInk = inkPixels(flat.calls, box);
+    ok(foldedInk.length > flatInk.length, 'the folded entry paints more rows than the single short one');
+
+    // The last ink of the folded panel is further down than the short one's, because the second entry was
+    // pushed there by the fold.
+    const lowest = (pixels) => pixels.reduce((best, call) => Math.max(best, call.args[1]), 0);
+    ok(
+        lowest(foldedInk) > lowest(flatInk),
+        `the entry after the fold starts lower: ${lowest(foldedInk)} vs ${lowest(flatInk)}`,
+    );
+});
+
+test('a text panel with no room for its entries marks that something is hidden', () => {
+    const widget = widgetOf('text_lines', { gap: 2 });
+    widget.height = 8;
+    widget.children = { kind: 'lines', values: ['first', 'second', 'third'] };
+    const env = boot(documentWith(widget));
+
+    // Three one-pixel dots in the last row the panel can show, right-aligned: inner.right() - 6.
+    const dotY = 60 + 8 - 1;
+    for (let dot = 0; dot < 3; dot += 1) {
+        const x = 40 + 160 - 6 + dot * 2;
+        ok(
+            env.calls.some(
+                (call) => call.method === 'fillRect' && call.args[0] === x && call.args[1] === dotY && call.args[2] === 1,
+            ),
+            `a marker dot at (${x}, ${dotY})`,
+        );
+    }
+
+    // A panel tall enough for all three says nothing: no dots anywhere.
+    const roomy = widgetOf('text_lines', { gap: 2 });
+    roomy.height = 96;
+    roomy.children = { kind: 'lines', values: ['first', 'second', 'third'] };
+    const quiet = boot(documentWith(roomy));
+    const rows = new Set(
+        inkPixels(quiet.calls, { x: 40, y: 60, width: 160, height: 96 }).map((call) => call.args[1]),
+    );
+    ok(rows.size > 0, 'the roomy panel still draws its entries');
 });

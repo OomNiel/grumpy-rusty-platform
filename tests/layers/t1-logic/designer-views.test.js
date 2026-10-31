@@ -182,7 +182,10 @@ test('the generated ui.rs is where a view lives', () => {
     // A one-view design generates exactly what it generated before views existed: no enum, no field, no method.
     const single = emitUiRs(document([widget('title', 'label', { x: 0, y: 0, width: 120, height: 20 })]));
     notContains(single, 'enum View', 'nothing to switch');
-    notContains(single, 'set_visible', 'and nothing to hide');
+    // Every design carries a generic widget handle, which has set_visible on it; what a single-view
+    // design must not have is the view machinery itself.
+    notContains(single, 'show_view', 'and nothing to switch');
+    notContains(single, 'View::', 'and no view enum at all');
 });
 
 test('adding, renaming and deleting a view are edits, and each is one undo step', () => {

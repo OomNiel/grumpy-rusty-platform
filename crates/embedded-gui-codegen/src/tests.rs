@@ -1049,3 +1049,58 @@ screen id="ClockFace" width=200 height=200 {
         "an omitted inset is the half-character one:\n{rust_code}"
     );
 }
+
+/// A text-line panel: the entries come from `line` children, the gap rides along, and a quote in a
+/// line survives into the generated Rust instead of ending the literal early.
+#[test]
+fn test_text_lines_node_compiles_into_the_builder() {
+    let kdl = r#"
+screen id="Log" width=240 height=320 {
+    grid cols="240px" rows="200px" gap=0 padding=0 {
+        text_lines id="Console" gap=2 col=0 row=0 {
+            line "booting"
+            line "he said \"hi\""
+        }
+    }
+}
+"#;
+    let code = compile_kdl_to_rust(kdl).unwrap();
+    assert!(code.contains("pub console: WidgetId,"), "the panel is addressable by name");
+    assert!(
+        code.contains(r#"gui.add_text_lines(cells[0], &["booting", "he said \"hi\""], 2, "#),
+        "the entries and the gap reach the builder: {}",
+        code.lines().find(|l| l.contains("add_text_lines")).unwrap_or("")
+    );
+
+    // The `text` attribute is the hand-written spelling: newlines split it into entries.
+    let attr = r#"
+screen id="Log2" width=240 height=320 {
+    grid cols="240px" rows="200px" {
+        text_lines id="Terse" text="one\ntwo" col=0 row=0
+    }
+}
+"#;
+    let code = compile_kdl_to_rust(attr).unwrap();
+    assert!(code.contains(r#"&["one", "two"]"#));
+}
+
+#[test]
+fn test_text_lines_serializes_back_to_children() {
+    let kdl = r#"screen id="Log" width=240 height=320 {
+    grid cols="240px" rows="200px" gap=0 padding=0 {
+        text_lines id="Console" gap=3 col=0 row=0 {
+            line "first"
+            line "second"
+        }
+    }
+}
+"#;
+    let screen = parse_kdl_screen(kdl).unwrap();
+    let text = serialize_kdl_screen(&screen);
+    assert!(text.contains("text_lines id=\"Console\""), "{}", text);
+    assert!(text.contains("gap=3"), "{}", text);
+    assert!(text.contains("line \"first\""), "{}", text);
+    // And what came back parses to the same screen, children and all.
+    let reparsed = parse_kdl_screen(&text).unwrap();
+    assert_eq!(reparsed, screen);
+}

@@ -49,12 +49,15 @@ function templateIds(boardId) {
 
 // ------------------------------------------------------------------ catalogue
 
-test('wired boards offer one template, wireless boards offer three', () => {
+test('every Pico offers the panel templates, beside the LED ones', () => {
+    // The three panel templates were added on 2026-10-26, on all four boards: a Pico's display is wired, so
+    // whether it can drive one is a question about the wiring rather than about the board.
+    const panel = ['designer', 'display', 'sdcard'];
     for (const id of WIRED) {
-        equal(templateIds(id), ['blinky'], `${id} template list`);
+        equal(templateIds(id), ['blinky', ...panel], `${id} template list`);
     }
     for (const id of WIRELESS) {
-        equal(templateIds(id), ['wifi', 'blinky', 'wifi-bluetooth'], `${id} template list`);
+        equal(templateIds(id), ['wifi', 'blinky', 'wifi-bluetooth', ...panel], `${id} template list`);
     }
 });
 
@@ -180,9 +183,21 @@ test('the wireless templates target the published embassy-net 0.9 API', () => {
 test('the PIO SPI binds a single DMA channel, as cyw43-pio 0.10.0 requires', () => {
     for (const id of WIRELESS) {
         for (const template of templateIds(id)) {
-            const main = filesFor(id, template).get('src/main.rs');
-            contains(main, 'dma::Channel::new(p.DMA_CH0, Irqs),');
-            notContains(main, 'DMA_CH1', `${id}/${template} must not bind a second DMA channel`);
+            const files = filesFor(id, template);
+            // A panel template keeps its radio work in src/net.rs (the clock's SNTP), so the binding lives
+            // there rather than in main.rs -- and takes the pin from `panel::Rest`. The rule is the same on
+            // both: one DMA channel, never two.
+            const source = `${files.get('src/main.rs')}\n${files.get('src/net.rs') ?? ''}`;
+            // A template that drives a panel without a clock has no radio code at all: the diagnostic and the
+            // card test never touch the CYW43, so there is nothing to bind.
+            if (!source.includes('PioSpi::new')) {
+                continue;
+            }
+            ok(
+                /dma::Channel::new\((p\.DMA_CH0|rest\.dma_ch0), Irqs\),/.test(source),
+                `${id}/${template} binds DMA_CH0 exactly once`,
+            );
+            notContains(source, 'DMA_CH1', `${id}/${template} must not bind a second DMA channel`);
         }
     }
 });

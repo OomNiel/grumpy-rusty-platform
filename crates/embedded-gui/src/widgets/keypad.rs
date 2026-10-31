@@ -534,6 +534,10 @@ impl KeypadWidget {
     ///
     /// `None` for the keys that act rather than type: those are labelled with
     /// [`Self::key_label`], and a one-character stand-in for them would be a lie on the glass.
+    ///
+    /// The space bar is the one overlap: it types a character, so this returns it, but the
+    /// character is a blank on the glass, so the key is also given [`Self::key_label`] "Space" --
+    /// the word that is actually drawn by `render`.
     pub fn legend(&self, key: KeypadKey) -> Option<char> {
         match key {
             KeypadKey::Char(c) if self.shift && c.is_ascii_alphabetic() => {
@@ -551,13 +555,17 @@ impl KeypadWidget {
         }
     }
 
-    /// The word a key shows when it does not type a character.
+    /// The word a key shows on its face, when a single character would not read on the glass.
     ///
     /// The keys that act are labelled rather than abbreviated to one letter: `CLR` and `ENT` were
     /// `C` and `E`, which read as letters of the alphabet on a keypad that has them, and the Shift
     /// key said `^`, which says nothing at all (asked for 2026-10-17). Backspace became `BKSP` when the
     /// two cursor keys arrived (2026-10-21): a lone `<` for 'delete backwards' next to `<-` and `->`
     /// would be three arrows meaning two different things.
+    ///
+    /// Space types a character -- the one [`Self::legend`] returns -- but on the glass it is a
+    /// blank, and a one-character stand-in for it would be a blank lie just as much as it is for the
+    /// acting keys above, so the bar wears the word "Space" instead (asked for 2026-10-29).
     pub fn key_label(&self, key: KeypadKey) -> Option<&'static str> {
         match key {
             KeypadKey::Clear => Some("CLR"),
@@ -569,7 +577,10 @@ impl KeypadWidget {
             // and `>`, which type those characters.
             KeypadKey::Left => Some("<-"),
             KeypadKey::Right => Some("->"),
-            KeypadKey::Char(_) | KeypadKey::Space => None,
+            // It types a space, but a space shown on the glass is nothing to read, so the bar says
+            // "Space": a one-character stand-in would be a blank lie.
+            KeypadKey::Space => Some("Space"),
+            KeypadKey::Char(_) => None,
         }
     }
 
@@ -999,6 +1010,48 @@ mod tests {
             Some("ABC"),
             "the mode key follows the mode"
         );
+    }
+
+    /// The space bar types a space, but a space on the glass is nothing to read, so the bar wears
+    /// the word "Space": `legend` still reports the blank it types, and `key_label` supplies the
+    /// word `render` draws.
+    #[test]
+    fn the_space_bar_wears_the_word_space_because_its_character_is_invisible() {
+        let pad = keypad();
+        // It still types a space, so the handler gets the right character.
+        assert_eq!(pad.legend(KeypadKey::Space), Some(' '));
+        // ...but what the finger reads on the glass is the word, not a blank glyph.
+        assert_eq!(pad.key_label(KeypadKey::Space), Some("Space"));
+    }
+
+    /// The space bar is blank no longer: its face carries the word "Space" in the legend colour.
+    #[test]
+    fn the_space_bar_carries_the_word_space_on_its_face() {
+        use crate::context::GuiContext;
+        use crate::test_buffer::TestBuffer;
+
+        let mut ctx: GuiContext<16, 8, 8> = GuiContext::new(Rect::new(0, 0, 320, 158));
+        let mut pad = keypad();
+        pad.legend_color = Rgb565::WHITE;
+        ctx.add_keypad_styled(RECT, pad, Style::panel().with_font(FontId::Tiny3x5))
+            .unwrap();
+        let mut buffer = TestBuffer::new(320, 158);
+        ctx.render(&mut buffer).unwrap();
+
+        let space_index = (0..pad.key_count())
+            .find(|index| pad.key_for_index(*index) == Some(KeypadKey::Space))
+            .expect("the letters page has a space bar");
+        let cell = pad.key_rect_at(RECT, space_index, FontId::Tiny3x5).unwrap();
+        // The bar's face and borders are dark; the only white ink in its cell is the word.
+        let mut ink = 0u32;
+        for y in cell.y..(cell.y + cell.h as i32) {
+            for x in cell.x..(cell.x + cell.w as i32) {
+                if buffer.pixel_at(x, y) == Some(Rgb565::WHITE) {
+                    ink += 1;
+                }
+            }
+        }
+        assert!(ink > 0, "the space bar shows the word Space, not a blank");
     }
 
     /// "The shift key must be a toggle key - caps lock": the state outlives the key press and
@@ -1506,3 +1559,5 @@ mod tests {
         );
     }
 }
+
+

@@ -370,12 +370,40 @@ pub fn parse_widget(node: &KdlNode) -> Result<(GridPlacementDef, WidgetDef), Cod
                 font,
             }
         }
+        "text_lines" | "text-lines" | "lines" => {
+            // Either a `text` attribute whose newlines separate the entries, or one `line` child
+            // per entry. The attribute is what a hand-written screen reaches for; the children are
+            // what the Designer emits, because a line that contains a quote or a backslash should
+            // not have to be escaped twice.
+            let mut lines: Vec<String> = get_string_prop(node, "text")
+                .map(|text| text.split('\n').map(str::to_string).collect())
+                .unwrap_or_default();
+            if let Some(children) = node.children() {
+                for child in children.nodes() {
+                    if matches!(child.name().value(), "line" | "text") {
+                        if let Some(text) = child.entries().first().and_then(entry_to_str) {
+                            lines.push(text.to_string());
+                        } else if let Some(text) = get_string_prop(child, "text") {
+                            lines.push(text.to_string());
+                        }
+                    }
+                }
+            }
+            let gap = get_i64_prop(node, "gap").unwrap_or(0).clamp(0, 255) as u8;
+            let font = get_string_prop(node, "font").map(|s| s.to_string());
+            WidgetDef::TextLines {
+                id,
+                lines,
+                gap,
+                style,
+                font,
+            }
+        }
         "button" => {
             let text = get_string_prop(node, "text")
                 .or_else(|| node.entries().first().and_then(entry_to_str))
                 .unwrap_or("Button")
-                .to_string();
-            let on_click = get_string_prop(node, "on_click")
+                .to_string();            let on_click = get_string_prop(node, "on_click")
                 .or_else(|| get_string_prop(node, "onClick"))
                 .map(|s| s.to_string());
             let bg = get_string_prop(node, "bg")

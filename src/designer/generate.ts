@@ -48,6 +48,12 @@ export const PINNED_SCREEN_ID = 'RustyPanel';
 export const UI_MARKER = 'rusty-designer-ui';
 export const HANDLERS_MARKER = 'rusty-designer-handlers';
 
+/** The logging macro an ESP project's stubs call. `log` is what esp-hal's ecosystem uses. */
+export const ESP_LOG_MACRO = 'log::info!';
+
+/** The logging macro a Pico project's stubs call: defmt is that family's logging route. */
+export const RP_LOG_MACRO = 'defmt::info!';
+
 /** The files a designer project carries, relative to the project root. */
 export const DESIGNER_FILES = {
     markup: 'src/ui.kdl',
@@ -176,8 +182,458 @@ export function requiredHandlers(document: DesignerDocument): string[] {
 }
 
 /**
- * The movement the code-behind attaches to a clock: one second on every attached face.
+ * The methods a project calls to write a text panel.
  *
+ * One set per panel, named after its id, because the crate's mutators take a WidgetId the app has no business
+ * holding: design.console_push_line("booting") is the whole story. The _owned variant copies the string into
+ * the widget, which is how a line built at runtime reaches it on a board with no heap.
+ *
+ * No backticks anywhere in this text: it lives inside a JavaScript template literal.
+ */
+function textPanelMethodsFor(panels: readonly DesignerWidget[]): string {
+    return panels
+        .map((widget) => {
+            const field = rustFieldName(widget.id);
+            return `
+    /// Replaces every entry of ${widget.id}. The entries are borrowed, so a static table costs no RAM.
+    #[allow(dead_code)]
+    pub fn ${field}_set_lines(&mut self, lines: &[&'static str]) {
+        let _ = self.gui.borrow_mut().set_text_lines(self.widgets.${field}, lines);
+    }
+
+    /// Appends one entry to ${widget.id}.
+    ///
+    /// Answers false when the panel has no room left -- its storage is full, or the entry would not fit
+    /// on the glass at the panel's own font -- and leaves it untouched, so a log answers "drop the oldest"
+    /// with: if !design.${field}_push_line(text) { design.${field}_remove_line(0); }
+    #[allow(dead_code)]
+    pub fn ${field}_push_line(&mut self, line: &'static str) -> bool {
+        self.gui.borrow_mut().push_text_line(self.widgets.${field}, line).is_ok()
+    }
+
+    /// Appends a line built at runtime: it is copied into the panel, so no heap is involved.
+    #[allow(dead_code)]
+    pub fn ${field}_push_line_owned(&mut self, line: &str) -> bool {
+        self.gui.borrow_mut().push_text_line_owned(self.widgets.${field}, line).is_ok()
+    }
+
+    /// Removes one entry by index, oldest first: 0 is the oldest.
+    #[allow(dead_code)]
+    pub fn ${field}_remove_line(&mut self, index: usize) {
+        let _ = self.gui.borrow_mut().remove_text_line(self.widgets.${field}, index);
+    }
+
+    /// How many entries the panel holds, whether or not they are all on the glass.
+    #[allow(dead_code)]
+    pub fn ${field}_line_count(&self) -> usize {
+        self.gui.borrow().text_line_count(self.widgets.${field}).unwrap_or(0)
+    }
+
+    /// The face and the ink of ${widget.id}, for a design that changes them at runtime. The rect does not
+    /// move: the text re-folds against the new font and re-stacks against its line height.
+    #[allow(dead_code)]
+    pub fn ${field}_set_text_style(&mut self, font: FontId, colour: Rgb565) {
+        let mut gui = self.gui.borrow_mut();
+        let _ = gui.set_widget_font(self.widgets.${field}, font);
+        let _ = gui.set_widget_text_color(self.widgets.${field}, colour);
+    }
+`;
+        })
+        .join('');
+}
+
+/**
+ * How a widget handle is reached from the design: the names a handle may not take.
+ *
+ * A widget called `render` would otherwise generate a method that hides `Designer::render`, and the failure
+ * would be a confusing one (`render` called with no arguments). A clash falls back to `<id>_widget()`, which
+ * the validator and the docs both name, so the app is never left guessing.
+ */
+const RESERVED_ACCESSOR_NAMES = new Set([
+    'new',
+    'gui',
+    'gui_mut',
+    'pointer',
+    'pump',
+    'is_dirty',
+    'repaint',
+    'render',
+    'widgets',
+    'show_view',
+    'active_view',
+    'set_wall_clock',
+    'wall_clock',
+    'has_wall_clock',
+]);
+
+/** One line of text copied out of a widget. Emitted only when a design can produce one. */
+const WIDGET_TEXT_TYPE = `
+/// One line of a widget's text, copied so it can outlive the borrow that read it.
+///
+/// Text is read through the design's RefCell, and a borrow guard is a temporary: a &str taken from a widget
+/// dies with the statement that read it, so handing one to another widget is not possible. This is the same
+/// fixed TEXT_LINE_BYTES the text panel stores, which also means copying a line around never needs a heap.
+#[derive(Clone, Copy)]
+pub struct WidgetText {
+    bytes: [u8; TEXT_LINE_BYTES],
+    len: u8,
+}
+
+#[allow(dead_code)]
+impl WidgetText {
+    pub const fn empty() -> Self {
+        Self {
+            bytes: [0; TEXT_LINE_BYTES],
+            len: 0,
+        }
+    }
+
+    /// Copies text, cut at the panel's own limit and never inside a character.
+    pub fn of(text: &str) -> Self {
+        let mut len = text.len().min(TEXT_LINE_BYTES);
+        while len > 0 && !text.is_char_boundary(len) {
+            len -= 1;
+        }
+        let mut bytes = [0u8; TEXT_LINE_BYTES];
+        bytes[..len].copy_from_slice(&text.as_bytes()[..len]);
+        Self {
+            bytes,
+            len: len as u8,
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        core::str::from_utf8(&self.bytes[..self.len as usize]).unwrap_or("")
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
+impl core::ops::Deref for WidgetText {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        self.as_str()
+    }
+}
+`;
+
+/** A handle to any widget: the setters the crate offers by id. */
+const WIDGET_HANDLE = `
+/// Any widget, by the name the design gave it.
+///
+/// A handle borrows the design, not the GUI, so several can be alive at once and the app never holds a
+/// WidgetId of its own: design.title().set_text("Ready"), design.panel().set_background(Some(Rgb565::new(2, 4, 2))).
+#[allow(dead_code)]
+pub struct WidgetHandle<'a> {
+    design: &'a Designer,
+    id: WidgetId,
+}
+
+#[allow(dead_code)]
+impl WidgetHandle<'_> {
+    pub fn id(&self) -> WidgetId {
+        self.id
+    }
+
+    /// The text of a label, button, toggle or checkbox. Borrowed for the life of the program, so nothing is
+    /// copied: a line put together at runtime needs a text panel, not a label.
+    pub fn set_text(&self, text: &'static str) {
+        let _ = self.design.gui.borrow_mut().set_text(self.id, text);
+    }
+
+    /// Whether it is drawn, and whether it can be pointed at.
+    pub fn set_visible(&self, visible: bool) {
+        let _ = self.design.gui.borrow_mut().set_visible(self.id, visible);
+    }
+
+    /// Whether it answers the pointer at all -- a disabled button still draws, and does nothing.
+    pub fn set_enabled(&self, enabled: bool) {
+        let _ = self.design.gui.borrow_mut().set_enabled(self.id, enabled);
+    }
+
+    /// Moves and resizes it in one go, in the design's own pixels.
+    pub fn set_rect(&self, rect: Rect) {
+        let _ = self.design.gui.borrow_mut().set_widget_rect(self.id, rect);
+    }
+
+    pub fn set_position(&self, x: i32, y: i32) {
+        let mut gui = self.design.gui.borrow_mut();
+        let _ = gui.set_widget_x(self.id, x);
+        let _ = gui.set_widget_y(self.id, y);
+    }
+
+    pub fn set_size(&self, width: u32, height: u32) {
+        let mut gui = self.design.gui.borrow_mut();
+        let _ = gui.set_widget_width(self.id, width);
+        let _ = gui.set_widget_height(self.id, height);
+    }
+
+    pub fn set_opacity(&self, opacity: u8) {
+        let _ = self.design.gui.borrow_mut().set_widget_opacity(self.id, opacity);
+    }
+
+    pub fn set_corner_radius(&self, radius: u8) {
+        let _ = self.design.gui.borrow_mut().set_widget_corner_radius(self.id, radius);
+    }
+
+    pub fn set_accent(&self, colour: Rgb565) {
+        let _ = self.design.gui.borrow_mut().set_widget_accent(self.id, colour);
+    }
+
+    pub fn set_text_colour(&self, colour: Rgb565) {
+        let _ = self.design.gui.borrow_mut().set_widget_text_color(self.id, colour);
+    }
+
+    /// None makes it transparent again.
+    pub fn set_background(&self, colour: Option<Rgb565>) {
+        let _ = self.design.gui.borrow_mut().set_widget_background(self.id, colour);
+    }
+}
+`;
+
+/** A handle to a text panel: the whole set of mutators the crate has for it. */
+const TEXT_LINES_HANDLE = `
+/// A text panel, by the name the design gave it.
+///
+/// The entries are folded and stacked by the widget, so nothing here has to know the font: design.log().add_line(line)
+/// appends one, and the line under it moves down by the rows it took.
+#[allow(dead_code)]
+pub struct TextLinesHandle<'a> {
+    design: &'a Designer,
+    id: WidgetId,
+}
+
+#[allow(dead_code)]
+impl TextLinesHandle<'_> {
+    pub fn id(&self) -> WidgetId {
+        self.id
+    }
+
+    /// Replaces every entry, from strings the program owns for its whole life: nothing is copied.
+    pub fn set_lines(&self, lines: &[&'static str]) {
+        let _ = self.design.gui.borrow_mut().set_text_lines(self.id, lines);
+    }
+
+    /// Adds one entry from such a string.
+    pub fn add_line_static(&self, line: &'static str) -> bool {
+        self.design
+            .gui
+            .borrow_mut()
+            .push_text_line(self.id, line)
+            .is_ok()
+    }
+
+    /// Adds one entry built while the program runs, copied into the panel so no heap is involved:
+    /// design.log().add_line(design.keypad().text). False when the panel has no room for it.
+    pub fn add_line(&self, line: WidgetText) -> bool {
+        self.design
+            .gui
+            .borrow_mut()
+            .push_text_line_owned(self.id, line.as_str())
+            .is_ok()
+    }
+
+    /// Replaces one entry, by index.
+    pub fn set_line_static(&self, index: usize, line: &'static str) {
+        let _ = self
+            .design
+            .gui
+            .borrow_mut()
+            .set_text_line(self.id, index, line);
+    }
+
+    pub fn set_line(&self, index: usize, line: WidgetText) {
+        let _ = self
+            .design
+            .gui
+            .borrow_mut()
+            .set_text_line_owned(self.id, index, line.as_str());
+    }
+
+    /// Inserts one entry at an index, moving the rest down. False when there is no room.
+    pub fn insert_line(&self, index: usize, line: WidgetText) -> bool {
+        self.design
+            .gui
+            .borrow_mut()
+            .insert_text_line_owned(self.id, index, line.as_str())
+            .is_ok()
+    }
+
+    /// Removes one entry by index, oldest first: remove_line(0) drops the oldest, keep the newest.
+    pub fn remove_line(&self, index: usize) {
+        let _ = self
+            .design
+            .gui
+            .borrow_mut()
+            .remove_text_line(self.id, index);
+    }
+
+    /// Empties the panel.
+    pub fn clear(&self) {
+        let _ = self.design.gui.borrow_mut().clear_text_lines(self.id);
+    }
+
+    /// One entry, copied out.
+    pub fn line(&self, index: usize) -> Option<WidgetText> {
+        let gui = self.design.gui.borrow();
+        gui.text_line(self.id, index).map(WidgetText::of)
+    }
+
+    /// How many entries the panel holds, whether or not they are all on the glass.
+    pub fn len(&self) -> usize {
+        self.design
+            .gui
+            .borrow()
+            .text_line_count(self.id)
+            .unwrap_or(0)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// The face and the ink. The rect does not move: the text re-folds against the new font and re-stacks
+    /// against its line height.
+    pub fn set_text_style(&self, font: FontId, colour: Rgb565) {
+        let mut gui = self.design.gui.borrow_mut();
+        let _ = gui.set_widget_font(self.id, font);
+        let _ = gui.set_widget_text_color(self.id, colour);
+    }
+}
+`;
+
+/** A handle to a keypad, whose `text` is the line it last submitted. */
+const KEYPAD_HANDLE = `
+/// A keypad, by the name the design gave it.
+///
+/// text is a copy taken when the handle was made -- the line it last submitted, empty when nothing has been
+/// submitted yet. The live line being typed belongs to the widget and is not readable while it is editable.
+#[allow(dead_code)]
+pub struct KeypadHandle<'a> {
+    design: &'a Designer,
+    id: WidgetId,
+    pub text: WidgetText,
+}
+
+#[allow(dead_code)]
+impl KeypadHandle<'_> {
+    pub fn id(&self) -> WidgetId {
+        self.id
+    }
+
+    /// Text, digits or symbols.
+    pub fn mode(&self) -> Option<KeypadMode> {
+        self.design.gui.borrow().keypad_mode(self.id)
+    }
+
+    /// Takes the line again: the field is a snapshot, and a design that reads it in two places should see
+    /// the same one.
+    pub fn refresh(&mut self) {
+        let gui = self.design.gui.borrow();
+        self.text = gui
+            .keypad_submitted(self.id)
+            .map(WidgetText::of)
+            .unwrap_or_else(WidgetText::empty);
+    }
+}
+`;
+
+/** The accessor name for a widget, avoiding the methods the design already has. */
+function accessorName(id: string): string {
+    const name = rustFieldName(id);
+    return RESERVED_ACCESSOR_NAMES.has(name) ? `${name}_widget` : name;
+}
+
+/**
+ * The handles a design exposes, and the accessors that make them.
+ *
+ * Only the kinds a design actually contains are emitted, so a design added before this existed generates
+ * byte for byte the file it generated before -- which is what keeps the goldens still.
+ */
+function handlesFor(document: DesignerDocument): { types: string; accessors: string } {
+    const panels = document.widgets.filter((widget) => widget.tag === 'text_lines');
+    const keypads = document.widgets.filter((widget) => widget.tag === 'keypad');
+    const generic = document.widgets.filter((widget) => {
+        if (widget.tag === 'text_lines' || widget.tag === 'keypad') {
+            return false;
+        }
+        const spec = widgetSpec(widget.tag);
+        // A shape the designer draws itself never reaches the markup, and a spacer has no id at all.
+        return spec !== undefined && spec.native !== true && spec.addressable !== false;
+    });
+
+    let types = '';
+    if (panels.length > 0 || keypads.length > 0) {
+        types += WIDGET_TEXT_TYPE;
+    }
+    if (generic.length > 0) {
+        types += WIDGET_HANDLE;
+    }
+    if (panels.length > 0) {
+        types += TEXT_LINES_HANDLE;
+    }
+    if (keypads.length > 0) {
+        types += KEYPAD_HANDLE;
+    }
+
+    const accessors: string[] = [];
+    for (const widget of document.widgets) {
+        const name = accessorName(widget.id);
+        const field = rustFieldName(widget.id);
+        if (widget.tag === 'text_lines') {
+            accessors.push(`
+    /// The text panel named ${widget.id}: design.${name}().add_line(text) appends an entry.
+    #[allow(dead_code)]
+    pub fn ${name}(&self) -> TextLinesHandle<'_> {
+        TextLinesHandle {
+            design: self,
+            id: self.widgets.${field},
+        }
+    }
+`);
+        } else if (widget.tag === 'keypad') {
+            accessors.push(`
+    /// The keypad named ${widget.id}. Its text is the line it last submitted.
+    #[allow(dead_code)]
+    pub fn ${name}(&self) -> KeypadHandle<'_> {
+        KeypadHandle {
+            design: self,
+            id: self.widgets.${field},
+            text: self
+                .gui
+                .borrow()
+                .keypad_submitted(self.widgets.${field})
+                .map(WidgetText::of)
+                .unwrap_or_else(WidgetText::empty),
+        }
+    }
+`);
+        } else {
+            const spec = widgetSpec(widget.tag);
+            if (spec === undefined || spec.native === true || spec.addressable === false) {
+                continue;
+            }
+            accessors.push(`
+    /// The ${widget.tag} named ${widget.id}.
+    #[allow(dead_code)]
+    pub fn ${name}(&self) -> WidgetHandle<'_> {
+        WidgetHandle {
+            design: self,
+            id: self.widgets.${field},
+        }
+    }
+`);
+        }
+    }
+
+    return { types, accessors: accessors.join('') };
+}
+
+/**
+ * The movement the code-behind attaches to a clock: one second on every attached face. *
  * The crate's clock holds a *time*, not a running clock, so the engine is here rather than in the
  * widget: it reads embassy's clock when the app paints, advances the widget by however many seconds
  * have passed, and the damage the widget reports is its own cell -- one hand moving is not a reason
@@ -203,7 +659,7 @@ function movementMethodsFor(document: DesignerDocument, clocks: readonly Designe
     };
     const advances = clocks
         .map((widget) =>
-            guard(widget, `let _ = self.gui.advance_clock(self.widgets.${rustFieldName(widget.id)});`, '            '),
+            guard(widget, `let _ = self.gui.borrow_mut().advance_clock(self.widgets.${rustFieldName(widget.id)});`, '            '),
         )
         .join('\n');
     // The same clocks, told the time a wall clock says rather than stepped by a count of ticks.
@@ -211,7 +667,7 @@ function movementMethodsFor(document: DesignerDocument, clocks: readonly Designe
         .map((widget) =>
             guard(
                 widget,
-                `let _ = self.gui.set_clock_time(self.widgets.${rustFieldName(widget.id)}, hour, minute, second);`,
+                `let _ = self.gui.borrow_mut().set_clock_time(self.widgets.${rustFieldName(widget.id)}, hour, minute, second);`,
                 '            ',
             ),
         )
@@ -329,6 +785,20 @@ function armsFor(widget: DesignerWidget, multiView: boolean): string[] {
         }
         // The event the switch borrows is the arm below, not a second one on the same pattern.
         if (trigger !== undefined && event === trigger) {
+            continue;
+        }
+        // An arm whose argument is read out of the GUI cannot be a one-liner any more: the borrow of the
+        // cell has to outlive the handler call, so it gets a statement and a block of its own.
+        if (spec.argument !== undefined) {
+            // The argument expression is written against `self.gui` (`keypad_submitted(id)`); inside this
+            // arm it reads through the borrow instead, which is why the receiver is renamed here.
+            const call = handlerCall(widget, event).replaceAll('self.gui.', 'pad.');
+            arms.push(
+                `                UiEvent::${spec.pattern} if id == self.widgets.${field} => {\n` +
+                '                    let pad = self.gui.borrow();\n' +
+                `                    crate::ui_handlers::${call};\n` +
+                '                },',
+            );
             continue;
         }
         arms.push(
@@ -496,9 +966,16 @@ export function emitUiRs(document: DesignerDocument, touch = true): string {
         : '';
     const movementTick = movement ? '        self.tick_clocks();\n' : '';
     const isDirty = movement
-        ? '        !self.gui.dirty_regions().is_empty() || self.clock_due()'
-        : '        !self.gui.dirty_regions().is_empty()';
+        ? '        !self.gui.borrow().dirty_regions().is_empty() || self.clock_due()'
+        : '        !self.gui.borrow().dirty_regions().is_empty()';
     const movementMethods = movement ? movementMethodsFor(document, movingClocks) : '';
+    // A design with a text panel gains the methods that write it: without them the app would have to reach
+    // into the GUI context with a WidgetId of its own, which is exactly the plumbing this file exists to hide.
+    const textPanels = document.widgets.filter((widget) => widget.tag === 'text_lines');
+    const textPanelMethods = textPanels.length > 0 ? textPanelMethodsFor(textPanels) : '';
+    // The handles behind design.log().add_line(design.keypad().text): one accessor per widget the design can
+    // name, and a type per kind it actually contains.
+    const handles = handlesFor(document);
     const wallMethods = wallMethodsFor(movement);
 
     const widgetsField =
@@ -542,6 +1019,7 @@ export function emitUiRs(document: DesignerDocument, touch = true): string {
 // Through embedded_graphics, not embedded_graphics_core: the project declares the former, which re-exports
 // the latter's types, and naming the core crate directly does not resolve (found by building a generated
 // project).
+use core::cell::{Ref, RefCell, RefMut};
 use embedded_graphics::draw_target::DrawTarget;
 use embedded_graphics::pixelcolor::Rgb565;
 use embedded_gui::prelude::*;
@@ -572,13 +1050,19 @@ pub const DIRTY: usize = 8;
 /// RgbColor trait, which this file does not pull in.
 pub const SCREEN_BACKGROUND: Rgb565 = Rgb565::new(0, 0, 0);
 
-${viewEnum}/// The screen, and the pointer state the widgets need to see a press and a release as a pair.
+${viewEnum}${handles.types}/// The screen, and the pointer state the widgets need to see a press and a release as a pair.
 ${touch ? '' : `///
 /// A board with no touch controller cannot raise an event, so the pointer plumbing below is never called --
 /// kept so that the same design compiles for both kinds of board rather than two shapes of this file.
 #[allow(dead_code)]
 `}pub struct Designer {
-    gui: GuiContext<'static, NODES, EVENTS, DIRTY>,
+    /// The design's context, in a RefCell so a widget handle can hold the design rather than the GUI.
+    ///
+    /// That is what makes design.log().add_line(design.keypad().text) possible at all: two handles hold
+    /// shared borrows of the design, and the mutation goes through this cell. What it cannot do is panic on
+    /// a nested borrow -- the outer borrow checker refuses to hold a handle across anything taking the
+    /// design mutably (render, pump), so the only borrows that can overlap are our own, and they do not.
+    gui: RefCell<GuiContext<'static, NODES, EVENTS, DIRTY>>,
     /// The widget ids, named the way the design names them.
 ${widgetsField}${PINNED_SCREEN_ID}Widgets,
     down: bool,
@@ -591,7 +1075,7 @@ ${touch ? '' : '#[allow(dead_code)]\n'}impl Designer {
         let mut gui = GuiContext::new(Rect::new(0, 0, width, height));
         let app = design::${PINNED_SCREEN_ID}App::build(&mut gui).expect("the design fits its node budget");
 ${viewStartHide}        Self {
-            gui,
+            gui: RefCell::new(gui),
             widgets: app.widgets,
             down: false,
             painted: false,
@@ -610,14 +1094,18 @@ ${wallInit}${movementInit}${viewInit}        }
     // the app's business, and the warning would otherwise appear in every project that does not. (No
     // backticks in this file's Rust template: they would end the JavaScript string it lives in.)
     #[allow(dead_code)]
-    pub fn gui(&self) -> &GuiContext<'static, NODES, EVENTS, DIRTY> {
-        &self.gui
+    pub fn gui(&self) -> Ref<'_, GuiContext<'static, NODES, EVENTS, DIRTY>> {
+        self.gui.borrow()
     }
 
     /// The same, mutably: the setters all take &mut self.
+    ///
+    /// A borrow, not a reference: the design keeps its context behind a RefCell so the widget handles below
+    /// can hold the design and still write to it. The guard behaves like the reference it replaces -- it
+    /// derefs to the context and is dropped at the end of the statement.
     #[allow(dead_code)]
-    pub fn gui_mut(&mut self) -> &mut GuiContext<'static, NODES, EVENTS, DIRTY> {
-        &mut self.gui
+    pub fn gui_mut(&mut self) -> RefMut<'_, GuiContext<'static, NODES, EVENTS, DIRTY>> {
+        self.gui.borrow_mut()
     }
 
     /// A touch sample.
@@ -643,12 +1131,17 @@ ${wallInit}${movementInit}${viewInit}        }
         } else {
             return;
         };
-        let _ = self.gui.handle_input(event);
+        let _ = self.gui.borrow_mut().handle_input(event);
     }
 
     /// Hands whatever the widgets raised to the code-behind.
     pub fn pump(&mut self) {
-        while let Some(event) = self.gui.pop_event() {
+        loop {
+            // Out of the loop condition and into a block of its own: a temporary borrow of the cell lives
+            // until the end of the statement it is written in, so asking for the next event inside while-let
+            // would keep the design borrowed for the whole body -- and the arms below borrow it again.
+            let next = { self.gui.borrow_mut().pop_event() };
+            let Some(event) = next else { break };
             match event {
 ${armText}
                 _ => {}
@@ -680,22 +1173,22 @@ ${isDirty}
     where
         D: DrawTarget<Color = Rgb565>,
     {
-${movementTick}        let result = if self.painted {
+${movementTick}        let mut gui = self.gui.borrow_mut();
+        let result = if self.painted {
             // A partial repaint paints the damaged regions and nothing else, and the design paints
             // no screen background of its own -- so the regions are cleared to the colour the panel
             // started as first. Without this a moving clock drew each new hand and left the old one
             // on the glass (reported 2026-10-17).
-            self.gui
-                .paint_damage(target, SCREEN_BACKGROUND)
-                .and_then(|()| self.gui.render_dirty(target))
+            gui.paint_damage(target, SCREEN_BACKGROUND)
+                .and_then(|()| gui.render_dirty(target))
         } else {
-            self.gui.render(target)
+            gui.render(target)
         };
         self.painted = true;
-        self.gui.clear_dirty();
+        gui.clear_dirty();
         result
     }
-${wallMethods}${movementMethods}}
+${wallMethods}${movementMethods}${textPanelMethods}${handles.accessors}}
 `;
 }
 
@@ -706,7 +1199,7 @@ ${wallMethods}${movementMethods}}
  * the user has emptied or renamed *and* re-declared -- if they rename it, it is theirs to fix, and the
  * compile error names it exactly.
  */
-export function emitHandlersRs(document: DesignerDocument, touch = true): string {
+export function emitHandlersRs(document: DesignerDocument, touch = true, log = ESP_LOG_MACRO): string {
     const names = requiredHandlers(document);
     const stubs = names.map((name) => {
         const event = document.widgets
@@ -724,7 +1217,7 @@ export function emitHandlersRs(document: DesignerDocument, touch = true): string
         const forwarded = usesArgument ? ', text' : '';
         return `${touch ? '' : '#[allow(dead_code)]\n'}/// Raised by the design. Called from \`ui::Designer::pump\`.
 pub fn ${name}(${parameters}) {
-    log::info!(${message}${forwarded});
+    ${log}(${message}${forwarded});
 }`;
     });
 
@@ -747,7 +1240,12 @@ ${stubs.join('\n\n')}
  * is found by name and left completely alone, and only the missing ones appear -- at the end, where they are
  * easy to find and out of the way of the code above them.
  */
-export function appendHandlerStubs(existing: string, document: DesignerDocument, touch = true): string {
+export function appendHandlerStubs(
+    existing: string,
+    document: DesignerDocument,
+    touch = true,
+    log = ESP_LOG_MACRO,
+): string {
     const missing: string[] = [];
     for (const name of requiredHandlers(document)) {
         // `pub fn name(` and `fn name(` both count: a user may have made a handler private on purpose.
@@ -766,7 +1264,7 @@ export function appendHandlerStubs(existing: string, document: DesignerDocument,
         const parameters = entry === undefined ? '' : handlerParameters(entry.event);
         return `${touch ? '' : '#[allow(dead_code)]\n'}/// Appended by the designer when the design asked for this event.
 pub fn ${name}(${parameters}) {
-    log::info!("design: ${name} fired");
+    ${log}("design: ${name} fired");
 }`;
     });
     const trimmed = existing.endsWith('\n') ? existing : `${existing}\n`;
@@ -779,12 +1277,12 @@ pub fn ${name}(${parameters}) {
  * Written as a test rather than an equality on the whole block because the block also carries the doc comment
  * and, on a board with no touch controller, an `#[allow(dead_code)]`.
  */
-function isUntouchedStub(body: string, name: string): boolean {
+function isUntouchedStub(body: string, name: string, log = ESP_LOG_MACRO): boolean {
     const lines = body
         .split('\n')
         .map((line) => line.trim())
         .filter((line) => line !== '');
-    return lines.length === 1 && lines[0] === `log::info!("design: ${name} fired");`;
+    return lines.length === 1 && lines[0] === `${log}("design: ${name} fired");`;
 }
 
 /**
@@ -795,14 +1293,18 @@ function isUntouchedStub(body: string, name: string): boolean {
  * above. A handler that has been filled in, renamed, or moved into a module is the user's code, and deleting a
  * widget must not delete someone's work -- so those stay, and the compiler says what to do about them.
  */
-export function pruneHandlerStubs(existing: string, document: DesignerDocument): string {
+export function pruneHandlerStubs(
+    existing: string,
+    document: DesignerDocument,
+    log = ESP_LOG_MACRO,
+): string {
     const wanted = new Set(requiredHandlers(document));
     // One block per handler: an optional `#[allow(dead_code)]`, the doc comment, the signature, and a body with
     // no braces of its own. A function whose body does have braces is one the user wrote, and it is returned
     // untouched -- the match stops early, which is why the body is non-greedy rather than counted.
     const block = /(?:#\[allow\(dead_code\)\]\n)?(?:\/\/\/[^\n]*\n)*pub fn (\w+)\s*\([^)]*\)\s*\{\n([\s\S]*?)\n\}\n?/g;
     return existing.replace(block, (matched, name: string, body: string) =>
-        wanted.has(name) || !isUntouchedStub(body, name) ? matched : '',
+        wanted.has(name) || !isUntouchedStub(body, name, log) ? matched : '',
     );
 }
 
@@ -813,8 +1315,13 @@ export function pruneHandlerStubs(existing: string, document: DesignerDocument):
  * ever, and what made "the designer appends a stub for an event that has none" true of this module and false
  * of the extension, since nothing called it between the wizard and the next save.
  */
-export function syncHandlerStubs(existing: string, document: DesignerDocument, touch = true): string {
-    return pruneHandlerStubs(appendHandlerStubs(existing, document, touch), document);
+export function syncHandlerStubs(
+    existing: string,
+    document: DesignerDocument,
+    touch = true,
+    log = ESP_LOG_MACRO,
+): string {
+    return pruneHandlerStubs(appendHandlerStubs(existing, document, touch, log), document, log);
 }
 
 /**

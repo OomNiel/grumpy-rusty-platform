@@ -18,6 +18,8 @@ import {
     DEFAULT_OPTIONS,
     DEFAULT_TABLE_HEADERS,
     DEFAULT_TABLE_ROWS,
+    DEFAULT_TEXT_LINES,
+    TEXT_LINES_MAX,
     KDL_WIDGETS,
     type ChildGrammar,
     type DesignerEvent,
@@ -48,6 +50,15 @@ export const DESIGNER_FILE_VERSION = 3;
 
 /** Where the document lives inside a generated project, relative to the project root. */
 export const DESIGNER_DOCUMENT_PATH = 'designer/panel.ui.json';
+
+/**
+ * Where a Pico project's panel wiring lives.
+ *
+ * Beside the design rather than inside it, because the two answer different questions and change at
+ * different times: the document is what the screen looks like, this is what the screen is plugged into. A
+ * copy of a design onto a differently wired board is a copy of the document and not of this file.
+ */
+export const DESIGNER_HARDWARE_PATH = 'designer/panel.hardware.json';
 
 /** Where the generated markup lives, relative to the project root. Read by `include_gui!`. */
 export const DESIGNER_KDL_PATH = 'src/ui.kdl';
@@ -103,7 +114,8 @@ export interface DesignerIconPart {
 export type DesignerChildren =
     | { kind: 'options'; values: string[] }
     | { kind: 'table'; headers: string[]; rows: string[][] }
-    | { kind: 'parts'; parts: DesignerIconPart[] };
+    | { kind: 'parts'; parts: DesignerIconPart[] }
+    | { kind: 'lines'; values: string[] };
 
 export interface DesignerWidget {
     /** The user-facing name. Also becomes the Rust struct field and the handler prefix. */
@@ -333,6 +345,11 @@ export function defaultChildren(tag: string): DesignerChildren | undefined {
             };
         case 'parts':
             return { kind: 'parts', parts: [] };
+        case 'lines':
+            // Two entries rather than none: an empty panel draws nothing at all, which reads as a broken
+            // widget on the canvas. The user deletes them, and the markup then carries no `line` children
+            // -- which is legal, and is what a log that its code fills at runtime starts as.
+            return { kind: 'lines', values: [...DEFAULT_TEXT_LINES] };
         default:
             return undefined;
     }
@@ -969,6 +986,30 @@ function childrenProblems(
                 `the same as the ${children.headers.length} headers`,
             );
         }
+        return problems;
+    }
+
+    if (grammar === 'lines') {
+        if (children.kind !== 'lines') {
+            problems.push(`"${widget.id}": expected text lines, found a ${children.kind} body`);
+            return problems;
+        }
+        // The widget holds a fixed number of entries, because it lives in an inline array rather than on a
+        // heap; one past that would be dropped by the builder without a word.
+        if (children.values.length > TEXT_LINES_MAX) {
+            problems.push(
+                `"${widget.id}": a text panel holds ${TEXT_LINES_MAX} entries, and this one lists ` +
+                `${children.values.length}. Remove some, or let your code add them a line at a time.`,
+            );
+        }
+        // An empty panel is legal -- a log that its code fills starts that way -- so nothing is said about
+        // a list with no entries. A blank entry is not: it reserves a row the user did not ask for, and the
+        // panel editor drops the trailing newline that would produce one.
+        children.values.forEach((value, index) => {
+            if (value === '' && index < children.values.length - 1) {
+                problems.push(`"${widget.id}": entry ${index + 1} is blank`);
+            }
+        });
         return problems;
     }
 

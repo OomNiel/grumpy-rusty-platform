@@ -94,7 +94,7 @@ test('the generated Rust is the barrel: markup, budgets, plumbing and the dispat
     contains(rust, 'pub fn pump(&mut self)', 'the dispatch');
     contains(rust, 'pub fn is_dirty(&self) -> bool', 'the dirty check');
     contains(rust, 'pub fn repaint<D>', 'and a forced full paint for after a calibration');
-    contains(rust, 'self.gui.render_dirty(target)', 'later frames honour the damage rectangles');
+    contains(rust, 'gui.render_dirty(target)', 'later frames honour the damage rectangles');
 });
 
 test('every event the design asks for becomes a match arm calling its handler by name', () => {

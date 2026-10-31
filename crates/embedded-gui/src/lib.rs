@@ -234,7 +234,7 @@ pub use widgets::{
 };
 pub use widgets::{
     CarouselSpec, ChartMode, CompositeIconSpec, KeyboardLayout, MenuCell, NotificationLevel,
-    SurfaceState, WidgetKind, WidgetNode,
+    SurfaceState, TextLine, TextLines, WidgetKind, WidgetNode, TEXT_LINES_CAPACITY, TEXT_LINE_BYTES,
 };
 
 pub mod prelude {
@@ -286,7 +286,8 @@ pub mod prelude {
         StateStyle, StateTransition, StatefulWidget, Stopwatch, StringArena, StrokeCap, StrokeDash,
         StrokeJoin, StrokeStyle, Style, StyleClassId, StyleTransition, SurfaceState, TableWidget,
         TabsState, Text, TextAlign, TextDirection, TextMetrics, TextOverflow, TextOverflowPolicy,
-        TextShaper, TextSlice, TextStyle, TextWrap, Theme, TileMode, TileRef, TimelineError,
+        TextLine, TextLines, TextShaper, TextSlice, TextStyle, TextWrap, Theme, TileMode, TileRef,
+        TimelineError, TEXT_LINES_CAPACITY, TEXT_LINE_BYTES,
         TimelineMotionPreset, TimelineStep, Timer, Transform2D, TransitionPreset, TranslationEntry,
         TranslationTable, Tween, UiEvent, UiEventFilter, VectorPath, VerticalAlign, ViewContext,
         VisualState, WidgetAnimationCallbacks, WidgetAnimationError, WidgetAnimator,
@@ -310,3 +311,4 @@ pub mod prelude {
 
 #[cfg(feature = "macros")]
 pub use embedded_gui_macros::{gui_kdl, include_gui, include_project};
+

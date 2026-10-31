@@ -24,12 +24,15 @@ import {
     describeEmptyAnswer,
     describeModel,
     rustCodeBlocks,
+    selectionContext,
     type ChatMessage
 } from '../ai/assistant';
 import { describeProgress } from '../ai/assistant';
 import { boardFacts } from '../ai/boardFacts';
+import { formatProblems, type PaneDiagnostic } from '../ai/panes';
+import { debugConsoleBlock } from '../ai/debugConsole';
 import { conventionsBlock, normaliseConventions } from '../ai/conventions';
-import { codeBlockLabel, crateList } from '../ai/rustCode';
+import { codeBlockLabel, completeAlternative, crateList } from '../ai/rustCode';
 import { log, logError } from '../ai/log';
 import { readActiveProject } from '../project/activeProject';
 import { panelState } from '../ai/panel';
@@ -73,6 +76,12 @@ let storeFile: string | undefined;
  */
 const surfaces = new Set<vscode.Webview>();
 let busy = false;
+/**
+ * The request in flight, so the panel's Abort button can stop it (asked 2026-10-31). One at a time, because
+ * `ask` refuses a second question while `busy`; the `finally` in `ask` is what clears it, so a stopped request
+ * cannot leave the panel believing something is still running.
+ */
+let abortable: AbortController | undefined;
 
 /** Rust Assist mode: watch the active .rs editor for `//~ keyword` triggers. */
 let rustAssistDisposable: vscode.Disposable | undefined;
@@ -653,18 +662,91 @@ function houseRules(): string {
     return conventionsBlock(normaliseConventions(configView('rustyPlatform.assistant').get('conventions')));
 }
 
-/** The file the developer is looking at, clipped to what a small local model can afford to read. */
-function fileBlock(): string {
-    const editor = vscode.window.activeTextEditor;
-    if (!editor || editor.document.languageId !== 'rust') return '';
-    const text = editor.document.getText();
-    const clipped = text.length > 12_000 ? `${text.slice(0, 12_000)}\n// … (file clipped)` : text;
-    return `The file the developer is looking at (${vscode.workspace.asRelativePath(editor.document.uri)}):\n\`\`\`rust\n${clipped}\n\`\`\``;
+/**
+ * The editor a prompt is about.
+ *
+ * `activeTextEditor` covers the side-bar view: the chat takes the focus without a text editor losing it. When
+ * the chat is an **editor tab** it is the active editor itself, and VS Code reports no active text editor at
+ * all — so the last Rust editor that was active is remembered and used instead. Without that, the panel meant
+ * for a second monitor had nothing to read a selection from (2026-10-31).
+ */
+let lastRustEditor: vscode.TextEditor | undefined;
+vscode.window.onDidChangeActiveTextEditor((editor) => {
+    if (editor && editor.document.languageId === 'rust') lastRustEditor = editor;
+});
+
+function promptEditor(): vscode.TextEditor | undefined {
+    const active = vscode.window.activeTextEditor;
+    if (active && active.document.languageId === 'rust') return active;
+    return lastRustEditor && !lastRustEditor.document.isClosed ? lastRustEditor : undefined;
 }
 
-/** The project context a question is answered against: the board, the crates, and the active file. */
-async function contextBlock(): Promise<string> {
-    return [await projectFacts(), fileBlock()].filter(Boolean).join('\n\n');
+/** The file the developer is looking at: the selection, or the file clipped to what a small model can afford. */
+function fileBlock(): string {
+    const editor = promptEditor();
+    if (!editor) return '';
+    const relative = vscode.workspace.asRelativePath(editor.document.uri);
+    const selection = editor.selection;
+    // What is selected is what the question is about, so it is sent instead of the file rather than beside it:
+    // adding both spends the model's window twice on the same lines, and the file is the half that gets clipped
+    // in any file bigger than a screen or two (see `selectionContext`).
+    if (!selection.isEmpty) {
+        const lines = editor.document.getText().split(/\r?\n/);
+        // A selection ending at column 0 of a later line does not include that line, so the last selected line is
+        // the one before it — one off, and the model is told the wrong line is the marked one.
+        const lastLine = selection.end.character === 0 && selection.end.line > selection.start.line
+            ? selection.end.line
+            : selection.end.line + 1;
+        return selectionContext(relative, lines, selection.start.line + 1, lastLine);
+    }
+    const text = editor.document.getText();
+    const clipped = text.length > 12_000 ? `${text.slice(0, 12_000)}\n// … (file clipped)` : text;
+    return `The file the developer is looking at (${relative}):\n\`\`\`rust\n${clipped}\n\`\`\``;
+}
+
+/**
+ * The Problems pane as prompt text (asked 2026-10-31: *"enable the ai model to access (read) the Problems …
+ * panes"*).
+ *
+ * The pane is a view of `vscode.languages.getDiagnostics()`, so this is a read rather than a scrape — and it
+ * covers rust-analyzer's problems as well as the extension's own cargo run. Only **errors and warnings** are
+ * sent: the pane also holds every hint rust-analyzer produces (unused imports, needless returns), which for a
+ * small local model is noise that pushes the question out of its window.
+ *
+ * Not gated behind a setting, because the alternative is what the chat already did — answer "fix the build"
+ * without ever looking at what the compiler said.
+ */
+function problemsBlock(): string {
+    const entries: PaneDiagnostic[] = [];
+    for (const [uri, list] of vscode.languages.getDiagnostics()) {
+        if (uri.scheme !== 'file') continue;
+        // Only this workspace: a folder that happens to be open is still the developer's problem list, but a
+        // library outside it is not what they are asking about, and it is exactly what floods a big workspace.
+        if (!vscode.workspace.getWorkspaceFolder(uri)) continue;
+        const file = vscode.workspace.asRelativePath(uri);
+        for (const diagnostic of list) {
+            const severity = diagnostic.severity;
+            if (severity !== vscode.DiagnosticSeverity.Error && severity !== vscode.DiagnosticSeverity.Warning) continue;
+            entries.push({
+                file,
+                line: diagnostic.range.start.line + 1,
+                column: diagnostic.range.start.character + 1,
+                severity: severity === vscode.DiagnosticSeverity.Error ? 'error' : 'warning',
+                message: diagnostic.message,
+                source: diagnostic.source
+            });
+        }
+    }
+    return formatProblems(entries);
+}
+
+/** The project context a question is answered against: the board, the crates, the active file, the problems. */
+async function contextBlock(consoleOnly = false): Promise<string> {
+    // "Console only" (asked 2026-10-31): the one question that needs nothing else is "what does this console
+    // output mean?", and it is the one that a defmt stream answers worst — the console is the longest block in
+    // the prompt, so everything beside it is what gets pushed out of a small model's window.
+    if (consoleOnly) return debugConsoleBlock() || 'The Debug Console has no lines in it yet.';
+    return [await projectFacts(), fileBlock(), problemsBlock(), debugConsoleBlock()].filter(Boolean).join('\n\n');
 }
 
 /** The system message for a free-form question. */
@@ -681,8 +763,11 @@ function chatSystem(context: string): ChatMessage {
             // everything it did not feel like reproducing (2026-10-12), and a placeholder is the same mistake
             // with a comment on it.
             'When asked to change code, return ONLY the item that changes — the one `fn`, `impl` or `struct` — ' +
-            'and leave every other item out of your answer entirely. Do not return the whole file unless the ' +
-            'developer asks for the whole file. Never write `...`, `// ...` or any other placeholder for code ' +
+            'and leave every other item out of your answer entirely. "Only the item" means that item WHOLE: ' +
+            'reproduce every line of it, including the lines you did not change, because the item replaces the ' +
+            'real one and a function that arrives carrying only the changed lines deletes the rest. Do not ' +
+            'return the whole file unless the developer asks for the whole file. Never write `...`, ' +
+            '`// ...` or any other placeholder for code ' +
             'you did not write: if something is too long to include, say so in a sentence instead of guessing. ' +
             'Never reproduce a file from the context to "keep it unchanged" — leaving it out is how it stays ' +
             'unchanged. Keep the file\'s own attributes, signature and names as they are; put any `use` a new ' +
@@ -691,7 +776,7 @@ function chatSystem(context: string): ChatMessage {
     };
 }
 
-async function ask(text: string): Promise<void> {
+async function ask(text: string, consoleOnly = false): Promise<void> {
     if (busy) {
         post({ type: 'error', message: 'A request is already running — wait for it, or cancel it.' });
         return;
@@ -711,15 +796,17 @@ async function ask(text: string): Promise<void> {
     post({ type: 'turn', role: 'user', text });
 
     busy = true;
+    let controller: AbortController | undefined;
     try {
-        const context = await contextBlock();
+        const context = await contextBlock(consoleOnly);
         const messages: ChatMessage[] = [
             chatSystem(context),
             ...chat.turns.map((t) => ({ role: t.role, content: t.text }))
         ];
         post({ type: 'busy', busy: true, message: 'thinking…' });
 
-        const controller = new AbortController();
+        controller = new AbortController();
+        abortable = controller;
         // `chatWithRescue` resolves `bundled`'s endpoint (it only exists once the runtime is up) and, when the
         // address has nothing behind it, gets a llama-server up and sends the question again — the extension is
         // not allowed to end at "No server answered" while llama.cpp is on the disk (asked 2026-10-04).
@@ -750,7 +837,19 @@ async function ask(text: string): Promise<void> {
         // a second guess by the view (see `turnsForView`).
         const shown = turnsForView([{ role: 'assistant', text: answer }])[0];
         post({ type: 'turn', role: 'assistant', text: answer, final: true, index: chat.turns.length - 1, code: shown?.code });
+        // The status line was drawn before this request, when nothing had answered yet, so it could only guess
+        // whether the model was in memory. The reply is the answer to that question, so the line is redrawn from
+        // the same state the panel uses — not left saying "not in memory yet; the next request loads it" for the
+        // rest of the conversation (reported 2026-10-31). Not awaited: the panel has its answer already.
+        void statusLine().then((text) => post({ type: 'status', text })).catch(logError);
     } catch (error) {
+        // Stopping is not a failure: the user asked for it, so the panel says so and the partial answer is not
+        // kept — half a function in the transcript is the thing the next question would be answered against.
+        if (controller?.signal.aborted === true) {
+            log('assistant: the request was stopped from the chat');
+            post({ type: 'turn', role: 'assistant', text: '⏹ Stopped — no answer was saved.' });
+            return;
+        }
         logError(error);
         let message = error instanceof Error ? error.message : String(error);
         // The one failure where knowing what *is* running changes everything: "No server answered at
@@ -762,6 +861,7 @@ async function ask(text: string): Promise<void> {
         }
         post({ type: 'error', message });
     } finally {
+        if (abortable === controller) abortable = undefined;
         busy = false;
         post({ type: 'busy', busy: false });
     }
@@ -944,7 +1044,10 @@ function html(webview: vscode.Webview): string {
            padding: 8px; margin: 0; display: flex; flex-direction: column; height: 100vh; box-sizing: border-box; gap: 8px; }
     h2 { font-size: 0.95em; margin: 0 0 4px; text-transform: uppercase; letter-spacing: .06em; opacity: .8; }
     #status { opacity: .85; font-size: .92em; overflow-wrap: anywhere; }
-    #log { flex: 1 1 auto; overflow-y: auto; border: 1px solid var(--vscode-panel-border); border-radius: 4px; padding: 6px; min-height: 120px; overflow-wrap: anywhere; word-break: break-word; }
+    /* flex-basis 0 rather than auto: the log takes exactly the space left over, so it is this box that
+       scrolls and never the page. With auto its height started at the height of the whole transcript and the
+       page grew instead, which put the newest row below the visible area (2026-10-31). */
+    #log { flex: 1 1 0; overflow-y: auto; border: 1px solid var(--vscode-panel-border); border-radius: 4px; padding: 6px; min-height: 120px; overflow-wrap: anywhere; word-break: break-word; }
     .turn { margin: 0 0 10px; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
     .turn.user { color: var(--vscode-textLink-foreground); }
     .turn pre { background: var(--vscode-textCodeBlock-background); padding: 6px; border-radius: 4px; overflow-x: hidden; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
@@ -959,6 +1062,8 @@ function html(webview: vscode.Webview): string {
     .row { display: flex; gap: 6px; align-items: center; }
     .row > * { flex: 1 1 auto; }
     .row > button { flex: 0 0 auto; }
+    /* Four actions in a narrow side bar: Ask, Abort, Implement, Fix. They wrap rather than run off the edge. */
+    #actions { flex-wrap: wrap; }
     /* The mode radios: the button on top, its name centred directly beneath it (measured in a browser --
        the input width rule above put the radio alone on its own line and left the text at the far left). */
     #assistMode label { display: flex; flex-direction: column; align-items: center; gap: 2px; margin: 0; text-align: center; }
@@ -991,9 +1096,15 @@ function html(webview: vscode.Webview): string {
     </div>
     <div id="log"></div>
     <div id="progress" class="busy" hidden></div>
-    <textarea id="prompt" placeholder="Ask about this project, or describe a change — e.g. &quot;blink the on-board LED once a second&quot;"></textarea>
-    <div class="row">
+    <div class="row" id="contextRow">
+        <label title="Send only the Debug Console to the model — not the file, the Problems pane or the board facts. For &quot;what does this console output mean?&quot;, where a defmt stream would otherwise be drowned out by everything else.">
+            <input id="consoleOnly" type="checkbox" style="width:auto"> <span>Console only</span>
+        </label>
+    </div>
+    <textarea id="prompt" title="Enter sends · Shift+Enter starts a new line" placeholder="Ask about this project, or describe a change — e.g. &quot;blink the on-board LED once a second&quot;"></textarea>
+    <div class="row" id="actions">
         <button id="ask">Ask</button>
+        <button id="abort" class="secondary" title="Stop the answer that is being written — it is not kept">Abort</button>
         <button id="implement" class="secondary" title="Insert a ✎ AI block at the caret">Implement in Function…</button>
         <button id="repair" class="secondary" title="Run cargo check and fix what it can">Fix the Build…</button>
     </div>
@@ -1029,6 +1140,39 @@ function html(webview: vscode.Webview): string {
     const log = document.getElementById('log');
     const progress = document.getElementById('progress');
     let current = null;
+
+    // Following the newest row (asked 2026-10-31: "make the chat panel scroll down automatically as new rows
+    // are added at the bottom"). It is a decision rather than a constant: the panel jumps to the bottom while
+    // the reader is already there, and stays put once they scroll up to read something earlier — being pulled
+    // away mid-answer is worse than missing a line. The reader's intent is tracked here, not at each append
+    // site, because content growing is not a scroll.
+    let follow = true;
+    let lastTop = 0;
+    const NEAR_BOTTOM = 32;
+    function atBottom() {
+        return log.scrollHeight - log.scrollTop - log.clientHeight <= NEAR_BOTTOM;
+    }
+    log.addEventListener('scroll', () => {
+        // Growing the log leaves scrollTop where it is, so only a *decrease* means the reader moved up.
+        // Asking "is it at the bottom now" instead would read an answer arriving below as a scroll away, and
+        // stop following exactly when the answer was being written.
+        const top = log.scrollTop;
+        if (top < lastTop - 4) follow = false;
+        else if (atBottom()) follow = true;
+        lastTop = top;
+    });
+    function scrollToEnd() {
+        if (!follow) return;
+        // Twice: now, because that is the frame being looked at, and on the next frame too, because a fenced
+        // block or a wrapped line settles its final height after this handler has returned.
+        log.scrollTop = log.scrollHeight;
+        requestAnimationFrame(() => { if (follow) log.scrollTop = log.scrollHeight; });
+    }
+    // One observer instead of a call at each place that writes: a turn, a streamed token, the settled answer,
+    // an error, the code buttons and a restored history all change this element. The path that had no scroll
+    // at all was the streamed token, so the panel showed the top of an answer while the rest was written below
+    // the fold.
+    new MutationObserver(() => scrollToEnd()).observe(log, { childList: true, subtree: true, characterData: true });
 
     function render(text) {
         // Very small renderer: fenced blocks become <pre>, everything else stays escaped text.
@@ -1071,7 +1215,7 @@ function html(webview: vscode.Webview): string {
         if (role === 'assistant' && !live) addCodeActions(div, turn);
         log.appendChild(div);
         current = div;
-        log.scrollTop = log.scrollHeight;
+        scrollToEnd();
     }
 
     function settleTurn(role, text, turn) {
@@ -1081,7 +1225,7 @@ function html(webview: vscode.Webview): string {
             current.dataset.text = text;
             current.innerHTML = render(text);
             if (role === 'assistant') addCodeActions(current, turn);
-            log.scrollTop = log.scrollHeight;
+            scrollToEnd();
             return;
         }
         addTurn(role, text, false, turn);
@@ -1096,6 +1240,10 @@ function html(webview: vscode.Webview): string {
             progress.textContent = '';
             current = null;
         }
+        // Abort is only meaningful while something is running. Disabling rather than hiding keeps the row the
+        // same width, so Ask does not jump sideways when a request starts.
+        const stop = document.getElementById('abort');
+        if (stop) stop.disabled = !busy;
     }
 
     function setting(id, value) {
@@ -1145,8 +1293,13 @@ function html(webview: vscode.Webview): string {
             document.getElementById('status').textContent = msg.text || '';
         } else if (msg.type === 'history') {
             // A restored conversation: the turns already happened, so they are drawn at once, not streamed.
+            // A conversation opened here is read from its newest row, so following starts again — clearing the
+            // log clamps scrollTop to 0, which the scroll listener would otherwise read as the reader moving
+            // up and stop following.
             log.innerHTML = '';
             current = null;
+            follow = true;
+            lastTop = 0;
             for (const turn of msg.turns || []) addTurn(turn.role, turn.text, false, turn);
         } else if (msg.type === 'chats') {
             setChats(msg.chats, msg.activeId);
@@ -1171,10 +1324,24 @@ function html(webview: vscode.Webview): string {
         const text = box.value.trim();
         if (!text) return;
         box.value = '';
-        vscode.postMessage({ type: 'ask', text });
+        // Asking is a request to see the answer, so it starts following again even when the reader had scrolled
+        // up to re-read something earlier.
+        follow = true;
+        // "Console only" is read here rather than kept in the extension: it is a property of this question, not
+        // of the assistant, and both ways of asking (the button and Enter) come through this handler.
+        vscode.postMessage({ type: 'ask', text, consoleOnly: document.getElementById('consoleOnly').checked });
     });
+    // Enter sends, Shift+Enter is the line break (asked 2026-10-31: "I also want to launch the prompt when
+    // pressing the 'Enter' key and 'Shift+Enter' for doing a 'New Line'"). Shift is checked first because the
+    // plain Enter case is the one that must be swallowed — leaving it to the textarea would insert a newline and
+    // then this handler would send a prompt with that newline trailing it. Ctrl/Cmd+Enter keeps working: it is
+    // what the status bar and the docs have pointed at, and there is no reason to take it away.
     document.getElementById('prompt').addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) document.getElementById('ask').click();
+        if (e.key !== 'Enter' || e.shiftKey) return;
+        // An IME uses Enter to accept its candidate; sending there would fire a half-written question.
+        if (e.isComposing || e.keyCode === 229) return;
+        e.preventDefault();
+        document.getElementById('ask').click();
     });
     // Opens the settings section and puts the caret in it. The block is a details element that starts closed, so
     // without this the panel can be revealed and still show nothing that answers "where are the settings?".
@@ -1204,6 +1371,11 @@ function html(webview: vscode.Webview): string {
         vscode.postMessage({ type: 'selectChat', chatId: event.target.value });
     });
     document.getElementById('newChat').addEventListener('click', () => vscode.postMessage({ type: 'newChat' }));
+    // Stop the answer that is being written. Enabled only while there is one (see setBusy below), so it cannot
+    // be clicked into a "nothing to stop" surprise.
+    const abortButton = document.getElementById('abort');
+    abortButton.addEventListener('click', () => vscode.postMessage({ type: 'abort' }));
+    abortButton.disabled = true;
     document.getElementById('deleteChat').addEventListener('click', () => vscode.postMessage({ type: 'deleteChat' }));
     document.getElementById('implement').addEventListener('click', () => vscode.postMessage({ type: 'command', command: 'rustyPlatform.assistant.implement' }));
     document.getElementById('repair').addEventListener('click', () => vscode.postMessage({ type: 'command', command: 'rustyPlatform.assistant.repair' }));
@@ -1272,6 +1444,8 @@ export class AiChatViewProvider implements vscode.WebviewViewProvider {
         index?: number;
         block?: number;
         mode?: string;
+        /** "Console only": the question is answered from the Debug Console and nothing else. */
+        consoleOnly?: boolean;
     }): Promise<void> {
         switch (message.type) {
             case 'ready': {
@@ -1286,8 +1460,16 @@ export class AiChatViewProvider implements vscode.WebviewViewProvider {
                 return;
             }
             case 'ask':
-                if (message.text) await ask(message.text);
+                if (message.text) await ask(message.text, message.consoleOnly === true);
                 return;
+            case 'abort': {
+                // The Abort button. Nothing to stop is not an error: the request may have finished between the
+                // click and this message.
+                if (!abortable) return;
+                log('assistant: the panel asked to stop the request');
+                abortable.abort();
+                return;
+            }
             case 'newChat': {
                 active = freshChat();
                 store = upsertChat(store, active);
@@ -1318,12 +1500,22 @@ export class AiChatViewProvider implements vscode.WebviewViewProvider {
                 // what the conversation actually says — not a copy the view kept.
                 const turn = active?.turns[message.index ?? -1];
                 const blocks = turn && turn.role === 'assistant' ? rustCodeBlocks(turn.text) : [];
-                const block = blocks[message.block ?? 0];
+                const chosen = message.block ?? 0;
+                const block = blocks[chosen];
                 if (!block) {
                     post({ type: 'error', message: 'That code is no longer in this conversation — ask again and it will be.' });
                     return;
                 }
-                await applyChatCode(block.code, { label: codeBlockLabel(block.code) });
+                // A before/after answer names both blocks after the same item. If the one clicked is the quote,
+                // the answer already holds the change — offer it rather than a modal that only says no. And if
+                // neither block can be applied, the refusal's button asks the chat for the whole function, so a
+                // refusal always leads somewhere (2026-10-31: "i dont see any changes").
+                const alternative = completeAlternative(blocks.map((b) => b.code), chosen);
+                await applyChatCode(block.code, {
+                    label: codeBlockLabel(block.code),
+                    alternative,
+                    retry: (question) => ask(question)
+                });
                 return;
             }
             case 'command':

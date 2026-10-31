@@ -124,7 +124,7 @@ export interface KdlProperty {
  * `options` covers the `option "text"` children that dropdown, roller and carousel share; `table` is the
  * `headers "a" "b"` plus `row "1" "2"` pair; `parts` is the composite icon's `part src="..."`.
  */
-export type ChildGrammar = 'options' | 'table' | 'parts';
+export type ChildGrammar = 'options' | 'table' | 'parts' | 'lines';
 
 /**
  * The events a widget can raise.
@@ -478,11 +478,23 @@ const NAVIGATE_PROPERTY: KdlProperty = {
 /** The option list a dropdown, roller or carousel starts with. */
 export const DEFAULT_OPTIONS: readonly string[] = ['One', 'Two', 'Three'];
 
+/** The entries a dropped text panel starts with. */
+export const DEFAULT_TEXT_LINES: readonly string[] = ['First entry', 'Second entry'];
+
+/**
+ * How many entries a text panel can hold.
+ *
+ * Mirrors `TEXT_LINES_CAPACITY` in the crate (`crates/embedded-gui/src/widgets/mod.rs`), which is a compile-time
+ * bound on an inline array -- there is no heap to grow into, so an entry past this one would be dropped in
+ * silence by the builder. The validator refuses it here instead, while the design is on screen, and a test
+ * keeps the two numbers equal. A log is not limited by this: it deletes the oldest entry as it adds a new one.
+ */
+export const TEXT_LINES_MAX = 8;
+
 /** The table a dropped table starts as. */
 export const DEFAULT_TABLE_HEADERS: readonly string[] = ['Name', 'Value'];
-export const DEFAULT_TABLE_ROWS: readonly (readonly string[])[] = [
-    ['A', '1'],
-    ['B', '2'],
+export const DEFAULT_TABLE_ROWS: readonly (readonly string[])[] = [['A', '1'],
+['B', '2'],
 ];
 
 /**
@@ -508,6 +520,28 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         defaultSize: { width: 96, height: 24 },
         props: [
             { name: 'text', kind: 'text', label: 'Text', defaultValue: 'Label' },
+            { name: 'font', kind: 'font', label: 'Font', defaultValue: '' },
+            STYLE_PROPERTY,
+            TEXT_COLOUR_PROPERTY,
+        ],
+        fontSupport: 'both',
+        events: [],
+    },
+    {
+        tag: 'text_lines',
+        aliases: [],
+        label: 'Text panel',
+        category: 'text',
+        defaultSize: { width: 160, height: 96 },
+        children: 'lines',
+        note:
+            'A read-only panel whose entries fold to its width: an entry too long for a row continues on '
+            + 'the next, and the entry under it moves down by the rows it took. Code addresses the entries '
+            + 'by index, so a log drops its oldest with remove_text_line(id, 0) rather than rewriting the '
+            + 'whole panel. The entries here are what the design starts with; a project with no code that '
+            + 'writes them shows exactly these.',
+        props: [
+            { name: 'gap', kind: 'int', label: 'Gap between entries', defaultValue: 2, min: 0, max: 32 },
             { name: 'font', kind: 'font', label: 'Font', defaultValue: '' },
             STYLE_PROPERTY,
             TEXT_COLOUR_PROPERTY,
@@ -1586,6 +1620,9 @@ const TAG_PROPERTY_HELP: Record<string, string> = {
     'arc.arc_radius': 'Zero fits the arc to the widget\'s shorter side',
     'busy_wheel.phase': 'One full turn is 0 to 1; feed it from your animation clock',
     'plotter.head': 'Which value is the newest one; the older ones wrap around behind it',
+    'text_lines.gap':
+        'Blank pixels between one entry and the next. A long entry still takes as many rows as it needs, '
+        + 'so the entry below it moves down by that much whatever this says',
     'scale.start_angle': 'Degrees clockwise from the right, so 135 starts at the lower left and 270 at the top',
     'scale.mode': 'A dial, or a bar that runs down or across',
     'image.src':
@@ -1609,6 +1646,7 @@ const WIDGET_HELP: Record<string, string> = {
     clock: 'A clock face: hour and minute ticks, hour numbers and three hands',
     keypad: 'A touch keypad with an entry box: letters, digits and symbols',
     label: 'Plain text',
+    text_lines: 'Read-only lines of text that fold to the panel width, written by your code',
     button: 'A pressable button, with a click event',
     toggle: 'A switch that stays on or off',
     checkbox: 'A tick box with a label',

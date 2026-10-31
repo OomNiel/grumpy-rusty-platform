@@ -91,20 +91,61 @@ Editor Tab* (or the **In Editor Tab…** button in the view's footer). Drag that
 it becomes its own OS window you can put wherever you like; it returns there after a reload. Both surfaces show
 one conversation — asking a question in either streams into both.
 
-Type a question or a request in the box at the bottom and press **Ask** (`Ctrl+Enter` also sends). The
-assistant answers with the active Rust file, the board's own profile and your `Cargo.toml` crates as
-context. Follow-up questions keep the thread.
+Type a question or a request in the box at the bottom and press **Enter** (**Shift+Enter** starts a new line;
+**Ctrl+Enter** also sends) or click **Ask**. The assistant answers with:
+
+- **the board and crates** — the exact profile the project was generated for and the `Cargo.toml` dependencies;
+- **the file you are looking at** — or, when you have a **selection**, that selection: its lines, numbered, with a
+  marked window either side and the file's own line numbers kept, so "why does line 121 not compile?" is answered
+  about line 121 rather than about the top of a clipped file;
+- **the Problems pane** — errors first, then warnings, deduplicated across rust-analyzer and rustc, each with its
+  file:line:column and the headline of the message, and the cut stated when there are more than fit;
+- **the Debug Console** of the last `probe-rs` session — the program's own lines in order, `[stderr]` marked,
+  `[stopped]` and `[exited]` where they happened, and the tail rather than the boot banner. It is read through
+  the debug adapter, so it exists only for sessions in this window; it starts empty and is cleared when a new
+  session starts.
+
+**Console only** (a checkbox above the box) sends *just* the Debug Console and nothing else — the question for a
+defmt stream that would otherwise be drowned out by everything beside it.
+
+**Abort** stops the answer that is being written. It is enabled only while something is running; the partial
+answer is not kept, because half a function is what your next question would be answered against.
+
+The conversation follows the newest row while you are at the bottom of it, and stops following the moment you
+scroll up to re-read something; asking a question starts following again.
+Follow-up questions keep the thread.
 
 **If an answer contains Rust code, a button appears under it: "Implement `fn flash_led` in the project…"**
 (one per block, labelled by the item it defines). Pressing it writes that code into the Rust file you have
 open — replacing the function of the same name where there is one, adding it to the file where there is not,
 and replacing the file only when the answer is a whole file (it starts with `#![…]` or has `use` lines beside
 `fn main`) — which asks first, in a dialog that names the file, because that shape is exactly how a file
-silently loses everything the model did not reproduce. An answer that elides anything (`...`, `// ...`) is
-refused outright rather than spliced: what is not in the answer cannot be applied.
-Your file's own attributes and signature are kept, so a refactored `main` cannot lose
-`#[embassy_executor::main]`. The result opens as a **diff** and nothing is written until you press **Apply**
-— the same review step as §4. No Rust file open? It asks which file, or offers to create one.
+silently loses everything the model did not reproduce. Your file's own attributes and signature are kept, so a
+refactored `main` cannot lose `#[embassy_executor::main]`. The result opens as a **diff** and nothing is written
+until you press **Apply** — the same review step as §4. No Rust file open? It asks which file, or offers to
+create one.
+
+### What will not be applied, and what the dialog offers instead
+
+A model that quotes the line it is talking about — `async fn main(spawner: Spawner) {9` — is answering *about*
+your code, not with a change to it. Every answer is therefore checked before anything is proposed:
+
+| The answer | What the extension does |
+|---|---|
+| leaves code out (`...`, `// ...`, "rest of the function") | refused: applying it would delete what the placeholder stands for |
+| does not close what it opens (`{` with no `}`) | refused, and its button is labelled `fn main (excerpt)` so the two blocks of a before/after answer can be told apart |
+| is a fragment (statements with no item around them) | refused: there is nowhere in the file it could go |
+| replaces a function with a fraction of it | **asks first**, by name and with the numbers (`replaces 11 lines of fn main with 3`) |
+| is a whole file with items missing from it | refused, naming the items it dropped |
+
+A refusal is not a dead end. It offers the way out that fits the answer:
+
+- **Apply the complete block** — the same answer usually carries the whole function further down; if it does,
+  the refusal names it and applies *that* (through the same diff, with the same confirmation).
+- **Fix just that line** — the compiler's own first error, fixed one line at a time (see §5). This is the one to
+  use when the model will not reproduce the function.
+- **Ask for it in full** — sends the question that asks for the whole function, in those words: every line, no
+  placeholders, and what leaving code out costs.
 
 ## 4. Review and apply
 
@@ -129,7 +170,32 @@ Run **Rusty AI: Fix the Build…**. It:
 3. rebuilds, keeps the fix if the project got closer to compiling, and **undoes it if it did not**,
 4. skips what nothing can fix, tries the next error, and lists what is left.
 
-Alternatively, put the caret on a squiggle and pick **Fix with the AI assist** from the Quick Fix menu.
+Alternatively, put the caret on a squiggle and pick **Fix with the AI assist** from the Quick Fix menu — or
+**Fix this line with the AI assist**, which is explained next.
+
+## 5a. Fix one line
+
+The whole-function flows above need the model to reproduce the function, and a small model sometimes answers
+with the change and `// ... rest of the function` for the rest — or with a quote of the line. **Fix this line**
+sidesteps that: the answer is one line, and it replaces exactly the line the compiler points at.
+
+Put the caret on a squiggle and press **`Ctrl+.`**, then pick **Fix this line with the AI assist**. It:
+
+1. reads the line and the compiler's message about it (two lines either side are sent as context only, and the
+   enclosing function is deliberately **not** sent — a model shown a function rewrites it);
+2. asks a *patcher* — "reply with the corrected version of that ONE line and nothing else" — with a greedy,
+   200-token budget, so a function cannot come back even if the model would like to write one;
+3. reads the reply as exactly one line (a fence is unwrapped; two lines, a placeholder or `CANNOT FIX` are
+   refused rather than trimmed);
+4. checks the substitute against the line it replaces: the bracket balance must be the same, so a one-line edit
+   can never unbalance the file below it, and a stripped indentation is put back;
+5. opens the result as the usual **diff** — one line out, one line in.
+
+Where one line is genuinely not enough (a missing `match` arm, a type that needs a new item), it says so, and
+**Fix with the AI assist** from the same menu is the one to use.
+
+The 200-token budget applies to this request only: **Longest answer** in the settings still decides every other
+question, including the chat's.
 
 ## 6. Teach it your house rules
 
@@ -152,6 +218,7 @@ The two that matter outside this document: **Rusty AI: Open the Assistant in an 
 | **Open the AI Assist Settings** | Focus the view **and expand its settings section** |
 | **Implement in Function…** | Insert the `✎ AI` block at the caret |
 | **Fix the Build…** | `cargo check`, then fix the errors one at a time |
+| **Fix This Line with AI** | Replace the one line a diagnostic points at (§5a; offered on the diagnostic itself) |
 | **Check the Project (cargo check)** | Compile and publish the diagnostics |
 | **Learn the House Rules from My Code…** | Measure the project's idioms and keep the ones you choose |
 | **Choose a Local Model…** | Pick and set up a model (downloads if needed) |
@@ -160,7 +227,8 @@ The two that matter outside this document: **Rusty AI: Open the Assistant in an 
 
 Two commands have no palette entry because they are offered where you need them — **Send the Prompt in the
 ✎ AI Block** (`Ctrl+Alt+Enter`) and **Discard the ✎ AI Block** (`Ctrl+Alt+Escape`), plus **Apply/Discard the
-Proposed Change** on the diff.
+Proposed Change** on the diff and **Fix This Line with AI** on a diagnostic's Quick Fix menu (it needs a
+diagnostic as its argument, which the palette cannot supply).
 
 ## Settings (`rustyPlatform.assistant.*`)
 
@@ -177,7 +245,7 @@ by default, a child process elsewhere), plus `gpuVramGb` for a card the extensio
 | `model` | *(empty)* | Model id to ask for; empty lets the server pick |
 | `showDiff` | `true` | Review the proposal before it is written |
 | `verifyAfterApply` | `true` | Offer a `cargo check` after a proposal is applied |
-| `maxTokens` | `4096` | The longest answer the local model may write |
+| `maxTokens` | `4096` | The longest answer the local model may write (the one-line fix is capped at 200 regardless) |
 | `temperature` | `0.2` | Sampling temperature — low is right for code |
 | `timeoutSeconds` | `60` | How long the model may go **without producing anything** before the request is treated as dead |
 | `conventions` | `[]` | The house rules you accepted |

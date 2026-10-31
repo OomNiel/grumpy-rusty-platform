@@ -126,9 +126,50 @@ pub fn serialize_kdl_screen(screen: &ScreenDef) -> String {
                     id_attr, text, style_attr, font_attr, span_attrs, p.col, p.row
                 );
             }
-            WidgetDef::Button {
+            WidgetDef::TextLines {
                 id,
-                text,
+                lines,
+                gap,
+                style,
+                font,
+            } => {
+                let id_attr = id
+                    .as_ref()
+                    .map(|s| format!(" id=\"{}\"", s))
+                    .unwrap_or_default();
+                let style_attr = style
+                    .as_ref()
+                    .map(|s| format!(" style=\"{}\"", s))
+                    .unwrap_or_default();
+                let font_attr = font
+                    .as_ref()
+                    .map(|s| format!(" font=\"{}\"", s))
+                    .unwrap_or_default();
+                let gap_attr = if *gap == 0 {
+                    String::new()
+                } else {
+                    format!(" gap={}", gap)
+                };
+                if lines.is_empty() {
+                    let _ = writeln!(
+                        &mut out,
+                        "        text_lines{}{}{}{} col={} row={}",
+                        id_attr, style_attr, font_attr, gap_attr, p.col, p.row
+                    );
+                } else {
+                    let _ = writeln!(
+                        &mut out,
+                        "        text_lines{}{}{}{} col={} row={} {{",
+                        id_attr, style_attr, font_attr, gap_attr, p.col, p.row
+                    );
+                    for line in lines {
+                        let _ = writeln!(&mut out, "            line \"{}\"", line);
+                    }
+                    let _ = writeln!(&mut out, "        }}");
+                }
+            }
+            WidgetDef::Button {
+                id,                text,
                 on_click,
                 style,
                 bg,

@@ -26,13 +26,13 @@ pub mod bandmeter;
 pub mod basic;
 pub mod cinematic;
 pub mod clock;
-pub mod keypad;
 pub mod compass;
 pub mod controls;
 pub mod data;
 pub mod dialog;
 pub mod gauges;
 pub mod inverter;
+pub mod keypad;
 pub mod matrix;
 pub mod notification;
 pub mod picker;
@@ -59,7 +59,6 @@ pub use bandmeter::{BandMeterWidget, MeterOrientation};
 pub use basic::{ButtonWidget, LabelWidget, PanelWidget, SpacerWidget};
 pub use cinematic::GlanceTileWidget;
 pub use clock::ClockWidget;
-pub use keypad::{KeypadKey, KeypadMode, KeypadWidget, KEYPAD_CAPACITY};
 pub use compass::{CompassMode, CompassWidget};
 pub use controls::{
     CheckboxLabelPosition, CheckboxWidget, RollerSelection, SliderWidget, ToggleWidget,
@@ -70,6 +69,7 @@ pub use dialog::{
 };
 pub use gauges::{ArcGaugeWidget, GaugeThreshold, ProgressBarWidget};
 pub use inverter::InverterWidget;
+pub use keypad::{KeypadKey, KeypadMode, KeypadWidget, KEYPAD_CAPACITY};
 pub use matrix::MatrixWidget;
 pub use notification::{
     NotificationAction, NotificationError, NotificationPriority, NotificationSheetWidget,
@@ -89,6 +89,283 @@ pub use wearable::{
 };
 
 pub const TEXTAREA_CAPACITY: usize = 128;
+
+/// How many lines a [`WidgetKind::TextLines`] panel can hold.
+///
+/// Small on purpose. The widest `WidgetKind` variant sets the size of *every* widget node in the
+/// budget, so a panel nobody dropped still costs this much per slot. A project that needs more
+/// raises it here: the type is built from the constant, so the change is compile-time.
+pub const TEXT_LINES_CAPACITY: usize = 8;
+
+/// How many bytes one *copied* line may occupy (`set_line_owned`).
+///
+/// Only copied lines are bounded: a borrowed line is an `&str` the design already owns, so a static
+/// table of long lines costs nothing but the two words of its pointer.
+pub const TEXT_LINE_BYTES: usize = 32;
+
+/// One entry of a [`WidgetKind::TextLines`] panel.
+///
+/// Either a borrowed string -- the design's own `&'static str`, no copy, no RAM -- or a copy in a
+/// fixed inline buffer, which is what lets a line built at runtime reach the panel without a heap.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TextLine<'a> {
+    Borrowed(&'a str),
+    Owned {
+        bytes: [u8; TEXT_LINE_BYTES],
+        len: u8,
+    },
+}
+
+impl<'a> TextLine<'a> {
+    /// The text of the line, whichever way it is stored.
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Borrowed(text) => text,
+            Self::Owned { bytes, len } => {
+                let used = (*len as usize).min(TEXT_LINE_BYTES);
+                core::str::from_utf8(&bytes[..used]).unwrap_or("")
+            }
+        }
+    }
+
+    /// Copies `text` in, truncating at `TEXT_LINE_BYTES` on a character boundary.
+    ///
+    /// An empty source is accepted: clearing one line is a real thing to do, and refusing it would
+    /// make the caller special-case a string that is simply empty.
+    fn set_owned(&mut self, text: &str) {
+        let mut len = text.len().min(TEXT_LINE_BYTES);
+        // Never split a character: a half a UTF-8 sequence is not a shorter line, it is a corrupt
+        // one, and `from_utf8` would answer an empty string for it.
+        while len > 0 && !text.is_char_boundary(len) {
+            len -= 1;
+        }
+        let mut bytes = [0u8; TEXT_LINE_BYTES];
+        bytes[..len].copy_from_slice(&text.as_bytes()[..len]);
+        *self = Self::Owned {
+            bytes,
+            len: len as u8,
+        };
+    }
+}
+
+/// A read-only panel of text lines, each folded to the widget's own width.
+///
+/// The point of the widget is that neither the folding nor the stacking is the caller's business: a
+/// long entry wraps to as many rows as it needs, and everything below it moves down by exactly that
+/// much. So the text positions itself against the *font* -- advance width decides where a line folds
+/// and line height decides where the next one starts -- and the rect only decides where it stops.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TextLines<'a> {
+    lines: [TextLine<'a>; TEXT_LINES_CAPACITY],
+    len: u8,
+    /// Blank pixels between one logical line and the next, on top of the font's own line spacing.
+    pub gap: u8,
+}
+
+impl Default for TextLines<'_> {
+    fn default() -> Self {
+        Self {
+            lines: [TextLine::Borrowed(""); TEXT_LINES_CAPACITY],
+            len: 0,
+            gap: 0,
+        }
+    }
+}
+
+impl<'a> TextLines<'a> {
+    pub const fn new() -> Self {
+        Self {
+            lines: [TextLine::Borrowed(""); TEXT_LINES_CAPACITY],
+            len: 0,
+            gap: 0,
+        }
+    }
+
+    /// A panel holding `lines`, in order, dropping any that do not fit the storage.
+    pub fn from_slice(lines: &[&'a str]) -> Self {
+        let mut panel = Self::new();
+        for line in lines.iter().take(TEXT_LINES_CAPACITY) {
+            panel.lines[panel.len as usize] = TextLine::Borrowed(line);
+            panel.len += 1;
+        }
+        panel
+    }
+
+    pub const fn gap(mut self, gap: u8) -> Self {
+        self.gap = gap;
+        self
+    }
+
+    /// How many lines the panel holds. Not how many are *visible*: that depends on the rect, the
+    /// font and how far each line folds.
+    pub const fn len(&self) -> usize {
+        self.len as usize
+    }
+
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub fn get(&self, index: usize) -> Option<&str> {
+        if index < self.len as usize {
+            Some(self.lines[index].as_str())
+        } else {
+            None
+        }
+    }
+
+    /// Replaces one line with a borrowed string.
+    pub fn set(&mut self, index: usize, text: &'a str) -> bool {
+        match self.lines.get_mut(index) {
+            Some(slot) if index < self.len as usize => {
+                *slot = TextLine::Borrowed(text);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Replaces one line with a copy of `text`, truncated to `TEXT_LINE_BYTES`.
+    pub fn set_owned(&mut self, index: usize, text: &str) -> bool {
+        match self.lines.get_mut(index) {
+            Some(slot) if index < self.len as usize => {
+                slot.set_owned(text);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Appends a borrowed line. `false` when the storage is full.
+    pub fn push(&mut self, text: &'a str) -> bool {
+        if self.len as usize >= TEXT_LINES_CAPACITY {
+            return false;
+        }
+        self.lines[self.len as usize] = TextLine::Borrowed(text);
+        self.len += 1;
+        true
+    }
+
+    /// Appends a copy of `text`. `false` when the storage is full.
+    pub fn push_owned(&mut self, text: &str) -> bool {
+        if self.len as usize >= TEXT_LINES_CAPACITY {
+            return false;
+        }
+        let mut slot = TextLine::Borrowed("");
+        slot.set_owned(text);
+        self.lines[self.len as usize] = slot;
+        self.len += 1;
+        true
+    }
+
+    /// Inserts a borrowed line at `index`, moving the rest down. `false` when the storage is full.
+    pub fn insert(&mut self, index: usize, text: &'a str) -> bool {
+        if index >= self.len as usize {
+            return self.push(text);
+        }
+        if self.len as usize >= TEXT_LINES_CAPACITY {
+            return false;
+        }
+        let from = index;
+        let to = self.len as usize;
+        for slot in (from..to).rev() {
+            self.lines[slot + 1] = self.lines[slot];
+        }
+        self.lines[index] = TextLine::Borrowed(text);
+        self.len += 1;
+        true
+    }
+
+    /// Inserts a copy of `text` at `index`, moving the rest down. `false` when the storage is full.
+    pub fn insert_owned(&mut self, index: usize, text: &str) -> bool {
+        if index >= self.len as usize {
+            return self.push_owned(text);
+        }
+        if self.len as usize >= TEXT_LINES_CAPACITY {
+            return false;
+        }
+        let from = index;
+        let to = self.len as usize;
+        for slot in (from..to).rev() {
+            self.lines[slot + 1] = self.lines[slot];
+        }
+        let mut line = TextLine::Borrowed("");
+        line.set_owned(text);
+        self.lines[index] = line;
+        self.len += 1;
+        true
+    }
+
+    /// Removes one line, moving the rest up -- `remove(0)` is how a log drops its oldest entry.
+    pub fn remove(&mut self, index: usize) -> bool {
+        if index >= self.len as usize {
+            return false;
+        }
+        let last = self.len as usize - 1;
+        for slot in index..last {
+            self.lines[slot] = self.lines[slot + 1];
+        }
+        self.lines[last] = TextLine::Borrowed("");
+        self.len -= 1;
+        true
+    }
+
+    pub fn clear(&mut self) {
+        self.lines = [TextLine::Borrowed(""); TEXT_LINES_CAPACITY];
+        self.len = 0;
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &str> + '_ {
+        (0..self.len as usize).map(move |index| self.lines[index].as_str())
+    }
+
+    /// How many pixels the lines take at `max_chars` per visual row, gaps included.
+    ///
+    /// `line_h` and `spacing` come from the resolved style, so the answer is in the font's own
+    /// units rather than in pixels guessed by the caller.
+    pub fn height_at(&self, max_chars: usize, line_h: u32, spacing: u32) -> u32 {
+        let mut total = 0u32;
+        for index in 0..self.len as usize {
+            let rows =
+                crate::render::count_lines(self.lines[index].as_str(), max_chars, TextWrap::Word)
+                    .max(1) as u32;
+            total += rows * line_h + rows.saturating_sub(1) * spacing;
+            if index + 1 < self.len as usize {
+                total += self.gap as u32;
+            }
+        }
+        total
+    }
+
+    /// The first line index whose folded block does not fit in `available` pixels, or `None` when
+    /// they all do. What the renderer uses to decide where to stop -- and what a caller can use to
+    /// know how many entries the rect can show.
+    pub fn first_hidden(
+        &self,
+        max_chars: usize,
+        line_h: u32,
+        spacing: u32,
+        available: u32,
+    ) -> Option<usize> {
+        let mut used = 0u32;
+        for index in 0..self.len as usize {
+            let rows =
+                crate::render::count_lines(self.lines[index].as_str(), max_chars, TextWrap::Word)
+                    .max(1) as u32;
+            let entry = rows * line_h + rows.saturating_sub(1) * spacing;
+            let gap = if index + 1 < self.len as usize {
+                self.gap as u32
+            } else {
+                0
+            };
+            if used + entry > available {
+                return Some(index);
+            }
+            used += entry + gap;
+        }
+        None
+    }
+}
 
 /// Geometry and motion of a [`WidgetKind::Carousel`].
 ///
@@ -532,6 +809,11 @@ pub enum WidgetKind<'a> {
         read_only: bool,
         single_line: bool,
         accept_newline: bool,
+    },
+    /// A read-only panel of text lines, each folded to the widget's own width. See [`TextLines`].
+    #[cfg(feature = "rich-widgets")]
+    TextLines {
+        lines: TextLines<'a>,
     },
     #[cfg(feature = "rich-widgets")]
     Keyboard {
@@ -1469,6 +1751,10 @@ impl<'a> WidgetNode<'a> {
             } => render_keyboard(
                 ctx, rect, keys, selected, cols, alt_keys, layout, self.style, state,
             ),
+            #[cfg(feature = "rich-widgets")]
+            WidgetKind::TextLines { lines } => {
+                render_text_lines(ctx, rect, &lines, self.style, state)
+            }
             WidgetKind::Image { image, fit } => {
                 render_image(ctx, rect, image, fit, self.style, state)
             }
@@ -2068,14 +2354,7 @@ pub(crate) fn slider_geometry(rect: Rect, style: Style, knob_w: u32) -> (Rect, u
 /// offset by half a grip: the left edge is `x - knob_w / 2`, clamped to the travel the grip has,
 /// and the fraction across that travel is the fraction across the range.
 #[cfg(feature = "rich-widgets")]
-pub fn slider_value_at_x(
-    rect: Rect,
-    style: Style,
-    min: f32,
-    max: f32,
-    knob_w: u32,
-    x: i32,
-) -> f32 {
+pub fn slider_value_at_x(rect: Rect, style: Style, min: f32, max: f32, knob_w: u32, x: i32) -> f32 {
     let (inner, knob_w) = slider_geometry(rect, style, knob_w);
     let travel = inner.w.saturating_sub(knob_w);
     if travel == 0 {
@@ -3530,6 +3809,110 @@ where
     Ok(())
 }
 
+/// Draws a panel of folded lines, stacking each one under the last by the height it folded to.
+///
+/// `count_lines` walks exactly the wrap boundaries `draw_text_in` will, so an entry that folds to
+/// three rows pushes the next entry down by three rows rather than one. The rect is the window: an
+/// entry that does not fit whole is not drawn, and three dots in the corner say that something is
+/// hidden -- which is the difference between "this is all of it" and "there is more" that a plain
+/// clip cannot make.
+/// The numbers a text-line panel lays its text out with: characters per row, the font's line
+/// height, the line spacing the text is drawn with, and how many pixels of the panel's inside are
+/// available.
+///
+/// A shared function rather than four lines copied into the renderer and the mutators, because the
+/// two have to agree exactly: the mutators use it to decide whether a line still fits, and the
+/// renderer uses it to decide where to stop drawing. Two copies would drift, and a line the caller
+/// was allowed to add would then be a line that is never drawn.
+#[cfg(feature = "rich-widgets")]
+pub(crate) fn text_lines_metrics(
+    style: crate::style::Style,
+    inner: Rect,
+) -> (usize, u32, u32, u32) {
+    let text_style = text_lines_text_style(style);
+    (
+        (inner.w / style.font.advance()).max(1) as usize,
+        style.font.line_height(),
+        text_style.line_spacing as u32,
+        inner.h,
+    )
+}
+
+/// The text style a text-line panel draws each entry with.
+///
+/// Word wrap, because that is what folding means to a reader; the crate's `line_len_at` falls back to
+/// a character split when a single word is wider than the panel, so a long token still folds.
+#[cfg(feature = "rich-widgets")]
+pub(crate) fn text_lines_text_style(style: crate::style::Style) -> TextStyle {
+    TextStyle::new(style.text)
+        .with_font(style.font)
+        .with_wrap(TextWrap::Word)
+}
+
+#[allow(clippy::too_many_arguments)]
+#[cfg(feature = "rich-widgets")]
+fn render_text_lines<D, C>(
+    ctx: &mut RenderCtx<'_, D, C>,
+    rect: Rect,
+    lines: &TextLines<'_>,
+    style: WidgetStyle,
+    state: VisualState,
+) -> Result<(), D::Error>
+where
+    D: embedded_graphics_core::draw_target::DrawTarget<Color = Rgb565>,
+    C: Compositor<D>,
+{
+    let style = style.resolve(state);
+    let block = Block::styled(style);
+    block.render(rect, ctx)?;
+    let inner = block.inner(rect);
+    if inner.is_empty() || lines.is_empty() {
+        return Ok(());
+    }
+    let (max_chars, line_h, spacing, _) = text_lines_metrics(style, inner);
+
+    let mut y = inner.y;
+    for index in 0..lines.len() {
+        let text = match lines.get(index) {
+            Some(text) => text,
+            None => break,
+        };
+        let rows = crate::render::count_lines(text, max_chars, TextWrap::Word).max(1) as u32;
+        let height = rows * line_h + rows.saturating_sub(1) * spacing;
+        if y + height as i32 > inner.bottom() {
+            break;
+        }
+        ctx.draw_text_in(
+            Rect::new(inner.x, y, inner.w, height),
+            text,
+            text_lines_text_style(style),
+        )?;
+        y += height as i32 + lines.gap as i32;
+    }
+
+    // Only after a line was cut: a panel showing all of its text says nothing, so a design that
+    // merely has blank space below its last line keeps that space blank.
+    if lines
+        .first_hidden(max_chars, line_h, spacing, inner.h)
+        .is_some()
+    {
+        // Three one-pixel dots, right-aligned in the last row the panel can show. Small enough not
+        // to be mistaken for content, and the only glyph that needs no assumption about the font.
+        let dot_y = inner.bottom() - 1;
+        let dot_w = 1u32;
+        let gap = 1u32;
+        let total = 3 * dot_w + 2 * gap;
+        let x = inner.right() - total as i32 - 1;
+        for dot in 0..3 {
+            ctx.fill_rect(
+                Rect::new(x + (dot * (dot_w + gap)) as i32, dot_y, dot_w, 1),
+                style.text,
+            )?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(feature = "rich-widgets")]
 fn textarea_grid_position(text: &str, cursor: usize, max_chars: usize) -> (usize, usize) {
     let mut row = 0usize;
@@ -4766,7 +5149,11 @@ mod tests {
             }
         }
         let (left, right) = (left.expect("the grip was drawn"), right.unwrap());
-        assert_eq!(right - left + 1, knob_w as i32, "the grip is as wide as it was asked to be");
+        assert_eq!(
+            right - left + 1,
+            knob_w as i32,
+            "the grip is as wide as it was asked to be"
+        );
 
         let centre = (left + right) / 2;
         let asked = slider_value_at_x(rect, style, 0.0, 100.0, 12, centre);
@@ -4907,5 +5294,180 @@ mod tests {
         assert!(node
             .render_at(&mut ctx, Rect::new(0, 0, 100, 60), VisualState::Focused)
             .is_ok());
+    }
+}
+
+#[cfg(test)]
+#[cfg(feature = "rich-widgets")]
+mod text_lines_tests {
+    use super::*;
+    use crate::context::GuiContext;
+    use crate::test_buffer::TestBuffer;
+    use crate::{font::Font as _, FontId, GuiError};
+
+    /// Folding is the font's business, not the caller's: a line too wide for the box takes two rows,
+    /// and the line under it starts two rows down.
+    #[test]
+    fn folding_and_stacking_follow_the_font() {
+        let line_h = FontId::Mono6x10.line_height();
+        let mut panel = TextLines::new();
+        // Twelve characters, no space to break on: the word-wrap has to fall back to a character split,
+        // which is the case a log line of a path or a hex dump hits.
+        assert!(panel.push("aaaaaaaaaaaa"));
+        let two_rows = line_h * 2 + 1; // the crate's own default line spacing is one pixel
+        assert_eq!(panel.height_at(10, line_h, 1), two_rows);
+        assert_eq!(panel.first_hidden(10, line_h, 1, two_rows - 1), Some(0));
+        assert_eq!(panel.first_hidden(10, line_h, 1, two_rows), None);
+
+        // A short entry is one row, and the gap is between entries rather than after the last.
+        let stacked = TextLines::from_slice(&["short", "short"]).gap(4);
+        assert_eq!(stacked.height_at(10, line_h, 1), line_h * 2 + 4);
+        assert_eq!(stacked.first_hidden(10, line_h, 1, line_h + 3), Some(1));
+        assert_eq!(stacked.first_hidden(10, line_h, 1, line_h * 2 + 4), None);
+    }
+
+    /// A borrowed line costs nothing, a copied one is bounded, and both answer the same text.
+    #[test]
+    fn lines_borrow_copy_and_delete_by_index() {
+        let mut panel = TextLines::from_slice(&["one", "two", "three"]);
+        assert_eq!(panel.len(), 3);
+        assert_eq!(panel.get(1), Some("two"));
+        assert!(panel.remove(1));
+        assert_eq!(panel.get(1), Some("three"));
+        assert_eq!(panel.len(), 2);
+        assert!(panel.set(0, "zero"));
+        assert_eq!(panel.get(0), Some("zero"));
+
+        // The copy keeps as much as fits, and stops on a character boundary rather than inside one.
+        let long = "x".repeat(TEXT_LINE_BYTES + 8);
+        assert!(panel.set_owned(0, &long));
+        assert_eq!(panel.get(0).map(str::len), Some(TEXT_LINE_BYTES));
+        let wide = "ä".repeat(TEXT_LINE_BYTES);
+        assert!(panel.set_owned(0, &wide));
+        let kept = panel.get(0).unwrap();
+        assert!(kept.len() <= TEXT_LINE_BYTES);
+        assert!(kept.chars().all(|ch| ch == 'ä'), "a character was split");
+
+        // Storage is bounded, and a full panel says so instead of overwriting.
+        let mut full = TextLines::new();
+        for _ in 0..TEXT_LINES_CAPACITY {
+            assert!(full.push("x"));
+        }
+        assert!(!full.push("y"));
+        assert_eq!(full.len(), TEXT_LINES_CAPACITY);
+        full.clear();
+        assert!(full.is_empty());
+    }
+
+    /// The mutators reach the glass and refuse without mutating.
+    #[test]
+    fn mutations_reach_the_panel_and_a_refusal_changes_nothing() {
+        let style = Style::panel();
+        let mut gui: GuiContext<16, 8, 8> = GuiContext::new(Rect::new(0, 0, 120, 60));
+        let id = gui
+            .add_text_lines(
+                Rect::new(0, 0, 120, 60),
+                &["first", "second", "third"],
+                2,
+                style,
+            )
+            .unwrap();
+        assert_eq!(gui.text_line_count(id), Some(3));
+        assert_eq!(gui.text_line(id, 1), Some("second"));
+
+        let ink = |buffer: &TestBuffer| -> usize {
+            let mut count = 0;
+            for y in 0..60 {
+                for x in 0..120 {
+                    if buffer.pixel_at(x, y) == Some(style.text) {
+                        count += 1;
+                    }
+                }
+            }
+            count
+        };
+
+        let mut before = TestBuffer::new(120, 60);
+        gui.render(&mut before).unwrap();
+        let three_lines = ink(&before);
+
+        assert!(gui.remove_text_line(id, 1).is_ok());
+        assert_eq!(gui.text_line_count(id), Some(2));
+        assert_eq!(gui.text_line(id, 1), Some("third"));
+        let mut after = TestBuffer::new(120, 60);
+        gui.render(&mut after).unwrap();
+        assert!(
+            ink(&after) < three_lines,
+            "the deleted line is still on the glass: {} vs {}",
+            ink(&after),
+            three_lines
+        );
+
+        // A runtime-built line, then a font change: both are what code has to be able to do.
+        assert!(gui.push_text_line_owned(id, "fourth").is_ok());
+        assert_eq!(gui.text_line(id, 2), Some("fourth"));
+        assert!(gui.set_widget_font(id, FontId::Mono8x16).is_ok());
+
+        // A 60-pixel panel of 16-pixel rows runs out of room. The refusal is `LinesFull`, and the
+        // panel is exactly as it was -- otherwise a caller looping until it is refused would leave a
+        // half-written line behind.
+        let refusal = loop {
+            match gui.push_text_line(id, "more") {
+                Ok(()) => {}
+                Err(error) => break error,
+            }
+        };
+        assert_eq!(refusal, GuiError::LinesFull);
+        let full = gui.text_line_count(id).unwrap();
+        assert_eq!(gui.push_text_line(id, "more"), Err(GuiError::LinesFull));
+        assert_eq!(gui.text_line_count(id), Some(full));
+        assert!(full >= 3);
+
+        // It still draws with nothing left to give.
+        let mut full_frame = TestBuffer::new(120, 60);
+        gui.render(&mut full_frame).unwrap();
+    }
+
+    /// A panel whose text does not fit says so, and one that fits says nothing.
+    #[test]
+    fn an_overflowing_panel_marks_itself() {
+        let style = Style::panel();
+        let lines = [
+            "alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta",
+        ];
+
+        let draw = |rect: Rect| -> TestBuffer {
+            let mut gui: GuiContext<16, 8, 8> = GuiContext::new(Rect::new(0, 0, 120, 90));
+            gui.add_text_lines(rect, &lines, 2, style).unwrap();
+            let mut buffer = TestBuffer::new(120, 90);
+            gui.render(&mut buffer).unwrap();
+            buffer
+        };
+
+        // Three dots in the last row the panel can show -- the row inside its own border and padding,
+        // which is where the renderer puts them.
+        let dots = |buffer: &TestBuffer, rect: Rect| -> usize {
+            let inner = crate::block::Block::styled(style).inner(rect);
+            let y = inner.bottom() - 1;
+            let mut count = 0;
+            for x in inner.x..inner.right() {
+                if buffer.pixel_at(x, y) == Some(style.text) {
+                    count += 1;
+                }
+            }
+            count
+        };
+
+        let cramped = draw(Rect::new(0, 0, 120, 20));
+        assert!(
+            dots(&cramped, Rect::new(0, 0, 120, 20)) >= 3,
+            "no marker on a clipped panel"
+        );
+        let roomy = draw(Rect::new(0, 0, 120, 90));
+        assert_eq!(
+            dots(&roomy, Rect::new(0, 0, 120, 90)),
+            0,
+            "a marker on a panel with room to spare"
+        );
     }
 }

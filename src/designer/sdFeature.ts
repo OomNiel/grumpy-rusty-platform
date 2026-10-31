@@ -1,7 +1,7 @@
 /**
  * The `sd` cargo feature of a Designer project.
  *
- * `src/designer/features.ts` holds the editing rules -- the two switches (SD and SMTP) share them exactly, so
+ * `src/designer/features.ts` holds the editing rules -- the SD switch lives here, so
  * the parsing lives in one place. What is SD-specific is the meaning: `sd` is `embedded-sdmmc` (a FAT
  * filesystem) plus the `critical-section` mutex `src/sd.rs` keeps the mounted volume behind; both are declared
  * `optional` and pulled in by the feature. It is in `default`, which is what ships every Designer project with

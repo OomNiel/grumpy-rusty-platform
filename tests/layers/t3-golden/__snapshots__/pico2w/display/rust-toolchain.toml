@@ -1,0 +1,5 @@
+# Pins the toolchain channel and makes rustup fetch the embedded target on first build.
+[toolchain]
+channel = "stable"
+targets = ["thumbv8m.main-none-eabihf"]
+profile = "minimal"

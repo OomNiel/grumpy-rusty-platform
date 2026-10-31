@@ -23,6 +23,7 @@ import { registerAssistantEditorCommands } from './ai/editor';
 import { publishDeb, installDeb } from './commands/debCommands';
 import { backupProject } from './commands/backupCommand';
 import { registerAiChatView } from './ui/aiChatView';
+import { registerDebugConsoleReader } from './ai/debugConsole';
 import { initModelRuntime } from './ai/runtime';
 import { initLlamaServer, registerLlamaServerCommands } from './ai/llamaServer';
 import { enforceOffAtStartup } from './ai/assistantSwitch';
@@ -63,6 +64,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         ...registerDebugCommand(state, output, context),
         ...registerWifiCommands(context, output),
         trackDebugSessions(),
+        // The Debug Console as the AI Assist can read it: a debug adapter tracker must exist before a session
+        // starts, so it is registered here and not when a question is asked (see `ai/debugConsole.ts`).
+        registerDebugConsoleReader(),
         ...registerLibraryCommands(state, output),
         ...registerToolchainCommands(state, output),
         // Missing requirements are announced when the window loads, and again when the open project makes a

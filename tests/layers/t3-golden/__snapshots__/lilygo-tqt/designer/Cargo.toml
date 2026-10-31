@@ -20,12 +20,6 @@ default = ["panel-gc9107"]
 panel-gc9107 = []
 panel-gc9a01 = []
 
-# The SMTP keep-alive client. `src/smtp.rs` is written by the SMTP wizard and left in the
-# project; this feature is what compiles it in and spawns its task (the wizard puts "smtp"
-# in `default`). Switching it off in the Designer toolbar drops the module and the task from
-# the build without deleting the file, which is what makes the toggle reversible.
-smtp = []
-
 [dependencies]
 esp-hal = { version = "~1.2.2", features = ["esp32s3", "log-04", "unstable"] }
 esp-rtos = { version = "0.4.0", features = ["embassy", "esp32s3", "esp-radio"] }
@@ -54,6 +48,17 @@ embassy-sync = "0.8.0"
 [patch.crates-io]
 embedded-gui-codegen = { path = "codegen/embedded-gui-codegen" }
 embedded-gui = { path = "codegen/embedded-gui" }
+
+# The debug profile is what the Debug button builds, and a design repaints a whole panel every frame: at
+# opt-level 0, embedded-graphics spends most of that frame in iterator plumbing it is not allowed to inline.
+# Level 1 keeps the variables a breakpoint can show, and the libraries are built as released -- which is where
+# the pixels are actually drawn. Debugging is unaffected: the lines and the locals are still there.
+[profile.dev]
+opt-level = 1
+debug = 2
+
+[profile.dev.package."*"]
+opt-level = 3
 
 [profile.release]
 opt-level = "s"

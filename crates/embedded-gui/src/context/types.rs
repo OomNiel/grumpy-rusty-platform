@@ -16,6 +16,12 @@ pub enum GuiError {
     DirtyFull,
     NotFound,
     Drawing,
+    /// A text-line panel has no room left for another line.
+    ///
+    /// Two things can fill it, and the widget cannot tell them apart from the caller's side: the
+    /// inline storage is full, or the line would not fit in the panel's own rect at its font. Both
+    /// mean the same thing to the caller -- delete a line before adding this one.
+    LinesFull,
 }
 
 impl From<DirtyError> for GuiError {

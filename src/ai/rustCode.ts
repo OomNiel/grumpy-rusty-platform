@@ -34,6 +34,8 @@ import type { ChatMessage } from './assistant';
 
 /** The `.rs` code fence every answer is asked to use. */
 const FENCE = '```rust';
+/** The marker on its own, for reading a fence back out of an answer — the closing one has no language. */
+const FENCE_MARK = '```';
 
 /**
  * The marker that separates module-level `use` lines a *new* item needs from the item itself.
@@ -122,6 +124,156 @@ export function buildFixPrompt(input: RewritePromptInput): ChatMessage[] {
         `The Rust compiler (or the flash tool) reported this problem in the function below:\n` +
         `${input.description.trim()}\n\nFix exactly that problem by rewriting this function:`;
     return [systemMessage(), { role: 'user', content: body(input, ask, input.func) }];
+}
+
+/**
+ * One line, and what the compiler said about it — the whole input of a line fix.
+ *
+ * WHY A LINE-SCOPED FIX EXISTS (2026-10-31). Asked to fix a stray character in a 100-line `main()`, the model
+ * answered with the *changed* function and `// ... rest of the function remains unchanged` for the rest, which
+ * cannot be applied — or, worse, answered with a quote of the line. A fix that may only return **one line**
+ * cannot delete anything: the answer is substituted for the diagnosed line and nothing else is within its
+ * reach. That is the property the function-level flow has to *ask* for and this one gets structurally.
+ */
+export interface LineFixInput {
+    /** The diagnosed line, indentation and all, exactly as the file has it. */
+    line: string;
+    /** The compiler's message, verbatim. */
+    problem: string;
+    /** Two lines either side, as context only. */
+    before?: string;
+    after?: string;
+    /** The item the line sits in, so the model knows what the code is for. Context only. */
+    item?: string;
+    target?: string;
+    crates?: string;
+    rules?: string;
+}
+
+/** The exact reply a model may give when it cannot fix the line on its own. */
+export const CANNOT_FIX = 'CANNOT FIX';
+
+/**
+ * The system message for a line fix — a **patcher**, not a rewriter.
+ *
+ * WHY THIS IS NOT `systemMessage()` (found 2026-10-31, from "why will the model not just replace a single
+ * line"). The line-fix prompt first reused the whole-item system message, which says *"You return complete,
+ * compilable Rust … You keep the function's attributes, signature and indentation exactly as they are"* — an
+ * instruction to produce a **function**, in the highest-priority slot of the request. The user message below it
+ * asked for one line. A model follows the system message, so it answered with the function: two instructions
+ * fighting, and the wrong one winning. A patcher needs its own voice, and it must never mention attributes or
+ * signatures at all, because those words are what make a model reach for the whole item.
+ */
+function lineSystemMessage(): ChatMessage {
+    return {
+        role: 'system',
+        content:
+            'You are a one-line patcher for Rust, often `no_std` firmware on Embassy. You are given ONE line of ' +
+            'a file and the compiler message about it. You answer with the corrected version of that line and ' +
+            'nothing else: no code fence, no explanation, no second line. You never rewrite the function around ' +
+            'it, never repeat the neighbouring lines, and never add or remove braces. If that one line cannot be ' +
+            `corrected on its own, you answer exactly ${CANNOT_FIX}.`
+    };
+}
+
+/** The line-only prompt: the answer is one line, which is the whole protection it gives. */
+export function buildLineFixPrompt(input: LineFixInput): ChatMessage[] {
+    const lines: string[] = [];
+    if (input.target?.trim()) lines.push(`Target: ${input.target.trim()}`, '');
+    lines.push(
+        'The compiler reported this problem in the Rust file:',
+        input.problem.trim(),
+        '',
+        'The line it points at is the marked one (lines above and below are context; do not change them):',
+        FENCE,
+        ...(input.before?.trim() ? [input.before.trimEnd()] : []),
+        `>> ${input.line}`,
+        ...(input.after?.trim() ? [input.after.trimEnd()] : []),
+        FENCE_MARK,
+        ''
+    );
+    if (input.item?.trim()) {
+        lines.push(
+            'It sits inside this item (context only — do not repeat it, do not change it):',
+            FENCE,
+            input.item.trimEnd(),
+            FENCE_MARK,
+            ''
+        );
+    }
+    if (input.crates?.trim()) {
+        lines.push('Dependencies the project has:', FENCE + 'toml', input.crates.trimEnd(), FENCE_MARK, '');
+    }
+    if (input.rules?.trim()) lines.push(input.rules.trimEnd(), '');
+    lines.push(
+        'Reply with the corrected version of that ONE line and nothing else: no code fence, no explanation, no ' +
+        'second line. Keep the line\'s own indentation, do not add or remove braces, and change nothing outside ' +
+        `that line. If it cannot be corrected on its own, reply exactly ${CANNOT_FIX}.`
+    );
+    return [lineSystemMessage(), { role: 'user', content: lines.join('\n') }];
+}
+
+/**
+ * The single line a line fix asked for, or the reason there is not one.
+ *
+ * Strict on purpose: the safety of this flow is that the answer touches exactly one line, so an answer that
+ * needs two is not something to be trimmed into shape — it is a different request, and the function-level fix
+ * is the one that can carry it.
+ */
+export function oneLineAnswer(reply: string): { line: string } | { problem: string } {
+    const text = String(reply ?? '').replace(/\r\n/g, '\n');
+    if (!text.trim()) return { problem: 'the assistant answered with nothing' };
+    if (new RegExp(`^\\s*${CANNOT_FIX}\\b`, 'i').test(text)) {
+        return { problem: 'the assistant says this line cannot be fixed on its own' };
+    }
+    // A fenced answer is one line too, once the fence is off — models fence everything. `split` on the marker
+    // matches both a closed fence and one the model forgot to close, which is the same idiom the chat uses.
+    const parts = text.split(FENCE_MARK);
+    const fenced = parts.length > 1 ? (parts[1] ?? '').replace(/^[A-Za-z]*\n/, '') : text;
+    const body = fenced.replace(/\s+$/, '');
+    const lines = body.split('\n').filter((line) => line.trim() !== '');
+    if (lines.length === 0) return { problem: 'the assistant answered with nothing' };
+    if (lines.length > 1) {
+        return {
+            problem: `the assistant answered with ${lines.length} lines — a line fix may only change one, ` +
+                'which is what makes it safe'
+        };
+    }
+    const line = (lines[0] ?? '').replace(/\s+$/, '');
+    const marker = elisionMarker(line);
+    if (marker !== undefined) return { problem: `the answer leaves code out (${marker})` };
+    return { line };
+}
+
+/**
+ * Whether `after` may stand in for `before` as one line of the file, or why not.
+ *
+ * Two rules, both about the *file* rather than the line. Braces, brackets and parens must net out the same, so a
+ * one-line edit can never unbalance everything below it — that is what the quote `async fn main(…) {9` did. And
+ * a line that arrives without indentation is given the original's, because a model that strips it would
+ * re-indent the statement to the file's left margin.
+ */
+export function replacementLine(before: string, after: string): { line: string } | { problem: string } {
+    const original = String(before ?? '');
+    const fresh = String(after ?? '').replace(/\s+$/, '');
+    if (!fresh.trim()) return { problem: 'the answer is an empty line, which would delete the line rather than fix it' };
+    const delta = (text: string): number => {
+        let net = 0;
+        for (const ch of stripTrivia(text)) {
+            if (ch === '{' || ch === '(' || ch === '[') net += 1;
+            if (ch === '}' || ch === ')' || ch === ']') net -= 1;
+        }
+        return net;
+    };
+    if (delta(original) !== delta(fresh)) {
+        return {
+            problem: 'the answer adds or removes a bracket, which changes the shape of the file below this line'
+        };
+    }
+    const indent = /^[ \t]*/.exec(original)?.[0] ?? '';
+    const line = /^[ \t]*/.exec(fresh)?.[0] ? fresh : indent + fresh;
+    if (line.trim() === original.trim()) return { problem: 'the answer is the line the file already has' };
+    return { line };
 }
 
 /** The shared middle of a rewrite prompt: target, header, optional sibling, then the function. */
@@ -603,7 +755,10 @@ export function insertItem(input: InsertItemInput): string {
  * or after any leading `//` banner). A line the file already has is never added twice.
  */
 export function addItemToFile(input: InsertItemInput & { uses: string[] }): { text: string; added: string[] } {
-    const withItem = insertItem(input);
+    // A `use`-only answer has no item to place. Running the insertion with an empty item put a blank line either
+    // side of nothing — three of them, after the caret line — which turned a header into `#![no_std]`, three
+    // blank lines, `#![no_main]` (found 2026-10-31 while refusing fragments).
+    const withItem = input.item.trim() ? insertItem(input) : input.text;
     const missing = (input.uses ?? [])
         .map((u) => String(u ?? '').trim())
         .filter((u) => u.length > 0 && isUseLine(u) && !alreadyImported(withItem, u));
@@ -824,9 +979,12 @@ export function codeBlockLabel(code: string): string {
     const text = String(code ?? '');
     if (looksLikeWholeFile(text)) return 'the whole file';
     const item = /(?:^|\n)\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:unsafe\s+)?(?:extern\s+"[^"]*"\s+)?(fn|struct|enum|trait|impl|mod|const|static|type|union)\s+([A-Za-z_]\w*)/.exec(text);
-    if (item) return `${item[1]} ${item[2]}`;
     const macro = /macro_rules!\s*([A-Za-z_]\w*)/.exec(text);
-    return macro ? `macro ${macro[1]}` : 'the code';
+    const label = item ? `${item[1]} ${item[2]}` : macro ? `macro ${macro[1]}` : 'the code';
+    // A before/after answer gives both blocks the same label, and only one of them can be applied. The one that
+    // does not close what it opens is the *quote*, not the change — saying so on the button is the difference
+    // between picking the right block and picking the one that is refused (2026-10-31).
+    return unbalancedAnswer(text) !== undefined ? `${label} (excerpt)` : label;
 }
 
 /**
@@ -891,10 +1049,124 @@ export function keepsEveryItem(original: string, code: string): boolean {
 }
 
 /**
+ * Does this answer declare something that can sit at the top level of a Rust file?
+ *
+ * The one shape that cannot is a **fragment**: statements with no `fn`, no `impl`, no `mod`, no `struct`, no
+ * `const`, no macro, and no `use` line — the model answering a question about the inside of a function by
+ * quoting its lines. There is nowhere safe to put that: `addItemToFile` inserts after the caret line, so the
+ * fragment landed between `#![no_std]` and `#![no_main]`, which is not legal Rust (found 2026-10-31 while
+ * checking the "Implement in fn main" report).
+ *
+ * A `use` line alone *is* placeable — adding an import from an answer is a legitimate request, and
+ * `addItemToFile` knows where the header ends.
+ */
+export function placeableAnswer(code: string): boolean {
+    const text = stripBom(String(code ?? ''));
+    if (itemNames(text).length > 0) return true;
+    if (/(?:^|\n)\s*(?:#\[[^\]]*\]\s*)?macro_rules!\s+[A-Za-z_]\w*/.test(text)) return true;
+    return text.split(/\r?\n/).some((line) => isUseLine(line));
+}
+
+/**
+ * The question the refusal's "Ask for it in full" button sends into the chat.
+ *
+ * It exists because a refusal is only useful if it leads somewhere. On 2026-10-31 the model answered a stray
+ * character in `main()` with thirteen lines ending in `// ... rest of the function remains unchanged`; applying
+ * that would delete the other hundred, so it was refused — and the user was left with a modal, nothing applied,
+ * and no way to say "no, the *whole* function". Naming the item and saying what leaving code out costs is the
+ * one instruction a small model follows, so the button says exactly that, in the refusal's own words.
+ */
+export function retryQuestion(label: string | undefined, problem: string): string {
+    const name = (label ?? 'the code').replace(' (excerpt)', '').trim() || 'the code';
+    const elided = /^\s*The answer leaves code out \(([^)]*)\)/.exec(problem)?.[1];
+    const incomplete = /^\s*The answer is not a complete piece of Rust \(([^)]*)\)/.exec(problem)?.[1];
+    const why = elided !== undefined
+        ? `it left code out where \`${elided}\` stands`
+        : incomplete !== undefined
+            ? `it stopped in the middle (${incomplete})`
+            : 'it could not be applied';
+    return `That answer could not be applied — ${why}. Answer again with the WHOLE \`${name}\`: every line of ` +
+        'it, including the lines that do not change, and no `// ...` or any other placeholder. The answer ' +
+        'replaces the function as it is, so anything left out is deleted.';
+}
+
+/**
+ * The other block of the same answer that the user probably meant, when the one they clicked is a quote.
+ *
+ * WHY (reported 2026-10-31: *"when clicking on 'Ok' nothing happens"*). A before/after answer carries the quoted
+ * line and the fixed function, and both buttons are named after the same item. Clicking the quote was refused
+ * with a modal whose only button was OK — correct, and a dead end: the thing the user wanted was two lines
+ * above it in the answer.
+ *
+ * Only a block that does not close what it opens is replaced, and only by one that declares the same item (or a
+ * whole file, which carries every item). The last such block wins, because a before/after pair puts the fix
+ * after the quote.
+ */
+export function completeAlternative(blocks: string[], chosen: number): { code: string; label: string } | undefined {
+    const at = blocks[chosen];
+    if (!at || unbalancedAnswer(at) === undefined) return undefined;
+    const wanted = itemNames(at)[0];
+    for (let i = blocks.length - 1; i >= 0; i -= 1) {
+        if (i === chosen) continue;
+        const candidate = blocks[i];
+        if (!candidate) continue;
+        if (unbalancedAnswer(candidate) !== undefined) continue;
+        if (elisionMarker(candidate) !== undefined) continue;
+        const names = itemNames(candidate);
+        if (wanted !== undefined && !names.includes(wanted) && !looksLikeWholeFile(candidate)) continue;
+        return { code: candidate, label: codeBlockLabel(candidate) };
+    }
+    return undefined;
+}
+
+/**
+ * Why an answer is not a complete piece of Rust — an unclosed `{`, `(` or `[` — or `undefined` when it balances.
+ *
+ * THE FAILURE THIS CATCHES (reported 2026-10-31, and it is the shape a model actually produces). Asked about a
+ * stray character in `main()`, the answer quoted the *line* it was talking about:
+ *
+ *     #[embassy_executor::main(…)]
+ *     async fn main(spawner: Spawner) {9
+ *
+ * That is not a function, it is a sentence pointing at one — and `insertChatCode` replaced the real 102-line
+ * `main` with it, so the diff (honest, and correct as a diff) showed the whole body being deleted and an
+ * unclosed brace left behind. The same answer's second block, the complete function, applied perfectly: the
+ * difference between the two is exactly "does it close what it opens".
+ *
+ * Counting is line-based through `stripTrivia`, like `itemSpans` — so a `}` in a string or a comment is never
+ * read as a brace. A block comment that opens and does not close on its own line is treated the conservative
+ * way, as `itemSpans` already documents.
+ */
+export function unbalancedAnswer(code: string): string | undefined {
+    const text = stripBom(String(code ?? ''));
+    let braces = 0;
+    let parens = 0;
+    let brackets = 0;
+    for (const raw of text.split(/\r?\n/)) {
+        for (const ch of stripTrivia(raw)) {
+            if (ch === '{') braces += 1;
+            else if (ch === '}') braces -= 1;
+            else if (ch === '(') parens += 1;
+            else if (ch === ')') parens -= 1;
+            else if (ch === '[') brackets += 1;
+            else if (ch === ']') brackets -= 1;
+            if (braces < 0 || parens < 0 || brackets < 0) return 'a closing bracket comes before the one it closes';
+        }
+    }
+    if (braces > 0) return 'a `{` is opened and never closed';
+    if (parens > 0) return 'a `(` is opened and never closed';
+    if (brackets > 0) return 'a `[` is opened and never closed';
+    return undefined;
+}
+
+/**
  * Why an answer must not be applied as it stands, or `undefined` when it is safe.
  *
- * Two failures, both of them a file on disk losing code that nobody asked to lose:
+ * Four failures, all of them a file on disk losing code that nobody asked to lose:
  *  - the answer leaves code out behind a placeholder, so applying it deletes what the placeholder stands for;
+ *  - the answer is not a complete item — it quotes a line instead of a function, and applying it deletes the
+ *    body it was quoting;
+ *  - the answer is a fragment with no top-level form, so pasting it anywhere breaks the file;
  *  - the answer claims to be the file but has dropped items the file already had.
  *
  * Returned as a sentence rather than a boolean because every caller shows it to the developer, and the fix is
@@ -907,6 +1179,21 @@ export function chatCodeProblem(original: string, code: string): string | undefi
             `The answer leaves code out (${marker}), so it is not the whole file it looks like — applying it ` +
             'would delete whatever that stands for. Ask again for the change only, or put the ✎ AI block inside ' +
             'the function you want changed.'
+        );
+    }
+    const broken = unbalancedAnswer(code);
+    if (broken !== undefined) {
+        return (
+            `The answer is not a complete piece of Rust (${broken}) — it usually means the model quoted the ` +
+            'line it was talking about instead of the whole function, and applying it would replace the real ' +
+            'function with that line. Read the answer, or apply the block that carries the whole function.'
+        );
+    }
+    if (!looksLikeWholeFile(code) && !placeableAnswer(code)) {
+        return (
+            'The answer is a fragment — statements with no function, struct, impl or `use` line around them — ' +
+            'so there is nowhere in the file it could go without breaking it. Ask again for the change to the ' +
+            'function you are looking at, or for the whole file.'
         );
     }
     if (!looksLikeWholeFile(code) || keepsEveryItem(original, code)) return undefined;
@@ -952,6 +1239,13 @@ export function insertChatCode(text: string, code: string): string {
     // function the placeholder was vague about — the file survives, and the function's body does not. The
     // caller refuses first and explains (`chatCodeProblem`); this is the last line of defence.
     if (elisionMarker(code) !== undefined) return text;
+    // Nor is anything placed from an answer that opens more than it closes: the model quoted a line, the file
+    // would lose the function around it, and the brace it left open breaks everything after it.
+    if (unbalancedAnswer(code) !== undefined) return text;
+    // A fragment has no top-level form: with the caret at line 1 it would land between the file's inner
+    // attributes. `chatCodeProblem` refuses it with a sentence; this is the last line of defence, for a caller
+    // that skips that check.
+    if (!looksLikeWholeFile(code) && !placeableAnswer(code)) return text;
     // Whole file only when it is *proven* to be one: it carries no placeholder, and it has not dropped an item
     // the file already had. Otherwise it is treated as items, which cannot lose the rest of the file.
     if (looksLikeWholeFile(code) && keepsEveryItem(text, code)) return code;
@@ -974,6 +1268,67 @@ export function insertChatCode(text: string, code: string): string {
 
 export function detectEol(text: string): string {
     return String(text ?? '').includes('\r\n') ? '\r\n' : '\n';
+}
+
+/**
+ * Whether an answer would replace an existing item with much less code than it had, and the numbers that say so.
+ *
+ * WHY THIS EXISTS (reported 2026-10-31). A stray character in `main()` came back answered as a `fn main` with
+ * two lines in it: the model had written the *change* and not the body. Nothing refused it — there was no
+ * placeholder to catch (`elisionMarker`), it is not a whole file, and `changeSummary`'s "lossy" rule wants more
+ * than twenty lines gone, which a forty-line firmware `main` never reaches. So the diff was the only warning,
+ * and the diff showed a deletion of code the user never asked to delete.
+ *
+ * It is a **question, not a refusal**: replacing a function wholesale is a legitimate request ("restructure
+ * this"), and the answer with the diff is the right place to decide. What must not happen is applying it
+ * without being told.
+ */
+export interface ItemReplacementRisk {
+    /** `fn main` — the same phrase the button under the answer uses. */
+    name: string;
+    /** Non-empty lines in the item as the file has it, and as the answer would leave it. */
+    before: number;
+    after: number;
+    /** Lines of the original that the answer does not carry: what applying it deletes. */
+    lost: number;
+}
+
+/** Non-empty lines, which is what "this function's size" means to a reader. */
+function codeLines(text: string): number {
+    return String(text ?? '').split(/\r?\n/).filter((line) => line.trim() !== '').length;
+}
+
+export function itemReplacementRisk(original: string, code: string): ItemReplacementRisk | undefined {
+    const text = stripBom(original);
+    const snippet = `${String(code ?? '').replace(/\s+$/, '')}\n`;
+    // The answer that left code out is refused outright elsewhere, and a whole file is a different question:
+    // this is about one item being quietly emptied.
+    if (elisionMarker(snippet) !== undefined) return undefined;
+    if (looksLikeWholeFile(snippet) && keepsEveryItem(text, snippet)) return undefined;
+    const parsed = parseNewItemAnswer(snippet, '');
+    const item = unwrapItem(parsed.item).item;
+    const named = /(?:^|\n)\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:unsafe\s+)?fn\s+([A-Za-z_]\w*)/.exec(item);
+    if (!named || !named[1]) return undefined;
+    const existing = fnSignatures(text).find((f) => f.name === named[1]);
+    const span = existing ? enclosingItemSpan(text, existing.line) : undefined;
+    if (!span) return undefined; // a new function replaces nothing, so it cannot delete anything
+    const offsets = itemOffsets(text, span);
+    const before = text.slice(offsets.start, offsets.end);
+    const change = changeSummary(before, item);
+    const beforeLines = codeLines(before);
+    const afterLines = codeLines(item);
+    // Two shapes of "the body was not reproduced": the answer is a fraction of the function (any size), or more
+    // lines left than arrived with a few of them gone (the size rule alone misses an insert-and-delete rewrite).
+    // A one-line fix is neither: it changes lines, it does not shorten the function.
+    const fraction = afterLines >= 1 && beforeLines - afterLines >= 2 && afterLines < beforeLines * 0.7;
+    const netLoss = change.removed >= 4 && change.removed > change.added;
+    if (!fraction && !netLoss) return undefined;
+    return {
+        name: `fn ${named[1]}`,
+        before: beforeLines,
+        after: afterLines,
+        lost: change.removed
+    };
 }
 
 /**

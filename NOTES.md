@@ -8074,3 +8074,70 @@ DevKitC designer (ST7789), DevKitC designer (ILI9341 + touch), DevKitC-mirror of
   the literal; `tsc` then reports `TS1005: ';' expected` and a second error on the same line, which reads like a
   CSS syntax error in a file that has none. Write CSS comments without backticks, and quote selectors in plain
   words instead.
+
+## §160 — The AI Assist sees what the editor sees, and a stray character teaches it to stop (0.17.x, 2026-10-31)
+
+One session, driven by what the bench actually did. Everything below is in `src/ai/**` and `src/ui/aiChatView.ts`
+unless it says otherwise; the release that carries it is **0.17.13** (see CHANGELOG).
+
+**What was built, in the order it was asked for.** The chat now follows the newest row, reads the *selection*,
+reads the **Problems pane** and the **Debug Console**, has a **Console only** switch, sends on **Enter**
+(Shift+Enter newlines), shows `Model loaded and active` once a model has answered, and has an **Abort** button. A
+`Fix this line` quick fix asks for **one line** instead of a whole function.
+
+**The traps, in the order they bit.**
+
+- **The 200-token budget was only meant for one request, and the rescue quietly removed it.** `chatWithRescue`
+  retries after starting a `llama-server` by calling `configWithEndpoint(assistantConfig())` — fresh settings, so
+  the caller's `maxTokens`/`temperature` were replaced by the panel's 5120. The retry now takes the *address* from
+  the fresh settings and keeps the *request's* answer shape. Anything that caps a request must be re-applied at
+  the retry, or it is not a cap.
+- **A prompt's *voice* beats its user message.** The first `buildLineFixPrompt` reused the whole-item
+  `systemMessage()` — "you return complete, compilable Rust … you keep the function's attributes, signature and
+  indentation" — and asked for one line in the user message. The model answered with the function. A line fix
+  needs `lineSystemMessage()`, and that message must not contain the words *signature* or *attributes* at all.
+  The same lever, on the other side: the chat's own prompt *demands* the item whole, which is why the chat will
+  never produce a minimal diff, and should not (a partial item cannot be applied safely).
+- **`max_tokens` is part of the instruction.** With 4096 available a model may rewrite a function; with 200 it
+  cannot. `temperature: 0` on that request as well — no sampling noise, no wandering.
+- **The failure that started it: a model answering with the *quote* of a line.** Asked about a stray `9`, it
+  replied `async fn main(spawner: Spawner) {9` and then the "fixed" function with
+  `// ... rest of the function remains unchanged`. `chatCodeProblem` missed both (no placeholder it recognised,
+  not a whole file), so the quote replaced the real 102-line `main` with one line. `unbalancedAnswer()` is the
+  missing rule: balance `{}`, `()` and `[]` through `stripTrivia`, refuse what does not close, and label such a
+  block `(excerpt)` on its button. Verified on the user's own `src/main.rs` (246 lines): the quote → refused,
+  the complete block → 246 lines, byte-identical.
+- **A refusal with one button is a dead end.** Three ways out, in the order a user wants them: *Apply the
+  complete block* (found by `completeAlternative` in the same answer), *Fix just that line* (the compiler's own
+  first error), *Ask for it in full* (`retryQuestion` — names the item, forbids placeholders, says what leaving
+  code out costs).
+- **`addItemToFile` with an empty item inserted three blank lines** (`insertItem` adds a blank either side of
+  nothing). A `use`-only answer now skips the item insertion entirely.
+- **"Loaded" is not only what LM Studio says.** `Discovery.loaded` knows nothing about a `llama-server` or any
+  other OpenAI-compatible endpoint, so the status line said `not in memory yet` after a whole conversation.
+  `noteModelAnswered`/`answeredHere` record the answer itself, and `ask()` redraws the status line when a reply
+  arrives — the line had only ever been drawn on open and on save.
+- **Reading a pane.** Problems is `vscode.languages.getDiagnostics()` (a read, not a scrape). The Debug Console
+  is a `DebugAdapterTracker` (`event: output|stopped|exited`), registered at activation because a tracker sees
+  nothing that happened before it attached, and filtered to `probe-rs*` sessions. Output is only readable when
+  the extension owns it (`log()` buffers what it wrote). The **Terminal** has no API at all; the honest route is
+  a captured process (`buildProject`), and shell integration needs `engines.vscode` 1.93.
+- **`#log` was `flex: 1 1 auto`**, so the log sized itself from the transcript and the *page* grew instead —
+  the newest row could sit below the visible area while `scrollTop` was at its maximum. `flex: 1 1 0` makes the
+  log the element that scrolls. The follow rule is "a decrease in `scrollTop` is the reader moving up", never
+  "is it at the bottom now" — content growing leaves `scrollTop` alone, so the second rule reads an answer
+  arriving as a scroll away and stops following exactly when it matters.
+- **The model's own answers are the best test corpus.** Every guard here was checked against the transcripts in
+  `globalStorage/grumpy.grumpy-rusty-platform/ai-chats.json` and the user's real `main.rs`, not against invented
+  answers — which is how the quote-vs-function distinction became a rule instead of a guess.
+
+**Known gaps left deliberately:** Rust Assist's radio state is not in the settings snapshot (a reloaded window
+comes back on Full Assist), `#status` is redrawn per answer rather than per token, and the line fix refuses a
+multi-line answer instead of trimming it — that is a different request, and the function-level fix is the one
+that can carry it.
+
+**Traps that bit twice in this session, both mine.** A backtick inside a CSS/JS comment inside the
+`html()` template literal ends the literal (TS1005 on a line with no CSS in it) — this is now the second NOTES
+entry about it, so quote selectors in plain words. And `replace_string_in_file` whose `oldString` ends with a
+newline and whose `newString` does not will **glue the next line onto the previous one**; always re-read the
+edit, and let `tsc` catch the ones that break syntax.
