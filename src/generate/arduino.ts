@@ -322,6 +322,12 @@ export function generateArduinoProjectFiles(options: GenerateOptions): Generated
     }
 
     if (template === 'designer') {
+        // LVGL: the widget library the design is drawn with. Its configuration has to live in the project,
+        // and LVGL only looks for `lv_conf.h` where a compiler flag points (see the build properties in
+        // toolchain/arduinoBuild.ts) -- which is why the file sits at the root and not in src/.
+        files.push({ path: 'lv_conf.h', content: lvConfHeader() });
+        files.push({ path: 'src/lvgl_display.h', content: lvglDisplayHeader() });
+        files.push({ path: 'src/lvgl_display.cpp', content: lvglDisplaySource() });
         files.push({ path: 'src/ui.h', content: uiHeader() });
         files.push({ path: 'src/ui.cpp', content: uiSource() });
         files.push({ path: 'src/ui_handlers.h', content: handlersHeader() });
@@ -400,7 +406,7 @@ function mainSource(request: {
         includes.push(`#include "panel.h"`);
     }
     if (template === 'designer') {
-        includes.push(`#include "ui.h"`);
+        includes.push(`#include "ui.h"`, `#include "lvgl_display.h"`);
     }
 
     const setupBody: string[] = [led.setup];
@@ -411,7 +417,7 @@ function mainSource(request: {
         setupBody.push('    panel_draw_test();');
     }
     if (template === 'designer') {
-        setupBody.push('    ui_init();');
+        setupBody.push('    lvgl_display_begin();', '    ui_init();');
     }
 
     const loopBody: string[] = [];
@@ -421,7 +427,9 @@ function mainSource(request: {
     if (template === 'display') {
         loopBody.push('    panel_blink_marker();', '    delay(500);');
     } else if (template === 'designer') {
-        loopBody.push('    ui_tick();', '    delay(20);');
+        // LVGL owns the screen: it is asked for the next frame every few milliseconds and never asked to be
+        // drawn by hand. The delay is what keeps the loop from spinning on nothing.
+        loopBody.push('    lvgl_display_tick();', '    ui_tick();', '    delay(5);');
     } else {
         loopBody.push('    delay(200);');
     }
@@ -527,6 +535,14 @@ void panel_fill(uint16_t colour);
 
 /** Fills one rectangle; clipped to the screen. */
 void panel_fill_rect(int x, int y, int w, int h, uint16_t colour);
+
+/**
+ * Writes a block of RGB565 pixels straight to the panel.
+ *
+ * This is the call LVGL's flush hands its drawing to: the rows are already in the panel's own colour format,
+ * so nothing is converted and nothing is copied twice.
+ */
+void panel_blit(int x, int y, int w, int h, const uint16_t *pixels);
 
 /** The frame, the corner markers, three colour bands and a square to be blinked by panel_blink_marker(). */
 void panel_draw_test();
@@ -713,17 +729,11 @@ int panel_height() {
     return gHeight;
 }
 
-void panel_fill_rect(int x, int y, int w, int h, uint16_t colour) {
-    if (x >= gWidth || y >= gHeight || w <= 0 || h <= 0) {
-        return;
+/** Opens the address window a write is about to fill. */
+bool open_window(int x, int y, int w, int h) {
+    if (x < 0 || y < 0 || w <= 0 || h <= 0 || x >= gWidth || y >= gHeight) {
+        return false;
     }
-    if (x + w > gWidth) {
-        w = gWidth - x;
-    }
-    if (y + h > gHeight) {
-        h = gHeight - y;
-    }
-
     const uint8_t caset[] = {static_cast<uint8_t>(x >> 8), static_cast<uint8_t>(x & 0xFF),
                              static_cast<uint8_t>((x + w - 1) >> 8),
                              static_cast<uint8_t>((x + w - 1) & 0xFF)};
@@ -733,25 +743,62 @@ void panel_fill_rect(int x, int y, int w, int h, uint16_t colour) {
                              static_cast<uint8_t>((y + h - 1) & 0xFF)};
     write_command_data(0x2B, raset, sizeof(raset));
     write_command(0x2C); // RAMWR
+    return true;
+}
 
+/** Streams a block of RGB565 pixels, row by row, with no buffer of its own. */
+void stream_pixels(const uint16_t *pixels, int stride, int w, int h) {
+    digitalWrite(kDc, HIGH);
+    digitalWrite(kCs, LOW);
+    panelSpi.beginTransaction(SPISettings(kSpiHz, MSBFIRST, SPI_MODE0));
+    for (int row = 0; row < h; row++) {
+        panelSpi.transfer(const_cast<uint16_t *>(pixels + row * stride), static_cast<size_t>(w) * 2);
+    }
+    panelSpi.endTransaction();
+    digitalWrite(kCs, HIGH);
+}
+
+void panel_blit(int x, int y, int w, int h, const uint16_t *pixels) {
+    if (pixels == nullptr) {
+        return;
+    }
+    const int stride = w;
+    if (x + w > gWidth) {
+        w = gWidth - x;
+    }
+    if (y + h > gHeight) {
+        h = gHeight - y;
+    }
+    if (!open_window(x, y, w, h)) {
+        return;
+    }
+    stream_pixels(pixels, stride, w, h);
+}
+
+void panel_fill_rect(int x, int y, int w, int h, uint16_t colour) {
+    if (x + w > gWidth) {
+        w = gWidth - x;
+    }
+    if (y + h > gHeight) {
+        h = gHeight - y;
+    }
+    if (!open_window(x, y, w, h)) {
+        return;
+    }
     // One line at a time through a small buffer: a full-screen fill would need 150 KB of RAM on a 240x320
     // panel, which is more than the smaller boards have.
-    static uint8_t line[240 * 2];
-    const int pixels = w < 240 ? w : 240;
-    const uint8_t high = static_cast<uint8_t>(colour >> 8);
-    const uint8_t low = static_cast<uint8_t>(colour & 0xFF);
+    static uint16_t line[320];
+    const int pixels = w < 320 ? w : 320;
     for (int i = 0; i < pixels; i++) {
-        line[i * 2] = high;
-        line[i * 2 + 1] = low;
+        line[i] = colour;
     }
-
     digitalWrite(kDc, HIGH);
     digitalWrite(kCs, LOW);
     panelSpi.beginTransaction(SPISettings(kSpiHz, MSBFIRST, SPI_MODE0));
     for (int row = 0; row < h; row++) {
         for (int chunk = 0; chunk < w; chunk += pixels) {
             const int count = (w - chunk) < pixels ? (w - chunk) : pixels;
-            panelSpi.transfer(line, count * 2);
+            panelSpi.transfer(line, static_cast<size_t>(count) * 2);
         }
     }
     panelSpi.endTransaction();
@@ -812,22 +859,14 @@ function uiHeader(): string {
 
 #include <Arduino.h>
 
-// The screen. This is the file the Designer fills in when the design changes; a person's code belongs in
+// The screen. The Designer rewrites this pair of files from the design; a person's code belongs in
 // src/ui_handlers.cpp.
 
-/** Draws the screen the design describes. Called once from setup(), and again whenever it has to be repainted. */
+/** Builds the screen the design describes. Called once from setup(), after the display is up. */
 void ui_init();
 
-/** Runs one turn of the screen's own work: repaints what changed. Called from loop(). */
+/** Runs one turn of the screen's own work. Called from loop(); LVGL does the drawing. */
 void ui_tick();
-
-/**
- * Presses or releases the skeleton's button.
- *
- * The Designer's event code calls this with the button's new state; a handler in src/ui_handlers.cpp can too,
- * which is what makes the generated event stub work from the first build.
- */
-void ui_set_button_pressed(bool pressed);
 `;
 }
 
@@ -838,61 +877,184 @@ function uiSource(): string {
 
 #include "ui.h"
 
+#include "lv_conf.h"
+#include <lvgl.h>
+
 #include "panel.h"
 #include "ui_handlers.h"
 
-// The first screen a Designer project is born with: a frame, a title bar and one button, drawn directly on
-// the panel. This is the skeleton the Designer's object tree replaces, and what it replaces is this file's
-// body, not its shape: ui_init()/ui_tick() stay, because main.cpp calls them.
+// The first screen a Designer project is born with: a title bar and one button, as LVGL objects. The
+// Designer replaces the body of this file with the object tree of the design; ui_init() and ui_tick() stay,
+// because main.cpp calls them.
 
 namespace {
 
-constexpr uint16_t kBackground = 0x1082; // very dark grey
-constexpr uint16_t kAccent = 0x05FF;     // cyan
-constexpr uint16_t kInk = 0xFFFF;
-
-int gButtonX = 0;
-int gButtonY = 0;
-int gButtonW = 0;
-int gButtonH = 0;
+lv_obj_t *gButton = nullptr;
+lv_obj_t *gButtonLabel = nullptr;
 bool gPressed = false;
-/** What the button was last painted as, so a turn with nothing to say costs nothing. */
-bool gPaintedPressed = false;
 
-void paint_button() {
-    panel_fill_rect(gButtonX, gButtonY, gButtonW, gButtonH, gPressed ? kInk : kAccent);
-    gPaintedPressed = gPressed;
+void style_common(lv_obj_t *object) {
+    lv_obj_set_style_radius(object, 6, 0);
+    lv_obj_set_style_border_width(object, 0, 0);
+}
+
+void on_button_pressed(lv_event_t *event) {
+    (void)event;
+    // The skeleton's own event, so the wiring from a click to src/ui_handlers.cpp works from the first
+    // build: the Designer appends one such function per widget event it is told about.
+    on_screen_tapped();
 }
 
 } // namespace
 
 void ui_init() {
-    const int width = panel_width();
-    const int height = panel_height();
+    lv_obj_t *screen = lv_screen_active();
+    lv_obj_set_style_bg_color(screen, lv_color_hex(0x101418), 0);
 
-    gButtonW = width / 2;
-    gButtonH = height / 5;
-    gButtonX = (width - gButtonW) / 2;
-    gButtonY = (height - gButtonH) / 2;
+    lv_obj_t *title = lv_label_create(screen);
+    lv_label_set_text(title, "Grumpy's Rusty Platform");
+    lv_obj_set_style_text_color(title, lv_color_hex(0x05C8FF), 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 8);
 
-    panel_fill(kBackground);
-    panel_fill_rect(0, 0, width, height / 8, kAccent); // the title bar
-    gPaintedPressed = !gPressed; // force the button's first paint
-    ui_tick();
+    gButton = lv_button_create(screen);
+    style_common(gButton);
+    lv_obj_set_size(gButton, lv_pct(60), 56);
+    lv_obj_align(gButton, LV_ALIGN_CENTER, 0, 10);
+    lv_obj_set_style_bg_color(gButton, lv_color_hex(0x05C8FF), 0);
 
-    Serial.printf("ui: %dx%d, button at %d,%d %dx%d\\n", width, height, gButtonX, gButtonY, gButtonW, gButtonH);
-}
+    gButtonLabel = lv_label_create(gButton);
+    lv_label_set_text(gButtonLabel, "Press me");
+    lv_obj_set_style_text_color(gButtonLabel, lv_color_hex(0x061018), 0);
+    lv_obj_center(gButtonLabel);
 
-void ui_set_button_pressed(bool pressed) {
-    gPressed = pressed;
+    lv_obj_add_event_cb(gButton, on_button_pressed, LV_EVENT_CLICKED, nullptr);
+
+    Serial.printf("ui: %dx%d\\n", panel_width(), panel_height());
 }
 
 void ui_tick() {
-    // The screen keeps its own state and repaints only what changed. An event arrives through
-    // src/ui_handlers.cpp, which is where the Designer appends the callback for each widget it is told about.
-    if (gPressed != gPaintedPressed) {
-        paint_button();
+    // Nothing of this skeleton owns a timer: LVGL is driven by lvgl_display_tick() in the loop, and every
+    // change comes from an event. The Designer's screens use this for what has to be recomputed, such as a
+    // clock's hands.
+    if (gButton != nullptr && gPressed) {
+        gPressed = false;
     }
+}
+`;
+}
+
+// ------------------------------------------------------------------------ LVGL
+
+/**
+ * The LVGL configuration this project builds with.
+ *
+ * Only what differs from LVGL's own defaults is set: the colour format of the glass (RGB565), a heap that fits
+ * a 320x240 screen with room to spare, no OS (the Arduino loop is the scheduler) and the one font the design
+ * format starts with. Everything else is LVGL's default, which is what makes this file short enough to read.
+ */
+function lvConfHeader(): string {
+    return `/* Grumpy's Rusty Platform -- the LVGL configuration for this project.
+ *
+ * This file is at the project root rather than in src/ because that is where LVGL looks: the build passes
+ * \`-DLV_CONF_INCLUDE_SIMPLE -I<project>\` (see the README), and without that flag LVGL looks for
+ * \`lv_conf.h\` inside its own library folder instead.
+ *
+ * Anything not set here is LVGL's own default. */
+#ifndef LV_CONF_H
+#define LV_CONF_H
+
+/* The panels this extension drives are RGB565. LV_COLOR_DEPTH is deprecated in LVGL 9 and kept only so that
+ * an older 9.x still agrees with a newer one. */
+#define LV_COLOR_FORMAT_DEFAULT LV_COLOR_FORMAT_RGB565
+#define LV_COLOR_DEPTH 16
+
+/* 64 KB: a full 320x240 screen is 150 KB, so LVGL renders through the display buffer and never holds a whole
+ * frame. This is the heap for objects, styles and strings. */
+#define LV_MEM_SIZE (64 * 1024U)
+
+#define LV_USE_OS LV_OS_NONE
+#define LV_USE_LOG 0
+
+/* The font a label starts with. Every other size is off, which is most of LVGL's code size. */
+#define LV_FONT_MONTSERRAT_14 1
+#define LV_FONT_MONTSERRAT_16 1
+#define LV_FONT_DEFAULT &lv_font_montserrat_14
+
+#endif /* LV_CONF_H */
+`;
+}
+
+function lvglDisplayHeader(): string {
+    return `${GENERATED_NOTE}
+
+#pragma once
+
+#include <Arduino.h>
+
+// LVGL's view of the panel: one display, one drawing buffer, and a tick that comes from millis().
+
+/** Initialises LVGL and binds it to the panel. Call after panel_init(). */
+void lvgl_display_begin();
+
+/** Gives LVGL its turn: runs the timers and flushes what changed. Call from loop(). */
+void lvgl_display_tick();
+`;
+}
+
+function lvglDisplaySource(): string {
+    return `${GENERATED_NOTE}
+
+#include "lvgl_display.h"
+
+#include "lv_conf.h"
+#include <lvgl.h>
+
+#include "panel.h"
+
+// The bridge between LVGL and the glass.
+//
+// LVGL renders into a buffer of its own and hands finished areas to a flush callback; this is that callback,
+// and it does one thing -- put the pixels where they belong through the panel driver. The buffer is a band of
+// the screen rather than the whole thing: a full 320x240 frame is 150 KB, which no Pico has to spare.
+
+namespace {
+
+// 20 lines of the widest panel this extension drives. 12.8 KB, and small enough to leave the rest of the RAM
+// to the sketch.
+constexpr int kMaxWidth = 320;
+constexpr int kBandLines = 20;
+uint16_t gBuffer[kMaxWidth * kBandLines];
+
+lv_display_t *gDisplay = nullptr;
+
+void flush(lv_display_t *display, const lv_area_t *area, uint8_t *pixels) {
+    const int w = static_cast<int>(area->x2 - area->x1) + 1;
+    const int h = static_cast<int>(area->y2 - area->y1) + 1;
+    panel_blit(static_cast<int>(area->x1), static_cast<int>(area->y1), w, h,
+               reinterpret_cast<const uint16_t *>(pixels));
+    lv_display_flush_ready(display);
+}
+
+/** LVGL's clock. millis() is what a sketch already has; nothing here keeps a second one. */
+uint32_t tick_ms() {
+    return static_cast<uint32_t>(millis());
+}
+
+} // namespace
+
+void lvgl_display_begin() {
+    lv_init();
+    lv_tick_set_cb(tick_ms);
+
+    gDisplay = lv_display_create(panel_width(), panel_height());
+    lv_display_set_flush_cb(gDisplay, flush);
+    lv_display_set_buffers(gDisplay, gBuffer, nullptr, sizeof(gBuffer), LV_DISPLAY_RENDER_MODE_PARTIAL);
+
+    Serial.printf("lvgl: %s, %dx%d\\n", lv_version_info(), panel_width(), panel_height());
+}
+
+void lvgl_display_tick() {
+    lv_timer_handler();
 }
 `;
 }
@@ -907,7 +1069,15 @@ function handlersHeader(): string {
 #include <Arduino.h>
 
 // Your code goes here. The Designer appends one function per widget event, and never rewrites what it finds;
-// this header keeps the prototypes and the two calls this file makes into the sketch.
+// this header keeps their prototypes so src/ui.cpp can call them.
+
+/**
+ * The skeleton screen's one event. Replace the body in src/ui_handlers.cpp with what the button should do.
+ *
+ * extern "C" because that is the linkage the Designer's generated call uses: a C++ function with a mangled name
+ * would not resolve from a generated file that was written for a widget rather than for a class.
+ */
+extern "C" void on_screen_tapped();
 `;
 }
 
@@ -929,9 +1099,9 @@ function handlersSource(): string {
 // The skeleton's own hook, so there is a working example in the file from the first build: pressing the
 // screen's button for a moment proves the loop, the panel and this file are all connected.
 extern "C" void on_screen_tapped() {
-    ui_set_button_pressed(true);
-    delay(80);
-    ui_set_button_pressed(false);
+    // The skeleton's own event. Replace this body with what the button should do; the Designer appends one
+    // function per widget event and never rewrites this one.
+    Serial.println("on_screen_tapped");
 }
 `;
 }
@@ -973,8 +1143,16 @@ function readme(request: {
         '',
         '```bash',
         'arduino-cli core install ' + core,
-        `arduino-cli compile --profile default`,
-        `arduino-cli upload --profile default -p /dev/ttyACM0`,
+        ...(panel !== undefined && template === 'designer'
+            ? [
+                  'arduino-cli lib install lvgl',
+                  '# LVGL needs its config pointed at, and that is what these two flags do:',
+                  'arduino-cli compile --fqbn ' + fqbn +
+                      ' --build-property "compiler.cpp.extra_flags=-DLV_CONF_INCLUDE_SIMPLE -I$PWD"' +
+                      ' --build-property "compiler.c.extra_flags=-DLV_CONF_INCLUDE_SIMPLE -I$PWD"',
+                  'arduino-cli upload --fqbn ' + fqbn + ' -p /dev/ttyACM0',
+              ]
+            : [`arduino-cli compile --profile default`, `arduino-cli upload --profile default -p /dev/ttyACM0`]),
         '```',
         '',
         `The board is recorded in \`sketch.yaml\` as \`${fqbn}\`, so no \`--fqbn\` is needed.`,

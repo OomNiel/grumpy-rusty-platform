@@ -5,6 +5,7 @@
 #include "main.h"
 #include "panel.h"
 #include "ui.h"
+#include "lvgl_display.h"
 
 // The Arduino contract: setup() runs once, loop() forever. The Rust templates split the same two halves into
 // an Embassy main and a task, so a project of either language has one obvious place for "at power on" and
@@ -13,6 +14,7 @@
 void setup() {
     pinMode(4, OUTPUT); // the offered LED pin
     panel_init();
+    lvgl_display_begin();
     ui_init();
 
     Serial.begin(115200);
@@ -25,6 +27,7 @@ void loop() {
     static bool ledOn = false;
     ledOn = !ledOn;
     digitalWrite(4, ledOn ? HIGH : LOW);
+    lvgl_display_tick();
     ui_tick();
-    delay(20);
+    delay(5);
 }

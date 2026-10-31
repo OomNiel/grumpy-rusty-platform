@@ -3,59 +3,66 @@
 
 #include "ui.h"
 
+#include "lv_conf.h"
+#include <lvgl.h>
+
 #include "panel.h"
 #include "ui_handlers.h"
 
-// The first screen a Designer project is born with: a frame, a title bar and one button, drawn directly on
-// the panel. This is the skeleton the Designer's object tree replaces, and what it replaces is this file's
-// body, not its shape: ui_init()/ui_tick() stay, because main.cpp calls them.
+// The first screen a Designer project is born with: a title bar and one button, as LVGL objects. The
+// Designer replaces the body of this file with the object tree of the design; ui_init() and ui_tick() stay,
+// because main.cpp calls them.
 
 namespace {
 
-constexpr uint16_t kBackground = 0x1082; // very dark grey
-constexpr uint16_t kAccent = 0x05FF;     // cyan
-constexpr uint16_t kInk = 0xFFFF;
-
-int gButtonX = 0;
-int gButtonY = 0;
-int gButtonW = 0;
-int gButtonH = 0;
+lv_obj_t *gButton = nullptr;
+lv_obj_t *gButtonLabel = nullptr;
 bool gPressed = false;
-/** What the button was last painted as, so a turn with nothing to say costs nothing. */
-bool gPaintedPressed = false;
 
-void paint_button() {
-    panel_fill_rect(gButtonX, gButtonY, gButtonW, gButtonH, gPressed ? kInk : kAccent);
-    gPaintedPressed = gPressed;
+void style_common(lv_obj_t *object) {
+    lv_obj_set_style_radius(object, 6, 0);
+    lv_obj_set_style_border_width(object, 0, 0);
+}
+
+void on_button_pressed(lv_event_t *event) {
+    (void)event;
+    // The skeleton's own event, so the wiring from a click to src/ui_handlers.cpp works from the first
+    // build: the Designer appends one such function per widget event it is told about.
+    on_screen_tapped();
 }
 
 } // namespace
 
 void ui_init() {
-    const int width = panel_width();
-    const int height = panel_height();
+    lv_obj_t *screen = lv_screen_active();
+    lv_obj_set_style_bg_color(screen, lv_color_hex(0x101418), 0);
 
-    gButtonW = width / 2;
-    gButtonH = height / 5;
-    gButtonX = (width - gButtonW) / 2;
-    gButtonY = (height - gButtonH) / 2;
+    lv_obj_t *title = lv_label_create(screen);
+    lv_label_set_text(title, "Grumpy's Rusty Platform");
+    lv_obj_set_style_text_color(title, lv_color_hex(0x05C8FF), 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 8);
 
-    panel_fill(kBackground);
-    panel_fill_rect(0, 0, width, height / 8, kAccent); // the title bar
-    gPaintedPressed = !gPressed; // force the button's first paint
-    ui_tick();
+    gButton = lv_button_create(screen);
+    style_common(gButton);
+    lv_obj_set_size(gButton, lv_pct(60), 56);
+    lv_obj_align(gButton, LV_ALIGN_CENTER, 0, 10);
+    lv_obj_set_style_bg_color(gButton, lv_color_hex(0x05C8FF), 0);
 
-    Serial.printf("ui: %dx%d, button at %d,%d %dx%d\n", width, height, gButtonX, gButtonY, gButtonW, gButtonH);
-}
+    gButtonLabel = lv_label_create(gButton);
+    lv_label_set_text(gButtonLabel, "Press me");
+    lv_obj_set_style_text_color(gButtonLabel, lv_color_hex(0x061018), 0);
+    lv_obj_center(gButtonLabel);
 
-void ui_set_button_pressed(bool pressed) {
-    gPressed = pressed;
+    lv_obj_add_event_cb(gButton, on_button_pressed, LV_EVENT_CLICKED, nullptr);
+
+    Serial.printf("ui: %dx%d\n", panel_width(), panel_height());
 }
 
 void ui_tick() {
-    // The screen keeps its own state and repaints only what changed. An event arrives through
-    // src/ui_handlers.cpp, which is where the Designer appends the callback for each widget it is told about.
-    if (gPressed != gPaintedPressed) {
-        paint_button();
+    // Nothing of this skeleton owns a timer: LVGL is driven by lvgl_display_tick() in the loop, and every
+    // change comes from an event. The Designer's screens use this for what has to be recomputed, such as a
+    // clock's hands.
+    if (gButton != nullptr && gPressed) {
+        gPressed = false;
     }
 }

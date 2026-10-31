@@ -1,8 +1,8 @@
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { ExecFn, execFileFn, findExecutable } from '../util/exec';
+import { ExecFn, execFileFn } from '../util/exec';
+import { arduinoCliPath } from './arduinoCli';
 import {
     ARDUINO_BUILD_DIR,
     INTELLISENSE_CONFIG_PATH,
@@ -21,44 +21,6 @@ import {
  * This is the first arduino-cli call in the extension; the detect/build/upload work of
  * `plans/arduino-backend.md` phase 3 will grow from it.
  */
-
-/** Where a locally installed `arduino-cli` usually is when it is not on the PATH. */
-function arduinoCliCandidates(): string[] {
-    const exe = process.platform === 'win32' ? 'arduino-cli.exe' : 'arduino-cli';
-    const home = os.homedir();
-    return [
-        path.join(home, '.local', 'bin', exe),
-        path.join(home, 'bin', exe),
-        path.join(home, '.arduino15', 'bin', exe),
-        // The official installer's default on macOS and its per-user Windows equivalent.
-        '/usr/local/bin/arduino-cli',
-        '/opt/homebrew/bin/arduino-cli',
-        path.join(process.env.LOCALAPPDATA ?? path.join(home, 'AppData', 'Local'), 'Arduino15', exe),
-    ];
-}
-
-function isExecutable(candidate: string): boolean {
-    try {
-        fs.accessSync(candidate, fs.constants.X_OK);
-        return true;
-    } catch {
-        return false;
-    }
-}
-
-/**
- * The `arduino-cli` this window should use.
- *
- * PATH first (so a version manager's choice wins), then the usual install locations: VS Code started from a
- * desktop launcher does not always inherit the PATH a terminal has.
- */
-export function arduinoCliPath(): string | undefined {
-    const onPath = findExecutable('arduino-cli');
-    if (onPath !== undefined) {
-        return onPath;
-    }
-    return arduinoCliCandidates().find(isExecutable);
-}
 
 export type IntelliSenseOutcome = 'written' | 'no-cli' | 'no-fqbn' | 'failed';
 

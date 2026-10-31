@@ -16,7 +16,7 @@
 // The skeleton's own hook, so there is a working example in the file from the first build: pressing the
 // screen's button for a moment proves the loop, the panel and this file are all connected.
 extern "C" void on_screen_tapped() {
-    ui_set_button_pressed(true);
-    delay(80);
-    ui_set_button_pressed(false);
+    // The skeleton's own event. Replace this body with what the button should do; the Designer appends one
+    // function per widget event and never rewrites this one.
+    Serial.println("on_screen_tapped");
 }

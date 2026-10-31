@@ -6,4 +6,12 @@
 #include <Arduino.h>
 
 // Your code goes here. The Designer appends one function per widget event, and never rewrites what it finds;
-// this header keeps the prototypes and the two calls this file makes into the sketch.
+// this header keeps their prototypes so src/ui.cpp can call them.
+
+/**
+ * The skeleton screen's one event. Replace the body in src/ui_handlers.cpp with what the button should do.
+ *
+ * extern "C" because that is the linkage the Designer's generated call uses: a C++ function with a mangled name
+ * would not resolve from a generated file that was written for a widget rather than for a class.
+ */
+extern "C" void on_screen_tapped();

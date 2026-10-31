@@ -165,17 +165,11 @@ int panel_height() {
     return gHeight;
 }
 
-void panel_fill_rect(int x, int y, int w, int h, uint16_t colour) {
-    if (x >= gWidth || y >= gHeight || w <= 0 || h <= 0) {
-        return;
+/** Opens the address window a write is about to fill. */
+bool open_window(int x, int y, int w, int h) {
+    if (x < 0 || y < 0 || w <= 0 || h <= 0 || x >= gWidth || y >= gHeight) {
+        return false;
     }
-    if (x + w > gWidth) {
-        w = gWidth - x;
-    }
-    if (y + h > gHeight) {
-        h = gHeight - y;
-    }
-
     const uint8_t caset[] = {static_cast<uint8_t>(x >> 8), static_cast<uint8_t>(x & 0xFF),
                              static_cast<uint8_t>((x + w - 1) >> 8),
                              static_cast<uint8_t>((x + w - 1) & 0xFF)};
@@ -185,25 +179,62 @@ void panel_fill_rect(int x, int y, int w, int h, uint16_t colour) {
                              static_cast<uint8_t>((y + h - 1) & 0xFF)};
     write_command_data(0x2B, raset, sizeof(raset));
     write_command(0x2C); // RAMWR
+    return true;
+}
 
+/** Streams a block of RGB565 pixels, row by row, with no buffer of its own. */
+void stream_pixels(const uint16_t *pixels, int stride, int w, int h) {
+    digitalWrite(kDc, HIGH);
+    digitalWrite(kCs, LOW);
+    panelSpi.beginTransaction(SPISettings(kSpiHz, MSBFIRST, SPI_MODE0));
+    for (int row = 0; row < h; row++) {
+        panelSpi.transfer(const_cast<uint16_t *>(pixels + row * stride), static_cast<size_t>(w) * 2);
+    }
+    panelSpi.endTransaction();
+    digitalWrite(kCs, HIGH);
+}
+
+void panel_blit(int x, int y, int w, int h, const uint16_t *pixels) {
+    if (pixels == nullptr) {
+        return;
+    }
+    const int stride = w;
+    if (x + w > gWidth) {
+        w = gWidth - x;
+    }
+    if (y + h > gHeight) {
+        h = gHeight - y;
+    }
+    if (!open_window(x, y, w, h)) {
+        return;
+    }
+    stream_pixels(pixels, stride, w, h);
+}
+
+void panel_fill_rect(int x, int y, int w, int h, uint16_t colour) {
+    if (x + w > gWidth) {
+        w = gWidth - x;
+    }
+    if (y + h > gHeight) {
+        h = gHeight - y;
+    }
+    if (!open_window(x, y, w, h)) {
+        return;
+    }
     // One line at a time through a small buffer: a full-screen fill would need 150 KB of RAM on a 240x320
     // panel, which is more than the smaller boards have.
-    static uint8_t line[240 * 2];
-    const int pixels = w < 240 ? w : 240;
-    const uint8_t high = static_cast<uint8_t>(colour >> 8);
-    const uint8_t low = static_cast<uint8_t>(colour & 0xFF);
+    static uint16_t line[320];
+    const int pixels = w < 320 ? w : 320;
     for (int i = 0; i < pixels; i++) {
-        line[i * 2] = high;
-        line[i * 2 + 1] = low;
+        line[i] = colour;
     }
-
     digitalWrite(kDc, HIGH);
     digitalWrite(kCs, LOW);
     panelSpi.beginTransaction(SPISettings(kSpiHz, MSBFIRST, SPI_MODE0));
     for (int row = 0; row < h; row++) {
         for (int chunk = 0; chunk < w; chunk += pixels) {
             const int count = (w - chunk) < pixels ? (w - chunk) : pixels;
-            panelSpi.transfer(line, count * 2);
+            panelSpi.transfer(line, static_cast<size_t>(count) * 2);
         }
     }
     panelSpi.endTransaction();

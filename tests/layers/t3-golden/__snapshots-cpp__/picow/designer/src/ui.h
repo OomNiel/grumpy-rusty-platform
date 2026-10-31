@@ -5,19 +5,11 @@
 
 #include <Arduino.h>
 
-// The screen. This is the file the Designer fills in when the design changes; a person's code belongs in
+// The screen. The Designer rewrites this pair of files from the design; a person's code belongs in
 // src/ui_handlers.cpp.
 
-/** Draws the screen the design describes. Called once from setup(), and again whenever it has to be repainted. */
+/** Builds the screen the design describes. Called once from setup(), after the display is up. */
 void ui_init();
 
-/** Runs one turn of the screen's own work: repaints what changed. Called from loop(). */
+/** Runs one turn of the screen's own work. Called from loop(); LVGL does the drawing. */
 void ui_tick();
-
-/**
- * Presses or releases the skeleton's button.
- *
- * The Designer's event code calls this with the button's new state; a handler in src/ui_handlers.cpp can too,
- * which is what makes the generated event stub work from the first build.
- */
-void ui_set_button_pressed(bool pressed);

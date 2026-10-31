@@ -29,6 +29,7 @@ import { BuildProfile, LAST_FLASHED_KEY } from '../project/launchConfig';
 import { activeWifiEnv } from '../wifi/credentials';
 import { ensureWifiEnv } from '../wifi/wifiPrompt';
 import { closeTerminal, defmtEnv, defmtPrefix, espEnv, killAllTerminals, openTerminalNames, runInTerminal } from './terminal';
+import { arduinoBuild, arduinoClean, arduinoMonitor, arduinoUpload } from './arduinoCommands';
 import { ensureEspToolchain } from './espToolchainCommands';
 import { rearmClockListener } from '../designer/editor';
 import { configHasBuildEpoch, configHasEpochSecond, setBuildEpochInConfig } from '../display/buildEpoch';
@@ -516,6 +517,10 @@ export function registerProjectCommands(
         // with it in a keybinding; the controls run these two.
         vscode.commands.registerCommand('rustyPlatform.build', () =>
             withProject(async (project) => {
+                if (project.language === 'arduino') {
+                    await arduinoBuild(context, project, output);
+                    return;
+                }
                 await clearTerminals('build');
                 await stampBuildTime(project);
                 closeWhenSucceeded(
@@ -526,6 +531,10 @@ export function registerProjectCommands(
         ),
         vscode.commands.registerCommand('rustyPlatform.buildDebug', () =>
             withProject(async (project) => {
+                if (project.language === 'arduino') {
+                    await arduinoBuild(context, project, output);
+                    return;
+                }
                 await clearTerminals('build');
                 await stampBuildTime(project);
                 closeWhenSucceeded(
@@ -536,6 +545,11 @@ export function registerProjectCommands(
         ),
         vscode.commands.registerCommand('rustyPlatform.buildRelease', () =>
             withProject(async (project) => {
+                if (project.language === 'arduino') {
+                    // The Arduino cores have no debug/release split: the compiler flags are the core's.
+                    await arduinoBuild(context, project, output);
+                    return;
+                }
                 await clearTerminals('build');
                 await stampBuildTime(project);
                 closeWhenSucceeded(
@@ -547,6 +561,10 @@ export function registerProjectCommands(
 
         vscode.commands.registerCommand('rustyPlatform.flash', (options?: { monitor?: boolean }) =>
             withProject(async (project) => {
+                if (project.language === 'arduino') {
+                    await arduinoUpload(context, project, output, { monitor: options?.monitor === true });
+                    return;
+                }
                 await flashProject(project, { choice: configuredProfileChoice(), monitor: options?.monitor === true });
             }),
         ),
@@ -556,11 +574,19 @@ export function registerProjectCommands(
         // is a worse control than one that does exactly what it says.
         vscode.commands.registerCommand('rustyPlatform.flashDebug', () =>
             withProject(async (project) => {
+                if (project.language === 'arduino') {
+                    await arduinoUpload(context, project, output);
+                    return;
+                }
                 await flashProject(project, { choice: 'debug' });
             }),
         ),
         vscode.commands.registerCommand('rustyPlatform.flashRelease', () =>
             withProject(async (project) => {
+                if (project.language === 'arduino') {
+                    await arduinoUpload(context, project, output);
+                    return;
+                }
                 await flashProject(project, { choice: 'release' });
             }),
         ),
@@ -569,6 +595,11 @@ export function registerProjectCommands(
         // for a probe that is present but unusable.
         vscode.commands.registerCommand('rustyPlatform.flashUsb', () =>
             withProject(async (project) => {
+                if (project.language === 'arduino') {
+                    // On a sketch "USB" is the only route there is: arduino-cli uploads over the port.
+                    await arduinoUpload(context, project, output);
+                    return;
+                }
                 // On this route "USB" is not a choice to make on an ESP32: its upload *is* USB serial, and
                 // the board profile says which route this board takes, so Upload is the answer either way.
                 await clearTerminals('flash');
@@ -585,6 +616,10 @@ export function registerProjectCommands(
 
         vscode.commands.registerCommand('rustyPlatform.monitor', () =>
             withProject(async (project) => {
+                if (project.language === 'arduino') {
+                    await arduinoMonitor(project, output);
+                    return;
+                }
                 const board = project.board;
                 if (board?.kind === 'esp') {
                     // `espflash monitor` holds the serial port until this terminal is closed, which is
@@ -616,6 +651,10 @@ export function registerProjectCommands(
 
         vscode.commands.registerCommand('rustyPlatform.clean', () =>
             withProject(async (project) => {
+                if (project.language === 'arduino') {
+                    await arduinoClean(project, output);
+                    return;
+                }
                 await clearTerminals('clean');
                 closeWhenSucceeded('Rusty: build', runInTerminal('Rusty: build', 'cargo clean', project.folder));
             }),

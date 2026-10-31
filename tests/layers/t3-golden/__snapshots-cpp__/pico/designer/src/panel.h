@@ -21,6 +21,14 @@ void panel_fill(uint16_t colour);
 /** Fills one rectangle; clipped to the screen. */
 void panel_fill_rect(int x, int y, int w, int h, uint16_t colour);
 
+/**
+ * Writes a block of RGB565 pixels straight to the panel.
+ *
+ * This is the call LVGL's flush hands its drawing to: the rows are already in the panel's own colour format,
+ * so nothing is converted and nothing is copied twice.
+ */
+void panel_blit(int x, int y, int w, int h, const uint16_t *pixels);
+
 /** The frame, the corner markers, three colour bands and a square to be blinked by panel_blink_marker(). */
 void panel_draw_test();
 
