@@ -255,8 +255,8 @@ async function pickPort(cli: string, fqbn: string): Promise<ArduinoPort | undefi
     if (ports.length === 0) {
         const hint = fqbn.startsWith('rp2040:')
             ? ' Hold BOOTSEL while plugging the board in (or press it while RESET is held) so it appears as a ' +
-              'drive, then try again. A **debug probe** does not appear as a port at all — use "Rusty: Upload ' +
-              'Method" to flash over SWD instead.'
+            'drive, then try again. A **debug probe** does not appear as a port at all — use "Rusty: Upload ' +
+            'Method" to flash over SWD instead.'
             : '';
         void vscode.window.showErrorMessage(`No board found on any port.${hint.replace(/\*\*/g, '')}`);
         return undefined;
@@ -389,7 +389,7 @@ export async function arduinoUploadMethod(project: ActiveProject, output: vscode
     if (menu === undefined) {
         void vscode.window.showInformationMessage(
             `The ${fqbn.split(':').slice(0, 2).join(':')} core offers no upload-method menu for this board, so there is ` +
-                'nothing to choose: it is flashed over USB.',
+            'nothing to choose: it is flashed over USB.',
         );
         return;
     }
