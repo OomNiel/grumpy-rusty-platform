@@ -11,6 +11,35 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.18.0] - 2026-10-31
+
+### Added
+
+- **Arduino (C++) as a second language, beside Rust.** New Project now asks which language first, and a C++
+  project is a real `arduino-cli` sketch: `sketch.yaml` records the board's FQBN, `<name>.ino` is the entry
+  file Arduino needs, and the code lives in `src/` with the same split as the Rust templates.
+  - Three C++ templates: **LED blinky**, **panel diagnostic screen** and **WYSIWYG designer (skeleton)** —
+    `src/panel.cpp` (the wiring and the panel's init) plus `src/ui.cpp` and `src/ui_handlers.cpp` (the two
+    files the Designer owns, and the one a person edits).
+  - **No libraries are needed**: the generated sketch draws with its own panel driver, so it builds on a
+    freshly installed core. Tested against `rp2040:rp2040` (arduino-pico) 6.3.1 and `esp32:esp32` 3.3.12.
+  - Every board in the catalogue has a board definition: `rp2040:rp2040:rpipico{,w,2,2w}` and
+    `esp32:esp32:esp32` / `esp32:esp32:esp32s3`. All seven compile.
+  - The pins, the controller, the colour order, the mirroring and the rotation come from this extension's own
+    board catalogue and panel wiring, not from a datasheet guess.
+- A project records its language in `rusty.project.json`. A project **without** that file is Rust, so nothing
+  on disk needs migrating — every existing project keeps working untouched.
+
+### Changed
+
+- The wizard, its template menu and the generated file list now go through a **sketch backend**, one per
+  language, so the extension's shell stays language-free. The language step is only asked once there is more
+  than one language to choose from.
+- A C++ project's folder and `.ino` share one identifier (`blinky-pico` becomes `blinky_pico`), because
+  Arduino requires it.
+- Build, Flash and Monitor on a C++ project say plainly that the `arduino-cli` route is not wired up yet,
+  instead of failing with a cargo error about a missing `Cargo.toml`.
+
 ## [0.17.14] - 2026-10-31
 
 ### Changed
