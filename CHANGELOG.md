@@ -11,6 +11,25 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.18.13] - 2026-10-31
+
+### Fixed
+
+- **IntelliSense now sees what the compiler sees, so the Problems pane stops inventing errors.** Three things
+  were wrong with the editor setup for a C++ project, all of them invisible to the build:
+  - the refresh ran `arduino-cli compile --only-compilation-database` **without** the LVGL `--build-property`,
+    so `lv_conf.h` was unresolved and every LVGL type undeclared;
+  - the database named arduino-cli's **copy** of the sketch (`.arduino/build/sketch/src/ui.cpp`), and the C/C++
+    extension matches entries to files by absolute path — so `src/ui.cpp` was not in it and every entry was
+    ignored;
+  - arduino-pico reaches sixty-odd pico-sdk include folders through `@response` files and `-iprefix`, which the
+    C/C++ extension does not open — hence `lwip/init.h` and `<pico/stdlib.h>` reported as missing.
+
+  The refresh now passes the same build properties as a build, rewrites the database with one entry per project
+  file (response files inlined, `-iprefix` turned into ordinary `-I`), and carries the compiler's includes,
+  `-D`s and `-mcpu`/`-march` flags into the config as well. A designer sketch of 551 KB now reads as zero
+  problems in the editor, and the build is unchanged.
+
 ## [0.18.12] - 2026-10-31
 
 ### Fixed

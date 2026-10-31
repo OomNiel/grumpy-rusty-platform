@@ -44,11 +44,27 @@ export function compileArgs(fqbn: string, projectDir?: string, hasLvConf = false
         '--output-dir',
         ARDUINO_ARTIFACT_DIR,
     ];
+    return [...args, ...lvConfBuildProperties(projectDir, hasLvConf)];
+}
+
+/**
+ * The `--build-property` pair that points LVGL at the project's own `lv_conf.h`.
+ *
+ * Exported because the IntelliSense refresh has to pass exactly these: a database generated without them
+ * describes a project with no LVGL in it, and the Problems pane then reports `lv_conf.h` and every `lv_obj_t`
+ * as missing while the build is fine (bench, 2026-10-31).
+ */
+export function lvConfBuildProperties(projectDir?: string, hasLvConf = false): string[] {
     if (!hasLvConf || projectDir === undefined) {
-        return args;
+        return [];
     }
     const flags = `-DLV_CONF_INCLUDE_SIMPLE -I${projectDir}`;
-    return [...args, '--build-property', `compiler.cpp.extra_flags=${flags}`, '--build-property', `compiler.c.extra_flags=${flags}`];
+    return [
+        '--build-property',
+        `compiler.cpp.extra_flags=${flags}`,
+        '--build-property',
+        `compiler.c.extra_flags=${flags}`,
+    ];
 }
 
 /**

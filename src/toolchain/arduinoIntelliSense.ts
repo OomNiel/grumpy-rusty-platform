@@ -16,10 +16,15 @@ export function configuredArduinoCliPath(): string | undefined {
 import {
     ARDUINO_BUILD_DIR,
     INTELLISENSE_CONFIG_PATH,
+    INTELLISENSE_DATABASE_PATH,
     fqbnFromSketchYaml,
     intelliSenseConfig,
+    expandCompileArguments,
     parseArduinoProperties,
+    parseCompileFlags,
+    projectCompileDatabase,
 } from '../generate/arduinoIntelliSense';
+import { lvConfBuildProperties } from './arduinoBuild';
 
 /**
  * Makes a C++ sketch folder understandable to the editor.
@@ -73,9 +78,20 @@ export async function writeArduinoIntelliSense(options: {
     }
 
     const buildPath = path.join(folder, ARDUINO_BUILD_DIR);
+    // The same `--build-property` the build passes, or the database describes a project with no LVGL in it:
+    // `lv_conf.h` unresolved, `lv_obj_t` undeclared, and a Problems pane full of errors for a sketch that
+    // compiles (bench, 2026-10-31). One helper, used by both, so they cannot drift.
     const result = await run(
         cli,
-        ['compile', '--fqbn', fqbn, '--only-compilation-database', '--build-path', buildPath],
+        [
+            'compile',
+            '--fqbn',
+            fqbn,
+            '--only-compilation-database',
+            '--build-path',
+            buildPath,
+            ...lvConfBuildProperties(folder, fs.existsSync(path.join(folder, 'lv_conf.h'))),
+        ],
         { cwd: folder, timeoutMs: 120_000 },
     );
     const database = path.join(buildPath, 'compile_commands.json');
@@ -88,6 +104,38 @@ export async function writeArduinoIntelliSense(options: {
         return 'failed';
     }
 
+    // The database names the *copy* of the sketch; the editor matches by path, so it gets its own copy with one
+    // entry per project file, built from the same command line.
+    let flags: { includes: string[]; defines: string[]; compilerArgs: string[] } = {
+        includes: [],
+        defines: [],
+        compilerArgs: [],
+    };
+    try {
+        const raw = fs.readFileSync(database, 'utf8');
+        const readResponse = (file: string): string | undefined => readText(file);
+        fs.writeFileSync(
+            path.join(folder, INTELLISENSE_DATABASE_PATH),
+            projectCompileDatabase(raw, folder, readResponse),
+            'utf8',
+        );
+        const entries = JSON.parse(raw) as { file?: unknown; arguments?: unknown }[];
+        const project = entries.find(
+            (entry) =>
+                typeof entry.file === 'string' &&
+                entry.file.startsWith(`${folder}/${ARDUINO_BUILD_DIR}/sketch/`) &&
+                entry.file.endsWith('.cpp'),
+        );
+        if (project !== undefined && Array.isArray(project.arguments)) {
+            const args = project.arguments.filter((arg): arg is string => typeof arg === 'string');
+            flags = parseCompileFlags(expandCompileArguments(args, readResponse));
+        }
+    } catch (error) {
+        output.appendLine(
+            `[intellisense] could not read the database: ${error instanceof Error ? error.message : String(error)}`,
+        );
+    }
+
     // The explicit paths, from the core itself: `compileCommands` above is the precise answer, but the C/C++
     // extension drops an entry it cannot parse and then every core header reads as missing. Same answer, in the
     // form it always understands -- and the reason this runs `--show-properties` at all.
@@ -96,10 +144,17 @@ export async function writeArduinoIntelliSense(options: {
         timeoutMs: 60_000,
     });
     const parsed = properties.code === 0 ? parseArduinoProperties(properties.stdout) : { includePaths: [] };
-    writeConfig(folder, fqbn, true, parsed);
+    writeConfig(folder, fqbn, true, {
+        // The database's own paths first: they include every library the sketch actually uses, which the core's
+        // property list does not know about.
+        includePaths: [...new Set([...flags.includes, ...parsed.includePaths])],
+        defines: flags.defines,
+        compilerArgs: flags.compilerArgs,
+        ...(parsed.compilerPath === undefined ? {} : { compilerPath: parsed.compilerPath }),
+    });
     output.appendLine(
         `[intellisense] ${fqbn}: compiler database written to ${ARDUINO_BUILD_DIR}` +
-            (parsed.includePaths.length === 0 ? ' (no core paths: --show-properties failed)' : ''),
+        (parsed.includePaths.length === 0 ? ' (no core paths: --show-properties failed)' : ''),
     );
     return 'written';
 }
@@ -108,7 +163,12 @@ function writeConfig(
     folder: string,
     fqbn: string,
     hasDatabase: boolean,
-    properties: { includePaths: string[]; compilerPath?: string } = { includePaths: [] },
+    properties: {
+        includePaths: string[];
+        defines?: string[];
+        compilerArgs?: string[];
+        compilerPath?: string;
+    } = { includePaths: [] },
 ): void {
     const target = path.join(folder, INTELLISENSE_CONFIG_PATH);
     fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -119,6 +179,8 @@ function writeConfig(
             family,
             hasDatabase,
             includePaths: properties.includePaths,
+            ...(properties.defines === undefined ? {} : { defines: properties.defines }),
+            ...(properties.compilerArgs === undefined ? {} : { compilerArgs: properties.compilerArgs }),
             ...(properties.compilerPath === undefined ? {} : { compilerPath: properties.compilerPath }),
         }),
         'utf8',

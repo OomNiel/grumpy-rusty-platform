@@ -8490,3 +8490,33 @@ touched, which is why it took `rm -rf .arduino/build build` to check rather than
 **Lesson:** a generated file is compiled by somebody else's compiler against somebody else's library version.
 Ask the version in the generated code rather than picking the newest spelling, and never trust an incremental
 build to show you the warnings in files it did not recompile.
+
+### 171. "problems persist" -- they were never the build's
+
+After 0.18.12 the build of Cpp_P2w_Test2 was clean: 551 KB, zero warnings, a UF2. The Problems pane was still
+full. Those were the **C/C++ extension's** problems, not arduino-cli's, and none of the three causes could show
+up in a compile:
+
+1. **The refresh did not pass the LVGL properties.** `writeArduinoIntelliSense` ran
+   `compile --only-compilation-database` with no `--build-property`, so the database it produced described a
+   project without `-DLV_CONF_INCLUDE_SIMPLE -I<project>`: `lv_conf.h` unresolved, `lv_obj_t` unknown.
+   `compileArgs` and the refresh now share `lvConfBuildProperties()`.
+2. **The database named the copy.** arduino-cli compiles `.arduino/build/sketch/src/ui.cpp`; the C/C++ extension
+   matches entries to files by absolute path, so **no entry ever matched a real source** and every flag was
+   ignored — the editor fell back to `includePath`, which knows nothing about libraries. The refresh now writes
+   `.arduino/compile_commands.json` with an entry per project file (same command line) and points the config at
+   it.
+3. **`@response` files and `-iprefix`.** arduino-pico hides sixty pico-sdk include folders in
+   `@…/core_inc.txt` as `-iwithprefixbefore/pico-sdk/…` under an `-iprefix`. A compiler opens them; the editor
+   does not, so `lwip/init.h` and `<pico/stdlib.h>` read as missing. `expandCompileArguments()` inlines them and
+   turns the pair into ordinary `-I<absolute>`.
+
+The config now also carries `defines` and `compilerArgs` (`-mcpu=cortex-m33`, `-march=…`), because without the
+CPU pico-sdk's own `spin_lock.h` stops with `#error no SW_SPIN_LOCK_LOCK available` — an error in the editor for
+a sketch that compiles. Measured the honest way: run `arm-none-eabi-g++ -fsyntax-only` with **exactly** the
+includes/defines/args the config declares, over all five sources: 0 errors. (Testing only `includePath` showed 9;
+that is what proved `compilerArgs` was needed.)
+
+**Lesson:** a Problems pane can hold two independent providers. When a build is clean and the pane is not, the
+first question is *which* tool is complaining -- and for the C/C++ extension the answer is a path-*matched*
+database, expanded response files, and the CPU flags.
