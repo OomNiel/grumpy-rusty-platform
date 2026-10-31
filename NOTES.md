@@ -8344,3 +8344,48 @@ language is not Rust — a button that cannot work is worse than no button.
 
 t1 **1143** (6 new for the config and the FQBN parse), t2 87, t3 7 (C++ snapshots refreshed for the template
 text and the `.gitignore`). 0.18.1 packaged (1,551,681 B, sha256 `a95fb5a4…`) and installed.
+
+## §166 — Phase 3 (arduino-cli build/upload/monitor) and the LVGL foundation for the C++ designer (2026-10-31)
+
+**Phase 3 is in.** `src/toolchain/arduinoCli.ts` finds `arduino-cli` (PATH, then `~/.local/bin`, `~/bin`,
+`~/.arduino15/bin`, the macOS/Windows spots), reads its version, its installed *cores* (an index entry with no
+version is not an install) and the ports. `src/toolchain/arduinoBuild.ts` owns the exact command lines and the
+diagnostics; `src/commands/arduinoCommands.ts` runs them and Build/Upload/Monitor/Clean route there when
+`project.language === 'arduino'`.
+
+Things worth not rediscovering:
+
+- **`--build-path .arduino/build` matters for diagnostics.** arduino-cli compiles a *copy* of the sketch; in a
+  temp folder every error names `/tmp/…/sketch/src/ui.cpp`, which the Problems pane cannot open and which the
+  next build overwrites. Pointing the build path inside the project puts the copy at
+  `.arduino/build/sketch/…`, and `projectPathOf()` maps that back to the real file.
+- **Two diagnostic formats.** `--format json` has structured `builder_result.diagnostics` (severities,
+  locations); the linker, picotool and a core's own tools only print `file:line:col: error: …`. Both are
+  collected and de-duplicated on file+line+severity+message.
+- **Upload uses `--input-dir build`**, so it uploads exactly what Build produced instead of rebuilding into a
+  fresh directory.
+- The build offers `arduino-cli core install <core>` (and `lib install lvgl` for a designer project) in a
+  terminal rather than doing it silently: both are large downloads.
+
+**Phase 4's foundation is in; the canvas itself is not.** A designer project now carries:
+
+- `lv_conf.h` at the project root — RGB565, 64 KB heap, no OS, montserrat 14/16 — because LVGL 9 looks for its
+  config two levels above its own header unless `LV_CONF_INCLUDE_SIMPLE` is defined, and *then* looks for it on
+  the include path. That flag plus `-I<project>` is what our build passes (`compiler.c.extra_flags` **and**
+  `compiler.cpp.extra_flags` — the library's own C files need it too, which is the part that cost an hour), and
+  the generated README shows the same command for a terminal build.
+- `src/lvgl_display.{h,cpp}` — `lv_init()`, one display, a 320x20 band buffer, a flush callback that hands
+  pixels to the new `panel_blit()` (raw RGB565 straight to the panel, no conversion), and `lv_tick_set_cb(millis)`.
+- `src/ui.cpp` as an LVGL object tree (title bar + button + event) instead of the hand-drawn screen; the button
+  calls `on_screen_tapped()` in `src/ui_handlers.cpp`, which is the append-only file a person owns.
+
+Verified: the generated designer project compiles for **rp2040:rp2040:rpipico2w** against **LVGL 9.6.0**
+(551,196 B flash / 151,160 B RAM). `LV_COLOR_DEPTH` is deprecated in 9.6 — `LV_COLOR_FORMAT_DEFAULT
+LV_COLOR_FORMAT_RGB565` is the setting that matters, the depth macro is only there for older 9.x.
+
+**What is still missing for "a WYSIWYG C++ project", in order:** the Designer does not yet open a C++ project
+(`src/designer/editor.ts` is Rust-shaped: it writes `ui.kdl` + `ui.rs`, syncs handlers as Rust, edits
+`Cargo.toml` for rotation and the SD feature, and copies the vendored crates). That needs a per-language save
+path — `emitUiCpp(document)`/`emitHandlersCpp` in `src/designer/lvgl.ts`, `DESIGNER_FILES` per backend, the
+panel rewritten from `designer/panel.hardware.json`, fonts as `lv_font_t` C arrays, and images as
+`lv_image_dsc_t`. Then phase 5 (C++ AI prompts/guards) and phase 6 (clock, packaging, docs).
