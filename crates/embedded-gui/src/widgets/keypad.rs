@@ -1152,7 +1152,10 @@ mod tests {
         pad.press_shift();
         assert!(pad.shift);
         assert!(pad.shift_locked(), "the second tap locks it");
-        assert!(pad.key_lit(KeypadKey::Shift), "and the key stays lit while it is on");
+        assert!(
+            pad.key_lit(KeypadKey::Shift),
+            "and the key stays lit while it is on"
+        );
         assert_eq!(pad.legend(KeypadKey::Char('q')), Some('Q'));
         // Typing does not consume a lock: that is the difference between the two states.
         for ch in ['q', 'w', 'e'] {
@@ -1648,5 +1651,3 @@ mod tests {
         );
     }
 }
-
-

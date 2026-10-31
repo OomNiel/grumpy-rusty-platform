@@ -2946,7 +2946,11 @@ mod keypad_touch_tests {
             "one letter spends the single tap"
         );
         tap(&mut ctx, &pad, KeypadKey::Char('w'));
-        assert_eq!(ctx.keypad_text(id), Some("Qw"), "and the next is lower case");
+        assert_eq!(
+            ctx.keypad_text(id),
+            Some("Qw"),
+            "and the next is lower case"
+        );
 
         // Two taps in a row: capitals stay on until Shift is touched again.
         tap(&mut ctx, &pad, KeypadKey::Shift);
@@ -2956,10 +2960,18 @@ mod keypad_touch_tests {
             let pad = current(&ctx, id);
             tap(&mut ctx, &pad, KeypadKey::Char(ch));
         }
-        assert_eq!(ctx.keypad_text(id), Some("QwABC"), "a lock outlives the letters");
+        assert_eq!(
+            ctx.keypad_text(id),
+            Some("QwABC"),
+            "a lock outlives the letters"
+        );
         assert_eq!(ctx.keypad_shift(id), Some(true), "and is still on");
         tap(&mut ctx, &pad, KeypadKey::Shift);
-        assert_eq!(ctx.keypad_shift(id), Some(false), "one more tap turns it off");
+        assert_eq!(
+            ctx.keypad_shift(id),
+            Some(false),
+            "one more tap turns it off"
+        );
         tap(&mut ctx, &pad, KeypadKey::Char('e'));
         assert_eq!(ctx.keypad_text(id), Some("QwABCe"));
     }
