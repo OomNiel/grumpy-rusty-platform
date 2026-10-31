@@ -369,6 +369,23 @@ export function generateArduinoProjectFiles(options: GenerateOptions): Generated
     return files;
 }
 
+/**
+ * `src/panel.cpp` for a design whose pins have moved.
+ *
+ * This is the C++ twin of `emitPanelRs` in the Designer's save path: the wiring the Hardware panel edits is the
+ * only source of pins, so the file is rewritten from it rather than patched.
+ */
+export function emitArduinoPanel(
+    wiring: PanelWiring,
+    rotation: number,
+    kind: 'rp' | 'esp' = 'rp',
+): { header: string; source: string } {
+    return {
+        header: panelHeader(),
+        source: panelSource(panelFromWiring(wiring), asLcdRotation(rotation), kind),
+    };
+}
+
 // ---------------------------------------------------------------------- sketch.yaml
 
 /**

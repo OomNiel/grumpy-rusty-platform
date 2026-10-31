@@ -232,7 +232,7 @@ function widgetLines(widget: DesignerWidget, parent: string): string[] {
             lines.push(`    lv_obj_t *${variable} = lv_slider_create(${parent});`, ...geometry);
             lines.push(
                 `    lv_slider_set_range(${variable}, ${Math.round(numberProp(widget, 'min', 0))}, ` +
-                    `${Math.round(numberProp(widget, 'max', 100))});`,
+                `${Math.round(numberProp(widget, 'max', 100))});`,
             );
             lines.push(
                 `    lv_slider_set_value(${variable}, ${Math.round(numberProp(widget, 'value', 0))}, LV_ANIM_OFF);`,
@@ -298,7 +298,7 @@ function widgetLines(widget: DesignerWidget, parent: string): string[] {
             lines.push(`    lv_obj_t *${variable} = lv_line_create(${parent});`);
             lines.push(
                 `    lv_line_set_points(${variable}, ${variable}_points, ` +
-                    `sizeof(${variable}_points) / sizeof(${variable}_points[0]));`,
+                `sizeof(${variable}_points) / sizeof(${variable}_points[0]));`,
             );
             break;
         }
@@ -358,9 +358,9 @@ function callbacksFor(document: DesignerDocument): string {
                 }
                 blocks.push(
                     `void navigate_to_${cppId(target)}_cb(lv_event_t *event) {\n` +
-                        `    (void)event;\n` +
-                        `    ui_show_view(${cString(target)});\n` +
-                        `}\n`,
+                    `    (void)event;\n` +
+                    `    ui_show_view(${cString(target)});\n` +
+                    `}\n`,
                 );
                 continue;
             }
@@ -368,11 +368,11 @@ function callbacksFor(document: DesignerDocument): string {
             const read = argumentRead(widget, event);
             blocks.push(
                 `void ${name}_cb(lv_event_t *event) {\n` +
-                    `    lv_obj_t *target = static_cast<lv_obj_t *>(lv_event_get_target(event));\n` +
-                    `    (void)target;\n` +
-                    (read === '' ? '' : `    ${read}\n`) +
-                    `    ${name}(${argumentName(event)});\n` +
-                    `}\n`,
+                `    lv_obj_t *target = static_cast<lv_obj_t *>(lv_event_get_target(event));\n` +
+                `    (void)target;\n` +
+                (read === '' ? '' : `    ${read}\n`) +
+                `    ${name}(${argumentName(event)});\n` +
+                `}\n`,
             );
         }
     }
@@ -433,15 +433,15 @@ ${callbacksFor(document)}
 
 void ui_show_view(const char *view_id) {
 ${views
-    .map(
-        (view: DesignerView) =>
-            `    if (strcmp(view_id, ${cString(view.id)}) == 0) {\n` +
-            `        lv_obj_remove_flag(view_${cppId(view.id)}, LV_OBJ_FLAG_HIDDEN);\n` +
-            `    } else {\n` +
-            `        lv_obj_add_flag(view_${cppId(view.id)}, LV_OBJ_FLAG_HIDDEN);\n` +
-            `    }`,
-    )
-    .join('\n')}
+            .map(
+                (view: DesignerView) =>
+                    `    if (strcmp(view_id, ${cString(view.id)}) == 0) {\n` +
+                    `        lv_obj_remove_flag(view_${cppId(view.id)}, LV_OBJ_FLAG_HIDDEN);\n` +
+                    `    } else {\n` +
+                    `        lv_obj_add_flag(view_${cppId(view.id)}, LV_OBJ_FLAG_HIDDEN);\n` +
+                    `    }`,
+            )
+            .join('\n')}
 }
 
 void ui_init() {

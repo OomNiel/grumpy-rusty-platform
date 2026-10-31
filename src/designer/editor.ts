@@ -64,6 +64,7 @@ import { parseBdfFont, type DesignFontPixels } from './bitmapFont';
 import { bdfFromRaster, fontIdFromFile, isBitmapFontFile, type RasterisedFont } from './fontImport';
 import { emitUiRs, handlerName, syncHandlerStubs, designHasClock, ESP_LOG_MACRO, RP_LOG_MACRO } from './generate';
 import { emitHandlersCppHeader, emitUiCpp, emitUiCppHeader, syncHandlerStubsCpp } from './lvgl';
+import { emitArduinoPanel } from '../generate/arduino';
 import { sdImagesNeedingCard } from './model';
 import { isFeatureInDefault, setFeatureInDefault } from './features';
 import {
@@ -982,7 +983,21 @@ class DesignerPanel {
             return;
         }
         if (wiringHasErrors(this.wiringProblems)) {
-            this.output.appendLine('[designer] the wiring has errors, so src/panel.rs was left as it was');
+            this.output.appendLine('[designer] the wiring has errors, so the panel file was left as it was');
+            return;
+        }
+        if (this.isCppProject()) {
+            // A sketch's panel is C++: same wiring, same rule -- the Hardware panel is the one source of pins.
+            const generated = emitArduinoPanel(this.wiring, this.document.rotation, 'rp');
+            const sourceUri = vscode.Uri.joinPath(this.folder, 'src', 'panel.cpp');
+            if ((await readText(sourceUri)) !== generated.source) {
+                await writeProjectFile(this.folder, 'src/panel.cpp', generated.source);
+                this.output.appendLine('[designer] src/panel.cpp rewritten from the wiring');
+            }
+            const headerUri = vscode.Uri.joinPath(this.folder, 'src', 'panel.h');
+            if ((await readText(headerUri)) !== generated.header) {
+                await writeProjectFile(this.folder, 'src/panel.h', generated.header);
+            }
             return;
         }
         const module = panelModuleOrDefault(this.wiring.panel);

@@ -11,6 +11,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.18.3] - 2026-10-31
+
+### Fixed
+
+- **Moving a pin in a C++ project's Hardware panel now moves it in the sketch.** The Designer's save path had
+  been rewritten for Rust only: a sketch keeps its pins in `src/panel.cpp`, and that file is now regenerated
+  from `designer/panel.hardware.json` exactly as `src/panel.rs` is for a crate — one source of pins for both
+  languages.
+
 ## [0.18.2] - 2026-10-31
 
 ### Added
