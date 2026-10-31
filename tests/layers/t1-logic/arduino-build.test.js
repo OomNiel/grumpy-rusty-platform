@@ -162,3 +162,16 @@ test('the CLI path can be named by a setting, and an empty one falls back to det
     // Whether a PATH lookup finds anything is the machine's business; what matters is that it does not throw.
     ok(arduinoCliPath() === undefined || arduinoCliPath().endsWith('arduino-cli'), 'and detection still works');
 });
+
+// ------------------------------------------------------- the command wrapper
+
+test('the shared command wrapper does not refuse a sketch before its own code runs', () => {
+    // The trap this pins, found on the bench 2026-10-31: the wrapper ran *before* every command body, so a
+    // refusal there made Build/Flash/Monitor unreachable on a sketch while their arduino-cli implementations sat
+    // inside `run` below it -- and every button reported the same wrong-route warning.
+    const fs = require('fs');
+    const path = require('path');
+    const wrapper = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'out', 'commands', 'withProject.js'), 'utf8');
+    contains(wrapper, "project.language === 'rust' && purpose", 'the toolchain check is for Rust only');
+    notContains(wrapper, 'That command is the Rust route', 'and nothing refuses on the way in');
+});

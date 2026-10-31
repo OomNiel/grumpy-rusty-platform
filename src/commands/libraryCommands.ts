@@ -197,6 +197,15 @@ export function registerLibraryCommands(state: RustyState, output: vscode.Output
     return [
         vscode.commands.registerCommand('rustyPlatform.addDependency', () =>
             withProject(async (project) => {
+                if (project.language !== 'rust') {
+                    // This command edits Cargo.toml, which a sketch does not have: its libraries come from
+                    // arduino-cli, and the message says so rather than opening a crate picker that cannot write.
+                    void vscode.window.showWarningMessage(
+                        'That command edits Cargo.toml, and this is an Arduino (C++) project. A sketch\'s ' +
+                            'libraries are installed with `arduino-cli lib install <name>`.',
+                    );
+                    return;
+                }
                 const choice = await pickCrate(project);
                 if (!choice) {
                     return;

@@ -11,6 +11,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.18.10] - 2026-10-31
+
+### Fixed
+
+- **Build, Flash and Monitor now actually run for a C++ project.** The shared command wrapper refused every
+  non-Rust project *before* the command body ran — and the arduino-cli implementations live inside that body —
+  so Build/Flash/Monitor/Clean and F5 all reported the same "that command is the Rust route" warning instead of
+  doing anything. The wrapper now only runs the Rust toolchain check (and only for a crate); the commands that
+  have a C++ implementation route inside their own bodies, and the library manager — the one command that
+  really does edit `Cargo.toml` — refuses for a sketch itself, in its own words.
+
 ## [0.18.9] - 2026-10-31
 
 ### Fixed
