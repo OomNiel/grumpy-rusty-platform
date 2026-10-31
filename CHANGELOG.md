@@ -11,6 +11,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.18.7] - 2026-10-31
+
+### Fixed
+
+- **The Controls and the Project view speak arduino-cli in a C++ project.** Every row was worded for cargo —
+  "cargo build", "cargo clean", and a red "cargo not found" for a project that never uses it — so a sketch
+  looked like a project whose Build button was missing. A C++ window now shows **Build** (`arduino-cli
+  compile`), **Flash** (`arduino-cli upload`), **Monitor** (`arduino-cli monitor`) and **Clean**
+  (`arduino-cli compile --clean`), one build row instead of the debug/release pair the Arduino cores do not
+  have, and the Project view reports arduino-cli, the board's core and the board instead of cargo, probe-rs and
+  rustup targets.
+
 ## [0.18.6] - 2026-10-31
 
 ### Fixed

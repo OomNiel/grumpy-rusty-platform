@@ -1,5 +1,6 @@
 import { espToolchainSummary } from '../toolchain/espToolchain';
 import { HealthFamily, HealthInput, healthReport } from '../toolchain/health';
+import type { SketchLanguage } from '../project/language';
 
 /**
  * The one-click controls, defined once and shown twice: in the status bar and in the sidebar's
@@ -258,8 +259,52 @@ function withEspWording(controls: ControlDescriptor[], family: HealthFamily): Co
     });
 }
 
+/**
+ * The wording for a sketch.
+ *
+ * Same buttons, different tool: a C++ project is compiled and written with arduino-cli, and the two build rows
+ * of a crate collapse into one -- the Arduino cores have a single build profile, so "for Debug" and "for
+ * Release" would be the same command twice.
+ */
+const CPP_WORDING: Record<string, Pick<ControlDescriptor, 'detail' | 'tooltip'>> = {
+    'rustyPlatform.buildDebug': {
+        detail: 'arduino-cli compile',
+        tooltip: 'Compile the sketch with arduino-cli, for the board in sketch.yaml. Problems appear as you go.',
+    },
+    'rustyPlatform.flash': {
+        detail: 'arduino-cli upload',
+        tooltip: 'Compile, then write it over the port arduino-cli finds (hold BOOTSEL if the board is not up).',
+    },
+    'rustyPlatform.monitor': {
+        detail: 'the serial log',
+        tooltip: 'arduino-cli monitor at 115200 on the port the board is on. Holds the port until closed.',
+    },
+    'rustyPlatform.clean': {
+        detail: 'arduino-cli compile --clean',
+        tooltip: 'Drops the compiler cache arduino-cli built for this sketch.',
+    },
+};
+
 /** The wording overrides for an ESP project, which is the only family left with any. */
-function withFamilyWording(controls: ControlDescriptor[], family: HealthFamily): ControlDescriptor[] {
+function withFamilyWording(
+    controls: ControlDescriptor[],
+    family: HealthFamily,
+    language: SketchLanguage = 'rust',
+): ControlDescriptor[] {
+    if (language === 'arduino') {
+        const renamed = controls
+            // One build profile, so the second build row would be the same command with another name.
+            .filter((control) => control.command !== 'rustyPlatform.buildRelease')
+            .map((control) =>
+                control.command === 'rustyPlatform.buildDebug'
+                    ? { ...control, label: 'Build', detail: CPP_WORDING[control.command]?.detail ?? control.detail }
+                    : control,
+            );
+        return renamed.map((control) => {
+            const wording = CPP_WORDING[control.command];
+            return wording === undefined ? control : { ...control, ...wording };
+        });
+    }
     return withEspWording(controls, family);
 }
 
@@ -277,6 +322,7 @@ export function visibleControls(
     sessionRunning: boolean,
     family: HealthFamily = 'unknown',
     designerProject = false,
+    language: SketchLanguage = 'rust',
 ): ControlDescriptor[] {
     // The side panel shows everything the status bar shows, plus the profile overrides and the
     // packaging controls.
@@ -290,7 +336,7 @@ export function visibleControls(
         ...FLASH_PROFILE_CONTROLS,
         ...PACKAGE_CONTROLS,
     ].filter((control) => control.sessionOnly !== true || sessionRunning);
-    return withFamilyWording(controls, family);
+    return withFamilyWording(controls, family, language);
 }
 
 /**
@@ -309,12 +355,13 @@ export function statusBarActions(
     projectOpen: boolean,
     sessionRunning: boolean,
     family: HealthFamily = 'unknown',
+    language: SketchLanguage = 'rust',
 ): ControlDescriptor[] {
     if (!projectOpen) {
         return [];
     }
     const actions = ACTION_CONTROLS.filter((control) => control.sessionOnly !== true || sessionRunning);
-    return withFamilyWording(actions, family);
+    return withFamilyWording(actions, family, language);
 }
 
 /**

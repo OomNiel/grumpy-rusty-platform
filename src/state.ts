@@ -8,6 +8,7 @@ import { detectEspToolchainNow } from './toolchain/espDetect';
 import { cargoVisibleOnShellPath, HealthFamily } from './toolchain/health';
 import type { HealthSummaryInput } from './ui/controls';
 import { readActiveProject } from './project/activeProject';
+import type { SketchLanguage } from './project/language';
 
 /**
  * Shared, cached toolchain state. Views and the status bar subscribe to
@@ -19,6 +20,7 @@ export class RustyState implements vscode.Disposable {
     private currentFamily: HealthFamily = 'unknown';
     private projectOpen = false;
     private designerProject = false;
+    private projectLanguage: SketchLanguage = 'rust';
     private readonly emitter = new vscode.EventEmitter<void>();
     private disposables: vscode.Disposable[] = [];
 
@@ -63,6 +65,16 @@ export class RustyState implements vscode.Disposable {
     }
 
     /**
+     * Which language the open project is written in.
+     *
+     * The Controls and the status bar are the same buttons in both cases, but what they *do* differs: a crate
+     * builds with cargo, a sketch with arduino-cli. This is the answer they word themselves from.
+     */
+    get language(): SketchLanguage {
+        return this.projectLanguage;
+    }
+
+    /**
      * Everything the health row needs, in one object.
      *
      * The ESP toolchain is only detected for an ESP project: it costs three process spawns, and for a
@@ -90,11 +102,12 @@ export class RustyState implements vscode.Disposable {
         family: HealthFamily;
         hasProject: boolean;
         designer: boolean;
+        language: SketchLanguage;
     }> {
         try {
             const project = await readActiveProject();
             if (project === undefined) {
-                return { family: 'unknown', hasProject: false, designer: false };
+                return { family: 'unknown', hasProject: false, designer: false, language: 'rust' };
             }
             return {
                 family: project.board?.kind ?? 'unknown',
@@ -102,10 +115,11 @@ export class RustyState implements vscode.Disposable {
                 // One canvas serves both languages: it edits `designer/panel.ui.json`, and the save path
                 // writes `ui.rs` for a crate and `ui.cpp` for a sketch.
                 designer: project.designer === true,
+                language: project.language,
             };
         } catch (error) {
             this.log(`project detection failed: ${String(error)}`);
-            return { family: 'unknown', hasProject: false, designer: false };
+            return { family: 'unknown', hasProject: false, designer: false, language: 'rust' };
         }
     }
 
@@ -122,6 +136,7 @@ export class RustyState implements vscode.Disposable {
             this.projectOpen = active.hasProject;
             this.currentFamily = active.family;
             this.designerProject = active.designer;
+            this.projectLanguage = active.language;
             this.currentEsp = this.currentFamily === 'esp'
                 ? await detectEspToolchainNow({ chips: chipsForTargets(espTargets()) })
                 : undefined;

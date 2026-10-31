@@ -1,7 +1,10 @@
 import * as vscode from 'vscode';
 import { RustyState } from '../state';
-import { readActiveProject } from '../project/activeProject';
+import { ActiveProject, readActiveProject } from '../project/activeProject';
 import { ParsedDependency, parseCargoToml } from '../library/cargoToml';
+import { coreIdFor, detectArduino, readSketchYaml } from '../toolchain/arduinoCli';
+import { fqbnFromSketchYaml } from '../generate/arduinoIntelliSense';
+import { execFileFn } from '../util/exec';
 import { UDEV_RULES_DIR } from '../toolchain/detect';
 
 /** Project view: what this workspace targets, whether it can build, and what it depends on. */
@@ -28,6 +31,52 @@ export class ProjectViewProvider implements vscode.TreeDataProvider<vscode.TreeI
         this.disposables.length = 0;
     }
 
+    /**
+     * The rows a sketch needs: arduino-cli itself, the core its board is built with, and the board.
+     *
+     * Read here rather than kept in the state, because a sketch's toolchain is only ever looked at when a C++
+     * project's view is drawn, and both calls are quick reads of the CLI's own index.
+     */
+    private async arduinoRows(project: ActiveProject): Promise<vscode.TreeItem[]> {
+        const status = await detectArduino(execFileFn);
+        const cli = new vscode.TreeItem(
+            `arduino-cli ${status.version ?? 'not found'}`,
+            vscode.TreeItemCollapsibleState.None,
+        );
+        cli.iconPath = new vscode.ThemeIcon(status.cli === undefined ? 'error' : 'pass');
+        cli.description = status.cli;
+        cli.tooltip = status.trouble;
+
+        const rows = [cli];
+        const sketchYaml = readSketchYaml(project.folder.fsPath);
+        const fqbn = sketchYaml === undefined ? undefined : fqbnFromSketchYaml(sketchYaml);
+        if (fqbn === undefined) {
+            const missing = new vscode.TreeItem('no board in sketch.yaml', vscode.TreeItemCollapsibleState.None);
+            missing.iconPath = new vscode.ThemeIcon('warning');
+            rows.push(missing);
+            return rows;
+        }
+
+        const core = coreIdFor(fqbn);
+        const installed = status.cores.find((candidate) => candidate.id === core);
+        const coreRow = new vscode.TreeItem(
+            `core ${installed === undefined ? `${core} not installed` : `${core} ${installed.version}`}`,
+            vscode.TreeItemCollapsibleState.None,
+        );
+        coreRow.iconPath = new vscode.ThemeIcon(installed === undefined ? 'error' : 'pass');
+        coreRow.description = fqbn;
+        rows.push(coreRow);
+
+        const board = new vscode.TreeItem(
+            project.board?.name ?? 'Unknown board',
+            vscode.TreeItemCollapsibleState.None,
+        );
+        board.iconPath = new vscode.ThemeIcon('circuit-board');
+        board.description = 'board';
+        rows.push(board);
+        return rows;
+    }
+
     getTreeItem(element: vscode.TreeItem): vscode.TreeItem {
         return element;
     }
@@ -45,6 +94,13 @@ export class ProjectViewProvider implements vscode.TreeDataProvider<vscode.TreeI
             none.iconPath = new vscode.ThemeIcon('info');
             none.command = { command: 'rustyPlatform.newProject', title: 'New Project' };
             return [none];
+        }
+
+        if (project.language === 'arduino') {
+            // A sketch has no Cargo.toml, no probe-rs and no rustup targets: cargo 'not found' in red would be a
+            // warning about a tool this project never uses.
+            items.push(...(await this.arduinoRows(project)));
+            return items;
         }
 
         const boardItem = new vscode.TreeItem(project.board?.name ?? 'Unknown board', vscode.TreeItemCollapsibleState.None);

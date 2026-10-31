@@ -73,6 +73,7 @@ export class StatusBarView implements vscode.Disposable {
                 this.state.hasProject,
                 activeProbeRsSession() !== undefined,
                 this.state.family,
+                this.state.language,
             ).map((control) => [control.command, control]),
         );
         for (const item of this.actionItems) {

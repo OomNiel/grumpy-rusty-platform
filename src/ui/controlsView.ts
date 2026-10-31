@@ -48,6 +48,7 @@ export class ControlsViewProvider implements vscode.TreeDataProvider<vscode.Tree
             activeProbeRsSession() !== undefined,
             this.state.family,
             this.state.hasDesignerProject,
+            this.state.language,
         )) {
             const item = new vscode.TreeItem(control.label, vscode.TreeItemCollapsibleState.None);
             item.iconPath = new vscode.ThemeIcon(control.icon);
