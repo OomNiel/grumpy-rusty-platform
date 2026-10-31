@@ -8,6 +8,7 @@ import {
     INTELLISENSE_CONFIG_PATH,
     fqbnFromSketchYaml,
     intelliSenseConfig,
+    parseArduinoProperties,
 } from '../generate/arduinoIntelliSense';
 
 /**
@@ -77,14 +78,39 @@ export async function writeArduinoIntelliSense(options: {
         return 'failed';
     }
 
-    writeConfig(folder, fqbn, true);
-    output.appendLine(`[intellisense] ${fqbn}: compiler database written to ${ARDUINO_BUILD_DIR}`);
+    // The explicit paths, from the core itself: `compileCommands` above is the precise answer, but the C/C++
+    // extension drops an entry it cannot parse and then every core header reads as missing. Same answer, in the
+    // form it always understands -- and the reason this runs `--show-properties` at all.
+    const properties = await run(cli, ['compile', '--fqbn', fqbn, '--show-properties'], {
+        cwd: folder,
+        timeoutMs: 60_000,
+    });
+    const parsed = properties.code === 0 ? parseArduinoProperties(properties.stdout) : { includePaths: [] };
+    writeConfig(folder, fqbn, true, parsed);
+    output.appendLine(
+        `[intellisense] ${fqbn}: compiler database written to ${ARDUINO_BUILD_DIR}` +
+            (parsed.includePaths.length === 0 ? ' (no core paths: --show-properties failed)' : ''),
+    );
     return 'written';
 }
 
-function writeConfig(folder: string, fqbn: string, hasDatabase: boolean): void {
+function writeConfig(
+    folder: string,
+    fqbn: string,
+    hasDatabase: boolean,
+    properties: { includePaths: string[]; compilerPath?: string } = { includePaths: [] },
+): void {
     const target = path.join(folder, INTELLISENSE_CONFIG_PATH);
     fs.mkdirSync(path.dirname(target), { recursive: true });
     const family = fqbn.startsWith('esp32:') ? 'esp' : 'rp';
-    fs.writeFileSync(target, intelliSenseConfig({ family, hasDatabase }), 'utf8');
+    fs.writeFileSync(
+        target,
+        intelliSenseConfig({
+            family,
+            hasDatabase,
+            includePaths: properties.includePaths,
+            ...(properties.compilerPath === undefined ? {} : { compilerPath: properties.compilerPath }),
+        }),
+        'utf8',
+    );
 }

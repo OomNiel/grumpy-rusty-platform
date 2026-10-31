@@ -11,6 +11,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.18.5] - 2026-10-31
+
+### Fixed
+
+- **`#include <Arduino.h>` resolves again, or for the first time.** The editor config pointed the C/C++
+  extension at arduino-cli's compilation database and nothing else; when that extension refuses a database
+  entry it does so silently, and every header from the core then reads as missing. The config now also names
+  the core's own include paths and the compiler that comes with the package, both read from
+  `arduino-cli compile --show-properties` — the same answer as the build, in the form that always works.
+
 ## [0.18.4] - 2026-10-31
 
 ### Fixed

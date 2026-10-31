@@ -33,6 +33,41 @@ export function fqbnFromSketchYaml(text: string): string | undefined {
 }
 
 /**
+ * The include paths and compiler `arduino-cli` reports for a board.
+ *
+ * `compile --show-properties` is the only honest source for these: the core, the variant, the core's own system
+ * folder and the compiler that comes with the package. Read here rather than guessed, so the editor's answer is
+ * the build's answer.
+ */
+export function parseArduinoProperties(stdout: string): { includePaths: string[]; compilerPath?: string } {
+    const values = new Map<string, string>();
+    for (const line of stdout.split('\n')) {
+        const match = /^([A-Za-z0-9_.]+)=(.*)$/.exec(line.trim());
+        if (match !== null && match[1] !== undefined && match[2] !== undefined) {
+            values.set(match[1], match[2]);
+        }
+    }
+    const includePaths: string[] = [];
+    for (const key of ['build.core.path', 'build.variant.path', 'build.system.path']) {
+        const value = values.get(key);
+        if (value !== undefined && value !== '' && !includePaths.includes(value)) {
+            includePaths.push(value);
+        }
+    }
+    const platform = values.get('runtime.platform.path');
+    if (platform !== undefined && platform !== '') {
+        includePaths.push(`${platform}/include`);
+    }
+    const toolchain = values.get('compiler.path');
+    const compiler = values.get('compiler.cpp.cmd');
+    const compilerPath =
+        toolchain !== undefined && compiler !== undefined && toolchain !== ''
+            ? `${toolchain}${compiler}`
+            : undefined;
+    return compilerPath === undefined ? { includePaths } : { includePaths, compilerPath };
+}
+
+/**
  * `c_cpp_properties.json`, as text.
  *
  * `compileCommands` is what does the work. `includePath` names only the sketch itself, because a project whose
@@ -44,6 +79,15 @@ export function intelliSenseConfig(settings: {
     family: 'rp' | 'esp';
     /** Whether the compilation database exists already; the comment then says how to refresh it. */
     hasDatabase: boolean;
+    /**
+     * The include paths the core reports, and the compiler it is built with.
+     *
+     * Belt and braces: `compileCommands` is the precise answer, but the C/C++ extension silently refuses a
+     * database entry it cannot make sense of, and then every header from the core reads as missing. These are
+     * the same paths in a form it always understands.
+     */
+    includePaths?: string[];
+    compilerPath?: string;
 }): string {
     const mode = settings.family === 'rp' ? 'gcc-arm' : 'gcc-x86';
     // Two whole sentences, each on its own line, so the command's name is never split by a wrap: a person who
@@ -61,7 +105,11 @@ export function intelliSenseConfig(settings: {
         {
             "name": "Arduino (C++)",
             "compileCommands": "\${workspaceFolder}/${ARDUINO_BUILD_DIR}/compile_commands.json",
-            "includePath": ["\${workspaceFolder}/src", "\${workspaceFolder}"],
+            "includePath": [${[
+                '"${workspaceFolder}/src"',
+                '"${workspaceFolder}"',
+                ...(settings.includePaths ?? []).map((path) => JSON.stringify(path)),
+            ].join(', ')}],${settings.compilerPath === undefined ? '' : `\n            "compilerPath": ${JSON.stringify(settings.compilerPath)},`}
             "cStandard": "gnu17",
             "cppStandard": "gnu++17",
             "intelliSenseMode": "${mode}"

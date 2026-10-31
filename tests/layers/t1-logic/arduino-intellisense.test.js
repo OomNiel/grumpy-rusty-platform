@@ -17,6 +17,7 @@ const {
     INTELLISENSE_CONFIG_PATH,
     fqbnFromSketchYaml,
     intelliSenseConfig,
+    parseArduinoProperties,
 } = compiled('generate/arduinoIntelliSense');
 
 const SKETCH_YAML = `# Grumpy's Rusty Platform -- the board this sketch is built for.
@@ -77,4 +78,36 @@ test('the file is valid JSON once its comments are dropped, which is what the C/
     equal(parsed.configurations.length, 1, 'one configuration');
     equal(parsed.configurations[0].name, 'Arduino (C++)', 'named for what it is');
     equal(parsed.configurations[0].cppStandard, 'gnu++17', 'and a C++ standard cpptools knows');
+});
+
+// ------------------------------------------------------- the core's own properties
+
+const SHOW_PROPERTIES = [
+    'build.core.path=/c/core',
+    'build.system.path=/c/system',
+    'build.variant.path=/c/variant',
+    'runtime.platform.path=/c/platform',
+    'compiler.path=/t/bin/',
+    'compiler.cpp.cmd=arm-none-eabi-g++',
+].join('\n');
+
+test('the core\'s own properties give the include paths and the compiler', () => {
+    const parsed = parseArduinoProperties(SHOW_PROPERTIES);
+    equal(parsed.includePaths.join(' '), '/c/core /c/variant /c/system /c/platform/include', 'core, variant, system, include');
+    equal(parsed.compilerPath, '/t/bin/arm-none-eabi-g++', 'the compiler that comes with the package');
+    equal(parseArduinoProperties('').includePaths.length, 0, 'nothing to say is nothing');
+});
+
+test('the config carries those paths, so a header resolves even if the database is refused', () => {
+    const parsed = parseArduinoProperties(SHOW_PROPERTIES);
+    const text = intelliSenseConfig({ family: 'rp', hasDatabase: true, ...parsed });
+    contains(text, '"/c/core"', 'the core is on the include path');
+    contains(text, '"/c/variant"', 'so is the variant');
+    contains(text, '"compilerPath": "/t/bin/arm-none-eabi-g++"', 'and the compiler is named');
+});
+
+test('a config with no properties is still valid, just less helpful', () => {
+    const text = intelliSenseConfig({ family: 'rp', hasDatabase: true, includePaths: [] });
+    contains(text, '"includePath": ["${workspaceFolder}/src", "${workspaceFolder}"]', 'the sketch itself');
+    notContains(text, 'compilerPath', 'and no compiler invented');
 });
