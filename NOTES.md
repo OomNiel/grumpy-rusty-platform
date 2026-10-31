@@ -8542,3 +8542,30 @@ compilation database is untouched — the compiler still gets the whole list.
 gcc and reported by IntelliSense; both can be right at once. Also: I could not read that pane, and two rounds of
 guessing went nowhere. A screenshot settled it in one step — `~/.config/Code/User/workspaceStorage/vscode-chat-images/`
 holds what the user pasted, and it is worth looking there first next time.
+
+### 173. Clean was arduino-cli's clean-and-rebuild, without the flags
+
+`arduinoClean` shelled out:
+
+    arduino-cli compile --fqbn rp2040:rp2040:rpipico2w --clean
+
+`--clean` in arduino-cli means "clean the build folder **before compiling**", so the command preprocesses the
+sketch -- and it was invoked without the `--build-property compiler.cpp.extra_flags=-DLV_CONF_INCLUDE_SIMPLE
+-I<project>` pair that `compileArgs` passes. A project that builds perfectly therefore failed Clean at
+`lvgl_display.cpp:6: fatal error: lv_conf.h: No such file or directory` (bench, 2026-10-31). Two faults in one
+line: not a clean, and not the same command line as the build.
+
+Clean is now what `cargo clean` is: delete the project's own output and stop.
+
+- `build/` -- the artifacts `upload --input-dir build` uses;
+- `.arduino/build` -- arduino-cli's objects, 103 MB of the 115 MB on the bench project.
+
+It reports what it freed (`build (12.0 MB), .arduino/build (103.0 MB)`), and leaves `.vscode/c_cpp_properties.json`
+untouched: that file already holds the include paths, defines and `compilerArgs` from the last build, so
+IntelliSense stays correct without the database. Regenerating the database in Clean would put 40 MB straight back
+-- measured -- which is the one thing a clean must not do.
+
+**Lesson:** an editor command named after a cargo verb must behave like that verb. `arduino-cli compile --clean`
+is a *build* with a wiped cache; wrapping it and calling it Clean gave a person a rebuild they did not ask for,
+plus a failure. And any command line the extension builds for arduino-cli has to come from the same helper as the
+build, or it will drift out of range of the project's own headers.

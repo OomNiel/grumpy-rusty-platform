@@ -11,6 +11,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.18.15] - 2026-10-31
+
+### Fixed
+
+- **Clean works on a designer project.** It ran `arduino-cli compile --fqbn … --clean`, and that flag means
+  *clean, then compile* — so it preprocessed the sketch and stopped on `lv_conf.h`, because it was invoked
+  without the LVGL `--build-property` a Build passes. Clean is now the `cargo clean` shape it should always have
+  been: it removes this project's `build/` and `.arduino/build` folders (115 MB on the bench project), reports
+  what it freed, and stops. The editor's config is left alone — it already carries the include paths, defines
+  and compiler flags from the last build, so IntelliSense keeps working without the database the build wrote.
+
 ## [0.18.14] - 2026-10-31
 
 ### Fixed

@@ -2,8 +2,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { ActiveProject } from '../project/activeProject';
-import { fqbnFromSketchYaml } from '../generate/arduinoIntelliSense';
+import { fqbnFromSketchYaml, ARDUINO_BUILD_DIR } from '../generate/arduinoIntelliSense';
 import {
+    ARDUINO_ARTIFACT_DIR,
     collectDiagnostics,
     compileArgs,
     lastLineOf,
@@ -344,18 +345,70 @@ export async function arduinoMonitor(
     runInTerminal('Rusty: monitor', `${quote(cli)} ${monitorArgs(port.address).join(' ')}`, project.folder);
 }
 
-/** Removes the artifacts, which is what `cargo clean` means on this side. */
+/**
+ * Removes the build output, which is what `cargo clean` means on this side.
+ *
+ * Not `arduino-cli compile --clean`: that flag means *clean before compiling*, so it preprocesses the sketch and
+ * then builds it — and it was invoked without the LVGL `--build-property`, so it died on `lv_conf.h` while a
+ * plain Build worked (bench, 2026-10-31). A Clean that also rebuilds is not a Clean, and the two folders it
+ * should empty are this project's own: `build/` (the artifacts Upload uses) and `.arduino/build` (arduino-cli's
+ * objects — the 100 MB of the two).
+ *
+ * The editor's `c_cpp_properties.json` is deliberately left alone: it already carries the include paths, defines
+ * and compiler flags from the last build, so IntelliSense keeps working without the database. Regenerating that
+ * database here would put 40 MB straight back, which is the one thing a Clean must not do.
+ */
 export async function arduinoClean(project: ActiveProject, output: vscode.OutputChannel): Promise<void> {
-    const cli = configuredArduinoCliPath();
-    if (cli === undefined) {
-        noCli();
+    const folder = project.folder.fsPath;
+    const targets = [path.join(folder, ARDUINO_ARTIFACT_DIR), path.join(folder, ARDUINO_BUILD_DIR)];
+    const removed: string[] = [];
+    for (const target of targets) {
+        if (!fs.existsSync(target)) {
+            continue;
+        }
+        const bytes = directorySize(target);
+        try {
+            fs.rmSync(target, { recursive: true, force: true });
+            removed.push(`${path.relative(folder, target)} (${(bytes / 1_048_576).toFixed(1)} MB)`);
+        } catch (error) {
+            void vscode.window.showErrorMessage(
+                `Could not remove ${path.relative(folder, target)}: ` +
+                    (error instanceof Error ? error.message : String(error)),
+            );
+            return;
+        }
+    }
+    if (removed.length === 0) {
+        void vscode.window.showInformationMessage('Nothing to clean: this project has no build output.');
         return;
     }
-    const fqbn = sketchFqbn(project);
-    if (fqbn === undefined) {
-        noFqbn();
-        return;
-    }
-    output.appendLine('[arduino] cleaning the build folder');
-    runInTerminal('Rusty: build', `${quote(cli)} compile --fqbn ${fqbn} --clean`, project.folder);
+    output.appendLine(`[arduino] cleaned ${removed.join(', ')}`);
+    void vscode.window.showInformationMessage(`Cleaned ${removed.join(', ')}. The next Build starts from scratch.`);
+}
+
+/** What a folder costs, so the message can say what was freed rather than only that something happened. */
+function directorySize(folder: string): number {
+    let total = 0;
+    const walk = (current: string): void => {
+        let entries: fs.Dirent[];
+        try {
+            entries = fs.readdirSync(current, { withFileTypes: true });
+        } catch {
+            return;
+        }
+        for (const entry of entries) {
+            const child = path.join(current, entry.name);
+            if (entry.isDirectory()) {
+                walk(child);
+            } else {
+                try {
+                    total += fs.statSync(child).size;
+                } catch {
+                    // A file that vanished while we walked it costs nothing to report as zero.
+                }
+            }
+        }
+    };
+    walk(folder);
+    return total;
 }

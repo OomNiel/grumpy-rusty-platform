@@ -175,3 +175,20 @@ test('the shared command wrapper does not refuse a sketch before its own code ru
     contains(wrapper, "project.language === 'rust' && purpose", 'the toolchain check is for Rust only');
     notContains(wrapper, 'That command is the Rust route', 'and nothing refuses on the way in');
 });
+
+test('Clean removes the output instead of asking arduino-cli to clean and rebuild', () => {
+    // `arduino-cli compile --clean` means *clean, then compile* -- and it was run without the LVGL build
+    // properties, so it stopped on lv_conf.h while a plain Build worked (bench, 2026-10-31). An editor's Clean
+    // has to be the cargo-shaped one: take the output away and stop.
+    const fs = require('fs');
+    const path = require('path');
+    const source = fs.readFileSync(
+        path.join(__dirname, '..', '..', '..', 'src', 'commands', 'arduinoCommands.ts'),
+        'utf8',
+    );
+    const clean = source.slice(source.indexOf('export async function arduinoClean'));
+    notContains(clean, '--clean', 'no arduino-cli clean, which would rebuild as well');
+    notContains(clean, 'runInTerminal', 'and nothing to watch in a terminal');
+    contains(clean, 'ARDUINO_ARTIFACT_DIR', 'the artifacts Upload uses');
+    contains(clean, 'ARDUINO_BUILD_DIR', 'and arduino-cli\'s own objects');
+});
