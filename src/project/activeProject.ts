@@ -3,7 +3,7 @@ import { detectBoardFromProject } from '../boards/detect';
 import { BoardProfile } from '../boards/types';
 import { DESIGNER_DOCUMENT_PATH } from '../designer/model';
 import { backendOrDefault } from '../generate/backends';
-import { LANGUAGE_MARKER, SketchLanguage, readProjectLanguage } from './language';
+import { LANGUAGE_MARKER, SketchLanguage, isDesignerProject, readProjectLanguage } from './language';
 
 export interface ActiveProject {
     folder: vscode.Uri;
@@ -83,7 +83,13 @@ export async function readProjectAt(folder: vscode.Uri): Promise<ActiveProject |
     const chip =
         (board === undefined ? undefined : board.kind === 'rp' ? board.probeChip : board.espChip) ??
         /probe-rs\s+run\s+--chip\s+["']?([^\s"']+)["']?/.exec(cargoConfigToml)?.[1];
-    const designer = await exists(vscode.Uri.joinPath(folder, DESIGNER_DOCUMENT_PATH));
+    // The canvas's own markers: the design document, or -- for a sketch made before the C++ designer had one --
+    // the generated screen it writes, which only the designer template produces.
+    const designer = isDesignerProject({
+        documentPresent: await exists(vscode.Uri.joinPath(folder, DESIGNER_DOCUMENT_PATH)),
+        language: backend.id,
+        hasCppScreen: await exists(vscode.Uri.joinPath(folder, 'src', 'ui.cpp')),
+    });
     return { folder, cargoToml, cargoConfigToml, board, chip, designer, language: backend.id };
 }
 

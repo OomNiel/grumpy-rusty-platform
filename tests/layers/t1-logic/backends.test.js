@@ -20,6 +20,7 @@ const {
     DEFAULT_LANGUAGE,
     LANGUAGE_MARKER,
     SKETCH_LANGUAGES,
+    isDesignerProject,
     isSketchLanguage,
     languageMarker,
     readProjectLanguage,
@@ -155,4 +156,18 @@ test('a project in another language records it, in the marker file, once', () =>
     equal(readProjectLanguage(markers[0].content), 'arduino', 'saying which language it is');
     equal(files.length, arduinoBackend.files(options).length + 1, 'the backend\'s files, plus the marker');
     equal(files[files.length - 1].path, LANGUAGE_MARKER, 'and it is the last one written');
+});
+
+// -------------------------------------------------------------- the designer marker
+
+test('a sketch with a generated screen is a designer project, even with no design document yet', () => {
+    // A project made before the C++ designer existed has src/ui.cpp and no designer/ folder; opening its canvas
+    // is what writes the document, so it has to be offered.
+    ok(isDesignerProject({ documentPresent: false, language: 'arduino', hasCppScreen: true }), 'a sketch');
+    ok(isDesignerProject({ documentPresent: true, language: 'arduino', hasCppScreen: true }), 'either marker');
+    ok(!isDesignerProject({ documentPresent: false, language: 'arduino', hasCppScreen: false }), 'a blinky is not');
+    ok(isDesignerProject({ documentPresent: true, language: 'rust', hasCppScreen: false }), 'a crate with a document');
+    ok(!isDesignerProject({ documentPresent: false, language: 'rust', hasCppScreen: false }), 'and a crate without one');
+    // src/ui.rs alone means nothing here: the Rust marker has always been the document.
+    ok(!isDesignerProject({ documentPresent: false, language: 'rust', hasCppScreen: true }), 'no guessing for Rust');
 });

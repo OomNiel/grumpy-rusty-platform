@@ -55,3 +55,21 @@ export function readProjectLanguage(markerText: string | undefined): SketchLangu
         return DEFAULT_LANGUAGE;
     }
 }
+
+/**
+ * Whether a folder is a Designer project.
+ *
+ * Two markers, because the two languages are born differently. A crate is a Designer project when it has the
+ * design document (the wizard writes it for the `designer` template and for no other). A sketch cannot rely on
+ * that alone: the C++ designer arrived later, so a project made before it has no `designer/` folder yet while
+ * its `src/ui.cpp` -- which only the designer template writes -- is there. Offering the canvas for such a
+ * project is what lets it be opened and saved into the document format, instead of looking like a project that
+ * has no design.
+ */
+export function isDesignerProject(markers: {
+    documentPresent: boolean;
+    language: SketchLanguage;
+    hasCppScreen: boolean;
+}): boolean {
+    return markers.documentPresent || (markers.language === 'arduino' && markers.hasCppScreen);
+}

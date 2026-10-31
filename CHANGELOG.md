@@ -11,6 +11,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.18.4] - 2026-10-31
+
+### Fixed
+
+- **Open Designer appears for a C++ project again.** A Designer project was recognised by
+  `designer/panel.ui.json` alone, which the C++ side only started writing in 0.18.2 — so a sketch made before
+  that had no design document and the sidebar offered no canvas. A sketch is now recognised by its generated
+  `src/ui.cpp` as well (only the designer template writes one), and opening it writes the document.
+
 ## [0.18.3] - 2026-10-31
 
 ### Fixed
