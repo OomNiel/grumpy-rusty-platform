@@ -8520,3 +8520,25 @@ that is what proved `compilerArgs` was needed.)
 **Lesson:** a Problems pane can hold two independent providers. When a build is clean and the pane is not, the
 first question is *which* tool is complaining -- and for the C/C++ extension the answer is a path-*matched*
 database, expanded response files, and the CPU flags.
+
+### 172. Six warnings about folders that do not exist
+
+The Problems pane after 0.18.13 held six entries, all against `.vscode/c_cpp_properties.json` itself:
+
+    Cannot find: ".../6.3.1//pico-sdk/src/common/pico_base/include"
+
+They are the paths arduino-pico's `core_inc.txt` still lists from the pico-sdk 2.x layout
+(`common/pico_base`, `common/pico_bit_ops`, `common/pico_divider`, `common/pico_stdlib`,
+`common/pico_usb_reset_interface`, `rp2_common/pico_platform`); the rp2350 SDK renamed them
+(`pico_base_headers`, `pico_platform_common`, …). A compiler ignores a `-I` that is not there, which is why the
+build never mentioned them — the C/C++ extension reports each one instead.
+
+`existingIncludePaths(paths, isDirectory)` keeps only what is on disk (absolute paths only; a `${workspaceFolder}`
+substitution is left alone), and `writeArduinoIntelliSense` calls it with `fs.existsSync`. Six dropped, 89 kept,
+and `arm-none-eabi-g++ -fsyntax-only` over all five sources with the filtered list: still 0 errors. The
+compilation database is untouched — the compiler still gets the whole list.
+
+**Lesson:** an include path list is judged by different rules by different tools. A missing `-I` is invisible to
+gcc and reported by IntelliSense; both can be right at once. Also: I could not read that pane, and two rounds of
+guessing went nowhere. A screenshot settled it in one step — `~/.config/Code/User/workspaceStorage/vscode-chat-images/`
+holds what the user pasted, and it is worth looking there first next time.

@@ -11,6 +11,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.18.14] - 2026-10-31
+
+### Fixed
+
+- **The six "Cannot find" warnings in `c_cpp_properties.json` are gone.** arduino-pico's `core_inc.txt` still
+  names pico-sdk 2.x include folders (`common/pico_base`, `common/pico_bit_ops`, `common/pico_divider`,
+  `common/pico_stdlib`, `common/pico_usb_reset_interface`, `rp2_common/pico_platform`) that the rp2350 layout
+  replaced with `…_headers` names. A compiler ignores a `-I` that does not exist; the C/C++ extension reported
+  each one against the config file, for paths nobody chose. The editor config now carries only folders that are
+  really on disk — the compilation database still holds everything the compiler was given.
+
 ## [0.18.13] - 2026-10-31
 
 ### Fixed

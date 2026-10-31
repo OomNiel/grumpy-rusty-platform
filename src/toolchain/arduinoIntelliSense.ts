@@ -19,6 +19,7 @@ import {
     INTELLISENSE_DATABASE_PATH,
     fqbnFromSketchYaml,
     intelliSenseConfig,
+    existingIncludePaths,
     expandCompileArguments,
     parseArduinoProperties,
     parseCompileFlags,
@@ -144,10 +145,15 @@ export async function writeArduinoIntelliSense(options: {
         timeoutMs: 60_000,
     });
     const parsed = properties.code === 0 ? parseArduinoProperties(properties.stdout) : { includePaths: [] };
+    // Paths that are not on disk cannot resolve anything, and the C/C++ extension reports each one as
+    // "Cannot find" against the config file -- six warnings for a project whose build is clean.
+    const includePaths = existingIncludePaths([...flags.includes, ...parsed.includePaths], (candidate) =>
+        fs.existsSync(candidate),
+    );
     writeConfig(folder, fqbn, true, {
         // The database's own paths first: they include every library the sketch actually uses, which the core's
         // property list does not know about.
-        includePaths: [...new Set([...flags.includes, ...parsed.includePaths])],
+        includePaths,
         defines: flags.defines,
         compilerArgs: flags.compilerArgs,
         ...(parsed.compilerPath === undefined ? {} : { compilerPath: parsed.compilerPath }),

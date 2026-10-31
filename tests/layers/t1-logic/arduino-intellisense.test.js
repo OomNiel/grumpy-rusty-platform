@@ -16,6 +16,7 @@ const {
     ARDUINO_BUILD_DIR,
     INTELLISENSE_CONFIG_PATH,
     INTELLISENSE_DATABASE_PATH,
+    existingIncludePaths,
     expandCompileArguments,
     fqbnFromSketchYaml,
     intelliSenseConfig,
@@ -190,4 +191,19 @@ test('the config points at the rewritten database and carries the flags', () => 
     contains(text, `"\${workspaceFolder}/${INTELLISENSE_DATABASE_PATH}"`, 'the rewritten database');
     contains(text, '"defines": ["LV_CONF_INCLUDE_SIMPLE"]', 'LVGL\'s own switch');
     contains(text, '"compilerArgs": ["-mcpu=cortex-m33"]', 'and the CPU the SDK headers insist on');
+});
+
+test('an include path that is not on disk is not offered to the editor', () => {
+    // arduino-pico's core_inc.txt still names pico-sdk 2.x folders the rp2350 layout renamed. g++ ignores a
+    // missing -I; the C/C++ extension reports each one as "Cannot find" against c_cpp_properties.json -- six
+    // warnings on the bench for paths nobody chose (2026-10-31).
+    const there = ['/c/cores', '/c/variant', '${workspaceFolder}/src'];
+    const kept = existingIncludePaths([...there, '/c/pico-sdk/src/common/pico_base/include', '/c/cores'], (p) =>
+        there.includes(p),
+    );
+    equal(kept.join(' '), '/c/cores /c/variant ${workspaceFolder}/src', 'only what is there, and only once');
+    // A drive letter is absolute too, so it is checked like any other -- kept when the folder is there, dropped
+    // when it is not, rather than treated as a `${workspaceFolder}` substitution and left alone.
+    equal(existingIncludePaths(['C:\\msys64\\include'], () => true).length, 1, 'a drive letter is absolute');
+    equal(existingIncludePaths(['C:\\msys64\\include'], () => false).length, 0, 'and checked, not trusted');
 });

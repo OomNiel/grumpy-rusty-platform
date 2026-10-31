@@ -217,6 +217,36 @@ export function projectCompileDatabase(json: string, folder: string, read: Respo
     return `${JSON.stringify(merged, null, 2)}\n`;
 }
 
+/**
+ * The include paths that are actually there.
+ *
+ * arduino-pico's `core_inc.txt` still lists pico-sdk 2.x folders (`common/pico_base`, `common/pico_bit_ops`, …)
+ * that the rp2350 layout replaced with `…_headers` names. A compiler ignores a `-I` that does not exist, but the
+ * C/C++ extension reports each one as *Cannot find* in the Problems pane, against `c_cpp_properties.json` itself
+ * — six warnings for a project that builds and for paths nobody chose (bench, 2026-10-31). A path that is not
+ * on disk cannot help an editor, so it is dropped here and nowhere else: the database keeps everything the
+ * compiler was given.
+ */
+export function existingIncludePaths(paths: readonly string[], isDirectory: (path: string) => boolean): string[] {
+    const kept: string[] = [];
+    for (const entry of paths) {
+        // `${workspaceFolder}/…` and other substitutions stay: only absolute paths can be checked here.
+        if (entry === '' || kept.includes(entry)) {
+            continue;
+        }
+        if (path_isAbsolute(entry) && !isDirectory(entry)) {
+            continue;
+        }
+        kept.push(entry);
+    }
+    return kept;
+}
+
+/** `path.isAbsolute` without importing `path` into a module that has no other reason to know the platform. */
+function path_isAbsolute(value: string): boolean {
+    return value.startsWith('/') || /^[A-Za-z]:[\\/]/.test(value);
+}
+
 export function intelliSenseConfig(settings: {
     /** Which compiler family the board uses: the C/C++ extension picks its own defaults from this. */
     family: 'rp' | 'esp';
