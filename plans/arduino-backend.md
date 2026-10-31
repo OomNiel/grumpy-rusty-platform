@@ -2,10 +2,14 @@
 
 Decided 2026-10-31. This is the plan the implementation follows; it is not user documentation.
 
-## Status: agreed, not started
+## Status: agreed; phase 1 done, phase 2 next (2026-10-31)
 
-**Nothing has been implemented.** The six questions that shaped this plan were answered on 2026-10-31 and are
-recorded under *Answers the user gave* below — the phases say what each answer will touch.
+**Phase 1 is in** — the seam and nothing visible: `src/project/language.ts`, `src/generate/backends.ts`
+(`SketchBackend`, `rustBackend`, `projectFiles`), `language` on `ActiveProject`, and the wizard's language step,
+templates and file list going through the backend. One backend is registered, so the language question is
+skipped, no marker is written and every generated file is byte-identical (1116 t1 checks, 4 goldens). The six
+questions that shaped this plan were answered on 2026-10-31 and are recorded under *Answers the user gave*
+below — the phases say what each answer will touch.
 
 **How to abandon it.** Where the decision is written down, so it can be taken back out cleanly:
 

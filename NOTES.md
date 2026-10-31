@@ -8210,3 +8210,42 @@ Nothing is committed per phase yet. When phases start, each one is its own commi
 behaviour change**, so reverting it restores the previous shape, and later phases only add files
 (`src/generate/arduino*`, `src/designer/lvgl*`, `src/ai/cpp*`). A project record that ends up carrying
 `language "rust"` needs no migration — a record without the field is already Rust.
+
+## §163 — Phase 1 of the C++ backend: the language seam, with nothing visible (2026-10-31)
+
+Plan: `plans/arduino-backend.md`. This is the phase that proves the promise "no behaviour change": the whole
+t1 layer (**1116** checks, ten of them new) and the 4 goldens pass, and every generated file is byte-identical
+to what the shipped generator writes.
+
+**What was added**
+
+- `src/project/language.ts` — `SketchLanguage`, the marker file's name, and `readProjectLanguage`.
+  **A project with no marker is Rust.** Missing, empty, malformed or unrecognised text reads as Rust: a marker
+  nobody can parse must not make a working project invisible, and Rust is what every such project is.
+- `src/generate/backends.ts` — `SketchBackend` (`id`, `label`, `detail`, `markerFile`, `templatesOfferedFor`,
+  `defaultTemplateFor`, `files`, `handlersPath`, `panelPath`), `rustBackend` (every member a delegation, not a
+  copy), `BACKENDS`, `availableBackends`, `backendFor` (throws for an unregistered language — a call-site bug),
+  `backendOrDefault` (cannot throw; reads a project), and `projectFiles` (a backend's files **plus** the marker
+  for a non-default language).
+- `ActiveProject.language`, and project-ness is now "the backend's marker file is there" instead of a
+  hard-coded `Cargo.toml`. `cargoToml` stays the board's source; it is empty for a language whose marker is
+  another file, which is a project with no board rather than a crash.
+- The wizard asks the language **first**, then passes it to `pickTemplate` and `projectFiles`.
+
+**Decisions taken while doing it, and why**
+
+1. **The marker is `rusty.project.json`, not `project.kdl`.** `project.kdl` is the *designer's screen manifest*
+   (it anchors asset paths) and exists only in designer projects, so it cannot be the thing that says what a
+   blinky project is written in. JSON because the reader is then `JSON.parse` and no KDL parser, no new file
+   format and no dependency on the designer's own syntax.
+2. **The marker is only written for a language that is not the default.** Rust needs no file to say it is Rust;
+   writing one into every generated project would change every file list, every golden and every existing
+   project's tree for no gain. What "no marker" means is decided in exactly one place.
+3. **The language step appears only when more than one backend is registered.** A question with one possible
+   answer is a step nobody can get wrong and nobody should pay for, and phase 1 must not add a click to the
+   wizard. Phase 2 registers `arduinoBackend` and the step shows up by itself.
+4. **`handlersPath`/`panelPath` are pinned by a test, not yet used by the Designer.** The emitter is phase 4;
+   having the accessors on the interface now means phase 4 changes where they are read, not what exists.
+
+**Abandoning phase 1** is `git revert` of its commit: it added two modules and one test file, added one field,
+and the wizard's three call sites. Nothing in the generated files, the goldens or on disk moved.

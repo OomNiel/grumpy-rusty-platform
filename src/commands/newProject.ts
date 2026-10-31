@@ -4,12 +4,10 @@ import { BoardProfile } from '../boards/types';
 import {
     AppTemplate,
     crateNameFrom,
-    defaultTemplateFor,
-    generateProjectFiles,
     isAcceptableProjectName,
     requiredFirmware,
-    templatesOfferedFor,
 } from '../generate/files';
+import { SketchBackend, availableBackends, projectFiles } from '../generate/backends';
 import { showDesigner } from '../designer/editor';
 import { copyVendoredCrates } from '../designer/vendored';
 import { forgetPendingDesigner, requestDesignerAfterReload } from '../designer/pendingOpen';
@@ -59,6 +57,33 @@ async function openProjectFolder(target: vscode.Uri): Promise<boolean> {
     return false;
 }
 
+/**
+ * Which language the project is written in -- the first question, because templates, generated files and the
+ * toolchain all follow from the answer.
+ *
+ * It is **not asked while there is only one backend**: a question with one possible answer is a step nobody
+ * can get wrong and nobody should pay for, and today's build has Rust alone. Phase 2 of
+ * `plans/arduino-backend.md` registers the second backend, and this step appears by itself when it does.
+ */
+async function pickLanguage(): Promise<SketchBackend | undefined> {
+    const backends = availableBackends();
+    if (backends.length === 1) {
+        return backends[0];
+    }
+    const picked = await vscode.window.showQuickPick(
+        backends.map((backend) => ({
+            label: backend.label,
+            detail: backend.detail,
+            backend,
+        })),
+        {
+            title: "Grumpy's Rusty Platform — which language?",
+            placeHolder: 'Language',
+        },
+    );
+    return picked?.backend;
+}
+
 async function pickBoard(preferredId: string | undefined): Promise<BoardProfile | undefined> {
     const defaultId = preferredId ?? vscode.workspace.getConfiguration('rustyPlatform').get<string>('defaultBoard');
     const ordered = [...BOARDS].sort((a, b) => Number(b.id === defaultId) - Number(a.id === defaultId));
@@ -79,12 +104,13 @@ async function pickBoard(preferredId: string | undefined): Promise<BoardProfile 
  * Wireless boards can generate more than one kind of application, so ask which one.
  * Wired boards have a single option and are not asked about at all.
  */
-async function pickTemplate(board: BoardProfile): Promise<AppTemplate | undefined> {
+async function pickTemplate(backend: SketchBackend, board: BoardProfile): Promise<AppTemplate | undefined> {
     // What the board's option *offers*, which is narrower for the ESP32-035: its menu is the WYSIWYG
-    // designer alone, and a board with one option is not asked about at all.
-    const options = templatesOfferedFor(board);
+    // designer alone, and a board with one option is not asked about at all. Which templates those are is the
+    // backend's answer, not this function's: a C++ Pico has no Embassy menu to offer.
+    const options = backend.templatesOfferedFor(board);
     if (options.length === 1) {
-        return options[0]?.id ?? defaultTemplateFor(board);
+        return options[0]?.id ?? backend.defaultTemplateFor(board);
     }
     const picked = await vscode.window.showQuickPick(
         options.map((info) => ({
@@ -283,12 +309,17 @@ export function registerNewProjectCommand(
     output: vscode.OutputChannel,
 ): vscode.Disposable {
     return vscode.commands.registerCommand('rustyPlatform.newProject', async (boardId?: string) => {
+        const backend = await pickLanguage();
+        if (backend === undefined) {
+            return;
+        }
+
         const board = await pickBoard(boardId);
         if (!board) {
             return;
         }
 
-        const template = await pickTemplate(board);
+        const template = await pickTemplate(backend, board);
         if (!template) {
             return;
         }
@@ -344,7 +375,7 @@ export function registerNewProjectCommand(
             return;
         }
 
-        const files = generateProjectFiles({
+        const files = projectFiles(backend, {
             board,
             projectName,
             template,

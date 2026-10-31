@@ -48,6 +48,16 @@ import { defaultTemplateForEsp, generateEspProjectFiles, offeredTemplateIds, tem
 export { binaryNameFrom, crateNameFrom, isAcceptableProjectName } from './naming';
 
 /**
+ * The Rust that drives a Pico panel: generated once by the wizard, then rewritten by the Designer every time
+ * the wiring changes, so the pins live in one place and the sketch reads them from there.
+ *
+ * Named here rather than spelled out at the one place that emits it, because a backend has to be able to say
+ * which file it is (see generate/backends.ts).
+ */
+export const RP_PANEL_PATH = 'src/panel.rs';
+
+
+/**
  * Pure project generator.
  *
  * `generateProjectFiles` is the single source of truth for what a generated
@@ -379,7 +389,7 @@ export function generateProjectFiles(options: GenerateOptions): GeneratedFile[] 
         // The hardware the whole project is wired to. The Designer rewrites this file on every save, so it
         // is generated from the same wiring the wizard started from -- there is no second source of pins.
         files.push({
-            path: 'src/panel.rs',
+            path: RP_PANEL_PATH,
             content: emitPanelRs({ board, wiring: panel.wiring, touch: panel.touch, sd: panel.sd }),
         });
         if (panel.sd) {
