@@ -360,8 +360,12 @@ test('a design that does not validate writes no markup, and so must not write th
     const path = require('path');
     const { repoRoot } = require('../../lib/harness');
     const editor = fs.readFileSync(path.join(repoRoot(), 'src', 'designer', 'editor.ts'), 'utf8');
-    // The save path has two guards on the markup (the document write, and the Rust), so the assertion is on
-    // the pair being adjacent: the sync call must sit between the guard and its closing brace.
-    const guard = editor.indexOf('if (rendered.kdl !== undefined) {\n            await this.syncModule(document);');
-    ok(guard !== -1, 'the Rust is regenerated inside the markup guard, not beside it');
+    // The guard is "the document validated", which is the same question as "markup came out" for a design that
+    // has markup -- and the only one a C++ project can answer, since its object tree *is* `src/ui.cpp`. Keying
+    // this on `rendered.kdl` meant `syncModule` never ran for a sketch, so its screen was never rewritten while
+    // its handlers were: `'on_screen_tapped' was not declared in this scope` (bench, 2026-10-31).
+    ok(
+        editor.includes('if (rendered.problems.length === 0) {\n            await this.syncModule(document);'),
+        'the Rust is regenerated inside the validation guard, not beside it',
+    );
 });

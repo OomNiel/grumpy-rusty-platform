@@ -11,6 +11,22 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.18.11] - 2026-10-31
+
+### Fixed
+
+- **A new C++ project's screen and its handler file now agree, so the first build compiles.** The generator
+  wrote a hand-made skeleton `src/ui.cpp` that called a handler of its own (`on_screen_tapped`), while the
+  Designer rewrites `src/ui_handlers.h` from the design — which declares `on_go_clicked` and nothing else. The
+  first build of a real project stopped at `'on_screen_tapped' was not declared in this scope`. All four
+  Designer files are now generated from the starter design through the same emitters the Designer saves with,
+  and a test checks, for every board, that everything `ui.cpp` calls is declared and defined, and that nothing
+  is declared that `ui.cpp` never calls.
+- **The Designer now rewrites a sketch's `src/ui.cpp` on save.** `syncModule` was gated on markup coming out,
+  and a C++ project has no markup — so a save rewrote the handlers (unconditional) and left the screen at
+  whatever the wizard wrote. The gate is now "the document validated", which is the same question for both
+  languages and the only one a sketch can answer.
+
 ## [0.18.10] - 2026-10-31
 
 ### Fixed

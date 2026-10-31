@@ -164,14 +164,51 @@ test('a designer template adds the two files the Designer owns and the one a per
     }
     contains(fileAt(files, 'src/main.cpp').content, 'ui_init();', 'the screen is brought up');
     contains(fileAt(files, 'src/main.cpp').content, 'ui_tick();', 'and ticked');
-    // The handler file is the one a person owns, and it has a working example in it from the first build.
+    // The handler file is the one a person owns, and it has a stub with a body in it from the first build.
     const handlers = fileAt(files, 'src/ui_handlers.cpp').content;
-    contains(handlers, 'on_screen_tapped', 'a stub with a body');
-    contains(fileAt(files, 'src/ui_handlers.h').content, 'extern "C" void on_screen_tapped();', 'declared for ui.cpp');
+    contains(handlers, 'on_go_clicked', 'a stub with a body');
+    contains(fileAt(files, 'src/ui_handlers.h').content, 'extern "C" void on_go_clicked();', 'declared for ui.cpp');
     // LVGL is what the design is drawn with, so a designer project carries its configuration and its display
     // driver as well as the two files the Designer owns.
     contains(list.join(' '), 'lv_conf.h', 'the LVGL configuration');
     contains(list.join(' '), 'src/lvgl_display.cpp', 'and the driver that puts LVGL on the glass');
+});
+
+test('every handler ui.cpp calls is declared, so a fresh project compiles', () => {
+    // The trap this pins, found on the bench 2026-10-31: the generator wrote a hand-made skeleton that called
+    // `on_screen_tapped()`, while the Designer's save rewrote `ui_handlers.h` from the design -- which declares
+    // `on_go_clicked()` and nothing else. The first build of a real project failed with "'on_screen_tapped' was
+    // not declared in this scope". Both files now come from the same design, and this is the check that says so
+    // for every board: what the screen calls, the header declares and the handler file defines.
+    const problems = [];
+    for (const board of BOARDS) {
+        const files = generateArduinoProjectFiles(project(board.id, 'designer'));
+        const screen = fileAt(files, 'src/ui.cpp').content;
+        const header = fileAt(files, 'src/ui_handlers.h').content;
+        const body = fileAt(files, 'src/ui_handlers.cpp').content;
+        // `on_<widget>_<event>_cb` is the LVGL callback, and it lives in ui.cpp itself.
+        const called = [...screen.matchAll(/\b(on_[A-Za-z0-9_]+)\(/g)].map((match) => match[1]);
+        const unique = [...new Set(called)].filter((name) => !name.endsWith('_cb'));
+        if (unique.length === 0) {
+            problems.push(`${board.id}: ui.cpp calls no handler at all, so the stub wiring is not being tested`);
+        }
+        for (const name of unique) {
+            if (!header.includes(`extern "C" void ${name}(`)) {
+                problems.push(`${board.id}: ui.cpp calls ${name}() and ui_handlers.h does not declare it`);
+            }
+            if (!body.includes(`extern "C" void ${name}(`)) {
+                problems.push(`${board.id}: ui.cpp calls ${name}() and ui_handlers.cpp does not define it`);
+            }
+        }
+        // And the other way round: a declaration nobody calls is a handler that can never run.
+        const declared = [...header.matchAll(/extern "C" void (on_[A-Za-z0-9_]+)\(/g)].map((match) => match[1]);
+        for (const name of declared) {
+            if (!unique.includes(name)) {
+                problems.push(`${board.id}: ui_handlers.h declares ${name}() and ui.cpp never calls it`);
+            }
+        }
+    }
+    equal(problems.length, 0, problems.slice(0, 6).join('; '));
 });
 
 test('a template the C++ side does not have is refused rather than quietly made into a blinky', () => {

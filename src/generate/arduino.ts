@@ -27,7 +27,12 @@ import { panelModuleOrDefault, wiringFile, type PanelWiring } from '../boards/pa
 import type { LcdRotation } from '../display/rotation';
 import { asLcdRotation } from '../display/rotation';
 import type { AppTemplate, AppTemplateInfo, GenerateOptions, GeneratedFile } from './files';
-import { emitUiCppHeader } from '../designer/lvgl';
+import {
+    emitHandlerStubsCpp,
+    emitHandlersCppHeader,
+    emitUiCpp,
+    emitUiCppHeader,
+} from '../designer/lvgl';
 import { DESIGNER_DOCUMENT_PATH, DESIGNER_HARDWARE_PATH, type DesignerDocument } from '../designer/model';
 import { starterDocument } from '../designer/generate';
 
@@ -382,10 +387,15 @@ export function generateArduinoProjectFiles(options: GenerateOptions): Generated
         files.push({ path: 'lv_conf.h', content: lvConfHeader() });
         files.push({ path: 'src/lvgl_display.h', content: lvglDisplayHeader() });
         files.push({ path: 'src/lvgl_display.cpp', content: lvglDisplaySource() });
-        files.push({ path: 'src/ui.h', content: uiHeader() });
-        files.push({ path: 'src/ui.cpp', content: uiSource() });
-        files.push({ path: 'src/ui_handlers.h', content: handlersHeader() });
-        files.push({ path: 'src/ui_handlers.cpp', content: handlersSource() });
+        // Every one of these four comes from the design that was just written above, through the *same*
+        // emitters the Designer saves with. A hand-written skeleton here disagreed with them: it called a
+        // handler of its own (`on_screen_tapped`) while the save path rewrote the header from the design, so
+        // the first build of a real project failed with "'on_screen_tapped' was not declared in this scope"
+        // (bench, 2026-10-31). One source of truth for both, and the files cannot drift apart again.
+        files.push({ path: 'src/ui.h', content: emitUiCppHeader() });
+        files.push({ path: 'src/ui.cpp', content: emitUiCpp(design) });
+        files.push({ path: 'src/ui_handlers.h', content: emitHandlersCppHeader(design) });
+        files.push({ path: 'src/ui_handlers.cpp', content: handlersSource(design) });
     }
 
     return files;
@@ -921,87 +931,6 @@ void panel_blink_marker() {
 `;
 }
 
-// ---------------------------------------------------------------------------- ui.h
-
-/** The header the Designer writes too: one emitter, so a project that has never been edited and one that has
- * say exactly the same thing. */
-function uiHeader(): string {
-    return emitUiCppHeader();
-}
-
-// -------------------------------------------------------------------------- ui.cpp
-
-function uiSource(): string {
-    return `${GENERATED_NOTE}
-
-#include "ui.h"
-
-#include "lv_conf.h"
-#include <lvgl.h>
-
-#include "panel.h"
-#include "ui_handlers.h"
-
-// The first screen a Designer project is born with: a title bar and one button, as LVGL objects. The
-// Designer replaces the body of this file with the object tree of the design; ui_init() and ui_tick() stay,
-// because main.cpp calls them.
-
-namespace {
-
-lv_obj_t *gButton = nullptr;
-lv_obj_t *gButtonLabel = nullptr;
-bool gPressed = false;
-
-void style_common(lv_obj_t *object) {
-    lv_obj_set_style_radius(object, 6, 0);
-    lv_obj_set_style_border_width(object, 0, 0);
-}
-
-void on_button_pressed(lv_event_t *event) {
-    (void)event;
-    // The skeleton's own event, so the wiring from a click to src/ui_handlers.cpp works from the first
-    // build: the Designer appends one such function per widget event it is told about.
-    on_screen_tapped();
-}
-
-} // namespace
-
-void ui_init() {
-    lv_obj_t *screen = lv_screen_active();
-    lv_obj_set_style_bg_color(screen, lv_color_hex(0x101418), 0);
-
-    lv_obj_t *title = lv_label_create(screen);
-    lv_label_set_text(title, "Grumpy's Rusty Platform");
-    lv_obj_set_style_text_color(title, lv_color_hex(0x05C8FF), 0);
-    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 8);
-
-    gButton = lv_button_create(screen);
-    style_common(gButton);
-    lv_obj_set_size(gButton, lv_pct(60), 56);
-    lv_obj_align(gButton, LV_ALIGN_CENTER, 0, 10);
-    lv_obj_set_style_bg_color(gButton, lv_color_hex(0x05C8FF), 0);
-
-    gButtonLabel = lv_label_create(gButton);
-    lv_label_set_text(gButtonLabel, "Press me");
-    lv_obj_set_style_text_color(gButtonLabel, lv_color_hex(0x061018), 0);
-    lv_obj_center(gButtonLabel);
-
-    lv_obj_add_event_cb(gButton, on_button_pressed, LV_EVENT_CLICKED, nullptr);
-
-    Serial.printf("ui: %dx%d\\n", panel_width(), panel_height());
-}
-
-void ui_tick() {
-    // Nothing of this skeleton owns a timer: LVGL is driven by lvgl_display_tick() in the loop, and every
-    // change comes from an event. The Designer's screens use this for what has to be recomputed, such as a
-    // clock's hands.
-    if (gButton != nullptr && gPressed) {
-        gPressed = false;
-    }
-}
-`;
-}
-
 // ------------------------------------------------------------------------ LVGL
 
 /**
@@ -1120,48 +1049,32 @@ void lvgl_display_tick() {
 
 // ------------------------------------------------------------------------- handlers
 
-function handlersHeader(): string {
-    return `${GENERATED_NOTE}
-
-#pragma once
-
-#include <Arduino.h>
-
-// Your code goes here. The Designer appends one function per widget event, and never rewrites what it finds;
-// this header keeps their prototypes so src/ui.cpp can call them.
-
 /**
- * The skeleton screen's one event. Replace the body in src/ui_handlers.cpp with what the button should do.
+ * `src/ui_handlers.cpp` for a brand-new project: the stubs the starter design asks for, and nothing else.
  *
- * extern "C" because that is the linkage the Designer's generated call uses: a C++ function with a mangled name
- * would not resolve from a generated file that was written for a widget rather than for a class.
+ * The file is the one a person owns -- the Designer only ever appends to it and prunes a stub that is still
+ * exactly what it wrote -- so what it is born with has to be what `src/ui.cpp` calls, or the first build fails
+ * on a handler nobody declared. That is why it takes the note below rather than `GENERATED_NOTE`: this file is
+ * not rewritten on save, and saying it is would be the first untrue thing in it.
  */
-extern "C" void on_screen_tapped();
-`;
-}
-
-function handlersSource(): string {
-    return `${GENERATED_NOTE}
+function handlersSource(design: DesignerDocument): string {
+    const stubs = emitHandlerStubsCpp(design).join('\n');
+    return `// Generated by Grumpy's Rusty Platform from the design. This file is yours: the Designer appends a stub
+// for a new event and removes one the design no longer asks for, and never rewrites what you wrote.
 
 #include "ui_handlers.h"
 
 #include "ui.h"
 
-// Your code goes here -- this file is the one the Designer appends to and nothing else touches.
+// Each event becomes one function, once, named after its widget:
 //
-// Each event becomes one function, once:
-//
-//   void on_button_clicked(const char *label) {
-//       Serial.printf("clicked: %s\\n", label);
+//   extern "C" void on_go_clicked() {
+//       Serial.println("pressed");
 //   }
 //
-// The skeleton's own hook, so there is a working example in the file from the first build: pressing the
-// screen's button for a moment proves the loop, the panel and this file are all connected.
-extern "C" void on_screen_tapped() {
-    // The skeleton's own event. Replace this body with what the button should do; the Designer appends one
-    // function per widget event and never rewrites this one.
-    Serial.println("on_screen_tapped");
-}
+// Leave a stub alone (its TODO and its Serial.println are how the Designer tells it from your own code) and it
+// is tidied away when the event is unticked; fill it in and it is yours for good.
+${stubs}
 `;
 }
 

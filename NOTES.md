@@ -8435,3 +8435,30 @@ widget and the extension's own drawing widgets (chart, plotter, mesh, path, icon
 crumbs, carousel, dialog, table, busy_wheel, scale, spinbox, number_picker, time_picker) which are reported
 rather than drawn; then phase 5 (C++ AI prompts and answer guards, the `//~` example set) and phase 6 (clock
 parity, `.deb`, the user docs).
+
+### 169. The first sketch that never built: two write paths, one design
+
+The C++ report after 0.18.10 was a real compiler error, which was progress: `'on_screen_tapped' was not
+declared in this scope` in `src/ui.cpp` of a project the wizard had just made. Two separate faults, both of
+them the same shape -- *a file written from one idea while the file beside it was written from another*.
+
+1. **The generator's own skeleton vs. the Designer's emitters.** `generate/arduino.ts` carried a hand-written
+   `uiSource()`, `handlersHeader()` and `handlersSource()` that called `on_screen_tapped()`. The Designer's save
+   rewrote `ui_handlers.h` from the *design* (`emitHandlersCppHeader`), which declares `on_go_clicked()` and
+   nothing else. So the header lost the hook the screen still called. The three hand-written emitters are gone;
+   the four Designer files now come out of `emitUiCpp`, `emitUiCppHeader`, `emitHandlersCppHeader` and
+   `emitHandlerStubsCpp` **of the starter design written a few lines above**, so a project is born consistent
+   and can never disagree with its own `panel.ui.json`.
+2. **`syncModule` was gated on markup.** `save()` ran `await this.syncHandlers(document)` unconditionally and
+   `await this.syncModule(document)` only `if (rendered.kdl !== undefined)`. A C++ project has no `ui.kdl` --
+   the comment right above says so -- so `src/ui.cpp` was *never* rewritten on a save while the handlers were
+   rewritten every time. The gate is now `rendered.problems.length === 0`, which is the same predicate for
+   Rust (`kdl` exists iff no problems) and the correct one for a sketch.
+
+**Tests.** t1 gained "every handler ui.cpp calls is declared, so a fresh project compiles": for every board it
+emits a designer project and checks both directions (called-but-not-declared, declared-but-never-called). The
+t3 C++ snapshots were regenerated. 1171 / 87 / 7.
+
+**Lesson to keep:** when two files are generated, generate both from the same input in the same place. A
+hand-written starter next to a generated file is a mismatch waiting for its first save; and a guard that reads
+one language's artefact (`kdl`) silently disables the feature for the other.

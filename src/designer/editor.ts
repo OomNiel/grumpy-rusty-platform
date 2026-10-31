@@ -1205,7 +1205,15 @@ class DesignerPanel {
         // widget the compiled markup does not have: `E0609: no field image on type RustyPanelWidgets`, found on
         // a real project on 2026-10-24 (an image widget whose asset had not been chosen yet). The last good pair
         // stays, and the project keeps building while the design is finished.
-        if (rendered.kdl !== undefined) {
+        //
+        // The test is "the document validated", not "markup came out": a C++ project has no markup at all --
+        // its `src/ui.cpp` *is* the object tree -- so keying this on `rendered.kdl` meant `syncModule` never ran
+        // for a sketch. The handlers were rewritten on every save (that call is unconditional) and the screen
+        // never was, which left a project whose `src/ui.cpp` called a handler its freshly written
+        // `src/ui_handlers.h` did not declare: `'on_screen_tapped' was not declared in this scope`, the first
+        // build of a real C++ project (bench, 2026-10-31). `rendered.problems.length === 0` is the same question
+        // for both languages.
+        if (rendered.problems.length === 0) {
             await this.syncModule(document);
         }
         // A clock dropped into a design that is already open is the other moment the automatic
