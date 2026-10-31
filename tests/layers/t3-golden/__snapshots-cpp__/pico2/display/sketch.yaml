@@ -1,0 +1,9 @@
+# Grumpy's Rusty Platform -- the board this sketch is built for.
+#
+# `arduino-cli compile` and `arduino-cli upload` read the FQBN from here, so neither needs to be told which
+# board it is. The name after the last colon is the board definition inside the core package; the pins this
+# project actually uses are in src/panel.cpp, because a generic definition cannot know how a module is wired.
+
+profiles:
+  default:
+    fqbn: rp2040:rp2040:rpipico2

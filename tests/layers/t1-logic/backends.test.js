@@ -27,6 +27,7 @@ const {
 const {
     BACKENDS,
     availableBackends,
+    arduinoBackend,
     backendFor,
     backendOrDefault,
     projectFiles,
@@ -78,19 +79,30 @@ test('the marker a build writes is JSON with a trailing newline, so git diffs st
 
 // ----------------------------------------------------------------- the backend
 
-test('one backend is registered in this build, so the wizard has nothing to ask', () => {
-    equal(BACKENDS.length, 1, 'exactly one');
-    equal(availableBackends().length, 1, 'and that is what the wizard offers');
-    equal(availableBackends()[0].id, 'rust', 'Rust');
-    equal(rustBackend.label, 'Rust (Embassy)', 'named for the wizard that will show it');
-    ok(rustBackend.detail.length > 20, 'with a line of detail under the name');
+test('two backends are registered, which is what makes the wizard ask', () => {
+    equal(BACKENDS.length, 2, 'Rust and C++');
+    equal(availableBackends().length, 2, 'and that is what the wizard offers');
+    equal(availableBackends()[0].id, 'rust', 'Rust first: a project with no marker is Rust');
+    equal(availableBackends()[1].id, 'arduino', 'then Arduino (C++)');
+    equal(rustBackend.label, 'Rust (Embassy)', 'named for the wizard');
+    equal(arduinoBackend.label, 'Arduino (C++)', 'both of them');
+    ok(rustBackend.detail.length > 20 && arduinoBackend.detail.length > 20, 'with a line of detail each');
+});
+
+test('each backend names its own files, its own templates and its own folder rule', () => {
+    equal(rustBackend.markerFile, 'Cargo.toml', 'a Rust project is one with a Cargo.toml');
+    equal(arduinoBackend.markerFile, 'sketch.yaml', 'a C++ project is an arduino-cli sketch');
+    equal(rustBackend.handlersPath(), 'src/ui_handlers.rs', 'the Designer appends stubs here');
+    equal(arduinoBackend.handlersPath(), 'src/ui_handlers.cpp', 'and here, in C++');
+    equal(rustBackend.panelPath(), 'src/panel.rs', 'the wiring lives here');
+    equal(arduinoBackend.panelPath(), 'src/panel.cpp', 'and here');
+
+    // A sketch's folder and .ino must share one name, and that name is a build directory as well.
+    equal(rustBackend.folderName('blinky-pico'), 'blinky-pico', 'Rust keeps the name as typed');
+    equal(arduinoBackend.folderName('blinky-pico'), 'blinky_pico', 'C++ cannot have the hyphen');
 });
 
 test('the Rust backend is today\'s generator, not a copy of it', () => {
-    equal(rustBackend.markerFile, 'Cargo.toml', 'a Rust project is one with a Cargo.toml');
-    equal(rustBackend.handlersPath(), 'src/ui_handlers.rs', 'the Designer appends stubs here');
-    equal(rustBackend.panelPath(), 'src/panel.rs', 'and rewrites this when a pin moves');
-
     const board = pico();
     const options = { board, projectName: 'seam-check', template: 'blinky' };
     const throughBackend = rustBackend.files(options);
@@ -112,12 +124,13 @@ test('the templates come from the backend, so a second one can offer a different
 });
 
 test('asking for a language this build cannot generate is an error, and reading one falls back', () => {
-    equal(backendFor('rust').id, 'rust', 'the one that exists');
-    throws(() => backendFor('arduino'), 'not in this build yet');
+    equal(backendFor('rust').id, 'rust', 'the Rust backend');
+    equal(backendFor('arduino').id, 'arduino', 'and the C++ one');
+    throws(() => backendFor('cobol'), 'a language with no backend is a call-site bug');
 
     equal(backendOrDefault(undefined).id, 'rust', 'no language is Rust');
     equal(backendOrDefault('rust').id, 'rust', 'and so is Rust');
-    equal(backendOrDefault('arduino').id, 'rust', 'a language with no backend reads as Rust, not as a crash');
+    equal(backendOrDefault('arduino').id, 'arduino', 'a marker that says C++ is read as C++');
 });
 
 // ------------------------------------------------------------------ the files
@@ -135,15 +148,11 @@ test('a Rust project gains no marker file: every generated file is what it alway
 
 test('a project in another language records it, in the marker file, once', () => {
     const board = pico();
-    const arduino = {
-        ...rustBackend,
-        id: 'arduino',
-        label: 'Arduino (C++)',
-        markerFile: 'sketch.yaml',
-    };
-    const files = projectFiles(arduino, { board, projectName: 'cpp-marker', template: 'blinky' });
+    const options = { board, projectName: 'cpp-marker', template: 'blinky' };
+    const files = projectFiles(arduinoBackend, options);
     const markers = files.filter((file) => file.path === LANGUAGE_MARKER);
     equal(markers.length, 1, 'one marker');
     equal(readProjectLanguage(markers[0].content), 'arduino', 'saying which language it is');
-    equal(files.length, projectFiles(rustBackend, { board, projectName: 'cpp-marker', template: 'blinky' }).length + 1, 'and one file more than Rust');
+    equal(files.length, arduinoBackend.files(options).length + 1, 'the backend\'s files, plus the marker');
+    equal(files[files.length - 1].path, LANGUAGE_MARKER, 'and it is the last one written');
 });

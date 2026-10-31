@@ -370,7 +370,8 @@ export function registerNewProjectCommand(
             return;
         }
 
-        const target = vscode.Uri.joinPath(parent, projectName.trim());
+        const folderName = backend.folderName(projectName);
+        const target = vscode.Uri.joinPath(parent, folderName);
         if (!(await ensureWritableTarget(target))) {
             return;
         }
@@ -399,14 +400,16 @@ export function registerNewProjectCommand(
 
         // An ESP project cannot be built or flashed without the Xtensa toolchain, and the
         // natural moment to set it up is here, when the project that needs it appears.
-        if (board.kind === 'esp') {
+        // The C++ side's equivalent -- the arduino-esp32 core -- is offered by the toolchain phase.
+        if (board.kind === 'esp' && backend.id === 'rust') {
             await ensureEspToolchain(output);
         }
 
         // Wireless boards need the CYW43 blobs next to the generated firmware/README.md.
-        // Only RP boards have a CYW43, so an ESP project has nothing to copy here.
+        // Only RP boards have a CYW43, so an ESP project has nothing to copy here -- and a C++ project needs
+        // none of them either: arduino-pico ships the blobs inside its own core.
         const blobNames =
-            board.kind === 'rp'
+            board.kind === 'rp' && backend.id === 'rust'
                 ? requiredFirmware(board, template).map((blob) => blob.fileName)
                 : [];
         if (blobNames.length > 0) {
@@ -431,7 +434,7 @@ export function registerNewProjectCommand(
         // wizard copies both crates from the extension's `crates/` folder into the project. This mirrors the
         // CYW43-blob copy just above: a runtime side effect, not a generated file, so the golden snapshots stay
         // a faithful record of what the generator itself emits.
-        if (template === 'designer') {
+        if (template === 'designer' && backend.id === 'rust') {
             try {
                 copyVendoredCrates(context, target, output);
             } catch (error) {
@@ -446,13 +449,17 @@ export function registerNewProjectCommand(
 
         const crateName = crateNameFrom(projectName);
         // A Designer project's whole point is the canvas, so the prompt offers it first and passes the folder
-        // that was just written, which may not be a workspace folder at all.
-        const opening = template === 'designer' ? 'Open Designer' : 'Open Project';
+        // that was just written, which may not be a workspace folder at all. A C++ project has no canvas in
+        // this build -- the Designer's LVGL emitter is a later phase -- so it is offered as a folder, and
+        // "Build Now" is not offered either: the arduino-cli route arrives with the toolchain phase, and a
+        // cargo build in a sketch folder would only produce an error.
+        const canDesign = backend.id === 'rust' && template === 'designer';
+        const opening = canDesign ? 'Open Designer' : 'Open Project';
+        const buttons = backend.id === 'rust' ? [opening, 'Build Now', 'Later'] : [opening, 'Later'];
         const action = await vscode.window.showInformationMessage(
-            `Created ${crateName} for ${board.name} (${template}, ${files.length} files).`,
-            opening,
-            'Build Now',
-            'Later',
+            `Created ${backend.id === 'rust' ? crateName : folderName
+            } for ${board.name} (${template}, ${files.length} files).`,
+            ...buttons,
         );
 
         const wantsDesigner = action === 'Open Designer';

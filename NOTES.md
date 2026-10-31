@@ -8249,3 +8249,62 @@ to what the shipped generator writes.
 
 **Abandoning phase 1** is `git revert` of its commit: it added two modules and one test file, added one field,
 and the wizard's three call sites. Nothing in the generated files, the goldens or on disk moved.
+
+## §164 — Phase 2 of the C++ backend: the generator, compiled on both cores (2026-10-31)
+
+Plan: `plans/arduino-backend.md` §"The C++ side in detail". Phase 1 was the seam (§163); this is the first
+phase that writes C++.
+
+**What is there now**
+
+- `src/generate/arduino.ts` — the whole C++ side: `CPP_FQBN` (board id → FQBN), `fqbnFor`,
+  `templatesForArduino`/`defaultTemplateForArduino` (blinky, display, designer), `sketchNameFrom`, and
+  `generateArduinoProjectFiles`.
+- `arduinoBackend` registered in `src/generate/backends.ts`, which is what makes the wizard's **language
+  question appear** and what writes `rusty.project.json` (`{"language": "arduino"}`) into a C++ project.
+- The wizard uses `backend.folderName(...)` (a sketch's folder and `.ino` must share one identifier, so
+  `blinky-pico` becomes `blinky_pico`) and no longer offers the Rust-only extras to a C++ project
+  (CYW43 blobs, `ensureEspToolchain`, vendored crates, "Build Now").
+- `src/commands/withProject.ts` refuses build/monitor/edit for a non-Rust project with one clear message
+  instead of letting cargo fail on a missing `Cargo.toml`. That is the whole of phase-2's command surface.
+
+**A generated C++ project** (root = the sketch folder): `sketch.yaml` (the FQBN, so no command needs
+`--fqbn`), `<name>.ino` (three lines; Arduino requires it and it only includes `src/main.h`),
+`src/main.h`, `src/main.cpp` (`setup()`/`loop()`), `src/panel.{h,cpp}` for the two panel templates,
+`src/ui.{h,cpp}` + `src/ui_handlers.{h,cpp}` for the designer, `README.md`, `.gitignore`, and the marker.
+**No libraries at all**: phase 2 draws with the panel driver directly, so a freshly installed core builds
+every template. LVGL is phase 4 and replaces `ui.cpp`'s body, not the file's shape.
+
+**Verified for real, not just by snapshot** — `arduino-cli` 1.5.1 with `rp2040:rp2040@6.3.1` (arduino-pico)
+and `esp32:esp32@3.3.12`, every board in the catalogue compiling at least one template:
+
+| board | FQBN | what compiled |
+|---|---|---|
+| Pico | `rp2040:rp2040:rpipico` | blinky, display, designer |
+| Pico W | `…:rpipicow` | display |
+| Pico 2 | `…:rpipico2` | designer |
+| Pico 2 W | `…:rpipico2w` | blinky |
+| ESP32-DevKitC | `esp32:esp32:esp32` | blinky, display, designer |
+| LilyGo T-QT | `esp32:esp32:esp32s3` | designer (GC9107 panel) |
+| ESP32-035 | `esp32:esp32:esp32` | display (ST7796) |
+
+Test layers: t1 **1137** (20 of them new in `arduino-generate.test.js`), t2 87, t3 **7** (182 new C++
+snapshots in `tests/layers/t3-golden/__snapshots-cpp__`, a tree of its own so neither language's orphan check
+can see the other's).
+
+**Two traps the real compiles caught, both invisible to the tests**
+
+1. **`SPI.setSDA` does not exist on arduino-pico.** Its `SPIClassRP2040` names the pins after I2C —
+   `setTX` is data out, `setRX` is data in, `setSCK` the clock — while the ESP32 core takes all four in
+   `begin(sck, miso, mosi, ss)`. A stub-header `g++ -fsyntax-only` pass cannot see this; only the installed
+   core can. The generated file now names the bus once (`auto &panelSpi = SPI | SPI1`, chosen by the wiring's
+   own `bus` field) and configures it per family.
+2. **A backtick inside a template literal silently truncates the generated file.** Writing `` `auto` `` in a
+   generated *comment* ended the TS template early; `tsc` still succeeded and the emitted `panel.cpp` stopped
+   mid-file (line 41 of 254). Same trap as `aiChatView.ts` in §160. The rule stands: **no backticks inside a
+   template literal, not even in prose**, and a generated file's *length* is worth checking, not just its
+   contents.
+
+**Not done, deliberately:** no arduino-cli detection/install/build/upload/monitor (phase 3), no LVGL or
+Designer emitter (phase 4), no C++ AI prompts (phase 5), no version bump and no packaging — the installed
+extension is still 0.17.14 and knows nothing about C++ until the next release.

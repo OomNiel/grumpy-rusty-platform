@@ -11,9 +11,9 @@
  *   4. build/upload/monitor (`availableBackends` decides what the commands may offer);
  *   5. the AI's prompts and answer guards (a per-language twin of `ai/rustCode.ts`).
  *
- * Phase 1 of `plans/arduino-backend.md` puts today's Rust code behind this interface with **no behaviour
- * change**: `BACKENDS` holds one entry, so the wizard asks no language question and every generated file is
- * byte-identical to before. Phase 2 adds `arduinoBackend` and nothing else has to move.
+ * Phase 1 of `plans/arduino-backend.md` put today's Rust code behind this interface with **no behaviour
+ * change**. Phase 2 registers `arduinoBackend` beside it, which is what makes the wizard's language step
+ * appear: the question only exists once there are two answers.
  */
 
 import { BoardProfile } from '../boards/types';
@@ -34,6 +34,12 @@ import {
     generateProjectFiles,
     templatesOfferedFor,
 } from './files';
+import {
+    defaultTemplateForArduino,
+    generateArduinoProjectFiles,
+    sketchNameFrom,
+    templatesForArduino,
+} from './arduino';
 
 export interface SketchBackend {
     /** The language this backend writes. Unique across `BACKENDS`. */
@@ -49,9 +55,17 @@ export interface SketchBackend {
      * when this file is there, and reads the board out of it.
      */
     readonly markerFile: string;
-    /** What the wizard offers for a board, and what it preselects. */
+    /** The wizard's template menu for a board, and what it preselects. */
     templatesOfferedFor(board: BoardProfile): AppTemplateInfo[];
     defaultTemplateFor(board: BoardProfile): AppTemplate;
+    /**
+     * What to call the project's folder and main file.
+     *
+     * A Rust project may be `blinky-pico`; an Arduino sketch's folder and `.ino` must share one name and it
+     * has to survive being a file name and a build directory, so the same answer is `blinky_pico`. The wizard
+     * asks rather than deciding, because only the backend knows what its toolchain accepts.
+     */
+    folderName(projectName: string): string;
     /** Every file the project is born with. Pure: it never touches the filesystem. */
     files(options: GenerateOptions): GeneratedFile[];
     /** Where the Designer appends an event's stub. */
@@ -73,18 +87,41 @@ export const rustBackend: SketchBackend = {
     markerFile: 'Cargo.toml',
     templatesOfferedFor,
     defaultTemplateFor,
+    folderName: (projectName) => projectName.trim(),
     files: generateProjectFiles,
     handlersPath: () => DESIGNER_HANDLERS_PATH,
     panelPath: () => RP_PANEL_PATH,
 };
 
 /**
+ * Arduino (C++), for the RP2040/RP2350 boards through arduino-pico and the ESP32 boards through
+ * arduino-esp32.
+ *
+ * A C++ project is a *sketch*: `sketch.yaml` records its FQBN, `<name>.ino` is the entry file Arduino needs,
+ * and `src/` holds the code. The pins, the panel and the LED still come from this extension's catalogue, so
+ * both languages of the same board drive the same hardware the same way.
+ */
+export const arduinoBackend: SketchBackend = {
+    id: 'arduino',
+    label: 'Arduino (C++)',
+    detail: 'arduino-cli with the arduino-pico or arduino-esp32 core, an Arduino sketch, no cargo. Built and uploaded with arduino-cli.',
+    markerFile: 'sketch.yaml',
+    templatesOfferedFor: templatesForArduino,
+    defaultTemplateFor: defaultTemplateForArduino,
+    folderName: sketchNameFrom,
+    files: generateArduinoProjectFiles,
+    handlersPath: () => 'src/ui_handlers.cpp',
+    panelPath: () => 'src/panel.cpp',
+};
+
+/**
  * The backends this build can generate.
  *
- * One entry until phase 2. This list is what the wizard asks from and what the language step is skipped on,
- * so registering a backend is the whole of "the new language is available".
+ * This list is what the wizard asks from and what the language step is skipped on, so registering a backend
+ * is the whole of "the new language is available". Rust comes first because a project with no marker is
+ * Rust, so it is also the answer when the question cannot be asked.
  */
-export const BACKENDS: readonly SketchBackend[] = [rustBackend];
+export const BACKENDS: readonly SketchBackend[] = [rustBackend, arduinoBackend];
 
 /** The languages the wizard can offer, in the order it offers them. */
 export function availableBackends(): readonly SketchBackend[] {

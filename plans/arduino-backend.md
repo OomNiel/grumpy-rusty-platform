@@ -2,12 +2,14 @@
 
 Decided 2026-10-31. This is the plan the implementation follows; it is not user documentation.
 
-## Status: agreed; phase 1 done, phase 2 next (2026-10-31)
+## Status: agreed; phases 1–2 done, phase 3 next (2026-10-31)
 
-**Phase 1 is in** — the seam and nothing visible: `src/project/language.ts`, `src/generate/backends.ts`
-(`SketchBackend`, `rustBackend`, `projectFiles`), `language` on `ActiveProject`, and the wizard's language step,
-templates and file list going through the backend. One backend is registered, so the language question is
-skipped, no marker is written and every generated file is byte-identical (1116 t1 checks, 4 goldens). The six
+**Phase 1** (the seam) and **phase 2** (the C++ generator) are in. Phase 2's generator is
+`src/generate/arduino.ts`, registered as `arduinoBackend`; it writes a sketch for all three templates, and
+every board in the catalogue compiles for real with `arduino-cli` 1.5.1 (`rp2040:rp2040@6.3.1` and
+`esp32:esp32@3.3.12`). Suite: t1 1137 · t2 87 · t3 7 (182 C++ snapshots). Nothing user-facing has shipped:
+no version bump, no package, and build/flash refuse a C++ project with a clear message until phase 3. See
+`NOTES.md` §§163–164 for what each phase changed and the two traps the real compiles caught. The six
 questions that shaped this plan were answered on 2026-10-31 and are recorded under *Answers the user gave*
 below — the phases say what each answer will touch.
 
