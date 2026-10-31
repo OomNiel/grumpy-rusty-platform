@@ -1,5 +1,7 @@
 # arduino-cli's build output, when it is asked to write into the project.
 build/
+# The compiler database that makes the editor's include paths work ("Arduino: Refresh C++ IntelliSense").
+.arduino/
 *.elf
 *.bin
 *.uf2

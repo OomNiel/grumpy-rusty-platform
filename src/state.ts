@@ -99,7 +99,9 @@ export class RustyState implements vscode.Disposable {
             return {
                 family: project.board?.kind ?? 'unknown',
                 hasProject: true,
-                designer: project.designer === true,
+                // The Designer is Rust-only: it writes `ui.rs`/`ui_handlers.rs` and drives embedded-gui. A C++
+                // project has no canvas to open, so offering one would be a button that cannot work.
+                designer: project.designer === true && project.language === 'rust',
             };
         } catch (error) {
             this.log(`project detection failed: ${String(error)}`);

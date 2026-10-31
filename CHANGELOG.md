@@ -11,6 +11,28 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.18.1] - 2026-10-31
+
+### Added
+
+- **A C++ project's editor now understands it.** A sketch's headers live inside the installed core, so the
+  wizard asks `arduino-cli` for the compiler command line it would use
+  (`compile --only-compilation-database`) and writes `.vscode/c_cpp_properties.json` pointing at it. No more
+  red squiggles on `#include <Arduino.h>` or `#include <SPI.h>`, and every `-D` the build defines is there
+  too.
+- **`Arduino: Refresh C++ IntelliSense`** for when that answer outlives the project: after installing a
+  library, upgrading a core, or changing the board in `sketch.yaml`. It also finishes off a project created
+  before this version.
+- The generated `.gitignore` keeps the compiler database (`.arduino/`) out of source control.
+
+### Fixed
+
+- The C++ `designer` template was called **"WYSIWYG designer (skeleton)"**, which promised a canvas that does
+  not exist yet. It is now **"Designer screen (no canvas yet)"**, and its description says plainly that the
+  WYSIWYG editor, the events and LVGL are Rust-only until the C++ designer lands.
+- The Designer is no longer offered for a C++ project (the sidebar row and its command appear only for a Rust
+  Designer project), instead of opening something that cannot edit a sketch.
+
 ## [0.18.0] - 2026-10-31
 
 ### Added

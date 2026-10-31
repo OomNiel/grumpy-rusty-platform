@@ -8308,3 +8308,39 @@ can see the other's).
 **Not done, deliberately:** no arduino-cli detection/install/build/upload/monitor (phase 3), no LVGL or
 Designer emitter (phase 4), no C++ AI prompts (phase 5), no version bump and no packaging — the installed
 extension is still 0.17.14 and knows nothing about C++ until the next release.
+
+## §165 — 0.18.1: the editor could not read a sketch, and the C++ template promised a canvas (2026-10-31)
+
+Both reports from the first bench run of 0.18.0 (`Cpp_pico2w_test1`, `Cpp_pico2w_wysiwyg_test1`).
+
+**"Include errors."** A sketch's headers are not anywhere the C/C++ extension looks: `Arduino.h` lives in
+`~/.arduino15/packages/<pkg>/hardware/<arch>/<ver>/cores/...`, `SPI.h` in that core's own `libraries/SPI/src`,
+and the flags that go with them (`-DUSBD_PID=...`, `-march=armv8-m.main+fp+dsp`, `-iprefix`) come from
+Arduino's build recipes. Nothing a hand-written `includePath` can keep up with. The one description that is
+exactly right is the compiler's command line, and arduino-cli writes it in about a second:
+
+    arduino-cli compile --fqbn <fqbn> --only-compilation-database --build-path .arduino/build
+
+- `src/generate/arduinoIntelliSense.ts` (pure) — `fqbnFromSketchYaml`, `intelliSenseConfig`, and the two paths.
+- `src/toolchain/arduinoIntelliSense.ts` — finds `arduino-cli` (PATH, then `~/.local/bin`, `~/bin`,
+  `~/.arduino15/bin`, the macOS/Windows install spots), runs that command with a 120 s ceiling, writes
+  `.vscode/c_cpp_properties.json` pointing `compileCommands` at the database. Never throws: `written`,
+  `no-cli`, `no-fqbn` or `failed`, each with one line in the log.
+- The wizard runs it after writing a C++ project's files; **`Arduino: Refresh C++ IntelliSense`**
+  (`rustyPlatform.arduino.refreshIntelliSense`) is the button for later, and what a project made by 0.18.0
+  needs once.
+- `.arduino/` is in the generated `.gitignore`: the database is ~200 entries of absolute paths, rebuilt on
+  demand, and must not be committed.
+
+Verified on the user's own two projects: `compile_commands.json` has 196 entries and `src/ui.cpp` is compiled
+with `-I …/cores/rp2040`, `-I …/variants/rpipico2w`, `-I …/libraries/SPI/src` — which is what makes both
+`Arduino.h` and `SPI.h` resolve.
+
+**"I don't see the WYSIWYG designer."** They were right, and the fault was my label: the C++ `designer`
+template was called **"WYSIWYG designer (skeleton)"** while the canvas is Rust-only until phase 4. It is now
+**"Designer screen (no canvas yet)"**, with a description that says the editor, the events and LVGL are not
+wired for C++ yet. `state.ts` also stops offering the Designer (sidebar row and command) for a project whose
+language is not Rust — a button that cannot work is worse than no button.
+
+t1 **1143** (6 new for the config and the FQBN parse), t2 87, t3 7 (C++ snapshots refreshed for the template
+text and the `.gitignore`). 0.18.1 packaged (1,551,681 B, sha256 `a95fb5a4…`) and installed.

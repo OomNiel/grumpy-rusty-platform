@@ -104,10 +104,11 @@ export function templatesForArduino(board: BoardProfile): AppTemplateInfo[] {
         },
         {
             id: 'designer',
-            label: 'WYSIWYG designer (skeleton)',
+            label: 'Designer screen (no canvas yet)',
             description:
-                'A project the Designer owns: it rewrites src/panel.cpp and src/ui.cpp, and appends a stub to ' +
-                'src/ui_handlers.cpp for each widget event.',
+                'The files a Designer project has — src/panel.cpp, src/ui.cpp and the src/ui_handlers.cpp your ' +
+                'code goes in — with the screen drawn by ui.cpp itself. The WYSIWYG canvas, the events and ' +
+                'LVGL are not wired up for C++ yet; the Rust designer template is the one with an editor.',
         },
     ];
 }
@@ -940,6 +941,8 @@ extern "C" void on_screen_tapped() {
 function gitignore(): string {
     return `# arduino-cli's build output, when it is asked to write into the project.
 build/
+# The compiler database that makes the editor's include paths work ("Arduino: Refresh C++ IntelliSense").
+.arduino/
 *.elf
 *.bin
 *.uf2

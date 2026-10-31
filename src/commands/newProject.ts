@@ -22,6 +22,7 @@ import { PANEL_MODULES, defaultWiring, type PanelWiring } from '../boards/panels
 import type { BoardChoices } from '../boards/esp';
 import { installFirmwareIntoProject } from '../toolchain/cyw43FirmwareRunner';
 import { samePath } from '../project/workspaceFolders';
+import { writeArduinoIntelliSense } from '../toolchain/arduinoIntelliSense';
 import { ensureEspToolchain } from './espToolchainCommands';
 import { runInTerminal } from './terminal';
 
@@ -396,6 +397,17 @@ export function registerNewProjectCommand(
                 vscode.Uri.joinPath(target, ...segments),
                 Buffer.from(file.content, 'utf8'),
             );
+        }
+
+        // A C++ project has to be described to the editor as well as written: Arduino's headers live in
+        // whichever core is installed, so the include paths come from arduino-cli itself (see
+        // toolchain/arduinoIntelliSense.ts). Best-effort: a project made without the core installed is still a
+        // project, and "Arduino: Refresh C++ IntelliSense" is how it is finished off later.
+        if (backend.id === 'arduino') {
+            const outcome = await writeArduinoIntelliSense({ project: target, output });
+            if (outcome !== 'written') {
+                output.appendLine(`[new-project] IntelliSense config written without a database (${outcome})`);
+            }
         }
 
         // An ESP project cannot be built or flashed without the Xtensa toolchain, and the

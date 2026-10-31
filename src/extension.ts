@@ -6,6 +6,7 @@ import { ControlsViewProvider } from './ui/controlsView';
 import { StatusBarView } from './ui/statusBar';
 import { DESIGNER_PROJECT_CONTEXT } from './ui/controls';
 import { registerNewProjectCommand } from './commands/newProject';
+import { registerArduinoIntelliSenseCommand } from './commands/arduinoIntelliSenseCommand';
 import { registerDesignerCommands } from './commands/designerCommands';
 import { resumePendingDesigner } from './designer/pendingOpen';
 import { registerLcdRotationSync } from './display/rotationSync';
@@ -58,6 +59,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         vscode.window.registerTreeDataProvider('rustyPlatform.project', projectView),
         vscode.window.registerTreeDataProvider('rustyPlatform.controls', controlsView),
         registerNewProjectCommand(context, output),
+        registerArduinoIntelliSenseCommand(output),
         registerLcdRotationSync(output),
         ...registerProjectCommands(state, output, context),
         ...registerDesignerCommands(context, output),
