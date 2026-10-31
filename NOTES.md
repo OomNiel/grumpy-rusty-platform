@@ -8141,3 +8141,37 @@ that can carry it.
 entry about it, so quote selectors in plain words. And `replace_string_in_file` whose `oldString` ends with a
 newline and whose `newString` does not will **glue the next line onto the previous one**; always re-read the
 edit, and let `tsc` catch the ones that break syntax.
+
+## §161 — The keypad's Shift: one letter, then a lock (0.17.14, 2026-10-31)
+
+Asked for in two sentences: *"Toggling to upper case must only persist for one typed character, then revert back
+to lower case"* and *"Double tapping the SHIFT key must act like a 'Shift-Lock' key."*
+
+**The widget had one bit and needed two.** `shift: bool` was a plain toggle (= caps lock). It now has three
+states — off, one shot, locked — with `shift` as "capitals now" and a private `shift_locked` beside it:
+`press_shift()` is off → once → locked → off, and `consume_shift()` turns a **one-shot** off after a character
+is typed while leaving a lock alone. `toggle_shift()` stays as the old name, so a design's own code compiles.
+
+**No clock is needed, and that is the design, not a shortcut.** A `no_std` widget has no time source, so "double
+tap" is defined as the second tap arriving **while the one-shot is still unspent** — which is exactly what a
+double tap is when nothing was typed in between. If a pause should cancel it, the context already has the
+plumbing (`pointer_double_window_ms` in `tick_input`), but that would mean a per-widget tick for a case nobody
+has asked for.
+
+**Where the state is spent: the context, not the widget.** `KeypadKey::Char(_)` and `Space` call
+`pad.consume_shift()` in `context/input.rs` **after** pushing the character, because typing is the event — the
+crate's widget never sees a key release on its own. `key_lit(Shift)` is true in both shifted states: the face
+colour is the only room there is for a state, and the letters already say which case they will type.
+
+**A design's `shift` property is a lock.** `with_shift(true)`/`set_keypad_shift(true)` now set the lock, not the
+one-shot: the property means "letters start in upper case", and a start state is not one letter. `set_shift_locked`
+is the one setter for both fields, so the two cannot disagree.
+
+**Tests moved with the behaviour.** The old `caps_lock_stays_on_and_the_letters_say_so` pinned "typing does not
+consume it" — the opposite of what was asked for — so it became `one_shift_tap_capitalises_exactly_one_letter`
+and `a_second_shift_tap_locks_capitals_until_it_is_tapped_again`, and the touch-path test in `input.rs` now
+walks both states through real taps. `cargo test` on the crate: 324 tests (334 with `--all-features`), all green.
+
+**How a project gets it.** The crate is vendored into `codegen/embedded-gui` and carries a
+`.rusty-platform-crates` marker with the extension version; the Designer offers **Update Crates** when the
+marker is not the running extension's, so installing this version and opening the Designer is the whole upgrade.

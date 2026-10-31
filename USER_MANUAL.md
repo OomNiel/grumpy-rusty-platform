@@ -191,8 +191,20 @@ The canvas size equals the designed area (panel size turned with the rotation).
 
 Pictures: widgets can show BMP/PNG/JPEG/GIF/WebP files from the project. The extension reads the file and the panel decodes it, so the canvas shows what the board gets. A widget whose pixels are not available yet draws a dashed frame carrying the file name. An `sd:/NAME.BMP` picture is the board's to fetch and is flagged on save while the card is off.
 
-### 10.3 Views (tabs)
+### 10.2a The touch keypad
 
+The Keypad widget types into its own entry box and hands the finished line to the event handler on **ENT**.
+
+- **`CLR`** empties the line, **`BKSP`** deletes one character, and the two cursor keys **`<-`** / **`->`** move
+  the caret: the next character typed overwrites the one under it instead of inserting.
+- **`SHIFT`** capitalises **one** character — tap it, type a letter, and the key goes back to lower case by
+  itself. **Tap it twice** (the second tap before you type) and capitals **lock on**: every letter after it is
+  upper case until `SHIFT` is touched again. The key is lit while either state is in force.
+- The letters on the keys follow the state, so the keypad always says what it will type.
+- The design property *shift* ("letters start in upper case") starts the keypad **locked**, which is what that
+  property has always meant.
+
+### 10.3 Views (tabs)
 - A tab strip above the canvas holds one tab per view. Add with `+`.
 - Right-click a tab to **rename**, **duplicate**, **delete**, or **make it the start view** (tab carries a dot; your order is preserved).
 - **All views** draws the other views as dashed outlines, so a widget dropped on the wrong view can be found without switching tabs.

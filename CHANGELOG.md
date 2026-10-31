@@ -11,6 +11,24 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.17.14] - 2026-10-31
+
+### Changed
+
+- **The touch keypad's Shift is a phone keypad's Shift.** One tap capitalises **one** character and then goes
+  back to lower case by itself; **tapping it twice** (the second tap before a letter is typed) locks capitals on
+  until Shift is touched again. Asked for in these words: *"Toggling to upper case must only persist for one
+  typed character, then revert back to lower case"* and *"Double tapping the SHIFT key must act like a
+  'Shift-Lock' key."*
+  - The key has three states — off, one shot, locked — and `press_shift()` moves round them. No clock is needed:
+    typing a character is what spends the one-shot (`consume_shift()`), so the second tap of a double tap is the
+    one that arrives while the one-shot is still unspent.
+  - The design property *shift* ("letters start in upper case") starts the keypad **locked**, because that is
+    what the property has always meant; only a tap on the glass can produce the one-letter state.
+  - `toggle_shift()` is kept as the old name for `press_shift()`, so a design's own code still compiles.
+  - The vendored crate changes, so a project's `codegen/embedded-gui` is refreshed by the usual *Update Crates*
+    offer the next time the Designer opens.
+
 ## [0.17.13] - 2026-10-31
 
 Everything since 0.13.30 in one release. Versions 0.14–0.17 were built and tested locally; this is the

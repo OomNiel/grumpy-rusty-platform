@@ -295,6 +295,13 @@ pub struct KeypadWidget {
     pub mode: KeypadMode,
     /// Whether letters are typed in upper case.
     pub shift: bool,
+    /// Whether that upper case is a **lock** rather than the one letter a single tap gives.
+    ///
+    /// Asked for 2026-10-31: *"Toggling to upper case must only persist for one typed character, then
+    /// revert back to lower case"* and *"Double tapping the SHIFT key must act like a 'Shift-Lock'
+    /// key"*. `shift` alone cannot say which of the two is in force, and the difference is what the
+    /// next key press does: a `true` here survives typing, a `false` does not.
+    shift_locked: bool,
     /// The typed line.
     text_buf: [u8; KEYPAD_CAPACITY],
     text_len: u8,
@@ -322,6 +329,7 @@ impl KeypadWidget {
         Self {
             mode: KeypadMode::Text,
             shift: false,
+            shift_locked: false,
             text_buf: [0; KEYPAD_CAPACITY],
             text_len: 0,
             cursor: 0,
@@ -343,8 +351,14 @@ impl KeypadWidget {
         self
     }
 
+    /// Starts with capitals on — **locked**, not one letter.
+    ///
+    /// A design that says "letters start in upper case" means upper case, so the builder sets the lock as
+    /// well: the key on the glass is what gives the one-shot, and only a key press can produce one
+    /// (2026-10-31).
     pub const fn with_shift(mut self, shift: bool) -> Self {
         self.shift = shift;
+        self.shift_locked = shift;
         self
     }
 
@@ -521,9 +535,61 @@ impl KeypadWidget {
         self.mode = self.mode.next();
     }
 
-    /// Toggles upper case. Only letters change, which is what Shift does on a phone keypad.
+    /// The Shift key was pressed: one tap capitalises **one** letter, a second tap locks it on.
+    ///
+    /// Asked for 2026-10-31: *"Toggling to upper case must only persist for one typed character, then
+    /// revert back to lower case"* and *"Double tapping the SHIFT key must act like a 'Shift-Lock' key.
+    /// Characters typed will all be upper case until the SHIFT key is touched again."*
+    ///
+    /// So the key has three states, and the press moves round them:
+    ///
+    /// | now | after a tap | what the next letter does |
+    /// |---|---|---|
+    /// | off | **one shot** | is a capital, and the shift is spent |
+    /// | one shot | **locked** | is a capital, and so is every one after it |
+    /// | locked | off | is lower case again |
+    ///
+    /// The second tap must come **before a letter is typed**, which is what a double tap is on a
+    /// keypad with no clock: [`Self::consume_shift`] is what ends a one-shot, so tapping twice in a
+    /// row locks and tapping once then typing does not. That is why this needs no elapsed-time
+    /// bookkeeping in a `no_std` widget that has no clock of its own.
+    pub fn press_shift(&mut self) {
+        if self.shift_locked {
+            self.shift_locked = false;
+            self.shift = false;
+        } else if self.shift {
+            // The one shot is still unspent, so this tap is the second of a double tap.
+            self.shift_locked = true;
+        } else {
+            self.shift = true;
+        }
+    }
+
+    /// The old name for [`Self::press_shift`]. Kept because the key used to be a plain toggle and a
+    /// design's own code may still call it (2026-10-31).
     pub fn toggle_shift(&mut self) {
-        self.shift = !self.shift;
+        self.press_shift();
+    }
+
+    /// A character was typed: a one-shot capital is spent, a locked shift is not.
+    pub fn consume_shift(&mut self) {
+        if !self.shift_locked {
+            self.shift = false;
+        }
+    }
+
+    /// Capitals on and locked, or off — the design-time property and the test helper, not the key press.
+    ///
+    /// The one-shot exists only while a finger has tapped Shift once, so nothing outside a press may create
+    /// it: a design asking for upper case asks for the lock.
+    pub fn set_shift_locked(&mut self, on: bool) {
+        self.shift = on;
+        self.shift_locked = on;
+    }
+
+    /// Whether capitals are locked on rather than waiting for one letter.
+    pub fn shift_locked(&self) -> bool {
+        self.shift_locked
     }
 
     /// The character a key types, after Shift.
@@ -1054,32 +1120,55 @@ mod tests {
         assert!(ink > 0, "the space bar shows the word Space, not a blank");
     }
 
-    /// "The shift key must be a toggle key - caps lock": the state outlives the key press and
-    /// changes what every letter key says.
+    /// Asked for 2026-10-31: *"Toggling to upper case must only persist for one typed character, then
+    /// revert back to lower case."* One tap is a **one-shot** capital, and the letter that spends it is
+    /// the letter that was capitalised.
     #[test]
-    fn caps_lock_stays_on_and_the_letters_say_so() {
+    fn one_shift_tap_capitalises_exactly_one_letter() {
         let mut pad = keypad();
         assert!(!pad.key_lit(KeypadKey::Shift), "shift is off to begin with");
-        assert_eq!(pad.legend(KeypadKey::Char('q')), Some('q'));
-        pad.toggle_shift();
+        pad.press_shift();
         assert!(pad.shift);
-        assert!(
-            pad.key_lit(KeypadKey::Shift),
-            "and the key is lit while it is on"
-        );
-        assert!(
-            !pad.key_lit(KeypadKey::Char('q')),
-            "only the Shift key is lit by caps lock"
-        );
+        assert!(!pad.shift_locked(), "one tap is not a lock");
         assert_eq!(pad.legend(KeypadKey::Char('q')), Some('Q'));
-        // Typing does not consume it: a caps lock is not a sticky shift.
+        // The letter types as the legend says, and typing it is what spends the shift.
         pad.push(pad.legend(KeypadKey::Char('q')).unwrap());
+        pad.consume_shift();
+        assert!(!pad.shift, "the one letter is all a single tap buys");
+        assert!(!pad.key_lit(KeypadKey::Shift), "so the key is unlit again");
+        assert_eq!(pad.legend(KeypadKey::Char('w')), Some('w'));
         pad.push(pad.legend(KeypadKey::Char('w')).unwrap());
-        assert_eq!(pad.text(), "QW");
-        assert!(pad.shift, "still on after two letters");
-        pad.toggle_shift();
-        assert!(!pad.key_lit(KeypadKey::Shift));
+        assert_eq!(pad.text(), "Qw");
+    }
+
+    /// Asked for 2026-10-31: *"Double tapping the SHIFT key must act like a 'Shift-Lock' key.
+    /// Characters typed will all be upper case until the SHIFT key is touched again."* The second tap
+    /// is the one that arrives while the one-shot is still unspent -- which, on a keypad with no
+    /// clock, is exactly what a double tap is.
+    #[test]
+    fn a_second_shift_tap_locks_capitals_until_it_is_tapped_again() {
+        let mut pad = keypad();
+        pad.press_shift();
+        pad.press_shift();
+        assert!(pad.shift);
+        assert!(pad.shift_locked(), "the second tap locks it");
+        assert!(pad.key_lit(KeypadKey::Shift), "and the key stays lit while it is on");
+        assert_eq!(pad.legend(KeypadKey::Char('q')), Some('Q'));
+        // Typing does not consume a lock: that is the difference between the two states.
+        for ch in ['q', 'w', 'e'] {
+            pad.push(pad.legend(KeypadKey::Char(ch)).unwrap());
+            pad.consume_shift();
+        }
+        assert_eq!(pad.text(), "QWE");
+        assert!(pad.shift, "still on after three letters");
+        // One more tap turns it off, and the next letter is lower case again.
+        pad.press_shift();
+        assert!(!pad.shift);
+        assert!(!pad.shift_locked());
         assert_eq!(pad.legend(KeypadKey::Char('q')), Some('q'));
+        pad.push(pad.legend(KeypadKey::Char('q')).unwrap());
+        pad.consume_shift();
+        assert_eq!(pad.text(), "QWEq");
     }
 
     /// The lit Shift key is the only visible sign of caps lock, so it has to be drawn.

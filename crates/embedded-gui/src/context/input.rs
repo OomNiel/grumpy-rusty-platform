@@ -2248,15 +2248,18 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
         let mut entered = false;
         let relayout = match key {
             // `legend` is what the key shows, so Shift's capitals are what gets typed -- the key
-            // itself is always the lower-case one, like a phone keypad.
+            // itself is always the lower-case one, like a phone keypad. Typing is also what spends a
+            // one-shot capital: one tap shifts one letter, and a locked shift survives it (2026-10-31).
             KeypadKey::Char(_) => {
                 if let Some(ch) = pad.legend(key) {
                     pad.push(ch);
                 }
+                pad.consume_shift();
                 false
             }
             KeypadKey::Space => {
                 pad.push(' ');
+                pad.consume_shift();
                 false
             }
             KeypadKey::Backspace => {
@@ -2276,7 +2279,7 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
                 false
             }
             KeypadKey::Shift => {
-                pad.toggle_shift();
+                pad.press_shift();
                 true
             }
             KeypadKey::Mode => {
@@ -2930,23 +2933,35 @@ mod keypad_touch_tests {
     }
 
     #[test]
-    fn shift_is_a_caps_lock_through_the_touch_path() {
+    fn shift_is_one_letter_on_a_single_tap_and_a_lock_on_a_double_tap() {
+        // Asked for 2026-10-31: one tap capitalises one character, a double tap is Shift-Lock. Through
+        // the touch path, because that is what the glass does — the widget's own state is only half of it.
         let (mut ctx, id, pad) = keypad();
         tap(&mut ctx, &pad, KeypadKey::Shift);
         assert_eq!(ctx.keypad_shift(id), Some(true));
         tap(&mut ctx, &pad, KeypadKey::Char('q'));
-        tap(&mut ctx, &pad, KeypadKey::Char('w'));
         assert_eq!(
-            ctx.keypad_text(id),
-            Some("QW"),
-            "caps lock outlives one letter"
+            ctx.keypad_shift(id),
+            Some(false),
+            "one letter spends the single tap"
         );
-        assert_eq!(ctx.keypad_shift(id), Some(true), "and is still on");
-        // Pressing it again goes back to lower case, which is what a toggle means.
+        tap(&mut ctx, &pad, KeypadKey::Char('w'));
+        assert_eq!(ctx.keypad_text(id), Some("Qw"), "and the next is lower case");
+
+        // Two taps in a row: capitals stay on until Shift is touched again.
         tap(&mut ctx, &pad, KeypadKey::Shift);
-        assert_eq!(ctx.keypad_shift(id), Some(false));
+        tap(&mut ctx, &pad, KeypadKey::Shift);
+        assert_eq!(ctx.keypad_shift(id), Some(true));
+        for ch in ['a', 'b', 'c'] {
+            let pad = current(&ctx, id);
+            tap(&mut ctx, &pad, KeypadKey::Char(ch));
+        }
+        assert_eq!(ctx.keypad_text(id), Some("QwABC"), "a lock outlives the letters");
+        assert_eq!(ctx.keypad_shift(id), Some(true), "and is still on");
+        tap(&mut ctx, &pad, KeypadKey::Shift);
+        assert_eq!(ctx.keypad_shift(id), Some(false), "one more tap turns it off");
         tap(&mut ctx, &pad, KeypadKey::Char('e'));
-        assert_eq!(ctx.keypad_text(id), Some("QWe"));
+        assert_eq!(ctx.keypad_text(id), Some("QwABCe"));
     }
 
     #[test]
