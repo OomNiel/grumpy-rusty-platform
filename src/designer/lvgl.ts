@@ -380,12 +380,46 @@ function callbacksFor(document: DesignerDocument): string {
 }
 
 /** The whole of `src/ui.cpp`. */
+/**
+ * The two flag setters a generated screen needs, written once per file.
+ *
+ * LVGL 9.6 deprecated `lv_obj_add_flag()`/`lv_obj_remove_flag()` in favour of one setter per flag -- and those
+ * setters do not exist before it, so a project on 9.2 has to keep the old spelling. The bench build put three
+ * `-Wdeprecated-declarations` warnings on the Problems pane for a screen nobody had touched (2026-10-31), which
+ * is how this arrived: the choice is made once, here, and every call site says what it means.
+ */
+const FLAG_WRAPPERS = `// LVGL 9.6 deprecated lv_obj_add_flag()/lv_obj_remove_flag() in favour of one setter per flag; those setters
+// do not exist on 9.2. These two wrappers are the whole difference, so one generated file builds on both.
+#if LVGL_VERSION_MAJOR > 9 || (LVGL_VERSION_MAJOR == 9 && LVGL_VERSION_MINOR >= 6)
+void ui_set_hidden(lv_obj_t *object, bool hidden) {
+    lv_obj_set_hidden(object, hidden);
+}
+void ui_set_scrollable(lv_obj_t *object, bool scrollable) {
+    lv_obj_set_scrollable(object, scrollable);
+}
+#else
+void ui_set_hidden(lv_obj_t *object, bool hidden) {
+    if (hidden) {
+        lv_obj_add_flag(object, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_remove_flag(object, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+void ui_set_scrollable(lv_obj_t *object, bool scrollable) {
+    if (scrollable) {
+        lv_obj_add_flag(object, LV_OBJ_FLAG_SCROLLABLE);
+    } else {
+        lv_obj_remove_flag(object, LV_OBJ_FLAG_SCROLLABLE);
+    }
+}
+#endif
+`;
+
 export function emitUiCpp(document: DesignerDocument): string {
     const views = designViews(document);
     const size = canvasSize(document);
     const firstView = views[0]?.id ?? 'main';
     const startView = views.find((view) => view.start === true)?.id ?? firstView;
-
     const viewObjects = views
         .map((view: DesignerView) => {
             const name = `view_${cppId(view.id)}`;
@@ -398,7 +432,7 @@ export function emitUiCpp(document: DesignerDocument): string {
                 `    lv_obj_set_style_bg_opa(${name}, LV_OPA_TRANSP, 0);`,
             ];
             if (view.id !== startView) {
-                lines.push(`    lv_obj_add_flag(${name}, LV_OBJ_FLAG_HIDDEN);`);
+                lines.push(`    ui_set_hidden(${name}, true);`);
             }
             return lines.join('\n');
         })
@@ -425,6 +459,7 @@ export function emitUiCpp(document: DesignerDocument): string {
 
 namespace {
 
+${FLAG_WRAPPERS}
 ${views.map((view: DesignerView) => `lv_obj_t *view_${cppId(view.id)} = nullptr;`).join('\n')}
 
 ${callbacksFor(document)}
@@ -436,9 +471,9 @@ ${views
             .map(
                 (view: DesignerView) =>
                     `    if (strcmp(view_id, ${cString(view.id)}) == 0) {\n` +
-                    `        lv_obj_remove_flag(view_${cppId(view.id)}, LV_OBJ_FLAG_HIDDEN);\n` +
+                    `        ui_set_hidden(view_${cppId(view.id)}, false);\n` +
                     `    } else {\n` +
-                    `        lv_obj_add_flag(view_${cppId(view.id)}, LV_OBJ_FLAG_HIDDEN);\n` +
+                    `        ui_set_hidden(view_${cppId(view.id)}, true);\n` +
                     `    }`,
             )
             .join('\n')}
@@ -446,7 +481,7 @@ ${views
 
 void ui_init() {
     lv_obj_t *screen = lv_screen_active();
-    lv_obj_remove_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
+    ui_set_scrollable(screen, false);
 
 ${viewObjects}
 

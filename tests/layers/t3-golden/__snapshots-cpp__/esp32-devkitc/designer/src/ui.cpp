@@ -11,6 +11,32 @@
 
 namespace {
 
+// LVGL 9.6 deprecated lv_obj_add_flag()/lv_obj_remove_flag() in favour of one setter per flag; those setters
+// do not exist on 9.2. These two wrappers are the whole difference, so one generated file builds on both.
+#if LVGL_VERSION_MAJOR > 9 || (LVGL_VERSION_MAJOR == 9 && LVGL_VERSION_MINOR >= 6)
+void ui_set_hidden(lv_obj_t *object, bool hidden) {
+    lv_obj_set_hidden(object, hidden);
+}
+void ui_set_scrollable(lv_obj_t *object, bool scrollable) {
+    lv_obj_set_scrollable(object, scrollable);
+}
+#else
+void ui_set_hidden(lv_obj_t *object, bool hidden) {
+    if (hidden) {
+        lv_obj_add_flag(object, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_remove_flag(object, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+void ui_set_scrollable(lv_obj_t *object, bool scrollable) {
+    if (scrollable) {
+        lv_obj_add_flag(object, LV_OBJ_FLAG_SCROLLABLE);
+    } else {
+        lv_obj_remove_flag(object, LV_OBJ_FLAG_SCROLLABLE);
+    }
+}
+#endif
+
 lv_obj_t *view_main = nullptr;
 
 void on_go_clicked_cb(lv_event_t *event) {
@@ -24,15 +50,15 @@ void on_go_clicked_cb(lv_event_t *event) {
 
 void ui_show_view(const char *view_id) {
     if (strcmp(view_id, "main") == 0) {
-        lv_obj_remove_flag(view_main, LV_OBJ_FLAG_HIDDEN);
+        ui_set_hidden(view_main, false);
     } else {
-        lv_obj_add_flag(view_main, LV_OBJ_FLAG_HIDDEN);
+        ui_set_hidden(view_main, true);
     }
 }
 
 void ui_init() {
     lv_obj_t *screen = lv_screen_active();
-    lv_obj_remove_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
+    ui_set_scrollable(screen, false);
 
     view_main = lv_obj_create(screen);
     lv_obj_set_pos(view_main, 0, 0);

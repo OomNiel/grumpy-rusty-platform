@@ -11,6 +11,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.18.12] - 2026-10-31
+
+### Fixed
+
+- **A generated screen builds with no warnings on LVGL 9.6.** LVGL 9.6 deprecated `lv_obj_add_flag()` and
+  `lv_obj_remove_flag()` in favour of one setter per flag, so a freshly generated `src/ui.cpp` put three
+  `-Wdeprecated-declarations` warnings on the Problems pane for a design nobody had touched. The emitter now
+  writes two small wrappers and asks the version once (`LVGL_VERSION_MAJOR`/`MINOR`): 9.6 and later call
+  `lv_obj_set_hidden()`/`lv_obj_set_scrollable()`, older versions keep the flag pair they actually have — so
+  one generated file builds on 9.2 and on 9.6 alike, and neither says a word.
+
 ## [0.18.11] - 2026-10-31
 
 ### Fixed

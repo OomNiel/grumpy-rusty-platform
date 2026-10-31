@@ -8462,3 +8462,31 @@ t3 C++ snapshots were regenerated. 1171 / 87 / 7.
 **Lesson to keep:** when two files are generated, generate both from the same input in the same place. A
 hand-written starter next to a generated file is a mismatch waiting for its first save; and a guard that reads
 one language's artefact (`kdl`) silently disables the feature for the other.
+
+### 170. Three warnings on a screen nobody had touched
+
+The 0.18.11 build of Cpp_P2w_Test2 compiled, and left three `-Wdeprecated-declarations` in the Problems pane:
+
+    src/ui.cpp:27: 'void lv_obj_remove_flag(...)' is deprecated: Use the dedicated lv_obj_set_<flag>() setters
+                   instead, e.g. lv_obj_set_hidden(obj, false).
+
+LVGL 9.6 deprecated `lv_obj_add_flag()`/`lv_obj_remove_flag()`, and the setters it points at do not exist on
+9.2 -- which a designer project may well be built against, since the library is machine-wide and the count of
+installed versions is zero-to-one. So neither spelling can be emitted unconditionally.
+
+The emitter now writes the choice once, at the top of `ui.cpp`, and every call site says what it means:
+
+    #if LVGL_VERSION_MAJOR > 9 || (LVGL_VERSION_MAJOR == 9 && LVGL_VERSION_MINOR >= 6)
+    void ui_set_hidden(lv_obj_t *object, bool hidden) { lv_obj_set_hidden(object, hidden); }
+    ...
+    #else
+    ... lv_obj_add_flag / lv_obj_remove_flag ...
+    #endif
+
+`ui_set_hidden(view, true)` / `ui_set_scrollable(screen, false)` at the call sites. A clean build now reports
+nothing at all -- and a clean build is the only way to see warnings from files the incremental build has not
+touched, which is why it took `rm -rf .arduino/build build` to check rather than a rebuild.
+
+**Lesson:** a generated file is compiled by somebody else's compiler against somebody else's library version.
+Ask the version in the generated code rather than picking the newest spelling, and never trust an incremental
+build to show you the warnings in files it did not recompile.

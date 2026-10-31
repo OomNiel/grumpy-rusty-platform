@@ -88,9 +88,16 @@ test('views are containers, and navigate hides one and shows the other', () => {
     const source = emitUiCpp(design());
     contains(source, 'lv_obj_t *view_main = nullptr;', 'the first view');
     contains(source, 'lv_obj_t *view_second = nullptr;', 'and the second');
-    contains(source, 'lv_obj_add_flag(view_second, LV_OBJ_FLAG_HIDDEN);', 'the one not on show starts hidden');
+    contains(source, 'ui_set_hidden(view_second, true);', 'the one not on show starts hidden');
     contains(source, 'ui_show_view("second");', 'navigate calls the switch');
     contains(source, 'strcmp(view_id, "second")', 'and the switch compares by id');
+    // LVGL 9.6 deprecated the flag pair, and its per-flag setters do not exist on 9.2, so the generated file
+    // asks by version and the call sites say what they mean. A clean bench build of a designer project is how
+    // the warning was found (2026-10-31): three `-Wdeprecated-declarations` on a screen nobody had touched.
+    contains(source, '#if LVGL_VERSION_MAJOR > 9 || (LVGL_VERSION_MAJOR == 9 && LVGL_VERSION_MINOR >= 6)', 'the choice is made once');
+    contains(source, 'lv_obj_set_hidden(object, hidden);', 'the 9.6 spelling');
+    contains(source, 'lv_obj_add_flag(object, LV_OBJ_FLAG_HIDDEN);', 'and the 9.2 one beside it');
+    notContains(source, '    lv_obj_add_flag(view_', 'no call site reaches for the deprecated function directly');
 });
 
 test('a widget the C++ side cannot draw is named in the report, not silently dropped', () => {
