@@ -8202,7 +8202,7 @@ guards. The 45 k lines of `embedded-gui` are replaced, not ported, because C++ h
 | `plans/arduino-backend.md` | the plan (its *Status* section carries this same recipe) |
 | `NOTES.md` §162 | this entry |
 | `/memories/repo/arduino-backend.md` | the repository memory entry |
-| `/memories/rusty-platform.md` | one bullet under *Project Registry* that points at it |
+| `/memories/rusty-platform.md` | the note at the top of that file, which points at the plan |
 | `README.md`, `USER_MANUAL.md`, `AI_ASSIST.md` | untouched until the phase that makes the feature real, so there is nothing to unpick |
 
 Nothing is committed per phase yet. When phases start, each one is its own commit, and abandoning it is

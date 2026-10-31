@@ -4,8 +4,8 @@ Decided 2026-10-31. This is the plan the implementation follows; it is not user 
 
 ## Status: agreed, not started
 
-**Nothing has been implemented.** The six questions at the bottom were answered on 2026-10-31 and are recorded
-under *Answers the user gave*; the phases below say what each one will touch.
+**Nothing has been implemented.** The six questions that shaped this plan were answered on 2026-10-31 and are
+recorded under *Answers the user gave* below — the phases say what each answer will touch.
 
 **How to abandon it.** Where the decision is written down, so it can be taken back out cleanly:
 
@@ -14,7 +14,7 @@ under *Answers the user gave*; the phases below say what each one will touch.
 | `plans/arduino-backend.md` | this file |
 | `NOTES.md` §162 | the dev-log entry that records the decision and this recipe |
 | `/memories/repo/arduino-backend.md` | the repository memory entry |
-| `/memories/rusty-platform.md` | one bullet under *Project Registry* pointing at the above |
+| `/memories/rusty-platform.md` | the note at the top of that file pointing at the above |
 | `README.md`, `USER_MANUAL.md` | **nothing** — user-facing docs are only touched in the phase that makes the feature real (see *Documentation* below) |
 
 After **phase 1** (the seams, no behaviour change) abandoning it is still cheap: the Rust code is behind an
