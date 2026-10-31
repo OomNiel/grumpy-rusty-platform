@@ -8389,3 +8389,32 @@ LV_COLOR_FORMAT_RGB565` is the setting that matters, the depth macro is only the
 path — `emitUiCpp(document)`/`emitHandlersCpp` in `src/designer/lvgl.ts`, `DESIGNER_FILES` per backend, the
 panel rewritten from `designer/panel.hardware.json`, fonts as `lv_font_t` C arrays, and images as
 `lv_image_dsc_t`. Then phase 5 (C++ AI prompts/guards) and phase 6 (clock, packaging, docs).
+
+## §167 — The C++ Designer: it opens, saves and builds (0.18.2, 2026-10-31)
+
+**What changed**
+
+- `src/designer/lvgl.ts` — the design document as LVGL C++: one container per view (the ones not on show hidden),
+  one LVGL object per widget, callbacks named `on_<widget>_<event>` (the *Rust* names, from `EVENT_SPECS`), and
+  `navigate` becomes `ui_show_view("...")` with no handler at all. `syncHandlerStubsCpp` appends a stub per new
+  event and prunes one only while its body is still exactly the stub this wrote (the marker is the
+  `Serial.println("<name>");` line), so deleting a widget never deletes somebody's code.
+- `editor.ts` — the save path branches on `sketch.yaml`: a sketch writes `src/ui.cpp`, `src/ui.h`,
+  `src/ui_handlers.{h,cpp}` and no `ui.kdl`; a crate is untouched. `syncRotation` is skipped for C++ (its
+  rotation lives in `panel.cpp`'s MADCTL bits, written at creation).
+- `generate/arduino.ts` — a designer project is born with `designer/panel.ui.json` (the *Rust* format, which
+  is what makes one canvas serve both) and, on a Pico, `designer/panel.hardware.json`. `ui.h` now comes from
+  `emitUiCppHeader()` so the wizard and the Designer cannot disagree about it.
+- `state.ts` — the Designer is offered for both languages again.
+
+**Proven on the bench, not just by test:** the starter design (a label and a button) emitted through
+`emitUiCpp` compiles for **rp2040:rp2040:rpipico2w** against LVGL 9.6 (551,612 B), and a hand-built
+multi-view design with a button, a slider, a toggle, a dropdown and a `navigate` compiles too (553,284 B).
+
+**Known gaps, in the order they matter for a real design:** fonts and images are not emitted as LVGL assets
+(`lv_font_t` / `lv_image_dsc_t`); `clock` and the extension's own drawing widgets (chart, plotter, mesh, path,
+status_bar, ...) are *reported* rather than drawn; the Designer does not yet rewrite `src/panel.cpp` from
+`designer/panel.hardware.json`, so moving a pin in the Hardware panel does not move it in the sketch; and the
+canvas's own load path has not been exercised on a C++ project on the bench yet (the save path has).
+
+t1 **1164** (10 new in `designer-lvgl.test.js`), t2 87, t3 7.
