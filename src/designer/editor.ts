@@ -63,6 +63,7 @@ import { collectImageAssets, imageSourcesOf, type DesignerImageAsset } from './i
 import { parseBdfFont, type DesignFontPixels } from './bitmapFont';
 import { bdfFromRaster, fontIdFromFile, isBitmapFontFile, type RasterisedFont } from './fontImport';
 import { emitUiRs, handlerName, syncHandlerStubs, designHasClock, ESP_LOG_MACRO, RP_LOG_MACRO } from './generate';
+import { emitHandlersCppHeader, emitUiCpp, emitUiCppHeader, syncHandlerStubsCpp } from './lvgl';
 import { sdImagesNeedingCard } from './model';
 import { isFeatureInDefault, setFeatureInDefault } from './features';
 import {
@@ -1172,7 +1173,9 @@ class DesignerPanel {
             await writeProjectFile(this.folder, DESIGNER_DOCUMENT_PATH, rendered.documentJson);
             this.lastWritten = rendered.documentJson;
         }
-        if (rendered.kdl !== undefined) {
+        if (rendered.kdl !== undefined && !this.isCppProject()) {
+            // A Rust design compiles through `ui.kdl`; a C++ one has no markup at all -- its object tree is
+            // ui.cpp itself, written by `syncModule` below.
             await writeProjectFile(this.folder, DESIGNER_KDL_PATH, rendered.kdl);
         }
         await this.syncRotation(document.rotation);
@@ -1220,6 +1223,10 @@ class DesignerPanel {
      * with no header, which would be a worse file than none at all.
      */
     private async syncHandlers(document: DesignerDocument): Promise<void> {
+        if (this.isCppProject()) {
+            await this.syncCppHandlers(document);
+            return;
+        }
         const uri = vscode.Uri.joinPath(this.folder, DESIGNER_HANDLERS_PATH);
         const existing = await readText(uri);
         if (existing === undefined) {
@@ -1249,6 +1256,10 @@ class DesignerPanel {
      * the module have to move together or the project stops building for a reason nothing in the design says.
      */
     private async syncModule(document: DesignerDocument): Promise<void> {
+        if (this.isCppProject()) {
+            await this.syncCppModule(document);
+            return;
+        }
         const uri = vscode.Uri.joinPath(this.folder, DESIGNER_MODULE_PATH);
         const next = emitUiRs(document, this.touchEnabled);
         if ((await readText(uri)) !== next) {
@@ -1256,8 +1267,60 @@ class DesignerPanel {
         }
     }
 
+    /** Whether this is an Arduino (C++) project: a sketch, not a crate. */
+    private isCppProject(): boolean {
+        return fs.existsSync(path.join(this.folder.fsPath, 'sketch.yaml'));
+    }
+
+    /**
+     * Rewrites a C++ project's screen from the design.
+     *
+     * `src/ui.cpp` is the object tree and `src/ui.h` its contract, exactly as `src/ui.rs` is on the Rust side:
+     * generated, rewritten on every save, and never the place for a person's code.
+     */
+    private async syncCppModule(document: DesignerDocument): Promise<void> {
+        const source = emitUiCpp(document);
+        const sourceUri = vscode.Uri.joinPath(this.folder, 'src', 'ui.cpp');
+        if ((await readText(sourceUri)) !== source) {
+            await writeProjectFile(this.folder, 'src/ui.cpp', source);
+        }
+        const header = emitUiCppHeader();
+        const headerUri = vscode.Uri.joinPath(this.folder, 'src', 'ui.h');
+        if ((await readText(headerUri)) !== header) {
+            await writeProjectFile(this.folder, 'src/ui.h', header);
+        }
+    }
+
+    /**
+     * Keeps a C++ project's handler file and its prototypes in step with the design.
+     *
+     * Same rules as the Rust side: a stub is appended once and never rewritten, and one the design no longer
+     * asks for is removed only while it is still exactly the stub this wrote.
+     */
+    private async syncCppHandlers(document: DesignerDocument): Promise<void> {
+        const handlersUri = vscode.Uri.joinPath(this.folder, 'src', 'ui_handlers.cpp');
+        const existing = await readText(handlersUri);
+        if (existing !== undefined) {
+            const next = syncHandlerStubsCpp(existing, document);
+            if (next !== existing) {
+                await writeProjectFile(this.folder, 'src/ui_handlers.cpp', next);
+                this.output.appendLine('[designer] src/ui_handlers.cpp tidied: stubs the design no longer asks for');
+            }
+        }
+        const headerUri = vscode.Uri.joinPath(this.folder, 'src', 'ui_handlers.h');
+        const header = emitHandlersCppHeader(document);
+        if ((await readText(headerUri)) !== header) {
+            await writeProjectFile(this.folder, 'src/ui_handlers.h', header);
+        }
+    }
+
     /** Keeps the project's own rotation setting in step with the design it was drawn for. */
     private async syncRotation(rotation: LcdRotation): Promise<void> {
+        if (this.isCppProject()) {
+            // A C++ project's rotation lives in src/panel.cpp (the MADCTL bits), which the project generator
+            // writes; rewriting it from a design save is the panel-rewrite step that is not in yet.
+            return;
+        }
         const configUri = vscode.Uri.joinPath(this.folder, ...this.configRelative.split('/'));
         const existing = (await readText(configUri)) ?? '';
         const updated = setLcdRotationInConfig(existing, rotation);

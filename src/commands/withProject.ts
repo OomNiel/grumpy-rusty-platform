@@ -115,7 +115,7 @@ export function makeWithProject(
         if (project.language !== 'rust') {
             void vscode.window.showWarningMessage(
                 `That command edits Cargo.toml, and this is an ${project.language === 'arduino' ? 'Arduino (C++)' : project.language} project. ` +
-                    'Build, Upload and Monitor work; dependencies are managed with `arduino-cli lib` for now.',
+                'Build, Upload and Monitor work; dependencies are managed with `arduino-cli lib` for now.',
             );
             return;
         }

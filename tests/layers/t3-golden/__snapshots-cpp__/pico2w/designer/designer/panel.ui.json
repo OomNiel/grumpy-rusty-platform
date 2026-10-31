@@ -1,0 +1,55 @@
+{
+  "version": 3,
+  "boardId": "pico2w",
+  "panelWidth": 240,
+  "panelHeight": 320,
+  "rotation": 0,
+  "screenId": "RustyPanel",
+  "theme": "dark",
+  "fonts": [],
+  "widgets": [
+    {
+      "id": "title",
+      "tag": "label",
+      "x": 16,
+      "y": 8,
+      "width": 208,
+      "height": 26,
+      "props": {
+        "text": "Rusty Platform",
+        "font": "",
+        "style": "",
+        "text_color": ""
+      },
+      "events": []
+    },
+    {
+      "id": "go",
+      "tag": "button",
+      "x": 50,
+      "y": 138,
+      "width": 140,
+      "height": 44,
+      "props": {
+        "text": "Press me",
+        "font": "",
+        "style": "",
+        "bg": "#3a6ea5",
+        "fg": "#f0f0f0",
+        "text_color": "#ffffff",
+        "pressed_bg": "#2a5a8a",
+        "pressed_fg": "#ffffff",
+        "disabled_bg": "#303030",
+        "disabled_fg": "#808080",
+        "focused_bg": "#4a7eb5",
+        "focused_fg": "#ffffff",
+        "border_color": "#101010",
+        "corner_radius": 4,
+        "navigate_to": ""
+      },
+      "events": [
+        "clicked"
+      ]
+    }
+  ]
+}

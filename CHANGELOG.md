@@ -11,6 +11,37 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.18.2] - 2026-10-31
+
+### Added
+
+- **The Designer opens a C++ project and writes the design as LVGL.** One canvas, two languages: the design is
+  the same `designer/panel.ui.json`, and on a sketch the save path writes `src/ui.cpp` (the LVGL object tree),
+  `src/ui.h`, and the handler stubs in `src/ui_handlers.cpp` — the append-only file a person owns, with the same
+  `on_<widget>_<event>` names the Rust side uses.
+- **Views and `navigate`** work in C++ too: each view is a container, the ones not on show are hidden, and a
+  navigate event calls `ui_show_view("...")` with no code.
+- A C++ designer project is born with the design document and, on a Pico, `designer/panel.hardware.json`, so
+  the canvas has something to open.
+- **Build / Upload / Monitor / Clean** for a C++ project, with `arduino-cli` diagnostics on the Problems pane
+  (evidence: the compiler's JSON, falling back to gcc's text), a missing core offered as a one-click install,
+  and Upload flashing exactly what Build produced.
+
+### Changed
+
+- A C++ designer project builds **LVGL 9** on top of the panel driver: `lv_conf.h` in the project,
+  `src/lvgl_display.{h,cpp}` with the flush callback and a `millis()` tick. Our build passes
+  `-DLV_CONF_INCLUDE_SIMPLE -I<project>` (the README shows the same command for a terminal), and the build
+  offers `arduino-cli lib install lvgl` when the library is missing.
+
+### Known limits
+
+- Widgets LVGL has no object for are **reported rather than drawn** in C++: `chart`, `plotter`, `mesh`, `path`,
+  `icon`, `status_bar`, `content_indicator`, `crumbs`, `carousel`, `dialog`, `table`, `busy_wheel`, `scale`,
+  `spinbox`, `number_picker`, `time_picker`, `clock`, `image`. Everything else emits.
+- Fonts and images are not emitted as LVGL assets yet, and the Designer does not rewrite `src/panel.cpp` from
+  `designer/panel.hardware.json` (the pins are written when the project is created).
+
 ## [0.18.1] - 2026-10-31
 
 ### Added

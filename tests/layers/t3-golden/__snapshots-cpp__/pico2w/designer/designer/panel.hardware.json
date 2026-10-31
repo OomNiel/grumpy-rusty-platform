@@ -1,0 +1,20 @@
+{
+  "panel": "ili9341",
+  "bus": 0,
+  "alt": false,
+  "sclk": 18,
+  "mosi": 19,
+  "miso": 16,
+  "cs": 17,
+  "dc": 20,
+  "rst": 21,
+  "backlight": 22,
+  "backlightActiveLow": false,
+  "touchCs": 14,
+  "touchIrq": 15,
+  "sdSclk": 10,
+  "sdMosi": 11,
+  "sdMiso": 12,
+  "sdCs": 13,
+  "timeSource": "wifi"
+}

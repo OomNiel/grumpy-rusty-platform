@@ -55,14 +55,14 @@ function sketchFqbn(project: ActiveProject): string | undefined {
 function noFqbn(): void {
     void vscode.window.showErrorMessage(
         'This C++ project\'s sketch.yaml has no `fqbn:` line, so there is no board to build for. ' +
-            'Add one (for example `fqbn: rp2040:rp2040:rpipico2w`), then try again.',
+        'Add one (for example `fqbn: rp2040:rp2040:rpipico2w`), then try again.',
     );
 }
 
 function noCli(): void {
     void vscode.window.showErrorMessage(
         'arduino-cli was not found. Install it (https://arduino.github.io/arduino-cli/) or put it on the ' +
-            'PATH, then try again.',
+        'PATH, then try again.',
     );
 }
 
@@ -230,7 +230,7 @@ export async function arduinoBuild(
             if (result.code !== 0) {
                 void vscode.window.showErrorMessage(
                     `Build failed${count > 0 ? ` — ${count} problem${count === 1 ? '' : 's'} in the Problems pane` : ''}: ` +
-                        (lastLineOf(result.stderr) || lastLineOf(result.stdout) || 'see the log'),
+                    (lastLineOf(result.stderr) || lastLineOf(result.stdout) || 'see the log'),
                 );
                 return false;
             }
@@ -249,7 +249,7 @@ async function pickPort(cli: string, fqbn: string): Promise<ArduinoPort | undefi
     if (ports.length === 0) {
         const hint = fqbn.startsWith('rp2040:')
             ? ' Hold BOOTSEL while plugging the board in (or press it while RESET is held) so it appears as a ' +
-              'drive, then try again.'
+            'drive, then try again.'
             : '';
         void vscode.window.showErrorMessage(`No board found on any port.${hint}`);
         return undefined;
