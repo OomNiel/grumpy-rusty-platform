@@ -2,6 +2,27 @@
 
 Decided 2026-10-31. This is the plan the implementation follows; it is not user documentation.
 
+## Status: agreed, not started
+
+**Nothing has been implemented.** The six questions at the bottom were answered on 2026-10-31 and are recorded
+under *Answers the user gave*; the phases below say what each one will touch.
+
+**How to abandon it.** Where the decision is written down, so it can be taken back out cleanly:
+
+| where | what to remove |
+|---|---|
+| `plans/arduino-backend.md` | this file |
+| `NOTES.md` §162 | the dev-log entry that records the decision and this recipe |
+| `/memories/repo/arduino-backend.md` | the repository memory entry |
+| `/memories/rusty-platform.md` | one bullet under *Project Registry* pointing at the above |
+| `README.md`, `USER_MANUAL.md` | **nothing** — user-facing docs are only touched in the phase that makes the feature real (see *Documentation* below) |
+
+After **phase 1** (the seams, no behaviour change) abandoning it is still cheap: the Rust code is behind an
+interface, so `git revert` of the phase-1 commit restores the previous shape, and every later phase's code lives
+in files that only it touches. After **phase 2** it is `git revert <phase-1>..<phase-n>` plus deleting the new
+`src/generate/arduino*`, `src/designer/lvgl*` and `src/ai/cpp*` modules; a project record that carries
+`language "rust"` needs no migration, because a record without the field is already Rust.
+
 ## What is being built
 
 One extension, **two languages per project** — Rust (Embassy + probe-rs) as it stands, and Arduino-style
@@ -43,6 +64,31 @@ knows about Rust stays exactly where it is.
 | code behind | | `src/ui_handlers.rs` | `src/ui_handlers.cpp` |
 | logging | | `defmt::info!` / RTT | `Serial.printf` |
 | AI prompts + answer guards | chat pipeline, panes, settings | `rustCode.ts`, `cargoMessages.ts` | `cppCode.ts`, `arduinoMessages.ts` |
+
+## Answers the user gave
+
+Asked 2026-10-31, answered the same day:
+
+1. **Cores: both.** `arduino-pico` (`rp2040:rp2040`) and `esp32` (`esp32:esp32`) from the first C++ release; AVR
+   stays out until those two are finished end to end.
+2. **LVGL: the most popular choice for this job — LVGL 9.x.** It is the de-facto MCU GUI library, packaged for
+   both cores (`arduino-cli lib install lvgl`), and it already ships the widget set the design format needs.
+   The exact 9.minor is pinned when the first sketch is built on the bench, recorded here and in the generated
+   project, and **not** floated: the 8→9 renames (`lv_btn`→`lv_button`, `lv_img`→`lv_image`) are precisely the
+   churn a generator cannot absorb twice.
+3. **Keypad: LVGL's own `lv_keyboard` SHIFT already meets the rule** (checked by the user against the behaviour
+   asked for on 2026-10-31: one tap capitalises one character, a double tap locks). So the C++ emitter uses
+   `lv_keyboard` **as it is** — no custom three-state logic in C++. The Rust widget keeps its own
+   `press_shift`/`consume_shift` state machine; the two must agree in observable behaviour, which the
+   generated-firmware tests and the bench check.
+4. **SD images: yes, in scope.** File-backed `lv_image` from the card is a phase-4 requirement, not a later
+   phase: it carries the filesystem driver (`SdFat`/`FS.h` on the ESP side, the core's SD support on
+   arduino-pico) **and** the design's `sd:/NAME.BMP` picture. Fallback if it cannot be made to work on a board
+   in phase 4: the canvas keeps drawing the dashed "pixels not here yet" frame, and the plan records why.
+5. **`//~` worked examples: a C++ set as well.** The examples are data, not code, so the Rust Assist trigger
+   gains C++ examples in phase 5 instead of being Rust-only.
+6. **Wizard: offered plainly.** No experimental setting and no hidden command — the language is step one of
+   New Project, beside the board and the template.
 
 ## The five seams
 
@@ -128,8 +174,8 @@ One design becomes one LVGL object tree. The mapping to fix before any emitter c
 | Slider | `lv_slider` | `LV_EVENT_VALUE_CHANGED` |
 | Switch | `lv_switch` | same |
 | Dropdown | `lv_dropdown` | `LV_EVENT_VALUE_CHANGED`, `navigate` on a choice |
-| Keypad | `lv_keyboard` + `lv_textarea` | **verify** whether LVGL's own SHIFT already implements one-tap and double-tap; if it does not, the rule lives in our callback |
-| Image | `lv_image` with an `lv_image_dsc_t` | file-backed images from the card need a filesystem driver (phase 6) |
+| Keypad | `lv_keyboard` + `lv_textarea` | used as it comes: its SHIFT already does one-tap and double-tap (answer 3), so no custom state machine on the C++ side |
+| Image | `lv_image` with an `lv_image_dsc_t` | file-backed images from the card are in scope (answer 4): `lv_image_set_src(img, "S:/NAME.BMP")` with the driver registered |
 | Clock | drawn by us as today | an arc/circle + hands in an `lv_obj` draw event |
 | Text panel | `lv_label` in a column + scroll | |
 
@@ -169,10 +215,10 @@ arduino-cli addresses boards by FQBN, so the board matrix becomes a mapping, not
 |---|---|---|
 | Pico, Pico W, Pico 2, Pico 2 W | `rp2040:rp2040` (arduino-pico) | `rp2040:rp2040:rpipico`, `…:rpipicow`, `…:rpipico2`, `…:rpipico2w` |
 | ESP32 / ESP32-S3 | `esp32:esp32` | `esp32:esp32:esp32`, `esp32:esp32:esp32s3` |
-| (optional) AVR | `arduino:avr` | `arduino:avr:uno`, `…:nano` |
 
-The RP and ESP boards keep the panel/wiring facts that were verified on glass — those are hardware, not
-language. AVR has no board here yet and is deliberately out of the first release.
+Both cores are in the first C++ release (answer 1). The RP and ESP boards keep the panel/wiring facts that were
+verified on glass — those are hardware, not language. AVR has no board here yet and is deliberately out of the
+first release.
 
 ### Toolchain, build and upload
 
@@ -195,8 +241,8 @@ language. AVR has no board here yet and is deliberately out of the first release
   refusal dialogs.
 - **New per language**: the system prompt (Arduino APIs, `Serial`, LVGL, no `std::` assumptions), the item and
   elision rules for C++ translation units, and the build-message parser.
-- **Rust Assist's `//~ keyword`** is Rust-specific in its examples. Decision needed: keep it Rust-only, or
-  give C++ a `//~` mode with C++ examples (cheap: the examples are data, not code).
+- **`//~ keyword`** keeps its trigger and gains a **C++ example set** (answer 5): the examples are data
+  (`src/ai/rustCode.ts`'s example table), so a C++ project gets C++ examples from the same command.
 
 ## Data model and compatibility
 
@@ -224,16 +270,25 @@ The layers are already there and carry over:
 
 | phase | what it delivers | proof | tokens |
 |---|---|---|---|
-| 0 | this file, and the questions answered | — | — |
-| 1 | `language` on the project, wizard order, `SketchBackend`, Rust moved behind it | t1: no behaviour change; the whole suite green | 0.1–0.2 M |
-| 2 | C++ generator: `blinky`, `display`, `designer` skeleton, `panel.cpp`, `main.cpp`, FQBN map | t3 C++ goldens; a hand-built sketch compiles with `arduino-cli` | 0.3–0.5 M |
-| 3 | toolchain: detect, core install, compile → Problems, upload, monitor | t2 shims + one real board on the bench | 0.25–0.4 M |
-| 4 | Designer → LVGL: emitter, views, events, handler stubs, fonts, images | t1 emitter cases + t3 goldens + one design on glass | 0.4–0.7 M |
-| 5 | AI for C++: prompt pack, guards, `arduinoMessages`, status line | t1 guard/parser cases; the stray-character drill in C++ | 0.15–0.3 M |
-| 6 | SD card and clock parity, `.deb` packaging, docs | bench | 0.15–0.3 M |
+| 0 | this file, and the six answers (recorded above) | — | — |
+| 1 | `language` on the project, wizard step one, `SketchBackend`, Rust moved behind it | t1: no behaviour change; the whole suite green | 0.1–0.2 M |
+| 2 | C++ generator for **both cores**: `blinky`, `display`, `designer` skeleton, `panel.cpp`, `main.cpp`, FQBN map for `rp2040:rp2040` and `esp32:esp32` | t3 C++ goldens per board; a hand-built sketch compiles with `arduino-cli` for one RP and one ESP board | 0.35–0.55 M |
+| 3 | toolchain: detect, core install, compile → Problems, upload, monitor | t2 shims + one real board of each family on the bench | 0.25–0.4 M |
+| 4 | Designer → LVGL 9.x: emitter, views, events, handler stubs, fonts, **`lv_keyboard` as it comes**, **SD images with a filesystem driver** | t1 emitter cases + t3 goldens + one design on glass with a card in the slot | 0.5–0.85 M |
+| 5 | AI for C++: prompt pack, guards, `arduinoMessages`, status line, **the C++ `//~` example set** | t1 guard/parser/example cases; the stray-character drill in C++ | 0.2–0.35 M |
+| 6 | clock parity, `.deb` packaging, docs | bench | 0.15–0.3 M |
+|  |  | **total** | **1.55–2.65 M** |
 
-Total ≈ **1.35–2.4 M tokens**, 8–15 focused sessions — the middle row of the earlier estimate, and about a third
-of a separate fork.
+## Documentation, per phase
+
+The user-facing docs say nothing until a phase makes the feature real, so a revert never has to unpick a manual:
+
+- **phase 1** — `NOTES.md` only (the seam exists, nothing changes for a user).
+- **phase 2** — README gains the C++ bullet; `USER_MANUAL.md` gains *Creating a C++ project*.
+- **phase 3** — the manual's build/flash/monitor sections gain their `arduino-cli` route.
+- **phase 4** — the Designer section gains the LVGL facts (keypad SHIFT, views, images from the card).
+- **phase 5** — `AI_ASSIST.md` gains the C++ prompt/guard differences and the C++ `//~` examples.
+- **CHANGELOG** — one entry the first time the wizard really offers C++, listing everything that landed.
 
 ## Non-goals (deliberately)
 
@@ -244,15 +299,11 @@ of a separate fork.
   languages, which is what keeps one canvas honest.
 - **No Marketplace work** for the C++ mode until the benches agree.
 
-## Questions before phase 1
+## Open questions (none block phase 1)
 
-1. **Cores**: `arduino-pico` (Earle Philhower) for the RP boards, and `esp32` for the ESP ones — both, or one
-   first?
-2. **LVGL version**: pin 9.x, or the version that ships with the cores where it is bundled?
-3. **Keypad**: does LVGL's own `lv_keyboard` SHIFT already satisfy the one-tap / double-tap rule (to be checked
-   on glass), or do we keep our own callback logic in C++ as we do in Rust?
-4. **SD images**: v1 or phase 6? It needs a filesystem driver *and* `lv_image` from a file, which is the
-   riskiest single item in the Designer port.
-5. **`//~` examples**: Rust-only, or a C++ set too?
-6. **Ship it behind what**: a setting (`rustyPlatform.experimental.languages`), a separate command, or plainly
-   in the wizard from day one?
+The six questions that shaped this plan were answered on 2026-10-31 — see *Answers the user gave*. What is left
+is discovered on the bench, not decided here:
+
+- The exact **LVGL 9.minor** the cores install today (record it when the first sketch is built).
+- The real **FQBNs** of the installed cores (`arduino-cli board listall`), which is a lookup, not a choice.
+- Whether a card's `lv_image` can be driven on **both** RP and ESP cores in phase 4, or only one before the other.

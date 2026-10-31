@@ -8175,3 +8175,38 @@ walks both states through real taps. `cargo test` on the crate: 324 tests (334 w
 **How a project gets it.** The crate is vendored into `codegen/embedded-gui` and carries a
 `.rusty-platform-crates` marker with the extension version; the Designer offers **Update Crates** when the
 marker is not the running extension's, so installing this version and opening the Designer is the whole upgrade.
+
+## §162 — Decided: an Arduino (C++) backend beside the Rust one (plan only, 2026-10-31)
+
+**Status: agreed, not started.** No code exists for it. The plan is `plans/arduino-backend.md`, and the six
+questions that shaped it were answered the same day:
+
+1. **Both cores** — `rp2040:rp2040` (arduino-pico) and `esp32:esp32` from the first C++ release; AVR later.
+2. **LVGL 9.x**, the most popular choice for this job; the exact minor is pinned on the bench, not floated.
+3. **`lv_keyboard`'s SHIFT already meets the rule** we built into the Rust keypad in §161 (one tap = one
+   character, double tap = lock), so the C++ side uses the widget as it comes and keeps **no** custom state
+   machine. Rust keeps its own three-state logic; the two must agree only in behaviour.
+4. **SD images are in scope** (phase 4): a filesystem driver *and* file-backed `lv_image`.
+5. **A C++ set of `//~` examples** as well as the Rust ones.
+6. **Plainly in the wizard** — language is step one of New Project; no experimental setting.
+
+**Why it is a backend and not a fork:** the shell (commands, views, settings, chat, panes, packaging, backup,
+Wi-Fi) is language-free, the Designer canvas is language-free, and only five seams know the language — the
+board profile and the wizard, the generator, the Designer's emit step, toolchain/flash, and the AI's prompts and
+guards. The 45 k lines of `embedded-gui` are replaced, not ported, because C++ has LVGL.
+
+**How to abandon it, which is the point of writing this down:**
+
+| where | what to remove |
+|---|---|
+| `plans/arduino-backend.md` | the plan (its *Status* section carries this same recipe) |
+| `NOTES.md` §162 | this entry |
+| `/memories/repo/arduino-backend.md` | the repository memory entry |
+| `/memories/rusty-platform.md` | one bullet under *Project Registry* that points at it |
+| `README.md`, `USER_MANUAL.md`, `AI_ASSIST.md` | untouched until the phase that makes the feature real, so there is nothing to unpick |
+
+Nothing is committed per phase yet. When phases start, each one is its own commit, and abandoning it is
+`git revert <phase-1>..<phase-n>`: phase 1 puts the Rust code behind the `SketchBackend` interface **with no
+behaviour change**, so reverting it restores the previous shape, and later phases only add files
+(`src/generate/arduino*`, `src/designer/lvgl*`, `src/ai/cpp*`). A project record that ends up carrying
+`language "rust"` needs no migration — a record without the field is already Rust.
