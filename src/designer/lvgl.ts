@@ -382,8 +382,11 @@ function clockBlock(widget: DesignerWidget, document: DesignerDocument): string 
         return named === undefined ? base : nearestFontSize(base * scale);
     })();
     const numeralFont = fontSymbol(numeralSize);
-    // Centring a glyph of this size on its mark: half a line up, and a pixel left for the digit's own side bearing.
-    const numeralY = -Math.round(numeralSize / 2) + 1;
+    // No vertical nudge, and that is measured rather than assumed: `lv_obj_align(LV_ALIGN_CENTER)` centres the
+    // label's *line box*, and Montserrat's own metrics put a digit's ink in the middle of it -- ascent 13 of a
+    // 16px line at size 14, 25 of 30 at 28, so (ascent - capHeight/2) lands on lineHeight/2 either way. A
+    // half-font-height correction on top of that pushed every numeral up by half a digit (bench, 2026-11-01).
+    const numeralY = 0;
     if (widget.props.show_labels === undefined || boolProp(widget, 'show_labels')) {
         geometry.numerals.forEach(([x, y], index) => {
             lines.push(
@@ -391,7 +394,7 @@ function clockBlock(widget: DesignerWidget, document: DesignerDocument): string 
                 `    lv_label_set_text(numeral_${id}_${index + 1}, "${index + 1}");`,
                 `    lv_obj_set_style_text_color(numeral_${id}_${index + 1}, ${labelColour}, 0);`,
                 `    lv_obj_set_style_text_font(numeral_${id}_${index + 1}, ${numeralFont}, 0);`,
-                `    lv_obj_align(numeral_${id}_${index + 1}, LV_ALIGN_CENTER, ${(x ?? 0) - geometry.cx - 1}, ${
+                `    lv_obj_align(numeral_${id}_${index + 1}, LV_ALIGN_CENTER, ${(x ?? 0) - geometry.cx}, ${
                     (y ?? 0) - geometry.cy + numeralY
                 });`,
             );

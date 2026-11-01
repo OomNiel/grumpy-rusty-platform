@@ -321,3 +321,25 @@ test('documentFontSizes is what lv_conf.h has to compile in', () => {
     const numerals = emitUiCpp(clockDesign());
     contains(numerals, 'lv_obj_set_style_text_font(numeral_clock_1, &lv_font_montserrat_28, 0);', 'and that is what ui.cpp names');
 });
+
+test('the numerals sit on their marks, with no half-a-font nudge', () => {
+    // `lv_obj_align(LV_ALIGN_CENTER)` centres the label's line box, and Montserrat's metrics put a digit's ink in
+    // the middle of it (ascent 13 of a 16px line at 14, 25 of 30 at 28). A `-fontSize/2` correction on top of
+    // that lifted every numeral by half a digit -- obvious at 28 pt, faintly wrong at 14 (bench, 2026-11-01).
+    const source = emitUiCpp(clockDesign());
+    const align = (numeral) => {
+        const found = new RegExp('lv_obj_align\\(numeral_clock_' + numeral + ', LV_ALIGN_CENTER, (-?\\d+), (-?\\d+)\\)').exec(source);
+        ok(found !== null, `numeral ${numeral} is aligned`);
+        return [Number(found[1]), Number(found[2])];
+    };
+    const [topX, topY] = align(12);
+    const [bottomX, bottomY] = align(6);
+    const [rightX, rightY] = align(3);
+    equal(topX, 0, 'twelve is centred horizontally');
+    equal(bottomX, 0, 'and so is six');
+    equal(topY, -bottomY, 'they are the same distance above and below the centre');
+    equal(rightY, 0, 'three is centred vertically');
+    ok(rightX > 0, 'and sits to the right');
+    // The half-font error would have made both vertical offsets larger by half the numeral size.
+    equal(bottomY - topY, 2 * Math.round(0.7 * (Math.min(320, 240) / 2 - 4)), 'and the ring radius is what decides the gap');
+});

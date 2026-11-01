@@ -11,6 +11,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.18.24] - 2026-11-01
+
+### Fixed
+
+- **The clock's numerals sit on their marks.** They were lifted by half a font height — faintly wrong at 14 pt and
+  obvious at 28. `lv_obj_align(LV_ALIGN_CENTER)` already centres the label's line box, and Montserrat's metrics put
+  a digit's ink in the middle of it (ascent 13 of a 16-pixel line at 14, 25 of 30 at 28), so the extra
+  half-font correction was one too many. The horizontal pixel of side-bearing is gone with it: numeral *12* is now
+  at (0, −81) and *6* at (0, +81) on a 320×240 face.
+
 ## [0.18.23] - 2026-11-01
 
 ### Added
