@@ -260,3 +260,16 @@ test('a probe upload asks for no port, and a UF2 upload still does', () => {
     equal(uploadArgs(probe).join(' '), `upload --fqbn ${probe} --input-dir ${ARDUINO_ARTIFACT_DIR}`, 'no -p at all');
     contains(uploadArgs('rp2040:rp2040:rpipico2w', '/dev/ttyACM0').join(' '), '-p /dev/ttyACM0', 'but a port is passed when there is one');
 });
+
+test('a new WYSIWYG project offers to open the canvas, in either language', () => {
+    // "Open Designer" was offered only for a Rust project, and the C++ branch said the canvas was a later phase.
+    // Asserted on the source because the wizard imports `vscode`.
+    const fs = require('fs');
+    const path = require('path');
+    const source = fs.readFileSync(
+        path.join(__dirname, '..', '..', '..', 'src', 'commands', 'newProject.ts'),
+        'utf8',
+    );
+    contains(source, 'const canDesign = template === \'designer\';', 'the canvas follows the template, not the language');
+    notContains(source, "canDesign = backend.id === 'rust'", 'and not the backend');
+});

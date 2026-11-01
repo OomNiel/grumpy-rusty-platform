@@ -8596,3 +8596,29 @@ Verified on the bench: `fqbn: rp2040:rp2040:rpipico2w:uploadmethod=picoprobe_cms
 
 **Lesson:** "device not found" and "I never looked properly" look identical from the UI. When a list is empty,
 print what the tool actually said before writing a hint about BOOTSEL.
+
+### 175. The WYSIWYG option was there; it was called something else and never opened
+
+"WYSIWYG is missing for Pico 2W" was two separate things, both left over from 0.18.1 when the C++ canvas did not
+exist yet:
+
+1. **The label.** `templatesForArduino` still said `Designer screen (no canvas yet)` with a description explaining
+   that the canvas, the events and LVGL "are not wired up for C++ yet". That was true in 0.18.1 and false from
+   the moment `emitUiCpp` landed. It now reads **WYSIWYG designer**, worded like the Rust template because it is
+   the same thing: design → `src/ui.cpp` as LVGL objects, events → `src/ui_handlers.cpp`.
+2. **The wizard never opened it.** `const canDesign = backend.id === 'rust' && template === 'designer'` made the
+   button "Open Project" for a sketch, so a designer project was created and then dropped into the Explorer. It
+   is `template === 'designer'` now, which is what the C++ canvas has been able to do for several releases.
+
+**All boards, checked the only way that counts.** Generated a WYSIWYG project per catalogue board and compiled
+each with arduino-cli + LVGL 9.6: pico 303 KB, picow 562 KB, pico2 293 KB, pico2w 551 KB, esp32-devkitc 551 KB,
+lilygo-tqt 568 KB, sunton-3248s035r 551 KB — every one builds, no warnings, and every starter design validates and
+emits through `emitUiCpp`. The ESP boards are the interesting ones: 42 % of a DevKitC's flash for LVGL, and the
+soldered panels (GC9A01, ST7796) go through the same `panel_*` API, so the WYSIWYG promise holds there too.
+
+**Trap for the harness, not the code:** a generated project's folder must be named after its `.ino`, so a script
+that writes `generateArduinoProjectFiles` output into `/tmp/<board id>/` cannot compile it. Rename to the sketch
+name first.
+
+**Lesson:** when a feature ships, sweep the *words* about it in the same release — a stale label costs a user a
+whole evening of "it's missing", and the code that should have opened it had been correct for eight versions.

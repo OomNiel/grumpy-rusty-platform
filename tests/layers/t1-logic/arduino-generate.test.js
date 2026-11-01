@@ -367,3 +367,32 @@ test('a C++ project of every board and template is generated without throwing', 
         }
     }
 });
+
+test('every board offers the WYSIWYG designer in the wizard, and it is called that', () => {
+    // The option existed but was labelled "Designer screen (no canvas yet)" long after the canvas worked, and the
+    // wizard never offered to open it -- so a person asked for the WYSIWYG option and could not find one
+    // (bench, 2026-10-31).
+    const problems = [];
+    for (const board of BOARDS) {
+        const offered = templatesForArduino(board);
+        const designer = offered.find((entry) => entry.id === 'designer');
+        if (designer === undefined) {
+            problems.push(`${board.id}: no designer template`);
+            continue;
+        }
+        if (designer.label !== 'WYSIWYG designer') {
+            problems.push(`${board.id}: the designer is called "${designer.label}"`);
+        }
+        if (/no canvas|not wired up/i.test(designer.description)) {
+            problems.push(`${board.id}: the description still says it has no canvas`);
+        }
+        // And the board can really make one: the template needs a panel, and every catalogue board has one.
+        const files = generateArduinoProjectFiles(project(board.id, 'designer'));
+        for (const path of ['src/ui.cpp', 'src/ui_handlers.cpp', 'designer/panel.ui.json']) {
+            if (!paths(files).includes(path)) {
+                problems.push(`${board.id}: a designer project has no ${path}`);
+            }
+        }
+    }
+    equal(problems.length, 0, problems.slice(0, 5).join('; '));
+});

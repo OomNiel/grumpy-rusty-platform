@@ -136,11 +136,11 @@ export function templatesForArduino(board: BoardProfile): AppTemplateInfo[] {
         },
         {
             id: 'designer',
-            label: 'Designer screen (no canvas yet)',
+            label: 'WYSIWYG designer',
             description:
-                'The files a Designer project has — src/panel.cpp, src/ui.cpp and the src/ui_handlers.cpp your ' +
-                'code goes in — with the screen drawn by ui.cpp itself. The WYSIWYG canvas, the events and ' +
-                'LVGL are not wired up for C++ yet; the Rust designer template is the one with an editor.',
+                'A project whose screen is a design rather than code: the extension opens the designer for this ' +
+                'board, the design is written to src/ui.cpp as LVGL objects, and the widgets\' events land in ' +
+                'src/ui_handlers.cpp for you to fill in.',
         },
     ];
 }

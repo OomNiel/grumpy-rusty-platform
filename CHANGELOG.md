@@ -11,6 +11,22 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.18.17] - 2026-11-01
+
+### Fixed
+
+- **A new C++ project from the wizard offers to open the canvas.** The template was called *Designer screen (no
+  canvas yet)* long after the C++ canvas worked, and the wizard's "Open Designer" button was still gated on the
+  Rust backend — so the WYSIWYG option could not be found, and a designer project could only be opened as a
+  folder. The template is now **WYSIWYG designer**, its description says what it really does (`src/ui.cpp` as
+  LVGL objects, events in `src/ui_handlers.cpp`), and the wizard offers **Open Designer** for either language.
+
+### Verified
+
+- A WYSIWYG project was generated and **compiled for all seven boards**: `pico` 303 KB, `picow` 562 KB,
+  `pico2` 293 KB, `pico2w` 551 KB, `esp32-devkitc` 551 KB, `lilygo-tqt` 568 KB, `sunton-3248s035r` 551 KB — all
+  with LVGL 9.6, no warnings, each starter design valid and emittable by the C++ Designer.
+
 ## [0.18.16] - 2026-10-31
 
 ### Fixed

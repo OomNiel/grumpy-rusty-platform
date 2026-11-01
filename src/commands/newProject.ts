@@ -461,11 +461,14 @@ export function registerNewProjectCommand(
 
         const crateName = crateNameFrom(projectName);
         // A Designer project's whole point is the canvas, so the prompt offers it first and passes the folder
-        // that was just written, which may not be a workspace folder at all. A C++ project has no canvas in
-        // this build -- the Designer's LVGL emitter is a later phase -- so it is offered as a folder, and
-        // "Build Now" is not offered either: the arduino-cli route arrives with the toolchain phase, and a
-        // cargo build in a sketch folder would only produce an error.
-        const canDesign = backend.id === 'rust' && template === 'designer';
+        // that was just written, which may not be a workspace folder at all.
+        //
+        // Both languages, because both have a Designer now: a C++ WYSIWYG project opens the same canvas, and its
+        // save path writes `src/ui.cpp` through the LVGL emitter. It was `backend.id === 'rust'` here long after
+        // the C++ canvas worked, so the wizard created a designer project and then offered "Open Project" — the
+        // option looked missing because nothing ever opened it (bench, 2026-10-31). "Build Now" stays Rust-only:
+        // it runs `cargo build`, and a sketch's build goes through arduino-cli with a captured log.
+        const canDesign = template === 'designer';
         const opening = canDesign ? 'Open Designer' : 'Open Project';
         const buttons = backend.id === 'rust' ? [opening, 'Build Now', 'Later'] : [opening, 'Later'];
         const action = await vscode.window.showInformationMessage(
