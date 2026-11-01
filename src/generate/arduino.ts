@@ -28,6 +28,7 @@ import type { LcdRotation } from '../display/rotation';
 import { asLcdRotation } from '../display/rotation';
 import type { AppTemplate, AppTemplateInfo, GenerateOptions, GeneratedFile } from './files';
 import {
+    documentFontSizes,
     emitHandlerStubsCpp,
     emitHandlersCppHeader,
     emitUiCpp,
@@ -35,6 +36,7 @@ import {
 } from '../designer/lvgl';
 import { DESIGNER_DOCUMENT_PATH, DESIGNER_HARDWARE_PATH, type DesignerDocument } from '../designer/model';
 import { starterDocument } from '../designer/generate';
+import { lvConfFontLines } from '../designer/lvglFonts';
 
 // ----------------------------------------------------------------------------- FQBN
 
@@ -386,7 +388,7 @@ export function generateArduinoProjectFiles(options: GenerateOptions): Generated
             // An ESP board's panel is soldered, and the board record already says everything.
             files.push({ path: DESIGNER_HARDWARE_PATH, content: wiringFile(options.wiring) });
         }
-        files.push({ path: 'lv_conf.h', content: lvConfHeader() });
+        files.push({ path: 'lv_conf.h', content: lvConfHeader(documentFontSizes(design)) });
         files.push({ path: 'src/lvgl_display.h', content: lvglDisplayHeader() });
         files.push({ path: 'src/lvgl_display.cpp', content: lvglDisplaySource() });
         // Every one of these four comes from the design that was just written above, through the *same*
@@ -964,7 +966,7 @@ void panel_blink_marker() {
  * a 320x240 screen with room to spare, no OS (the Arduino loop is the scheduler) and the one font the design
  * format starts with. Everything else is LVGL's default, which is what makes this file short enough to read.
  */
-function lvConfHeader(): string {
+export function lvConfHeader(fontSizes: readonly number[] = []): string {
     return `/* Grumpy's Rusty Platform -- the LVGL configuration for this project.
  *
  * This file is at the project root rather than in src/ because that is where LVGL looks: the build passes
@@ -987,10 +989,9 @@ function lvConfHeader(): string {
 #define LV_USE_OS LV_OS_NONE
 #define LV_USE_LOG 0
 
-/* The font a label starts with. Every other size is off, which is most of LVGL's code size. */
-#define LV_FONT_MONTSERRAT_14 1
-#define LV_FONT_MONTSERRAT_16 1
-#define LV_FONT_DEFAULT &lv_font_montserrat_14
+/* The fonts this design draws with, and nothing else: every Montserrat size is about 20 KB of flash, so the set
+ * is exactly what ui.cpp names plus the default. The Designer rewrites this block when a font changes. */
+${lvConfFontLines(fontSizes)}
 
 #endif /* LV_CONF_H */
 `;

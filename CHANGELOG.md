@@ -11,6 +11,22 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.18.23] - 2026-11-01
+
+### Added
+
+- **Fonts work on the C++ canvas.** Every label, button, checkbox, text panel, dropdown, roller and keypad in a
+  designer project was drawn at LVGL's default 14 pt, whatever the design said. The design's font is now mapped to
+  the nearest **Montserrat** face LVGL carries — chosen against the line height the canvas draws that font at, so a
+  label keeps its place in its rectangle — and applied with `lv_obj_set_style_text_font`. The clock's numerals take
+  the design's font multiplied by *Number size* (`label_scale`).
+- **`lv_conf.h` follows the design.** LVGL resolves a font at build time, so the sizes `ui.cpp` names have to be
+  switched on. It now lists exactly those (plus the default) instead of an unused Montserrat 16, and the Designer
+  rewrites it on save — so choosing a bigger font in the canvas is a compile, never a link error.
+
+  A font whose pixels come from a BDF file cannot be read by LVGL at all; it is approximated at 24 pt and that is
+  stated in the mapping, the generated file and here, rather than left to look exact.
+
 ## [0.18.22] - 2026-11-01
 
 ### Fixed

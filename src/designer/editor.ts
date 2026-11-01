@@ -63,9 +63,10 @@ import { collectImageAssets, imageSourcesOf, type DesignerImageAsset } from './i
 import { parseBdfFont, type DesignFontPixels } from './bitmapFont';
 import { bdfFromRaster, fontIdFromFile, isBitmapFontFile, type RasterisedFont } from './fontImport';
 import { emitUiRs, handlerName, syncHandlerStubs, designHasClock, ESP_LOG_MACRO, RP_LOG_MACRO } from './generate';
-import { emitHandlersCppHeader, emitUiCpp, emitUiCppHeader, syncHandlerStubsCpp } from './lvgl';
+import { documentFontSizes, emitHandlersCppHeader, emitUiCpp, emitUiCppHeader, syncHandlerStubsCpp } from './lvgl';
 import { emitArduinoPanel } from '../generate/arduino';
 import { sdImagesNeedingCard } from './model';
+import { lvConfHeader } from '../generate/arduino';
 import { isFeatureInDefault, setFeatureInDefault } from './features';
 import {
     copyVendoredCrates,
@@ -1311,10 +1312,19 @@ class DesignerPanel {
         if ((await readText(sourceUri)) !== source) {
             await writeProjectFile(this.folder, 'src/ui.cpp', source);
         }
-        const header = emitUiCppHeader();
+        const header = emitUiCppHeader(document);
         const headerUri = vscode.Uri.joinPath(this.folder, 'src', 'ui.h');
         if ((await readText(headerUri)) !== header) {
             await writeProjectFile(this.folder, 'src/ui.h', header);
+        }
+        // LVGL resolves a font at build time, so the sizes `ui.cpp` names have to be switched on in `lv_conf.h`.
+        // A font chosen in the Designer and not compiled in is a link error in a project that built a minute ago,
+        // which is why this file follows the design rather than only being written when the project is created.
+        const confUri = vscode.Uri.joinPath(this.folder, 'lv_conf.h');
+        const conf = lvConfHeader(documentFontSizes(document));
+        if ((await readText(confUri)) !== conf) {
+            await writeProjectFile(this.folder, 'lv_conf.h', conf);
+            this.output.appendLine('[designer] lv_conf.h: the fonts this design draws with');
         }
     }
 

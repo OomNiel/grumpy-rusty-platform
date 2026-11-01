@@ -21,6 +21,7 @@ const {
     cppRequiredHandlers,
     emitHandlerStubsCpp,
     emitHandlersCppHeader,
+    documentFontSizes,
     emitUiCpp,
     emitUiCppHeader,
     lvEventName,
@@ -28,6 +29,14 @@ const {
     unsupportedTags,
 } = compiled('designer/lvgl');
 const { createDocument } = compiled('designer/model');
+const {
+    DEFAULT_FONT_SIZE,
+    LVGL_FONT_SIZES,
+    fontSymbol,
+    lvConfFontLines,
+    lvglFontFor,
+    nearestFontSize,
+} = compiled('designer/lvglFonts');
 
 /** A design with a title, a button, a slider and two views. */
 function design() {
@@ -199,6 +208,9 @@ function clockDesign(overrides = {}) {
                 label_color: '#ffffff',
                 show_labels: true,
                 movement: true,
+                // What the bench design asks for: Mono6x10 (Montserrat 14) doubled by label_scale.
+                font: 'Mono6x10',
+                label_scale: 2,
                 ...overrides,
             },
             events: [],
@@ -256,4 +268,56 @@ test('nothing is padded: a design\'s coordinates are absolute', () => {
     const rich = emitUiCpp(design());
     contains(rich, 'lv_obj_set_style_pad_all(view_main, 0, 0);', 'still true when widgets live in the view');
     equal(/lv_obj_set_size\(view_main, 240, 320\);/.test(rich), true, 'and the view is the canvas size, exactly');
+});
+
+// ------------------------------------------------------------------ fonts (C++)
+
+test('a design font becomes the nearest LVGL face, and an imported one is approximated', () => {
+    // LVGL has no bitmaps of its own to match `Mono8x16`; it has Montserrat at fixed sizes, compiled in one at a
+    // time. The mapping is against the canvas's line height, so a label keeps its place in its rectangle.
+    equal(lvglFontFor('Mono8x16').size, 20, 'the 16px-tall bitmap face is Montserrat 20');
+    equal(lvglFontFor('Mono8x16').source, 'builtin', 'and it is a font the design knows');
+    equal(lvglFontFor('Tiny3x5').size, 10, 'the smallest face is not left at the default');
+    equal(lvglFontFor(undefined).source, 'default', 'no font named is LVGL\'s default');
+    equal(lvglFontFor(undefined).size, DEFAULT_FONT_SIZE, 'which is the one always compiled in');
+    equal(lvglFontFor('my-bdf-face', ['my-bdf-face']).source, 'declared', 'a BDF-declared font cannot be read by LVGL');
+    equal(lvglFontFor('my-bdf-face', ['my-bdf-face']).size, 24, 'so a generous stand-in is used, and said so');
+    equal(lvglFontFor('nonsense').source, 'default', 'an unknown name falls back rather than failing a build');
+    // Nothing may ask for a size LVGL was not built with, and a huge request is capped.
+    for (const id of ['Vector(3)', 'Mono8x16']) {
+        ok(LVGL_FONT_SIZES.includes(lvglFontFor(id).size), `${id} lands on a real size`);
+    }
+    equal(nearestFontSize(200), 36, 'and a giant font is capped, not turned into a link error');
+});
+
+test('lv_conf.h switches on exactly the sizes the design names', () => {
+    const lines = lvConfFontLines([20, 36]);
+    contains(lines, '#define LV_FONT_MONTSERRAT_20 1', 'the label font');
+    contains(lines, '#define LV_FONT_MONTSERRAT_36 1', 'the big one');
+    contains(lines, `#define LV_FONT_DEFAULT ${fontSymbol(DEFAULT_FONT_SIZE)}`, 'and the default is always there');
+    contains(lines, '#define LV_FONT_MONTSERRAT_14 1', 'even when no widget asks for it');
+    equal(lines.includes('LV_FONT_MONTSERRAT_16'), false, 'nothing is switched on unused');
+});
+
+test('a widget the design gives a font gets it, and one without stays at the default', () => {
+    const document = design();
+    document.widgets[0].props.font = 'Mono8x16';
+    const source = emitUiCpp(document);
+    contains(source, 'lv_obj_set_style_text_font(w_title, &lv_font_montserrat_20, 0);', 'the label');
+    // The button's text is drawn by its own label, so that is what carries the font.
+    document.widgets[1].props.font = 'Mono6x10';
+    contains(emitUiCpp(document), 'lv_obj_set_style_text_font(w_go_label, &lv_font_montserrat_14, 0);', 'a button label');
+    const plain = emitUiCpp(design());
+    equal(/text_font/.test(plain), false, 'a design that names no font emits none');
+});
+
+test('documentFontSizes is what lv_conf.h has to compile in', () => {
+    const document = design();
+    document.widgets[0].props.font = 'Mono8x16';
+    equal(documentFontSizes(document).join(' '), '20', 'one label');
+    // The clock multiplies: Mono6x10 is 14 and label_scale 2 asks for 28.
+    equal(documentFontSizes(clockDesign()).join(' '), '28', 'the clock numerals');
+    equal(documentFontSizes(clockDesign({ movement: false })).join(' '), '28', 'moving or not');
+    const numerals = emitUiCpp(clockDesign());
+    contains(numerals, 'lv_obj_set_style_text_font(numeral_clock_1, &lv_font_montserrat_28, 0);', 'and that is what ui.cpp names');
 });

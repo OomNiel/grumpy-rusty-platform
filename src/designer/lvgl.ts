@@ -15,6 +15,7 @@
 
 import { EVENT_SPECS, type DesignerEvent } from './catalog';
 import type { DesignerDocument, DesignerWidget, DesignerView } from './model';
+import { designFontOf, fontSymbol, lvglFontFor, nearestFontSize } from './lvglFonts';
 import { designViews, rustFieldName } from './model';
 
 /** Tags this emitter draws, and what each one becomes. Anything else is reported, not drawn. */
@@ -333,7 +334,7 @@ static void ui_clock_tick(ui_clock *clock) {
 `;
 
 /** The C++ for one clock: its geometry, its hands and the two entry points an app needs. */
-function clockBlock(widget: DesignerWidget): string {
+function clockBlock(widget: DesignerWidget, document: DesignerDocument): string {
     const id = cppId(widget.id);
     const geometry = clockGeometry(widget);
     const hour = Math.round(numberProp(widget, 'hour', 10)) % 24;
@@ -374,14 +375,24 @@ function clockBlock(widget: DesignerWidget): string {
             `    lv_obj_set_style_line_width(tick_${id}_${index}, ${major ? 3 : 1}, 0);`,
         );
     }
+    const numeralSize = (() => {
+        const named = designFontOf(widget.props);
+        const scale = Math.max(1, Math.round(numberProp(widget, 'label_scale', 1)));
+        const base = lvglFontFor(named, document.fonts.map((font) => font.id)).size;
+        return named === undefined ? base : nearestFontSize(base * scale);
+    })();
+    const numeralFont = fontSymbol(numeralSize);
+    // Centring a glyph of this size on its mark: half a line up, and a pixel left for the digit's own side bearing.
+    const numeralY = -Math.round(numeralSize / 2) + 1;
     if (widget.props.show_labels === undefined || boolProp(widget, 'show_labels')) {
         geometry.numerals.forEach(([x, y], index) => {
             lines.push(
                 `    lv_obj_t *numeral_${id}_${index + 1} = lv_label_create(parent);`,
                 `    lv_label_set_text(numeral_${id}_${index + 1}, "${index + 1}");`,
                 `    lv_obj_set_style_text_color(numeral_${id}_${index + 1}, ${labelColour}, 0);`,
+                `    lv_obj_set_style_text_font(numeral_${id}_${index + 1}, ${numeralFont}, 0);`,
                 `    lv_obj_align(numeral_${id}_${index + 1}, LV_ALIGN_CENTER, ${(x ?? 0) - geometry.cx - 1}, ${
-                    (y ?? 0) - geometry.cy - 7
+                    (y ?? 0) - geometry.cy + numeralY
                 });`,
             );
         });
@@ -402,7 +413,7 @@ function clockBlock(widget: DesignerWidget): string {
     return lines.join('\n');
 }
 
-function widgetLines(widget: DesignerWidget, parent: string): string[] {
+function widgetLines(widget: DesignerWidget, parent: string, document: DesignerDocument): string[] {
     const variable = `w_${cppId(widget.id)}`;
     const lines: string[] = [];
     const geometry = [
@@ -415,6 +426,12 @@ function widgetLines(widget: DesignerWidget, parent: string): string[] {
             lines.push(`    lv_obj_t *${variable} = lv_label_create(${parent});`, ...geometry);
             lines.push(`    lv_label_set_long_mode(${variable}, LV_LABEL_LONG_WRAP);`);
             lines.push(`    lv_label_set_text(${variable}, ${cString(textOf(widget, 'text'))});`);
+            {
+                const font = fontLine(widget, variable, document);
+                if (font !== undefined) {
+                    lines.push(font);
+                }
+            }
             break;
         case 'text_lines': {
             lines.push(`    lv_obj_t *${variable} = lv_obj_create(${parent});`, ...geometry);
@@ -423,6 +440,12 @@ function widgetLines(widget: DesignerWidget, parent: string): string[] {
             lines.push(`    lv_obj_set_style_border_width(${variable}, 0, 0);`);
             lines.push(`    lv_obj_set_style_bg_opa(${variable}, LV_OPA_TRANSP, 0);`);
             lines.push(`    lv_obj_set_style_pad_all(${variable}, 0, 0);`);
+            {
+                const font = fontLine(widget, variable, document);
+                if (font !== undefined) {
+                    lines.push(font);
+                }
+            }
             const values = widget.children?.kind === 'lines' ? widget.children.values : [];
             for (const value of values) {
                 lines.push(`    lv_label_set_text(lv_label_create(${variable}), ${cString(value)});`);
@@ -434,6 +457,12 @@ function widgetLines(widget: DesignerWidget, parent: string): string[] {
             lines.push(`    lv_obj_t *${variable}_label = lv_label_create(${variable});`);
             lines.push(`    lv_label_set_text(${variable}_label, ${cString(textOf(widget, 'text', 'Button'))});`);
             lines.push(`    lv_obj_center(${variable}_label);`);
+            {
+                const font = fontLine(widget, `${variable}_label`, document);
+                if (font !== undefined) {
+                    lines.push(font);
+                }
+            }
             break;
         case 'toggle': {
             lines.push(`    lv_obj_t *${variable} = lv_switch_create(${parent});`, ...geometry);
@@ -449,6 +478,12 @@ function widgetLines(widget: DesignerWidget, parent: string): string[] {
         case 'checkbox':
             lines.push(`    lv_obj_t *${variable} = lv_checkbox_create(${parent});`, ...geometry);
             lines.push(`    lv_checkbox_set_text(${variable}, ${cString(textOf(widget, 'label', 'Checkbox'))});`);
+            {
+                const font = fontLine(widget, variable, document);
+                if (font !== undefined) {
+                    lines.push(font);
+                }
+            }
             if (boolProp(widget, 'checked')) {
                 lines.push(`    lv_obj_add_state(${variable}, LV_STATE_CHECKED);`);
             }
@@ -468,6 +503,12 @@ function widgetLines(widget: DesignerWidget, parent: string): string[] {
             const options = widget.children?.kind === 'options' ? widget.children.values : [];
             lines.push(`    lv_dropdown_set_options(${variable}, ${cString(options.join('\n'))});`);
             lines.push(`    lv_dropdown_set_selected(${variable}, ${Math.round(numberProp(widget, 'selected', 0))});`);
+            {
+                const font = fontLine(widget, variable, document);
+                if (font !== undefined) {
+                    lines.push(font);
+                }
+            }
             break;
         }
         case 'roller': {
@@ -476,6 +517,12 @@ function widgetLines(widget: DesignerWidget, parent: string): string[] {
             lines.push(
                 `    lv_roller_set_options(${variable}, ${cString(options.join('\n'))}, LV_ROLLER_MODE_NORMAL);`,
             );
+            {
+                const font = fontLine(widget, variable, document);
+                if (font !== undefined) {
+                    lines.push(font);
+                }
+            }
             break;
         }
         case 'progress':
@@ -540,6 +587,12 @@ function widgetLines(widget: DesignerWidget, parent: string): string[] {
         }
         case 'keypad':
             lines.push(`    lv_obj_t *${variable} = lv_textarea_create(${parent});`, ...geometry);
+            {
+                const font = fontLine(widget, variable, document);
+                if (font !== undefined) {
+                    lines.push(font);
+                }
+            }
             lines.push(`    lv_obj_t *${variable}_keys = lv_keyboard_create(${parent});`);
             lines.push(`    lv_keyboard_set_textarea(${variable}_keys, ${variable});`);
             break;
@@ -572,6 +625,61 @@ function widgetLines(widget: DesignerWidget, parent: string): string[] {
         );
     }
     return lines;
+}
+
+/**
+ * The `text_font` line for a widget, when the design names a font.
+ *
+ * LVGL resolves a font by compiling it in, so the size comes from `lvglFonts.ts` — the nearest Montserrat to the
+ * font the canvas draws. Nothing is emitted when the design names none, which leaves LVGL's default in place.
+ */
+function fontLine(widget: DesignerWidget, target: string, document: DesignerDocument): string | undefined {
+    const named = designFontOf(widget.props);
+    if (named === undefined) {
+        return undefined;
+    }
+    const choice = lvglFontFor(named, document.fonts.map((font) => font.id));
+    return `    lv_obj_set_style_text_font(${target}, ${fontSymbol(choice.size)}, 0);`;
+}
+
+/** The widget tags whose text the design can give a font. */
+const TEXT_TAGS: ReadonlySet<string> = new Set([
+    'label',
+    'button',
+    'checkbox',
+    'text_lines',
+    'dropdown',
+    'roller',
+    'keypad',
+]);
+
+/**
+ * Every Montserrat size this design needs compiled in.
+ *
+ * LVGL resolves a font at build time, so `lv_conf.h` has to switch on exactly the sizes `ui.cpp` names -- one
+ * missing symbol is a link error, and one extra is 20 KB of flash nobody asked for. The clock's numerals are the
+ * one place a size is multiplied (`label_scale`), which is why this is asked of the emitter rather than read off
+ * the props.
+ */
+export function documentFontSizes(document: DesignerDocument): number[] {
+    const declared = document.fonts.map((font) => font.id);
+    const sizes: number[] = [];
+    for (const widget of document.widgets) {
+        const named = designFontOf(widget.props);
+        if (widget.tag === 'clock') {
+            if (named === undefined) {
+                continue;
+            }
+            const scale = Math.max(1, Math.round(numberProp(widget, 'label_scale', 1)));
+            sizes.push(lvglFontFor(named, declared).size * scale);
+            continue;
+        }
+        if (named === undefined || !TEXT_TAGS.has(widget.tag)) {
+            continue;
+        }
+        sizes.push(lvglFontFor(named, declared).size);
+    }
+    return sizes;
 }
 
 /** The canvas size: the panel turned with the design, exactly as the canvas shows it. */
@@ -683,7 +791,7 @@ export function emitUiCpp(document: DesignerDocument): string {
 
     const widgetBlocks: string[] = [];
     for (const widget of document.widgets) {
-        const lines = widgetLines(widget, `view_${cppId(widget.view ?? firstView)}`);
+        const lines = widgetLines(widget, `view_${cppId(widget.view ?? firstView)}`, document);
         if (lines.length > 0) {
             widgetBlocks.push(lines.join('\n'));
         }
@@ -702,7 +810,7 @@ export function emitUiCpp(document: DesignerDocument): string {
 
 namespace {
 
-${FLAG_WRAPPERS}${clocks.length === 0 ? '' : `\n${CLOCK_HELPERS.replace('[[clocks]]', clocks.map(clockBlock).join('\n'))}\n`}
+${FLAG_WRAPPERS}${clocks.length === 0 ? '' : `\n${CLOCK_HELPERS.replace('[[clocks]]', clocks.map((clock) => clockBlock(clock, document)).join('\n'))}\n`}
 ${views.map((view: DesignerView) => `lv_obj_t *view_${cppId(view.id)} = nullptr;`).join('\n')}
 
 ${callbacksFor(document)}

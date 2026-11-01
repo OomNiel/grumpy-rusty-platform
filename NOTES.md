@@ -8756,3 +8756,43 @@ approximately true rather than true — which is exactly the kind of "approximat
 describes a GRAM offset. It isn't: the panel is addressed 0..319 / 0..239 and the bars were LVGL's own padding. The
 check that settles it is whether the *content* is clipped at the same edge as the bar — a driver offset pushes
 everything one way, padding shrinks the box from the inside.
+### 181. The font system, in LVGL's own terms
+
+The C++ emitter ignored `props.font` entirely: every label, button, checkbox, text panel, dropdown, roller, keypad
+and the clock's numerals were drawn at LVGL's default 14 pt. The design could say `Mono8x16` and the glass showed
+Montserrat 14, which is the sort of "approximate" that makes a canvas untrustworthy.
+
+One canvas serves two languages, and the two have incompatible font machinery:
+
+- the Rust crate draws **bitmaps it owns** — `Tiny3x5`, `Mono8x16`, `Vector(n)` scaled, and any BDF a person
+  imported;
+- LVGL carries **Montserrat at fixed point sizes**, and a size exists in the build only if `lv_conf.h` defines
+  `LV_FONT_MONTSERRAT_<n>` (about 20 KB of flash each).
+
+So `src/designer/lvglFonts.ts` is the translation table, and the number it maps against is the **line height the
+canvas draws that font at** (`webview/designer/glyphs.ts`), because that is what decides whether a label still fits
+its rectangle:
+
+    Tiny3x5 6 -> 10   Medium4x7 8 -> 10   Medium5x7 9 -> 12   Scaled6x10 11 -> 14
+    Mono6x10 12 -> 14  Mono8x16 19 -> 20   Vector(2) 24 -> 24   Vector(3) 36 -> 34
+
+- `fontLine()` emits `lv_obj_set_style_text_font(...)` on whatever draws the text — the button's *label*, a text
+  panel's container (LVGL inherits), the dropdown/roller/keypad itself — and nothing at all when the design names no
+  font.
+- The clock's numerals multiply by `label_scale`, and their vertical centring offset is now derived from the
+  resolved size instead of a hard-coded 7 px.
+- `documentFontSizes()` collects the sizes the design needs, and **`lv_conf.h` is generated from it** — at project
+  creation and on every Designer save (`syncCppModule`). A font chosen in the canvas that was not compiled in would
+  be a *link error* in a project that built a minute earlier, which is the worst kind.
+- A BDF-imported font cannot be read by LVGL at all: it becomes Montserrat 24, and the mapping says `source:
+  'declared'` rather than pretending. `nearestFontSize()` also caps a request at 36 pt, because Montserrat 44 is
+  60 KB.
+
+Measured on the bench project (clock only, `Mono6x10`, Number size 2): `documentFontSizes` = [28], `lv_conf.h`
+gains `LV_FONT_MONTSERRAT_28`, the numerals are `&lv_font_montserrat_28` aligned at −83 px, and the sketch goes
+from 557 KB to 594 KB — the font's 38 KB, which is why only the named sizes are switched on.
+
+**Lesson:** a shared design needs one *vocabulary* per backend, and the translation has to be a module with a
+table, not a set of `if`s in the emitter. The mapping is the interesting part — it is the one place where "what the
+canvas shows" and "what the board draws" are allowed to differ, so it is also the place that must be tested,
+documented and visible in the generated file.

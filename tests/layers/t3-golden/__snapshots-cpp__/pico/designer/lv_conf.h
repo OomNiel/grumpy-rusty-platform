@@ -20,9 +20,9 @@
 #define LV_USE_OS LV_OS_NONE
 #define LV_USE_LOG 0
 
-/* The font a label starts with. Every other size is off, which is most of LVGL's code size. */
+/* The fonts this design draws with, and nothing else: every Montserrat size is about 20 KB of flash, so the set
+ * is exactly what ui.cpp names plus the default. The Designer rewrites this block when a font changes. */
 #define LV_FONT_MONTSERRAT_14 1
-#define LV_FONT_MONTSERRAT_16 1
 #define LV_FONT_DEFAULT &lv_font_montserrat_14
 
 #endif /* LV_CONF_H */
