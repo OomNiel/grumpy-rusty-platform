@@ -20,6 +20,14 @@ import type { PanelWiring, WiringProblem } from '../boards/panels';
 export interface DesignerInit {
     type: 'init';
     document: DesignerDocument;
+    /**
+     * The toolbox widgets this project's language cannot draw, with the sentence a person gets on hovering one.
+     *
+     * Empty for a Rust project, which draws everything. A C++ project draws with LVGL, which has no 3D
+     * rasteriser, so its toolbox lists `mesh` greyed out rather than offering a drop that would become an empty
+     * box. The list is computed where the emitter lives, so there is one place that knows what is missing.
+     */
+    unavailable?: { tag: string; reason: string }[];
     /** The designed area after the rotation, which is the canvas the panel draws. */
     canvas: { width: number; height: number };
     /** Where the document and the markup are written, shown in the panel's footer. */

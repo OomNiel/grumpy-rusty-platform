@@ -16,6 +16,7 @@
 import { EVENT_SPECS, type DesignerEvent } from './catalog';
 import type { DesignerDocument, DesignerWidget, DesignerView } from './model';
 import { designFontOf, fontSymbol, lvglFontFor, nearestFontSize } from './lvglFonts';
+import { pixelLines, type CppImageSlots } from './lvglImages';
 import { flattenPath } from './lvglShapes';
 import { designViews, rustFieldName } from './model';
 
@@ -52,6 +53,8 @@ export const SUPPORTED_TAGS: Readonly<Record<string, string>> = {
     table: 'lv_table',
     carousel: 'lv_obj + lv_label',
     path: 'lv_line, flattened at generation time',
+    image: 'lv_image, its file decoded to pixels at generation time',
+    icon: 'lv_image, its parts composited at generation time',
     keypad: 'lv_keyboard + lv_textarea',
 };
 
@@ -486,7 +489,12 @@ function tableRowsOf(widget: DesignerWidget): { cells: string[][]; maxColumns: n
     return { cells, maxColumns: Math.max(1, ...cells.map((row) => row.length)) };
 }
 
-function widgetLines(widget: DesignerWidget, parent: string, document: DesignerDocument): string[] {
+function widgetLines(
+    widget: DesignerWidget,
+    parent: string,
+    document: DesignerDocument,
+    images: CppImageSlots,
+): string[] {
     const variable = `w_${cppId(widget.id)}`;
     const lines: string[] = [];
     const geometry = [
@@ -962,6 +970,44 @@ function widgetLines(widget: DesignerWidget, parent: string, document: DesignerD
             );
             break;
         }
+        case 'image':
+        case 'icon': {
+            // The pixels were decoded when the file was read and are in the table above, keyed by this widget.
+            // A file that could not be read leaves an empty box the size of the widget rather than nothing at
+            // all: a design keeps its layout while the asset is sorted out, and the problem list names the file.
+            const slot = images.get(widget.id);
+            if (slot?.image === undefined) {
+                lines.push(
+                    `    // ${slot?.note ?? 'no picture was decoded for this widget'}`,
+                    `    lv_obj_t *${variable} = lv_obj_create(${parent});`,
+                    ...geometry,
+                    `    lv_obj_set_style_border_width(${variable}, 0, 0);`,
+                    `    lv_obj_set_style_radius(${variable}, 0, 0);`,
+                    `    lv_obj_set_style_bg_opa(${variable}, LV_OPA_TRANSP, 0);`,
+                );
+                break;
+            }
+            const image = slot.image;
+            lines.push(`    lv_obj_t *${variable} = lv_image_create(${parent});`, ...geometry);
+            lines.push(
+                `    ui_image_attach(&img_${cppId(widget.id)}, img_${cppId(widget.id)}_data, ` +
+                    `${image.bytes.byteLength}, ${image.format}, ${image.width}, ${image.height}, ${image.stride});`,
+            );
+            lines.push(`    lv_image_set_src(${variable}, &img_${cppId(widget.id)});`);
+            // `stretch` fills the widget's box and `center` draws the picture at its own size in the middle of
+            // it: the two fits the catalogue offers and the two the crate draws. An icon's picture is already
+            // the size the parts compose to, so its alignment is the one the crate calls `IconAlign`.
+            const placement =
+                widget.tag === 'icon'
+                    ? widget.props.align === 'top_left'
+                        ? 'LV_IMAGE_ALIGN_TOP_LEFT'
+                        : 'LV_IMAGE_ALIGN_CENTER'
+                    : widget.props.fit === 'center'
+                      ? 'LV_IMAGE_ALIGN_CENTER'
+                      : 'LV_IMAGE_ALIGN_STRETCH';
+            lines.push(`    lv_image_set_inner_align(${variable}, ${placement});`);
+            break;
+        }
         case 'keypad':
             lines.push(`    lv_obj_t *${variable} = lv_textarea_create(${parent});`, ...geometry);
             {
@@ -1002,6 +1048,75 @@ function widgetLines(widget: DesignerWidget, parent: string, document: DesignerD
         );
     }
     return lines;
+}
+
+/**
+ * The toolbox widgets a C++ project cannot draw, and the sentence a person gets when they hover one.
+ *
+ * LVGL has no 3D rasteriser, so a mesh is a rect of nothing on a C++ panel. Listing the tag in the toolbox with
+ * this reason is the difference between a limitation and a bug -- and computing it here, next to
+ * `SUPPORTED_TAGS`, keeps the emitter and the toolbox from disagreeing.
+ */
+export const UNAVAILABLE_CPP: Readonly<Record<string, string>> = {
+    mesh:
+        'Not available in a C++ project: LVGL has no 3D rasteriser, so a mesh would be an empty box. ' +
+        'The Rust option draws it.',
+};
+
+/** The list above as the panel wants it, which is a shape it can paint without knowing what LVGL can do. */
+export function unavailableCppWidgets(): { tag: string; reason: string }[] {
+    return Object.entries(UNAVAILABLE_CPP).map(([tag, reason]) => ({ tag, reason }));
+}
+
+/**
+ * The pixel tables, and the one helper that turns each of them into an `lv_image_dsc_t`.
+ *
+ * LVGL's descriptor is a header of bit fields plus a size and a pointer, and bit-field initialisers are C++20 --
+ * a sketch is C++17 -- so the fields are assigned in a small function instead of written as an aggregate. That
+ * is also the only reason this helper exists: it keeps the eight assignments out of every widget's block.
+ *
+ * Empty when the design holds no pictures, so a design without one still emits exactly what it used to.
+ */
+function imageTables(document: DesignerDocument, images: CppImageSlots): string {
+    const drawn = document.widgets.filter((widget) => images.get(widget.id)?.image !== undefined);
+    if (drawn.length === 0) {
+        return '';
+    }
+    const blocks: string[] = [
+        '// ---- pictures ---------------------------------------------------------------',
+        '//',
+        '// Each file below was decoded when the design was saved and is copied into the flash as the pixels LVGL',
+        '// draws: RGB565, or RGB565A8 when the picture has transparency. Nothing is read at run time.',
+        '',
+        'static void ui_image_attach(lv_image_dsc_t *image, const uint8_t *data, uint32_t size,',
+        '                            lv_color_format_t format, int32_t width, int32_t height, int32_t stride) {',
+        '    image->header.magic = LV_IMAGE_HEADER_MAGIC;',
+        '    image->header.cf = format;',
+        '    image->header.flags = 0;',
+        '    image->header.w = (uint16_t)width;',
+        '    image->header.h = (uint16_t)height;',
+        '    image->header.stride = (uint16_t)stride;',
+        '    image->data_size = size;',
+        '    image->data = data;',
+        '}',
+    ];
+    for (const widget of drawn) {
+        const image = images.get(widget.id)?.image;
+        if (image === undefined) {
+            continue;
+        }
+        const symbol = `img_${cppId(widget.id)}`;
+        blocks.push(
+            '',
+            `// ${widget.id}: ${image.width}x${image.height}, ${image.format.replace('LV_COLOR_FORMAT_', '')}, ${image.bytes.byteLength} bytes.`,
+            `static const uint8_t ${symbol}_data[] =`,
+            ...pixelLines(image.bytes, '    ').map((line, index, all) =>
+                index === all.length - 1 ? `${line};` : line,
+            ),
+            `static lv_image_dsc_t ${symbol};`,
+        );
+    }
+    return `${blocks.join('\n')}\n\n`;
 }
 
 /**
@@ -1137,7 +1252,7 @@ void ui_set_scrollable(lv_obj_t *object, bool scrollable) {
 #endif
 `;
 
-export function emitUiCpp(document: DesignerDocument): string {
+export function emitUiCpp(document: DesignerDocument, images: CppImageSlots = new Map()): string {
     const views = designViews(document);
     const clocks = document.widgets.filter((widget) => widget.tag === 'clock');
     const size = canvasSize(document);
@@ -1168,7 +1283,7 @@ export function emitUiCpp(document: DesignerDocument): string {
 
     const widgetBlocks: string[] = [];
     for (const widget of document.widgets) {
-        const lines = widgetLines(widget, `view_${cppId(widget.view ?? firstView)}`, document);
+        const lines = widgetLines(widget, `view_${cppId(widget.view ?? firstView)}`, document, images);
         if (lines.length > 0) {
             widgetBlocks.push(lines.join('\n'));
         }
@@ -1187,7 +1302,7 @@ export function emitUiCpp(document: DesignerDocument): string {
 
 namespace {
 
-${FLAG_WRAPPERS}${clocks.length === 0 ? '' : `\n${CLOCK_HELPERS.replace('[[clocks]]', clocks.map((clock) => clockBlock(clock, document)).join('\n'))}\n`}
+${FLAG_WRAPPERS}${clocks.length === 0 ? '' : `\n${CLOCK_HELPERS.replace('[[clocks]]', clocks.map((clock) => clockBlock(clock, document)).join('\n'))}\n`}${imageTables(document, images)}
 ${views.map((view: DesignerView) => `lv_obj_t *view_${cppId(view.id)} = nullptr;`).join('\n')}
 
 ${callbacksFor(document)}

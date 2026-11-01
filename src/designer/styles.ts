@@ -332,6 +332,17 @@ body {
     opacity: 0.6;
 }
 
+/* A widget this project's language cannot draw: still listed, because a person looking for it deserves the
+   reason rather than a gap in the toolbox -- but greyed out, unclickable and undraggable. */
+.toolbox-item.is-unavailable {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+.toolbox-item.is-unavailable:hover {
+    background: transparent;
+}
+
 .panel-section {
     margin-bottom: 12px;
     padding-bottom: 8px;

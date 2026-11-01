@@ -60,10 +60,18 @@ import {
 } from './model';
 import { loadDocument, missingAssets, planAssetImport, renderDesign } from './store';
 import { collectImageAssets, imageSourcesOf, type DesignerImageAsset } from './imageAssets';
+import { buildCppImages } from './lvglImages';
 import { parseBdfFont, type DesignFontPixels } from './bitmapFont';
 import { bdfFromRaster, fontIdFromFile, isBitmapFontFile, type RasterisedFont } from './fontImport';
 import { emitUiRs, handlerName, syncHandlerStubs, designHasClock, ESP_LOG_MACRO, RP_LOG_MACRO } from './generate';
-import { documentFontSizes, emitHandlersCppHeader, emitUiCpp, emitUiCppHeader, syncHandlerStubsCpp } from './lvgl';
+import {
+    documentFontSizes,
+    emitHandlersCppHeader,
+    emitUiCpp,
+    emitUiCppHeader,
+    syncHandlerStubsCpp,
+    unavailableCppWidgets,
+} from './lvgl';
 import { emitArduinoPanel } from '../generate/arduino';
 import { sdImagesNeedingCard } from './model';
 import { lvConfHeader } from '../generate/arduino';
@@ -1039,6 +1047,7 @@ class DesignerPanel {
         this.fontSignature = declared.signature;
         await this.panel.webview.postMessage({
             type: 'init',
+            unavailable: this.isCppProject() ? unavailableCppWidgets() : [],
             document: this.document,
             canvas,
             paths: { document: DESIGNER_DOCUMENT_PATH, kdl: DESIGNER_KDL_PATH },
@@ -1080,6 +1089,15 @@ class DesignerPanel {
         return this.board?.kind === 'esp' && this.board.sd !== undefined;
     }
 
+    /** One asset's bytes, named the way the design names it; `undefined` when the file is not there. */
+    private readAsset(relative: string): Uint8Array | undefined {
+        try {
+            return fs.readFileSync(vscode.Uri.joinPath(this.folder, relative).fsPath);
+        } catch {
+            return undefined;
+        }
+    }
+
     /**
      * The design's image files, so the canvas can draw them instead of an empty box.
      *
@@ -1089,14 +1107,7 @@ class DesignerPanel {
      * ship through a message is not a preview.
      */
     private async canvasImages(): Promise<DesignerImageAsset[]> {
-        const read = (relative: string): Uint8Array | undefined => {
-            try {
-                return fs.readFileSync(vscode.Uri.joinPath(this.folder, relative).fsPath);
-            } catch {
-                return undefined;
-            }
-        };
-        const assets = collectImageAssets(this.document, read);
+        const assets = collectImageAssets(this.document, (relative) => this.readAsset(relative));
         this.imageSignature = imageSourcesOf(this.document).join('\n');
         return assets;
     }
@@ -1307,7 +1318,14 @@ class DesignerPanel {
      * generated, rewritten on every save, and never the place for a person's code.
      */
     private async syncCppModule(document: DesignerDocument): Promise<void> {
-        const source = emitUiCpp(document);
+        // The pictures have to be decoded here: LVGL draws pixels, not file names, and a sketch has no decoder
+        // for a PNG. A file that is missing or in a format this generator does not read is named in the output
+        // channel and drawn as an empty box, which keeps the rest of the screen compiling.
+        const pictures = buildCppImages(document, (relative) => this.readAsset(relative));
+        for (const problem of pictures.problems) {
+            this.output.appendLine(`[designer] ${problem}`);
+        }
+        const source = emitUiCpp(document, pictures.slots);
         const sourceUri = vscode.Uri.joinPath(this.folder, 'src', 'ui.cpp');
         if ((await readText(sourceUri)) !== source) {
             await writeProjectFile(this.folder, 'src/ui.cpp', source);

@@ -11,6 +11,24 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.18.29] - 2026-11-01
+
+### Added
+
+- **Images and composite icons are drawn in C++ projects.** LVGL has no decoder, so both files are decoded when
+  the design is saved and the pixels are written into `src/ui.cpp` as an `lv_image_dsc_t`: BMP (1, 4, 8, 16, 24
+  and 32 bits) and PNG (greyscale, palette and truecolour, with or without alpha). Pictures with transparency use
+  RGB565A8, so a rounded icon does not get a black border on the panel. An image honours the `fit` the catalogue
+  offers; an icon is composited from its parts the way the Rust crate draws it — threshold to ink, `tint`,
+  `invert`, nearest-neighbour `scale`, and the alignment it asks for.
+- The toolbox lists `mesh` greyed out in a C++ project, with the reason on hover: LVGL has no 3D rasteriser.
+
+### Notes
+
+- A JPEG, GIF or WebP in a design is named in the output channel with what to do about it (save it as PNG or
+  BMP) rather than drawn as an empty box; so is an `sd:` image, which needs a filesystem driver that the C++
+  backend does not have yet.
+
 ## [0.18.28] - 2026-11-01
 
 ### Fixed

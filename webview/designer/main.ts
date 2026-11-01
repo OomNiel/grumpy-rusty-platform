@@ -287,7 +287,7 @@ window.addEventListener('message', (event: MessageEvent<
         view.setActiveView(currentView());
         view.setState(state);
         document.title = `${message.document.screenId} - ${canvasWidth}x${canvasHeight}`;
-        renderToolbox(toolbox, (tag) => drop(tag));
+        renderToolbox(toolbox, (tag) => drop(tag), message.unavailable);
         refreshProperties();
         refreshToolbar();
         const problems = message.loadProblems ?? [];

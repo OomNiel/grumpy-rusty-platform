@@ -23,6 +23,8 @@ const {
     emitHandlersCppHeader,
     documentFontSizes,
     emitUiCpp,
+    UNAVAILABLE_CPP,
+    unavailableCppWidgets,
     emitUiCppHeader,
     lvEventName,
     syncHandlerStubsCpp,
@@ -356,11 +358,18 @@ test('the numerals sit on their marks, with no half-a-font nudge', () => {
  * Keeping this list *explicit* is the point: a widget added to the toolbox tomorrow fails the test below until it is
  * either implemented or written down here, which is the difference between a known gap and a silent one.
  */
-const UNDRAWABLE_CPP = [
-    'image', // needs the asset decoded to pixels at generation time; the Rust crate does that in Rust
-    'icon', // the same asset pipeline, tinted through a threshold
-    'mesh', // 3D shaded triangles: LVGL has no rasteriser for them
-];
+const UNDRAWABLE_CPP = Object.keys(UNAVAILABLE_CPP);
+
+test('a C++ project is told which widgets its language cannot draw, in words', () => {
+    // The list lives beside the emitter's coverage, so the toolbox and the generated code cannot disagree. One
+    // entry today: LVGL has no 3D rasteriser, so a mesh would be an empty box.
+    equal(UNDRAWABLE_CPP.join(','), 'mesh', 'the mesh is the one gap');
+    const listed = unavailableCppWidgets();
+    equal(listed.length, 1, 'and it is sent to the panel as a table');
+    equal(listed[0].tag, 'mesh', 'under the tag the toolbox knows');
+    contains(listed[0].reason, 'LVGL has no 3D rasteriser', 'with the reason, not just a refusal');
+    contains(listed[0].reason, 'Rust option draws it', 'and where the person can get it');
+});
 
 test('every toolbox widget is drawn, or is on the list of ones that are not', () => {
     const missing = KDL_WIDGETS.map((widget) => widget.tag).filter(

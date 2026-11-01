@@ -241,8 +241,16 @@ function button(label: string, className: string, onClick: () => void): HTMLButt
  * Each entry can be dragged onto the canvas, and can also be clicked, which drops it in the middle. The click
  * path exists because dragging is not available to everyone: a keyboard or an assistive device can only reach
  * the button, and a designer that requires a drag shuts those users out.
+ *
+ * `unavailable` is the widgets this project's language cannot draw, with the reason. They are listed but not
+ * offered: a person looking for one deserves the sentence rather than a gap in the toolbox.
  */
-export function renderToolbox(root: HTMLElement, onTag: (tag: string) => void): void {
+export function renderToolbox(
+    root: HTMLElement,
+    onTag: (tag: string) => void,
+    unavailable: readonly { tag: string; reason: string }[] = [],
+): void {
+    const blocked = new Map(unavailable.map((entry) => [entry.tag, entry.reason]));
     root.replaceChildren();
     root.append(element('h2', 'panel-title', 'Toolbox'));
 
@@ -251,6 +259,14 @@ export function renderToolbox(root: HTMLElement, onTag: (tag: string) => void): 
         node.append(element('h3', 'group-title', CATEGORY_LABELS[group.category]));
         for (const spec of group.widgets) {
             const item = button(spec.label, 'toolbox-item', () => onTag(spec.tag));
+            const reason = blocked.get(spec.tag);
+            if (reason !== undefined) {
+                item.disabled = true;
+                item.classList.add('is-unavailable');
+                item.title = reason;
+                node.append(item);
+                continue;
+            }
             item.draggable = true;
             item.title = [
                 widgetHelp(spec.tag) ?? spec.label,
