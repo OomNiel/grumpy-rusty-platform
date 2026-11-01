@@ -224,13 +224,13 @@ interface ClockGeometry {
     /** Centre, in the clock's own coordinates. */
     cx: number;
     cy: number;
+    /** The face's radius: where the ticks and the numerals are placed from. */
+    radius: number;
     /** Where a hand ends, per hand, in pixels. */
     hourLength: number;
     minuteLength: number;
     secondLength: number;
-    /** `{x, y}` pairs: the hour ticks, the minute ticks, and the numerals 1..12. */
-    hourTicks: number[][];
-    minuteTicks: number[][];
+    /** `{x, y}` centres of the numerals 1..12 on the face. */
     numerals: number[][];
 }
 
@@ -244,14 +244,6 @@ function clockGeometry(widget: DesignerWidget): ClockGeometry {
         cx + Math.round(distance * Math.cos((index * 2 * Math.PI) / CLOCK_STEPS - Math.PI / 2)),
         cy + Math.round(distance * Math.sin((index * 2 * Math.PI) / CLOCK_STEPS - Math.PI / 2)),
     ];
-    const ticks = (inner: number, outer: number, count: number): number[][] => {
-        const pairs: number[][] = [];
-        for (let index = 0; index < count; index += 1) {
-            const step = Math.round((index * CLOCK_STEPS) / count);
-            pairs.push(at(step, inner), at(step, outer));
-        }
-        return pairs;
-    };
     const numerals: number[][] = [];
     for (let hour = 1; hour <= 12; hour += 1) {
         numerals.push(at(Math.round((hour * CLOCK_STEPS) / 12), radius * 0.7));
@@ -259,18 +251,12 @@ function clockGeometry(widget: DesignerWidget): ClockGeometry {
     return {
         cx,
         cy,
+        radius,
         hourLength: Math.round(radius * 0.45),
         minuteLength: Math.round(radius * 0.62),
         secondLength: Math.round(radius * 0.7),
-        hourTicks: ticks(radius * 0.82, radius * 0.94, 12),
-        minuteTicks: ticks(radius * 0.9, radius * 0.94, 60),
         numerals,
     };
-}
-
-/** `{x, y}, {x, y}, ...` for an `lv_point_precise_t[]` initialiser. */
-function pointPairs(pairs: readonly number[][]): string {
-    return pairs.map(([x, y]) => `{${x ?? 0}, ${y ?? 0}}`).join(', ');
 }
 
 /** The runtime half: one struct per clock, and the three calls that drive it. Emitted once per design. */
@@ -365,8 +351,6 @@ function clockBlock(widget: DesignerWidget, document: DesignerDocument): string 
     void movement;
     const lines = [
         `static ui_clock clock_${id};`,
-        `static lv_point_precise_t clock_${id}_hourTicks[] = {${pointPairs(geometry.hourTicks)}};`,
-        `static lv_point_precise_t clock_${id}_minuteTicks[] = {${pointPairs(geometry.minuteTicks)}};`,
         '',
         `static void clock_${id}_build(lv_obj_t *parent) {`,
         `    clock_${id}.cx = ${geometry.cx};`,
@@ -379,18 +363,32 @@ function clockBlock(widget: DesignerWidget, document: DesignerDocument): string 
         `    clock_${id}.second = ${second};`,
         `    clock_${id}.lastMs = millis();`,
     ];
-    for (let index = 0; index < geometry.minuteTicks.length / 2; index += 1) {
+    // A tick is a small filled rectangle, rotated about the face's centre -- not an `lv_line`.
+    //
+    // Lines were the obvious choice and the wrong one: an `lv_line` object has no size of its own, and LVGL needs
+    // an area to invalidate. The ticks that lay almost along an axis survived; the diagonal ones kept whatever was
+    // behind them, which is exactly "the minute ticks render in the unpainted colour except next to 12, 3, 6 and 9"
+    // (bench, 2026-11-01). A rectangle has a real area, and its colour is a background -- the primitive the dots,
+    // the dialog and the face itself already use.
+    for (let index = 0; index < 60; index += 1) {
         const major = index % 5 === 0;
+        const thickness = major ? 3 : 2;
+        const inner = Math.round(geometry.radius * (major ? 0.82 : 0.9));
+        const outer = Math.round(geometry.radius * 0.94);
+        const length = Math.max(2, outer - inner);
         lines.push(
-            `    lv_obj_t *tick_${id}_${index} = lv_line_create(parent);`,
-            // `minuteTicks` carries all sixty positions, majors included, so the minor index is the tick's own:
-            // subtracting the majors before multiplying ran the array short, and the last ten ticks -- the 10 to 12
-            // sector -- landed on positions already drawn (bench, 2026-11-01).
-            `    lv_line_set_points(tick_${id}_${index}, &clock_${id}_${
-                major ? 'hourTicks' : 'minuteTicks'
-            }[${major ? (index / 5) * 2 : index * 2}], 2);`,
-            `    lv_obj_set_style_line_color(tick_${id}_${index}, ${major ? majorColour : minorColour}, 0);`,
-            `    lv_obj_set_style_line_width(tick_${id}_${index}, ${major ? 3 : 1}, 0);`,
+            `    lv_obj_t *tick_${id}_${index} = lv_obj_create(parent);`,
+            `    lv_obj_set_size(tick_${id}_${index}, ${thickness}, ${length});`,
+            `    lv_obj_set_pos(tick_${id}_${index}, ${geometry.cx - Math.floor(thickness / 2)}, ${geometry.cy - inner});`,
+            `    lv_obj_set_style_radius(tick_${id}_${index}, 0, 0);`,
+            `    lv_obj_set_style_border_width(tick_${id}_${index}, 0, 0);`,
+            `    lv_obj_set_style_pad_all(tick_${id}_${index}, 0, 0);`,
+            `    lv_obj_set_style_bg_opa(tick_${id}_${index}, LV_OPA_COVER, 0);`,
+            `    lv_obj_set_style_bg_color(tick_${id}_${index}, ${major ? majorColour : minorColour}, 0);`,
+            // Turned about its inner end: the pivot is the top centre, which is the radius it starts at.
+            `    lv_obj_set_style_transform_pivot_x(tick_${id}_${index}, ${Math.floor(thickness / 2)}, 0);`,
+            `    lv_obj_set_style_transform_pivot_y(tick_${id}_${index}, 0, 0);`,
+            `    lv_obj_set_style_transform_rotation(tick_${id}_${index}, ${index * 60}, 0);`,
         );
     }
     const numeralSize = (() => {

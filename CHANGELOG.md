@@ -11,6 +11,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.18.27] - 2026-11-01
+
+### Fixed
+
+- The clock's minute ticks now all render in their chosen colours. They were `lv_line`
+  objects, and a line has no area of its own, so LVGL could not invalidate most of them —
+  only the marks lying along an axis (next to 12, 3, 6 and 9) survived, and the rest kept
+  whatever was behind them. Each tick is now a rotated filled rectangle with a real size:
+  3 px in `hour_tick_color` every five minutes, 2 px in `minute_tick_color` in between.
+
 ## [0.18.26] - 2026-11-01
 
 ### Fixed

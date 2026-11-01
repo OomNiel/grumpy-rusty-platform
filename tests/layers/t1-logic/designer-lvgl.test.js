@@ -227,7 +227,8 @@ test('the clock is drawn, not dropped: 12 hour ticks, 60 minute ticks and three 
     // showed a blank screen (bench, 2026-11-01).
     const source = emitUiCpp(clockDesign());
     equal(unsupportedTags(clockDesign()).join(' '), '', 'nothing is unsupported about a clock');
-    equal((source.match(/lv_line_create/g) ?? []).length, 63, '60 minute ticks, 12 hour ticks, 3 hands');
+    equal((source.match(/lv_line_create/g) ?? []).length, 3, 'the three hands are the only lines');
+    equal((source.match(/lv_obj_t \*tick_clock_/g) ?? []).length, 60, 'and the ticks are rectangles, one per minute');
     contains(source, 'struct ui_clock {', 'the face has state of its own');
     contains(source, 'static const float ui_clock_sin[60]', 'and a table instead of a trigonometry library');
     contains(source, 'lv_label_set_text(numeral_clock_12, "12");', 'the numerals');
@@ -254,7 +255,7 @@ test('the face starts at the time the design shows, and an app can hand over the
 test('a clock with no numerals draws no labels', () => {
     const source = emitUiCpp(clockDesign({ show_labels: false }));
     equal(/numeral_clock_1 = lv_label_create/.test(source), false, 'no numeral objects at all');
-    equal((source.match(/lv_line_create/g) ?? []).length, 63, 'and the ticks and hands are still there');
+    equal((source.match(/lv_obj_t \*tick_clock_/g) ?? []).length, 60, 'and the ticks are still there');
 });
 
 test('nothing is padded: a design\'s coordinates are absolute', () => {
@@ -405,20 +406,21 @@ test('a design using every drawable widget emits code for all of them', () => {
     equal(unsupportedTags(document).length, 0, 'and none of them is reported as undrawable');
 });
 
-test('all sixty ticks are drawn, each at its own minute', () => {
-    // `minuteTicks` carries all sixty positions; the minor index used to subtract the majors before multiplying,
-    // which ran the array short -- the last ten ticks (the 10-to-12 sector) landed on positions already drawn
-    // (bench, 2026-11-01).
-    const source = emitUiCpp(clockDesign());
-    const minors = [...source.matchAll(/minuteTicks\[(\d+)\], 2\)/g)].map((match) => Number(match[1]));
-    const majors = [...source.matchAll(/hourTicks\[(\d+)\], 2\)/g)].map((match) => Number(match[1]));
-    equal(minors.length, 48, 'forty-eight minute ticks');
-    equal(majors.length, 12, 'twelve hour ticks');
-    equal(new Set(minors).size, 48, 'and every one of them at a different position');
-    equal(Math.max(...minors), 59 * 2, 'the last minute tick is the fifty-ninth');
-    // The sixty positions the two arrays between them cover, with no repeats: 0,5,10,... from the majors.
-    const covered = new Set([...minors.map((index) => index / 2), ...majors.map((index) => (index / 2) * 5)]);
-    equal(covered.size, 60, 'sixty positions, none drawn twice');
+test('all sixty ticks are drawn, each at its own minute and in its own colour', () => {
+    // Ticks are rotated rectangles, not `lv_line`s: a line has no area of its own, and LVGL needs one to invalidate
+    // -- the diagonal ticks kept the background while the ones near an axis drew, which is what "the minute ticks
+    // render unpainted except next to 12, 3, 6 and 9" looked like (bench, 2026-11-01).
+    const source = emitUiCpp(clockDesign({ hour_tick_color: '#f70202', minute_tick_color: '#04fb14' }));
+    const ticks = [...source.matchAll(/bg_color\(tick_clock_(\d+), lv_color_hex\(0x([0-9a-f]+)\)/g)];
+    equal(ticks.length, 60, 'sixty ticks, one per minute mark');
+    equal(ticks.filter((tick) => tick[2] === 'f70202').length, 12, 'twelve in the hour colour, every five minutes');
+    equal(ticks.filter((tick) => tick[2] === '04fb14').length, 48, 'and forty-eight in the minute colour');
+    // Each tick has a real area and is turned about the radius it starts at, which is what makes it draw and stay
+    // drawn.
+    contains(source, 'lv_obj_set_size(tick_clock_0, 3, 14);', 'the twelve is a 3-pixel mark');
+    contains(source, 'lv_obj_set_style_transform_rotation(tick_clock_59, 3540, 0);', 'and the fifty-ninth is turned 354 degrees');
+    contains(source, 'lv_obj_set_style_transform_pivot_y(tick_clock_1, 0, 0);', 'pivoting on its inner end');
+    equal(/lv_line_create\(parent\);\n    lv_line_set_points\(tick_/.test(source), false, 'no tick is a line');
 });
 
 test('a clock wears the design\'s background, frame and corners', () => {
