@@ -11,6 +11,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.18.19] - 2026-11-01
+
+### Fixed
+
+- **A flash that cannot go over USB now offers the debug probe instead of dead-ending.** With a Pico Probe
+  attached, `arduino-cli upload` (the default UF2 method) ends at `No drive to deploy.` — the board is never in
+  BOOTSEL mass-storage mode, because the probe programs over SWD. Flash now notices, asks once, writes
+  `uploadmethod=picoprobe_cmsis_dap` into the project's `sketch.yaml`, rebuilds with that method (it decides the
+  debug script and the maximum data size) and flashes again — no `-p` anywhere. The method is read from the
+  core's own menu, so a board or core without one simply says so.
+
 ## [0.18.18] - 2026-11-01
 
 ### Fixed

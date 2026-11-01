@@ -8647,3 +8647,33 @@ Fixed three ways:
 **Lesson:** an artefact is judged by its name first. A default that ignores the choice made one line earlier reads
 as a wrong feature, and it cost a release to find. When a user says "the wrong thing was created", look at the
 *name* of what was created before doubting the code that made it.
+### 177. "No drive to deploy." — the UF2 route with a probe plugged in
+
+`cpp_designer_pico2w_1` would not flash through the Pico Probe. Reproduced exactly:
+
+    arduino-cli upload --fqbn rp2040:rp2040:rpipico2w -p /dev/ttyACM1 --input-dir build .
+    Resetting /dev/ttyACM1
+    Scanning for RP2040 devices
+    No drive to deploy.
+
+Two things were true at once. The project's `sketch.yaml` had **no `uploadmethod`**, so the default (UF2 over USB)
+was used; and the port picker now lists ports (0.18.16 fixed that), so a probe user is offered `/dev/ttyACM1` — the
+probe's UART bridge, which is not a way into the bootloader. UF2 needs the board in BOOTSEL mass-storage mode; SWD
+does not need a port at all.
+
+`arduinoUpload` is now one attempt plus one offer:
+
+- `flashOnce()` — build, pick a port only if the method needs one, upload, report;
+- on failure or "no port": `probeUploadMethod(cli, fqbn)` reads the core's menu (`board details --format json`),
+  picks the value matching `/cmsis|picoprobe|debug/`, and a modal asks once. On yes the FQBN is written into
+  `sketch.yaml`, the project is **rebuilt** (the method sets `build.debugscript` and `upload.maximum_data_size`, so
+  the old artifact is wrong for the new route) and flashed again without `-p`.
+
+The selection rule is pure — `chooseProbeMethod(values)` in `toolchain/arduinoBuild.ts` — so t1 pins that a USB-only
+board returns `undefined` rather than an invented value.
+
+Flashing the user's project with the fixed FQBN: OpenOCD programs, `** Verified OK **`, `New upload port: (default)`.
+
+**Lesson:** a failure message from the *tool* is a question about which route it took, not about the board. "No
+drive to deploy" is the UF2 route saying it has no drive; the answer is a different upload method, and the fact that
+the compiler's own menu already knows which is what the offer should read.

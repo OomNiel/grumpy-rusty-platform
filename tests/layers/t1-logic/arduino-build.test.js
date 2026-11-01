@@ -11,6 +11,7 @@
 const { test, ok, equal, contains, notContains, compiled } = require('../../lib/harness');
 const {
     ARDUINO_ARTIFACT_DIR,
+    chooseProbeMethod,
     compileArgs,
     fqbnOption,
     uploadArgs,
@@ -287,4 +288,23 @@ test('a new project is named after the template, not always after blinky', () =>
     contains(source, 'value: `${template}-${board.id}`', 'the template decides the name');
     notContains(source, 'value: `blinky-${board.id}`', 'and never a fixed one');
     contains(source, '(${templateLabel})', 'the prompt names the template being created');
+});
+
+test('the probe method is chosen from the core\'s own list, never invented', () => {
+    // A USB-only board has no such value, and inventing one would be a command line the core rejects.
+    equal(chooseProbeMethod(['default', 'picotool', 'picoprobe_cmsis_dap']), 'picoprobe_cmsis_dap', 'arduino-pico');
+    equal(chooseProbeMethod(['default', 'cmsis-dap']), 'cmsis-dap', 'another core may spell it differently');
+    equal(chooseProbeMethod(['default']), undefined, 'a USB-only board says so');
+    equal(chooseProbeMethod([]), undefined, 'and an empty menu says nothing');
+});
+
+test('a flash that fails over USB can be retried through the probe', () => {
+    // "No drive to deploy." with a probe plugged in (bench, 2026-11-01): the retry needs the option, and the
+    // method must then stop asking for a port.
+    const usb = 'rp2040:rp2040:rpipico2w';
+    const probe = withFqbnOption(usb, 'uploadmethod', chooseProbeMethod(['default', 'picotool', 'picoprobe_cmsis_dap']));
+    equal(probe, 'rp2040:rp2040:rpipico2w:uploadmethod=picoprobe_cmsis_dap', 'the retry FQBN');
+    equal(uploadNeedsPort(usb), true, 'which needs a port before the switch');
+    equal(uploadNeedsPort(probe), false, 'and none after it');
+    equal(uploadArgs(probe).includes('-p'), false, 'so the command has no -p');
 });

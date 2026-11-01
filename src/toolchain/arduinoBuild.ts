@@ -132,6 +132,17 @@ export function withoutFqbnOption(fqbn: string, key: string): string {
 }
 
 /**
+ * The upload method a debug probe needs, out of the list the core offers.
+ *
+ * Asked of the core rather than hard-coded: arduino-pico calls it `picoprobe_cmsis_dap`, another core may call it
+ * something else, and a value the core did not list is a command line it would reject. `undefined` means the
+ * board cannot be programmed by a probe at all, which is the honest answer for a USB-only board.
+ */
+export function chooseProbeMethod(values: readonly string[]): string | undefined {
+    return values.find((value) => /cmsis|picoprobe|debug/i.test(value));
+}
+
+/**
  * Whether the core's upload recipe wants a serial port at all.
  *
  * Only UF2-over-USB does. `picoprobe_cmsis_dap` programs through OpenOCD on SWD, and `picotool` talks to the

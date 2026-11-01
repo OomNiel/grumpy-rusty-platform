@@ -403,7 +403,7 @@ export function registerNewProjectCommand(
         if (signatures.length > 0) {
             void vscode.window.showErrorMessage(
                 `The ${templateLabel} project was not written: this generator does not produce ` +
-                    `${signatures.join(', ')} for ${board.name}. Nothing was created.`,
+                `${signatures.join(', ')} for ${board.name}. Nothing was created.`,
             );
             return;
         }

@@ -5,6 +5,7 @@ import { ActiveProject } from '../project/activeProject';
 import { fqbnFromSketchYaml, ARDUINO_BUILD_DIR } from '../generate/arduinoIntelliSense';
 import {
     ARDUINO_ARTIFACT_DIR,
+    chooseProbeMethod,
     collectDiagnostics,
     compileArgs,
     fqbnOption,
@@ -303,15 +304,62 @@ export async function arduinoUpload(
         return;
     }
 
-    const building = await arduinoBuild(context, project, output);
-    if (!building) {
+    const first = await flashOnce(context, project, output);
+    if (first.port !== undefined && options.monitor === true) {
+        runInTerminal('Rusty: monitor', `${quote(cli)} ${monitorArgs(first.port).join(' ')}`, project.folder);
+    }
+    if (first.status === 'ok') {
         return;
+    }
+
+    // A board that will not take a USB upload is the one case where a debug probe is the answer, and the person
+    // looking at it has no reason to know that "Upload Method…" exists. Offer the switch, in the words of the core
+    // itself, and do the whole thing again: the artifact is rebuilt because the method decides the debug script
+    // and the maximum data size (bench, 2026-11-01: "No drive to deploy." with a probe plugged in).
+    const probe = await probeUploadMethod(cli, fqbn);
+    if (probe === undefined) {
+        return;
+    }
+    const choice = await vscode.window.showWarningMessage(
+        'The board did not accept the upload over USB. This core can program it through a debug probe (CMSIS-DAP) ' +
+            'over SWD instead — switch this project to that and flash now?',
+        { modal: true },
+        `Use ${probe}`,
+    );
+    if (choice === undefined) {
+        return;
+    }
+    const switched = withFqbnOption(fqbn, 'uploadmethod', probe);
+    setSketchFqbn(project.folder.fsPath, switched);
+    output.appendLine(`[arduino] upload method: ${switched}`);
+    void vscode.window.showInformationMessage(`This project now flashes over the debug probe (${probe}).`);
+
+    const second = await flashOnce(context, project, output);
+    if (second.port !== undefined && options.monitor === true) {
+        runInTerminal('Rusty: monitor', `${quote(cli)} ${monitorArgs(second.port).join(' ')}`, project.folder);
+    }
+}
+
+/** One build-and-upload attempt, reporting for itself. */
+async function flashOnce(
+    context: vscode.ExtensionContext,
+    project: ActiveProject,
+    output: vscode.OutputChannel,
+): Promise<{ status: 'ok' | 'failed' | 'no-port'; port?: string }> {
+    const cli = configuredArduinoCliPath();
+    const fqbn = sketchFqbn(project);
+    if (cli === undefined || fqbn === undefined) {
+        return { status: 'failed' };
+    }
+    if (!(await arduinoBuild(context, project, output))) {
+        return { status: 'failed' };
     }
     // A probe programs over SWD and a bootloader upload takes the UF2; neither has a serial port to pick, and
     // asking for one is what stopped a probe user at "No board found" before flashing anything (2026-10-31).
-    const port = uploadNeedsPort(fqbn) ? await pickPort(cli, fqbn) : undefined;
-    if (uploadNeedsPort(fqbn) && port === undefined) {
-        return;
+    const needsPort = uploadNeedsPort(fqbn);
+    const port = needsPort ? await pickPort(cli, fqbn) : undefined;
+    if (needsPort && port === undefined) {
+        return { status: 'no-port' };
     }
 
     output.show(true);
@@ -327,14 +375,28 @@ export async function arduinoUpload(
         void vscode.window.showErrorMessage(
             `Upload failed: ${lastLineOf(result.stderr) || lastLineOf(result.stdout) || 'see the log'}`,
         );
-        return;
+        return { status: 'failed', ...(port === undefined ? {} : { port: port.address }) };
     }
     void vscode.window.showInformationMessage(
         port === undefined ? 'Uploaded over the debug probe.' : `Uploaded to ${port.address}.`,
     );
-    if (options.monitor === true && port !== undefined) {
-        runInTerminal('Rusty: monitor', `${quote(cli)} ${monitorArgs(port.address).join(' ')}`, project.folder);
-    }
+    return { status: 'ok', ...(port === undefined ? {} : { port: port.address }) };
+}
+
+/**
+ * The upload method this core offers for a probe, if it offers one.
+ *
+ * Asked of the core rather than guessed: arduino-pico calls it `picoprobe_cmsis_dap`, another core may call it
+ * something else, and a value the core did not list would be a command line it rejects.
+ */
+async function probeUploadMethod(cli: string, fqbn: string): Promise<string | undefined> {
+    const details = await execFileFn(
+        cli,
+        ['board', 'details', '--fqbn', fqbn.split(':').slice(0, 3).join(':'), '--format', 'json'],
+        { timeoutMs: 60_000 },
+    );
+    const menu = details.code === 0 ? parseUploadMethodMenu(details.stdout) : undefined;
+    return menu === undefined ? undefined : chooseProbeMethod(menu.values);
 }
 
 /** Opens the serial monitor; it holds the port until its terminal is closed, as the Rust monitor does. */
