@@ -11,6 +11,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.18.26] - 2026-11-01
+
+### Fixed
+
+- **A clock's background, frame and corners are drawn.** The container was emitted transparent whatever the design
+  said, so a coloured face never reached the glass. `bg`, `border_color`/`border_width` and `corner_radius` now
+  apply to it like any other block, and a clock with no colour in the design stays transparent as before.
+- **All sixty ticks are drawn.** The minute ticks were indexed with the hour ticks subtracted before multiplying,
+  so the array ran short and the last ten positions — the 10-to-12 sector — landed on ticks already drawn. Each of
+  the 60 positions is now drawn once: 12 longer hour ticks, 48 minute ticks.
+
 ## [0.18.25] - 2026-11-01
 
 ### Added

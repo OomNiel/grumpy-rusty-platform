@@ -383,9 +383,12 @@ function clockBlock(widget: DesignerWidget, document: DesignerDocument): string 
         const major = index % 5 === 0;
         lines.push(
             `    lv_obj_t *tick_${id}_${index} = lv_line_create(parent);`,
+            // `minuteTicks` carries all sixty positions, majors included, so the minor index is the tick's own:
+            // subtracting the majors before multiplying ran the array short, and the last ten ticks -- the 10 to 12
+            // sector -- landed on positions already drawn (bench, 2026-11-01).
             `    lv_line_set_points(tick_${id}_${index}, &clock_${id}_${
                 major ? 'hourTicks' : 'minuteTicks'
-            }[${major ? (index / 5) * 2 : (index - Math.floor(index / 5)) * 2}], 2);`,
+            }[${major ? (index / 5) * 2 : index * 2}], 2);`,
             `    lv_obj_set_style_line_color(tick_${id}_${index}, ${major ? majorColour : minorColour}, 0);`,
             `    lv_obj_set_style_line_width(tick_${id}_${index}, ${major ? 3 : 1}, 0);`,
         );
@@ -645,10 +648,29 @@ function widgetLines(widget: DesignerWidget, parent: string, document: DesignerD
             break;
         }
         case 'clock': {
-            // The face draws itself from the geometry in its own block; the container only holds it.
+            // The face draws itself from the geometry in its own block; the container holds it and wears the
+            // design's own appearance -- a clock may have a coloured face, a frame and rounded corners like any
+            // other block, and emitting it transparent ignored every one of those (bench, 2026-11-01).
             lines.push(`    lv_obj_t *${variable} = lv_obj_create(${parent});`, ...geometry);
-            lines.push(`    lv_obj_set_style_border_width(${variable}, 0, 0);`);
-            lines.push(`    lv_obj_set_style_bg_opa(${variable}, LV_OPA_TRANSP, 0);`);
+            const fill = colourLiteral(widget.props.bg);
+            if (fill === undefined) {
+                lines.push(`    lv_obj_set_style_bg_opa(${variable}, LV_OPA_TRANSP, 0);`);
+            } else {
+                lines.push(`    lv_obj_set_style_bg_color(${variable}, ${fill}, 0);`);
+                lines.push(`    lv_obj_set_style_bg_opa(${variable}, LV_OPA_COVER, 0);`);
+            }
+            const borderWidth = Math.max(0, Math.round(numberProp(widget, 'border_width', 0)));
+            const borderColour = colourLiteral(widget.props.border_color);
+            if (borderWidth > 0 && borderColour !== undefined) {
+                lines.push(`    lv_obj_set_style_border_color(${variable}, ${borderColour}, 0);`);
+                lines.push(`    lv_obj_set_style_border_width(${variable}, ${borderWidth}, 0);`);
+            } else {
+                lines.push(`    lv_obj_set_style_border_width(${variable}, 0, 0);`);
+            }
+            const radius = Math.max(0, Math.round(numberProp(widget, 'corner_radius', 0)));
+            if (radius > 0) {
+                lines.push(`    lv_obj_set_style_radius(${variable}, ${radius}, 0);`);
+            }
             lines.push(`    ui_set_scrollable(${variable}, false);`);
             lines.push(`    lv_obj_set_style_pad_all(${variable}, 0, 0);`);
             lines.push(`    clock_${cppId(widget.id)}_build(${variable});`);

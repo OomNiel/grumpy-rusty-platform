@@ -404,3 +404,34 @@ test('a design using every drawable widget emits code for all of them', () => {
     equal(problems.length, 0, problems.slice(0, 4).join('; '));
     equal(unsupportedTags(document).length, 0, 'and none of them is reported as undrawable');
 });
+
+test('all sixty ticks are drawn, each at its own minute', () => {
+    // `minuteTicks` carries all sixty positions; the minor index used to subtract the majors before multiplying,
+    // which ran the array short -- the last ten ticks (the 10-to-12 sector) landed on positions already drawn
+    // (bench, 2026-11-01).
+    const source = emitUiCpp(clockDesign());
+    const minors = [...source.matchAll(/minuteTicks\[(\d+)\], 2\)/g)].map((match) => Number(match[1]));
+    const majors = [...source.matchAll(/hourTicks\[(\d+)\], 2\)/g)].map((match) => Number(match[1]));
+    equal(minors.length, 48, 'forty-eight minute ticks');
+    equal(majors.length, 12, 'twelve hour ticks');
+    equal(new Set(minors).size, 48, 'and every one of them at a different position');
+    equal(Math.max(...minors), 59 * 2, 'the last minute tick is the fifty-ninth');
+    // The sixty positions the two arrays between them cover, with no repeats: 0,5,10,... from the majors.
+    const covered = new Set([...minors.map((index) => index / 2), ...majors.map((index) => (index / 2) * 5)]);
+    equal(covered.size, 60, 'sixty positions, none drawn twice');
+});
+
+test('a clock wears the design\'s background, frame and corners', () => {
+    // Emitting the container transparent ignored every one of them: the design's `bg` never reached the glass
+    // (bench, 2026-11-01).
+    const document = clockDesign({ bg: '#102030', border_color: '#00ffff', border_width: 2, corner_radius: 8 });
+    const source = emitUiCpp(document);
+    contains(source, 'lv_obj_set_style_bg_color(w_clock, lv_color_hex(0x102030), 0);', 'the face colour');
+    contains(source, 'lv_obj_set_style_bg_opa(w_clock, LV_OPA_COVER, 0);', 'opaque enough to see');
+    contains(source, 'lv_obj_set_style_border_color(w_clock, lv_color_hex(0x00ffff), 0);', 'the frame');
+    contains(source, 'lv_obj_set_style_border_width(w_clock, 2, 0);', 'and its width');
+    contains(source, 'lv_obj_set_style_radius(w_clock, 8, 0);', 'and the corners');
+    // With no background in the design the container stays transparent, as a clock on a coloured view should.
+    const plain = emitUiCpp(clockDesign({ bg: '' }));
+    contains(plain, 'lv_obj_set_style_bg_opa(w_clock, LV_OPA_TRANSP, 0);', 'no colour means no fill');
+});
