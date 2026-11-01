@@ -8796,3 +8796,34 @@ from 557 KB to 594 KB — the font's 38 KB, which is why only the named sizes ar
 table, not a set of `if`s in the emitter. The mapping is the interesting part — it is the one place where "what the
 canvas shows" and "what the board draws" are allowed to differ, so it is also the place that must be tested,
 documented and visible in the generated file.
+### 182. The whole toolbox, in LVGL's vocabulary
+
+The emitter knew 18 of the 35 toolbox tags. Fifteen more now draw, and the number that matters is the one the tests
+hold: **every tag is either drawn or on an explicit list of three that are not.**
+
+| crate widget | what a C++ project gets |
+|---|---|
+| chart, plotter | `lv_chart` (LINE); the plotter's ring buffer is unrolled in the emitter, since `head` is design-time |
+| scale | `lv_scale` (`ROUND_INNER`) with `lv_scale_set_line_needle_value` — the one value widget with no drawing code |
+| spinbox, number_picker | `lv_spinbox`, the picker with a unit label beside it |
+| time_picker | `lv_roller`s, an AM/PM one only when the design is 12-hour |
+| busy_wheel | `lv_spinner` |
+| table | `lv_table`, cells written from the design's `children.kind === 'table'` |
+| dialog | container + title + message + OK button, in that order |
+| status_bar | container + right-aligned time + a bottom rule |
+| content_indicator, crumbs | dots and bars from the crate's own spacing, the current one in the accent colour |
+| carousel | item labels laid out by `item_step`/`visible`, selected in the accent |
+| path | `lv_line` over a polyline **flattened in TypeScript**, twelve segments per curve |
+
+The path one is the interesting one. `src/designer/lvglShapes.ts` is a small SVG-ish parser (M/L/H/V/Q/C/Z, absolute
+and relative), and it flattens curves with `CURVE_STEPS = 12` — the crate's own number, because a different step
+count would draw a visibly different arc on the glass than on the canvas. Same rule as the clock: geometry that
+never changes is computed in the emitter, so the firmware links no maths.
+
+**Verified the only way that works for LVGL:** a design containing every drawable tag, generated for a Pico 2 W and
+compiled — 32 widgets, 563 KB, no errors, no warnings. A unit test asserts each tag reaches the emitter (rather than
+falling through `default: return []`), and another asserts the undrawable list is honest in both directions.
+
+**What remains, and why:** `image` and `icon` need the asset decoded to pixels at generation time (the Rust crate
+does that in Rust, so there is nothing to reuse), and `mesh` is 3D shaded triangles — LVGL has no rasteriser. Those
+three are the whole of the gap, and they are written down in the test, not just in a conversation.

@@ -28,7 +28,8 @@ const {
     syncHandlerStubsCpp,
     unsupportedTags,
 } = compiled('designer/lvgl');
-const { createDocument } = compiled('designer/model');
+const { createDocument, defaultChildren, defaultProps } = compiled('designer/model');
+const { KDL_WIDGETS, widgetSpec } = compiled('designer/catalog');
 const {
     DEFAULT_FONT_SIZE,
     LVGL_FONT_SIZES,
@@ -110,10 +111,12 @@ test('views are containers, and navigate hides one and shows the other', () => {
 });
 
 test('a widget the C++ side cannot draw is named in the report, not silently dropped', () => {
+    // `mesh` is the one that is still not drawable: it is 3D shaded triangles and LVGL has no rasteriser for them.
+    // A chart used to be the example here, until the whole toolbox was implemented.
     const document = design();
     document.widgets.push({
-        id: 'chart1',
-        tag: 'chart',
+        id: 'shape1',
+        tag: 'mesh',
         x: 0,
         y: 0,
         width: 100,
@@ -121,8 +124,8 @@ test('a widget the C++ side cannot draw is named in the report, not silently dro
         props: {},
         events: [],
     });
-    equal(unsupportedTags(document).join(' '), 'chart', 'the tag is reported');
-    notContains(emitUiCpp(document), 'chart1', 'and nothing is emitted for it');
+    equal(unsupportedTags(document).join(' '), 'mesh', 'the tag is reported');
+    notContains(emitUiCpp(document), 'shape1', 'and nothing is emitted for it');
     ok(SUPPORTED_TAGS.button === 'lv_button', 'the map says what each tag becomes');
 });
 
@@ -342,4 +345,62 @@ test('the numerals sit on their marks, with no half-a-font nudge', () => {
     ok(rightX > 0, 'and sits to the right');
     // The half-font error would have made both vertical offsets larger by half the numeral size.
     equal(bottomY - topY, 2 * Math.round(0.7 * (Math.min(320, 240) / 2 - 4)), 'and the ring radius is what decides the gap');
+});
+
+// ----------------------------------------------------------- the whole toolbox
+
+/**
+ * The tags the C++ emitter still cannot draw, and why.
+ *
+ * Keeping this list *explicit* is the point: a widget added to the toolbox tomorrow fails the test below until it is
+ * either implemented or written down here, which is the difference between a known gap and a silent one.
+ */
+const UNDRAWABLE_CPP = [
+    'image', // needs the asset decoded to pixels at generation time; the Rust crate does that in Rust
+    'icon', // the same asset pipeline, tinted through a threshold
+    'mesh', // 3D shaded triangles: LVGL has no rasteriser for them
+];
+
+test('every toolbox widget is drawn, or is on the list of ones that are not', () => {
+    const missing = KDL_WIDGETS.map((widget) => widget.tag).filter(
+        (tag) => SUPPORTED_TAGS[tag] === undefined && !UNDRAWABLE_CPP.includes(tag),
+    );
+    equal(missing.length, 0, `not drawn and not listed: ${missing.join(', ')}`);
+    // And the list may not lie: a tag on it must really be unsupported.
+    for (const tag of UNDRAWABLE_CPP) {
+        equal(SUPPORTED_TAGS[tag], undefined, `${tag} is claimed undrawable`);
+    }
+});
+
+test('a design using every drawable widget emits code for all of them', () => {
+    // The kitchen sink: the only check that catches a wrong LVGL call, because it is the only one that compiles.
+    // Here it proves each tag reaches the emitter rather than falling through to the `default: return []` arm.
+    const document = createDocument({ boardId: 'pico2w', panelWidth: 240, panelHeight: 320, rotation: 0, screenId: 'RustyPanel' });
+    const drawable = KDL_WIDGETS.map((widget) => widget.tag).filter((tag) => SUPPORTED_TAGS[tag] !== undefined);
+    document.widgets = drawable.map((tag, index) => {
+        const spec = widgetSpec(tag);
+        const widget = {
+            id: `w${index}_${tag}`,
+            tag,
+            x: 2,
+            y: 2 + index,
+            width: spec?.defaultSize.width ?? 40,
+            height: spec?.defaultSize.height ?? 20,
+            props: { ...defaultProps(tag) },
+            events: [],
+        };
+        const children = defaultChildren(tag);
+        return children === undefined ? widget : { ...widget, children };
+    });
+    const source = emitUiCpp(document);
+    const problems = [];
+    for (const tag of drawable) {
+        // Every widget creates at least one object, and the object is named after the widget.
+        const id = `w${drawable.indexOf(tag)}_${tag}`;
+        if (!source.includes(`w_${id}`)) {
+            problems.push(`${tag} emitted nothing`);
+        }
+    }
+    equal(problems.length, 0, problems.slice(0, 4).join('; '));
+    equal(unsupportedTags(document).length, 0, 'and none of them is reported as undrawable');
 });

@@ -16,6 +16,7 @@
 import { EVENT_SPECS, type DesignerEvent } from './catalog';
 import type { DesignerDocument, DesignerWidget, DesignerView } from './model';
 import { designFontOf, fontSymbol, lvglFontFor, nearestFontSize } from './lvglFonts';
+import { flattenPath } from './lvglShapes';
 import { designViews, rustFieldName } from './model';
 
 /** Tags this emitter draws, and what each one becomes. Anything else is reported, not drawn. */
@@ -37,6 +38,20 @@ export const SUPPORTED_TAGS: Readonly<Record<string, string>> = {
     line: 'lv_line',
     triangle: 'lv_line',
     clock: 'lv_obj + lv_line hands',
+    chart: 'lv_chart',
+    plotter: 'lv_chart (the ring buffer unrolled)',
+    scale: 'lv_scale + a line needle',
+    spinbox: 'lv_spinbox',
+    number_picker: 'lv_spinbox + a unit label',
+    time_picker: 'lv_obj + lv_roller',
+    busy_wheel: 'lv_spinner',
+    status_bar: 'lv_obj + lv_label + lv_line',
+    content_indicator: 'lv_obj dots',
+    crumbs: 'lv_obj bars',
+    dialog: 'lv_obj + lv_label + lv_button',
+    table: 'lv_table',
+    carousel: 'lv_obj + lv_label',
+    path: 'lv_line, flattened at generation time',
     keypad: 'lv_keyboard + lv_textarea',
 };
 
@@ -416,6 +431,57 @@ function clockBlock(widget: DesignerWidget, document: DesignerDocument): string 
     return lines.join('\n');
 }
 
+
+/** The accent colour a design gives a widget, or the crate's own cyan when it names none. */
+function accentOf(widget: DesignerWidget): string {
+    return colourLiteral(widget.props.accent) ?? 'lv_color_hex(0x00FFFF)';
+}
+
+/** The accent when the design set one, otherwise its text colour: the selected item of a strip. */
+function accentOrText(widget: DesignerWidget): string {
+    return colourLiteral(widget.props.accent) ?? colourLiteral(widget.props.text_color) ?? 'lv_color_hex(0xFFFFFF)';
+}
+
+/**
+ * The numbers behind a chart or a plotter, from the design's `values` list.
+ *
+ * A plotter is a ring buffer with the newest sample at `head`; the design's head is a fixed number, so the list is
+ * rotated here and LVGL is given a plain series. Anything that is not a number is dropped rather than sent as zero,
+ * which is what the canvas does too.
+ */
+function seriesOf(widget: DesignerWidget, rotate: boolean): number[] {
+    const raw = textOf(widget, 'values');
+    const values = raw
+        .split(',')
+        .map((entry) => Number(entry.trim()))
+        .filter((value) => Number.isFinite(value));
+    if (!rotate || values.length === 0) {
+        return values;
+    }
+    const head = Math.max(0, Math.round(numberProp(widget, 'head', 0))) % values.length;
+    return values.map((_, index) => values[(head + index) % values.length] ?? 0);
+}
+
+/** The items a carousel lists, which the design keeps as its `options` children. */
+function optionsOf(widget: DesignerWidget): string[] {
+    return widget.children?.kind === 'options' ? [...widget.children.values] : [];
+}
+
+/** A table's cells: the header row first when the design has one, then every row. */
+function tableRowsOf(widget: DesignerWidget): { cells: string[][]; maxColumns: number } {
+    if (widget.children?.kind !== 'table') {
+        return { cells: [], maxColumns: 1 };
+    }
+    const cells: string[][] = [];
+    if (widget.children.headers.length > 0) {
+        cells.push([...widget.children.headers]);
+    }
+    for (const row of widget.children.rows) {
+        cells.push([...row]);
+    }
+    return { cells, maxColumns: Math.max(1, ...cells.map((row) => row.length)) };
+}
+
 function widgetLines(widget: DesignerWidget, parent: string, document: DesignerDocument): string[] {
     const variable = `w_${cppId(widget.id)}`;
     const lines: string[] = [];
@@ -586,6 +652,291 @@ function widgetLines(widget: DesignerWidget, parent: string, document: DesignerD
             lines.push(`    ui_set_scrollable(${variable}, false);`);
             lines.push(`    lv_obj_set_style_pad_all(${variable}, 0, 0);`);
             lines.push(`    clock_${cppId(widget.id)}_build(${variable});`);
+            break;
+        }
+        case 'chart':
+        case 'plotter': {
+            // The crate draws both as a connected polyline over `values`; LVGL has that shape as a chart series, so
+            // the design's numbers go in as points and LVGL draws the line. The plotter's ring buffer is unrolled
+            // here: `head` is a design-time number, so the rotation costs nothing at runtime.
+            lines.push(`    lv_obj_t *${variable} = lv_chart_create(${parent});`, ...geometry);
+            const series = seriesOf(widget, widget.tag === 'plotter');
+            const min = Math.round(numberProp(widget, 'min', 0));
+            const max = Math.round(numberProp(widget, 'max', 10));
+            lines.push(`    lv_chart_set_type(${variable}, LV_CHART_TYPE_LINE);`);
+            lines.push(`    lv_chart_set_range(${variable}, LV_CHART_AXIS_PRIMARY_Y, ${min}, ${max});`);
+            lines.push(`    lv_chart_set_point_count(${variable}, ${Math.max(1, series.length)});`);
+            lines.push(`    lv_chart_set_div_line_count(${variable}, 0, 0);`);
+            lines.push(`    lv_obj_set_style_size(${variable}, 0, 0, LV_PART_INDICATOR);`);
+            lines.push(
+                `    lv_chart_series_t *${variable}_series = lv_chart_add_series(${variable}, ${accentOf(widget)}, LV_CHART_AXIS_PRIMARY_Y);`,
+            );
+            lines.push(
+                `    static const int32_t ${variable}_values[] = {${series.map((value) => Math.round(value)).join(', ')}};`,
+            );
+            lines.push(
+                `    lv_chart_set_series_values(${variable}, ${variable}_series, ${variable}_values, ${Math.max(1, series.length)});`,
+            );
+            break;
+        }
+        case 'scale': {
+            // A radial scale is `LV_SCALE_MODE_ROUND_INNER`; LVGL draws the ticks and labels and, given a line, the
+            // needle, so this is the one value widget with no drawing code of its own.
+            lines.push(`    lv_obj_t *${variable} = lv_scale_create(${parent});`, ...geometry);
+            const min = Math.round(numberProp(widget, 'min', 0));
+            const max = Math.round(numberProp(widget, 'max', 100));
+            const major = Math.max(1, Math.round(numberProp(widget, 'major_ticks', 5)));
+            const minor = Math.max(1, Math.round(numberProp(widget, 'minor_ticks', 2)));
+            lines.push(`    lv_scale_set_mode(${variable}, LV_SCALE_MODE_ROUND_INNER);`);
+            lines.push(`    lv_scale_set_range(${variable}, ${min}, ${max});`);
+            lines.push(`    lv_scale_set_total_tick_count(${variable}, ${major * minor});`);
+            lines.push(`    lv_scale_set_major_tick_every(${variable}, ${minor});`);
+            lines.push(`    lv_scale_set_label_show(${variable}, ${boolProp(widget, 'show_labels') ? 'true' : 'false'});`);
+            lines.push(`    lv_scale_set_angle_range(${variable}, 270);`);
+            lines.push(`    lv_scale_set_rotation(${variable}, 135);`);
+            if (boolProp(widget, 'show_needle')) {
+                lines.push(`    lv_obj_t *${variable}_needle = lv_line_create(${variable});`);
+                lines.push(`    lv_obj_set_style_line_width(${variable}_needle, 3, 0);`);
+                lines.push(
+                    `    lv_obj_set_style_line_color(${variable}_needle, ${colourLiteral(widget.props.needle_color) ?? 'lv_color_hex(0xFF0000)'}, 0);`,
+                );
+                lines.push(
+                    `    lv_scale_set_line_needle_value(${variable}, ${variable}_needle, ${Math.round(-0.1 * Math.min(widget.width, widget.height))}, ${Math.round(numberProp(widget, 'value', 0))});`,
+                );
+            }
+            break;
+        }
+        case 'spinbox': {
+            lines.push(`    lv_obj_t *${variable} = lv_spinbox_create(${parent});`, ...geometry);
+            lines.push(
+                `    lv_spinbox_set_range(${variable}, ${Math.round(numberProp(widget, 'min', 0))}, ${Math.round(numberProp(widget, 'max', 9999))});`,
+            );
+            lines.push(
+                `    lv_spinbox_set_digit_format(${variable}, ${Math.max(1, Math.round(numberProp(widget, 'digits', 4)))}, ${Math.max(1, Math.round(numberProp(widget, 'digits', 4))) - Math.max(0, Math.round(numberProp(widget, 'decimals', 0)))});`,
+            );
+            lines.push(`    lv_spinbox_set_value(${variable}, ${Math.round(numberProp(widget, 'value', 0))});`);
+            break;
+        }
+        case 'number_picker': {
+            // The crate draws a value with the unit beside it; LVGL's spinbox is the value, a label is the unit.
+            lines.push(`    lv_obj_t *${variable} = lv_spinbox_create(${parent});`, ...geometry);
+            const digits = Math.max(1, String(Math.round(numberProp(widget, 'max', 100))).length);
+            lines.push(
+                `    lv_spinbox_set_range(${variable}, ${Math.round(numberProp(widget, 'min', 0))}, ${Math.round(numberProp(widget, 'max', 100))});`,
+            );
+            lines.push(`    lv_spinbox_set_digit_format(${variable}, ${digits}, ${digits});`);
+            lines.push(`    lv_spinbox_set_value(${variable}, ${Math.round(numberProp(widget, 'value', 0))});`);
+            const unit = textOf(widget, 'unit');
+            if (unit !== '') {
+                lines.push(`    lv_obj_t *${variable}_unit = lv_label_create(${variable});`);
+                lines.push(`    lv_label_set_text(${variable}_unit, ${cString(unit)});`);
+            }
+            break;
+        }
+        case 'time_picker': {
+            // Two rollers, and an AM/PM roller only when the design asks for a 12-hour face: LVGL's roller is the
+            // same control the crate's picker builds from its digits.
+            lines.push(`    lv_obj_t *${variable} = lv_obj_create(${parent});`, ...geometry);
+            lines.push(`    lv_obj_set_style_border_width(${variable}, 0, 0);`);
+            lines.push(`    lv_obj_set_style_pad_all(${variable}, 0, 0);`);
+            lines.push(`    lv_obj_set_flex_flow(${variable}, LV_FLEX_FLOW_ROW);`);
+            lines.push(
+                `    lv_obj_set_flex_align(${variable}, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);`,
+            );
+            const twelve = boolProp(widget, 'is_12h');
+            const first = twelve ? 1 : 0;
+            const last = twelve ? 12 : 23;
+            const pad = (value: number): string => String(value).padStart(2, '0');
+            const hours: string[] = [];
+            for (let hour = first; hour <= last; hour += 1) {
+                hours.push(pad(hour));
+            }
+            const minutes: string[] = [];
+            for (let minute = 0; minute < 60; minute += 1) {
+                minutes.push(pad(minute));
+            }
+            lines.push(`    lv_obj_t *${variable}_hour = lv_roller_create(${variable});`);
+            lines.push(`    lv_roller_set_options(${variable}_hour, ${cString(hours.join('\n'))}, LV_ROLLER_MODE_NORMAL);`);
+            lines.push(
+                `    lv_roller_set_selected(${variable}_hour, ${Math.max(0, Math.round(numberProp(widget, 'hour', 12)) - first)}, LV_ANIM_OFF);`,
+            );
+            lines.push(`    lv_obj_t *${variable}_minute = lv_roller_create(${variable});`);
+            lines.push(`    lv_roller_set_options(${variable}_minute, ${cString(minutes.join('\n'))}, LV_ROLLER_MODE_NORMAL);`);
+            lines.push(
+                `    lv_roller_set_selected(${variable}_minute, ${Math.max(0, Math.round(numberProp(widget, 'minute', 0)))}, LV_ANIM_OFF);`,
+            );
+            if (twelve) {
+                lines.push(`    lv_obj_t *${variable}_meridiem = lv_roller_create(${variable});`);
+                lines.push(`    lv_roller_set_options(${variable}_meridiem, "AM\\nPM", LV_ROLLER_MODE_NORMAL);`);
+                lines.push(
+                    `    lv_roller_set_selected(${variable}_meridiem, ${boolProp(widget, 'is_pm') ? 1 : 0}, LV_ANIM_OFF);`,
+                );
+            }
+            break;
+        }
+        case 'busy_wheel':
+            lines.push(`    lv_obj_t *${variable} = lv_spinner_create(${parent});`, ...geometry);
+            lines.push(`    lv_spinner_set_anim_params(${variable}, 1000, 60);`);
+            lines.push(
+                `    lv_obj_set_style_arc_color(${variable}, ${accentOf(widget)}, LV_PART_INDICATOR);`,
+            );
+            break;
+        case 'status_bar': {
+            // The crate's bar is the time on the right and a rule along the bottom; both are ordinary objects here.
+            lines.push(`    lv_obj_t *${variable} = lv_obj_create(${parent});`, ...geometry);
+            lines.push(`    lv_obj_set_style_border_width(${variable}, 0, 0);`);
+            lines.push(`    lv_obj_set_style_pad_all(${variable}, 0, 0);`);
+            lines.push(`    ui_set_scrollable(${variable}, false);`);
+            lines.push(`    lv_obj_t *${variable}_time = lv_label_create(${variable});`);
+            lines.push(`    lv_label_set_text(${variable}_time, ${cString(textOf(widget, 'time', '12:00'))});`);
+            lines.push(`    lv_obj_align(${variable}_time, LV_ALIGN_RIGHT_MID, -4, 0);`);
+            {
+                const font = fontLine(widget, `${variable}_time`, document);
+                if (font !== undefined) {
+                    lines.push(font);
+                }
+            }
+            lines.push(`    static lv_point_precise_t ${variable}_rule[] = {{0, 0}, {${Math.round(widget.width)}, 0}};`);
+            lines.push(`    lv_obj_t *${variable}_line = lv_line_create(${variable});`);
+            lines.push(`    lv_line_set_points(${variable}_line, ${variable}_rule, 2);`);
+            lines.push(`    lv_obj_align(${variable}_line, LV_ALIGN_BOTTOM_LEFT, 0, 0);`);
+            break;
+        }
+        case 'content_indicator':
+        case 'crumbs': {
+            // Both are a row of marks with one of them current. A dot is a circle, a crumb is a rounded bar: the
+            // sizes come from the crate's own renderer, so the row is the same shape on the glass as on the canvas.
+            const indicator = widget.tag === 'content_indicator';
+            const count = Math.max(1, Math.round(numberProp(widget, 'count', 3)));
+            const active = Math.min(Math.max(0, Math.round(numberProp(widget, 'active', 0))), count - 1);
+            const width = Math.round(widget.width);
+            const height = Math.round(widget.height);
+            const dot = indicator ? Math.max(2, Math.round(Math.min(width, height) / 3)) : 4;
+            const step = indicator ? dot + 2 : 6;
+            const size = indicator ? dot : 4;
+            const startX = Math.round((width - ((count - 1) * step + size)) / 2);
+            const centreY = Math.round((height - (indicator ? dot : 4)) / 2);
+            lines.push(`    lv_obj_t *${variable} = lv_obj_create(${parent});`, ...geometry);
+            lines.push(`    lv_obj_set_style_border_width(${variable}, 0, 0);`);
+            lines.push(`    lv_obj_set_style_pad_all(${variable}, 0, 0);`);
+            lines.push(`    ui_set_scrollable(${variable}, false);`);
+            lines.push(
+                `    lv_obj_set_style_bg_opa(${variable}, ${colourLiteral(widget.props.bg) === undefined ? 'LV_OPA_TRANSP' : colourLiteral(widget.props.bg)}, 0);`,
+            );
+            for (let index = 0; index < count; index += 1) {
+                const target = `    lv_obj_t *${variable}_dot${index} = lv_obj_create(${variable});`;
+                lines.push(target);
+                lines.push(
+                    `    lv_obj_set_size(${variable}_dot${index}, ${indicator ? dot : 4}, ${indicator ? dot : 4});`,
+                );
+                lines.push(`    lv_obj_set_pos(${variable}_dot${index}, ${startX + index * step}, ${centreY});`);
+                lines.push(`    lv_obj_set_style_border_width(${variable}_dot${index}, 0, 0);`);
+                lines.push(
+                    `    lv_obj_set_style_radius(${variable}_dot${index}, ${indicator ? 'LV_RADIUS_CIRCLE' : '1'}, 0);`,
+                );
+                lines.push(
+                    `    lv_obj_set_style_bg_color(${variable}_dot${index}, ${index === active ? accentOf(widget) : 'lv_color_hex(0x0A140A)'}, 0);`,
+                );
+            }
+            break;
+        }
+        case 'dialog': {
+            // A container with a title line, the message, and one button: what the crate composes, in the same order.
+            lines.push(`    lv_obj_t *${variable} = lv_obj_create(${parent});`, ...geometry);
+            lines.push(`    lv_obj_set_style_pad_all(${variable}, 4, 0);`);
+            lines.push(`    ui_set_scrollable(${variable}, false);`);
+            const title = textOf(widget, 'title', 'Alert');
+            lines.push(`    lv_obj_t *${variable}_title = lv_label_create(${variable});`);
+            lines.push(`    lv_label_set_text(${variable}_title, ${cString(title)});`);
+            lines.push(`    lv_obj_align(${variable}_title, LV_ALIGN_TOP_MID, 0, 0);`);
+            lines.push(`    lv_obj_t *${variable}_message = lv_label_create(${variable});`);
+            lines.push(`    lv_label_set_text(${variable}_message, ${cString(textOf(widget, 'message'))});`);
+            lines.push(`    lv_label_set_long_mode(${variable}_message, LV_LABEL_LONG_WRAP);`);
+            lines.push(`    lv_obj_set_width(${variable}_message, lv_pct(100));`);
+            lines.push(`    lv_obj_align(${variable}_message, LV_ALIGN_TOP_MID, 0, 20);`);
+            lines.push(`    lv_obj_t *${variable}_ok = lv_button_create(${variable});`);
+            lines.push(`    lv_obj_align(${variable}_ok, LV_ALIGN_BOTTOM_RIGHT, 0, 0);`);
+            lines.push(`    lv_obj_t *${variable}_ok_label = lv_label_create(${variable}_ok);`);
+            lines.push(`    lv_label_set_text(${variable}_ok_label, "OK");`);
+            lines.push(`    lv_obj_center(${variable}_ok_label);`);
+            {
+                const font = fontLine(widget, `${variable}_title`, document);
+                if (font !== undefined) {
+                    lines.push(font);
+                }
+            }
+            break;
+        }
+        case 'table': {
+            // The design holds the cells, so the table is fully described at generation time: LVGL's table takes a
+            // row and column count and a string per cell.
+            const rows = tableRowsOf(widget);
+            lines.push(`    lv_obj_t *${variable} = lv_table_create(${parent});`, ...geometry);
+            lines.push(`    lv_table_set_column_count(${variable}, ${Math.max(1, rows.maxColumns)});`);
+            lines.push(`    lv_table_set_row_count(${variable}, ${Math.max(1, rows.cells.length)});`);
+            rows.cells.forEach((row, rowIndex) => {
+                row.forEach((cell, columnIndex) => {
+                    lines.push(
+                        `    lv_table_set_cell_value(${variable}, ${rowIndex}, ${columnIndex}, ${cString(cell)});`,
+                    );
+                });
+            });
+            {
+                const font = fontLine(widget, variable, document);
+                if (font !== undefined) {
+                    lines.push(font);
+                }
+            }
+            break;
+        }
+        case 'carousel': {
+            // A vertical strip of items with the selected one in the accent colour, laid out from the design's
+            // `item_step` and `visible` counts -- the crate's wheel, flattened the way the canvas draws it.
+            lines.push(`    lv_obj_t *${variable} = lv_obj_create(${parent});`, ...geometry);
+            lines.push(`    lv_obj_set_style_border_width(${variable}, 0, 0);`);
+            lines.push(`    lv_obj_set_style_pad_all(${variable}, 0, 0);`);
+            lines.push(`    ui_set_scrollable(${variable}, false);`);
+            const items = optionsOf(widget);
+            const selected = Math.min(Math.max(0, Math.round(numberProp(widget, 'selected', 0))), Math.max(0, items.length - 1));
+            const step = Math.max(1, Math.round(numberProp(widget, 'item_step', 16)));
+            const centreX = Math.round(widget.width / 2);
+            const centreY = Math.round(widget.height / 2);
+            const half = Math.max(1, Math.round(numberProp(widget, 'visible', 7) / 2));
+            items.forEach((item, index) => {
+                const distance = index - selected;
+                if (Math.abs(distance) > half) {
+                    return;
+                }
+                lines.push(`    lv_obj_t *${variable}_item${index} = lv_label_create(${variable});`);
+                lines.push(`    lv_label_set_text(${variable}_item${index}, ${cString(item)});`);
+                lines.push(
+                    `    lv_obj_align(${variable}_item${index}, LV_ALIGN_CENTER, ${-Math.round(centreX / 2)}, ${distance * step - Math.round(centreY / 2)});`,
+                );
+                lines.push(
+                    `    lv_obj_set_style_text_color(${variable}_item${index}, ${distance === 0 ? accentOrText(widget) : 'lv_color_hex(0x606060)'}, 0);`,
+                );
+            });
+            break;
+        }
+        case 'path': {
+            // A path is a polyline once flattened, and flattening happens here so no curve maths is linked in.
+            const points = flattenPath(textOf(widget, 'd'));
+            if (points.length < 2) {
+                return [];
+            }
+            lines.push(`    static lv_point_precise_t ${variable}_points[] = {${points
+                .map((point) => `{${point.x}, ${point.y}}`)
+                .join(', ')}};`);
+            lines.push(`    lv_obj_t *${variable} = lv_line_create(${parent});`);
+            lines.push(
+                `    lv_line_set_points(${variable}, ${variable}_points, ${points.length});`,
+            );
+            lines.push(
+                `    lv_obj_set_style_line_color(${variable}, ${colourLiteral(widget.props.colour) ?? 'lv_color_hex(0xFFFFFF)'}, 0);`,
+            );
+            lines.push(
+                `    lv_obj_set_style_line_width(${variable}, ${Math.max(1, Math.round(numberProp(widget, 'stroke_width', 1)))}, 0);`,
+            );
             break;
         }
         case 'keypad':

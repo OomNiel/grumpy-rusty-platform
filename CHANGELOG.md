@@ -11,6 +11,24 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.18.25] - 2026-11-01
+
+### Added
+
+- **Fifteen more toolbox widgets draw on the C++ canvas.** The emitter knew 18 of the 35 tags; it now knows 32.
+  Newly drawn: **chart** and **plotter** (`lv_chart`, with the plotter's ring buffer unrolled at generation time),
+  **scale** (`lv_scale` with a line needle), **spinbox**, **number_picker** (spinbox + unit), **time_picker**
+  (rollers, AM/PM only when the design is 12-hour), **busy_wheel** (`lv_spinner`), **status_bar**, **dialog**,
+  **table** (`lv_table`, cells from the design), **carousel**, **content_indicator** and **crumbs** (dots and bars
+  in the accent colour), and **path** — flattened in the emitter into a polyline with the crate's own twelve
+  segments per curve, so no curve maths is linked into the firmware.
+- **A guard so the gap cannot grow back silently.** One test fails if a toolbox tag is neither drawn nor on an
+  explicit list of undrawable ones; another emits a design containing every drawable tag, so a wrong LVGL call is
+  caught by the compiler rather than on the glass.
+
+  Still not drawn, and listed as such: **image** and **icon** (both need the asset decoded to pixels at generation
+  time — the Rust crate does that in Rust) and **mesh** (3D shaded triangles; LVGL has no rasteriser for them).
+
 ## [0.18.24] - 2026-11-01
 
 ### Fixed
