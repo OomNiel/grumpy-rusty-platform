@@ -415,11 +415,14 @@ test('all sixty ticks are drawn, each at its own minute and in its own colour', 
     equal(ticks.length, 60, 'sixty ticks, one per minute mark');
     equal(ticks.filter((tick) => tick[2] === 'f70202').length, 12, 'twelve in the hour colour, every five minutes');
     equal(ticks.filter((tick) => tick[2] === '04fb14').length, 48, 'and forty-eight in the minute colour');
-    // Each tick has a real area and is turned about the radius it starts at, which is what makes it draw and stay
-    // drawn.
+    // Each tick has a real area ...
     contains(source, 'lv_obj_set_size(tick_clock_0, 3, 14);', 'the twelve is a 3-pixel mark');
     contains(source, 'lv_obj_set_style_transform_rotation(tick_clock_59, 3540, 0);', 'and the fifty-ninth is turned 354 degrees');
-    contains(source, 'lv_obj_set_style_transform_pivot_y(tick_clock_1, 0, 0);', 'pivoting on its inner end');
+    // ... and turns about the face's centre, not its own end: a pivot on the tick's top end left all sixty
+    // stacked at the twelve, because every one of them was swinging around the same point up there.
+    // 320x240 face -> centre (160,120), radius 116, outer 109.
+    contains(source, 'lv_obj_set_pos(tick_clock_5, 159, 11);', 'a tick starts at twelve o\'clock, outer radius above the centre');
+    contains(source, 'lv_obj_set_style_transform_pivot_y(tick_clock_5, 109, 0);', 'and its pivot lands on the centre itself');
     equal(/lv_line_create\(parent\);\n    lv_line_set_points\(tick_/.test(source), false, 'no tick is a line');
 });
 

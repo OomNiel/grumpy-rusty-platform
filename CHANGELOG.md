@@ -11,6 +11,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.18.28] - 2026-11-01
+
+### Fixed
+
+- The clock's ticks fan out around the face again. 0.18.27 pivoted each tick on its own top end,
+  so all sixty swung around the same point at the twelve and piled up there. They now pivot on the
+  centre of the face (a pivot outside the little rectangle, which LVGL accepts), which puts every
+  mark at its own minute.
+
 ## [0.18.27] - 2026-11-01
 
 ### Fixed

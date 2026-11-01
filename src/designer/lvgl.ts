@@ -379,15 +379,18 @@ function clockBlock(widget: DesignerWidget, document: DesignerDocument): string 
         lines.push(
             `    lv_obj_t *tick_${id}_${index} = lv_obj_create(parent);`,
             `    lv_obj_set_size(tick_${id}_${index}, ${thickness}, ${length});`,
-            `    lv_obj_set_pos(tick_${id}_${index}, ${geometry.cx - Math.floor(thickness / 2)}, ${geometry.cy - inner});`,
+            `    lv_obj_set_pos(tick_${id}_${index}, ${geometry.cx - Math.floor(thickness / 2)}, ${geometry.cy - outer});`,
             `    lv_obj_set_style_radius(tick_${id}_${index}, 0, 0);`,
             `    lv_obj_set_style_border_width(tick_${id}_${index}, 0, 0);`,
             `    lv_obj_set_style_pad_all(tick_${id}_${index}, 0, 0);`,
             `    lv_obj_set_style_bg_opa(tick_${id}_${index}, LV_OPA_COVER, 0);`,
             `    lv_obj_set_style_bg_color(tick_${id}_${index}, ${major ? majorColour : minorColour}, 0);`,
-            // Turned about its inner end: the pivot is the top centre, which is the radius it starts at.
+            // Turned about the *face's centre*, which for a tick sitting at twelve o'clock is `outer` pixels below
+            // its own top -- outside the little rectangle, and that is fine: LVGL takes the pivot in object
+            // coordinates and does not require it to be inside them. Pivoting on the tick's own top end instead
+            // left all sixty of them stacked at the twelve (bench, 2026-11-01).
             `    lv_obj_set_style_transform_pivot_x(tick_${id}_${index}, ${Math.floor(thickness / 2)}, 0);`,
-            `    lv_obj_set_style_transform_pivot_y(tick_${id}_${index}, 0, 0);`,
+            `    lv_obj_set_style_transform_pivot_y(tick_${id}_${index}, ${outer}, 0);`,
             `    lv_obj_set_style_transform_rotation(tick_${id}_${index}, ${index * 60}, 0);`,
         );
     }
