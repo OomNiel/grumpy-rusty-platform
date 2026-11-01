@@ -11,6 +11,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.18.22] - 2026-11-01
+
+### Fixed
+
+- **The screen fills the panel: no blank bars, and the design is where it says it is.** LVGL's default theme
+  pads a container, and a design's coordinates are absolute — so a view sized to the whole panel had its contents
+  pushed in by the padding, leaving the last few pixels of the panel showing the background (the bars on the right
+  and bottom) and making a full-screen widget look off-centre. Every container the emitter creates now sets
+  `pad_all = 0` — the screen, each view (which is also made non-scrollable) and every container widget — so what
+  the canvas shows at 0,0 is what the glass shows at 0,0.
+
 ## [0.18.21] - 2026-11-01
 
 ### Fixed

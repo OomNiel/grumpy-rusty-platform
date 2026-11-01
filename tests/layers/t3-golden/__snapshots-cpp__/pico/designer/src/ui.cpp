@@ -59,6 +59,7 @@ void ui_show_view(const char *view_id) {
 void ui_init() {
     lv_obj_t *screen = lv_screen_active();
     ui_set_scrollable(screen, false);
+    lv_obj_set_style_pad_all(screen, 0, 0);
 
     view_main = lv_obj_create(screen);
     lv_obj_set_pos(view_main, 0, 0);
@@ -66,6 +67,8 @@ void ui_init() {
     lv_obj_set_style_border_width(view_main, 0, 0);
     lv_obj_set_style_radius(view_main, 0, 0);
     lv_obj_set_style_bg_opa(view_main, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_pad_all(view_main, 0, 0);
+    ui_set_scrollable(view_main, false);
 
     lv_obj_t *w_title = lv_label_create(view_main);
     lv_obj_set_pos(w_title, 16, 8);

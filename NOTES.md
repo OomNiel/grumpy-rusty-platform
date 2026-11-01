@@ -8733,3 +8733,26 @@ paths and that the buffer is sized from `kLinePixels`.
 **Lesson:** "the colour order is wrong" and "the byte order is wrong" look identical on the glass and are fixed in
 different files. The way to tell them apart is to ask what the *other* working implementation sends — here,
 mipidsi's MADCTL byte — and then whether anything else in the path is allowed to differ. It was.
+### 180. Blank bars, and a face that looked off-centre — theme padding
+
+Two symptoms, one cause: the generated screen left a few pixels of background on the right and bottom, and a
+full-screen clock face looked shifted. LVGL's **default theme pads a container**, and a design's coordinates are
+absolute — so a view created with `lv_obj_create()` and sized to the whole panel did not put its children at 0,0 of
+the panel, and its last few pixels were outside the padded content area. A container that is padded and can scroll
+is a container whose contents sit somewhere other than where its size says they do.
+
+The emitter now says it explicitly, everywhere it positions a design's coordinates:
+
+    lv_obj_set_style_pad_all(screen, 0, 0);
+    lv_obj_set_style_pad_all(view_main, 0, 0);   // + ui_set_scrollable(view_main, false)
+    lv_obj_set_style_pad_all(w_clock, 0, 0);     // and every container widget
+
+**The general rule:** one canvas serves both languages. The Rust renderer draws at absolute coordinates into a
+framebuffer and has no concept of padding; LVGL has one, and its default is not zero. Every LVGL container the
+emitter makes must therefore be given `pad_all = 0` and `scrollable = false`, or the WYSIWYG promise is
+approximately true rather than true — which is exactly the kind of "approximately" a person sees as a bar.
+
+**Cost of the detour:** I first went looking for a panel offset in the driver, because "bars on two edges" also
+describes a GRAM offset. It isn't: the panel is addressed 0..319 / 0..239 and the bars were LVGL's own padding. The
+check that settles it is whether the *content* is clipped at the same edge as the bar — a driver offset pushes
+everything one way, padding shrinks the box from the inside.

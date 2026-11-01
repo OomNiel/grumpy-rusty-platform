@@ -422,6 +422,7 @@ function widgetLines(widget: DesignerWidget, parent: string): string[] {
             lines.push(`    lv_obj_set_style_pad_row(${variable}, ${Math.round(numberProp(widget, 'gap', 2))}, 0);`);
             lines.push(`    lv_obj_set_style_border_width(${variable}, 0, 0);`);
             lines.push(`    lv_obj_set_style_bg_opa(${variable}, LV_OPA_TRANSP, 0);`);
+            lines.push(`    lv_obj_set_style_pad_all(${variable}, 0, 0);`);
             const values = widget.children?.kind === 'lines' ? widget.children.values : [];
             for (const value of values) {
                 lines.push(`    lv_label_set_text(lv_label_create(${variable}), ${cString(value)});`);
@@ -493,6 +494,7 @@ function widgetLines(widget: DesignerWidget, parent: string): string[] {
         case 'circle': {
             lines.push(`    lv_obj_t *${variable} = lv_obj_create(${parent});`, ...geometry);
             lines.push(`    lv_obj_set_style_border_width(${variable}, 0, 0);`);
+            lines.push(`    lv_obj_set_style_pad_all(${variable}, 0, 0);`);
             if (widget.tag === 'circle') {
                 lines.push(`    lv_obj_set_style_radius(${variable}, LV_RADIUS_CIRCLE, 0);`);
             }
@@ -532,6 +534,7 @@ function widgetLines(widget: DesignerWidget, parent: string): string[] {
             lines.push(`    lv_obj_set_style_border_width(${variable}, 0, 0);`);
             lines.push(`    lv_obj_set_style_bg_opa(${variable}, LV_OPA_TRANSP, 0);`);
             lines.push(`    ui_set_scrollable(${variable}, false);`);
+            lines.push(`    lv_obj_set_style_pad_all(${variable}, 0, 0);`);
             lines.push(`    clock_${cppId(widget.id)}_build(${variable});`);
             break;
         }
@@ -544,6 +547,7 @@ function widgetLines(widget: DesignerWidget, parent: string): string[] {
             lines.push(`    lv_obj_t *${variable} = lv_obj_create(${parent});`, ...geometry);
             lines.push(`    lv_obj_set_style_border_width(${variable}, 0, 0);`);
             lines.push(`    lv_obj_set_style_radius(${variable}, 0, 0);`);
+            lines.push(`    lv_obj_set_style_pad_all(${variable}, 0, 0);`);
             break;
         default:
             return [];
@@ -664,6 +668,11 @@ export function emitUiCpp(document: DesignerDocument): string {
                 `    lv_obj_set_style_border_width(${name}, 0, 0);`,
                 `    lv_obj_set_style_radius(${name}, 0, 0);`,
                 `    lv_obj_set_style_bg_opa(${name}, LV_OPA_TRANSP, 0);`,
+                // The default theme pads a container, and a design's coordinates are absolute: padding moved
+                // every widget in, and the container's last few pixels showed the background as a bar on the
+                // right and bottom (bench, 2026-11-01).
+                `    lv_obj_set_style_pad_all(${name}, 0, 0);`,
+                `    ui_set_scrollable(${name}, false);`,
             ];
             if (view.id !== startView) {
                 lines.push(`    ui_set_hidden(${name}, true);`);
@@ -726,6 +735,7 @@ ${clocks
             .join('\n')}${clocks.length === 0 ? '' : '\n'}void ui_init() {
     lv_obj_t *screen = lv_screen_active();
     ui_set_scrollable(screen, false);
+    lv_obj_set_style_pad_all(screen, 0, 0);
 
 ${viewObjects}
 

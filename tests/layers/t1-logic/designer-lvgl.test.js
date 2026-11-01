@@ -241,3 +241,19 @@ test('a clock with no numerals draws no labels', () => {
     equal(/numeral_clock_1 = lv_label_create/.test(source), false, 'no numeral objects at all');
     equal((source.match(/lv_line_create/g) ?? []).length, 63, 'and the ticks and hands are still there');
 });
+
+test('nothing is padded: a design\'s coordinates are absolute', () => {
+    // LVGL's default theme pads a container, so a view the design sizes to the whole panel had its contents
+    // pushed in and its last few pixels left showing the background -- a bar on the right and bottom, and a face
+    // that looked off-centre (bench, 2026-11-01). Every container the emitter makes now says pad_all 0, and the
+    // views and the screen are not scrollable either.
+    const source = emitUiCpp(clockDesign());
+    contains(source, 'lv_obj_set_style_pad_all(screen, 0, 0);', 'the screen');
+    contains(source, 'lv_obj_set_style_pad_all(view_main, 0, 0);', 'a view');
+    contains(source, 'ui_set_scrollable(view_main, false);', 'and a view does not scroll');
+    contains(source, 'lv_obj_set_style_pad_all(w_clock, 0, 0);', 'a container widget');
+
+    const rich = emitUiCpp(design());
+    contains(rich, 'lv_obj_set_style_pad_all(view_main, 0, 0);', 'still true when widgets live in the view');
+    equal(/lv_obj_set_size\(view_main, 240, 320\);/.test(rich), true, 'and the view is the canvas size, exactly');
+});
