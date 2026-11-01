@@ -677,6 +677,9 @@ int gWidth = ${panel.width};
 int gHeight = ${panel.height};
 int gMarkerX = 0;
 
+/** The widest line this panel can have, which is the size of the one-line scratch buffer. */
+constexpr int kLinePixels = ${Math.max(panel.width, panel.height)};
+
 // The panel's bus, named once. On the Pico the wiring says which peripheral it is on; on an ESP board the
 // bus is remappable and SPI is the one. auto deduces each core's own SPI type, which neither core spells
 // the same way.
@@ -690,6 +693,17 @@ void write_command(uint8_t command) {
     panelSpi.transfer(command);
     digitalWrite(kCs, HIGH);
     panelSpi.endTransaction();
+}
+
+/**
+ * One RGB565 pixel, the way the controller wants it: most significant byte first.
+ *
+ * A uint16_t sits in memory low byte first on both cores, so writing pixels straight out of a buffer sends every
+ * colour byte-swapped -- which is red appearing as blue, not a colour-order or wiring problem (bench, 2026-11-01;
+ * the Rust side goes through a driver that does this swap for it).
+ */
+uint16_t swap_pixel(uint16_t value) {
+    return static_cast<uint16_t>((value >> 8) | (value << 8));
 }
 
 void write_data(const uint8_t *data, size_t length) {
@@ -829,13 +843,21 @@ bool open_window(int x, int y, int w, int h) {
     return true;
 }
 
-/** Streams a block of RGB565 pixels, row by row, with no buffer of its own. */
+/** Streams a block of RGB565 pixels, row by row, through one swapped line at a time. */
 void stream_pixels(const uint16_t *pixels, int stride, int w, int h) {
+    if (w > kLinePixels) {
+        w = kLinePixels;
+    }
+    static uint16_t line[kLinePixels];
     digitalWrite(kDc, HIGH);
     digitalWrite(kCs, LOW);
     panelSpi.beginTransaction(SPISettings(kSpiHz, MSBFIRST, SPI_MODE0));
     for (int row = 0; row < h; row++) {
-        panelSpi.transfer(const_cast<uint16_t *>(pixels + row * stride), static_cast<size_t>(w) * 2);
+        const uint16_t *source = pixels + row * stride;
+        for (int column = 0; column < w; column++) {
+            line[column] = swap_pixel(source[column]);
+        }
+        panelSpi.transfer(line, static_cast<size_t>(w) * 2);
     }
     panelSpi.endTransaction();
     digitalWrite(kCs, HIGH);
@@ -870,10 +892,10 @@ void panel_fill_rect(int x, int y, int w, int h, uint16_t colour) {
     }
     // One line at a time through a small buffer: a full-screen fill would need 150 KB of RAM on a 240x320
     // panel, which is more than the smaller boards have.
-    static uint16_t line[320];
-    const int pixels = w < 320 ? w : 320;
+    static uint16_t line[kLinePixels];
+    const int pixels = w < kLinePixels ? w : kLinePixels;
     for (int i = 0; i < pixels; i++) {
-        line[i] = colour;
+        line[i] = swap_pixel(colour);
     }
     digitalWrite(kDc, HIGH);
     digitalWrite(kCs, LOW);

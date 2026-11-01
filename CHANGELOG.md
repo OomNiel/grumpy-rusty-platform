@@ -11,6 +11,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.18.21] - 2026-11-01
+
+### Fixed
+
+- **Red no longer renders as blue on a designer project.** The colour *order* was already right — MADCTL's BGR bit
+  is set exactly as `mipidsi` sets it for the same glass on the Rust side — but every pixel went out **low byte
+  first**: a `uint16_t` sits in memory little-endian, and an ILI9341 (like every SPI panel here) wants the most
+  significant byte of each RGB565 pixel first. `0xF800` (red) arrived as `0x00F8` (blue), and a solid fill was
+  swapped the same way. `src/panel.cpp` now swaps as it streams, one line at a time through a buffer sized from the
+  panel's widest dimension, in both `stream_pixels()` and `panel_fill_rect()` — so the designer screen, the
+  diagnostic screen and every fill are the same answer.
+
 ## [0.18.20] - 2026-11-01
 
 ### Added

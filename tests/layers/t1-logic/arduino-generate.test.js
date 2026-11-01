@@ -412,3 +412,30 @@ test('a designer project is refused unless it really carries its design', () => 
         equal(missing.length, 0, `${board.id}: ${missing.join(', ')}`);
     }
 });
+
+test('pixels go out high byte first, or every colour is byte-swapped', () => {
+    // Red rendering as blue on the bench (2026-11-01) was not the colour order: MADCTL's BGR bit was already set,
+    // exactly as mipidsi sets it on the Rust side. A uint16_t sits in memory low byte first, so a blitted RGB565
+    // buffer reaches an ILI9341 byte-swapped, and 0xF800 (red) arrives as 0x00F8 (blue).
+    const problems = [];
+    for (const board of BOARDS) {
+        const files = generateArduinoProjectFiles(project(board.id, 'designer'));
+        const panel = fileAt(files, 'src/panel.cpp').content;
+        if (!/uint16_t swap_pixel\(uint16_t value\)/.test(panel)) {
+            problems.push(`${board.id}: no swap_pixel`);
+            continue;
+        }
+        if (!/line\[column\] = swap_pixel\(source\[column\]\);/.test(panel)) {
+            problems.push(`${board.id}: stream_pixels sends the buffer raw`);
+        }
+        if (!/line\[i\] = swap_pixel\(colour\);/.test(panel)) {
+            problems.push(`${board.id}: panel_fill_rect sends the colour raw`);
+        }
+        // The scratch line has to hold the panel's widest dimension, or a wide blit is truncated.
+        const widest = /constexpr int kLinePixels = (\d+);/.exec(panel)?.[1];
+        if (widest === undefined || !/line\[kLinePixels\]/.test(panel)) {
+            problems.push(`${board.id}: the line buffer is not sized from kLinePixels`);
+        }
+    }
+    equal(problems.length, 0, problems.slice(0, 4).join('; '));
+});

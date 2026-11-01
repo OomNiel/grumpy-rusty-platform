@@ -8704,3 +8704,32 @@ literals — a second clock in one design would have coloured itself with the fi
 **Lesson:** `SUPPORTED_TAGS` is the whole vocabulary of the canvas, and a tag missing from it fails *at runtime, on
 the glass*, with no error anywhere. When a widget is added to the Designer, the C++ emitter is a second list to
 update — and the honest way to check is to build and flash a design that contains only that widget.
+### 179. Red rendered as blue — the byte order, not the colour order
+
+The report named the colour order, and that is where I looked first. It was already right: `kColorOrderBgr = true`
+puts MADCTL bit 0x08 on the wire, and `mipidsi`'s `ColorOrder::Bgr` sets *the same bit* (`set_address_mode.rs`,
+`result.0 |= 0b0000_1000`) — so the Rust and C++ drivers tell the controller the same thing.
+
+What differed was the **bytes inside each pixel**. `stream_pixels()` did:
+
+    panelSpi.transfer(const_cast<uint16_t *>(pixels + row * stride), w * 2);
+
+on a buffer whose `uint16_t`s are little-endian in memory, so every RGB565 word arrives as high-byte-second. An
+ILI9341 wants most-significant byte first: `0xF800` (red) is received as `0x00F8` — blue. A byte swap of RGB565 is
+*exactly* "red shows as blue" with green shifted, which is why the diagnosis looked like a colour-order problem and
+was not one. The Rust side never sees it because `mipidsi` swaps inside its SPI word writer.
+
+`panel.cpp` now swaps as it streams, and the swap lives in one place:
+
+- `swap_pixel(value)` — `(value >> 8) | (value << 8)`;
+- `stream_pixels()` copies each row through a static line buffer, swapping as it goes;
+- `panel_fill_rect()` fills its line with swapped pixels, so a solid fill and a blit agree;
+- the buffer is `kLinePixels` = the panel's **widest** dimension (320 here, 480 on the Sunton), which also fixes a
+  latent truncation: the old `static uint16_t line[320]` would have cut a 480-wide blit short.
+
+Golden snapshots for every C++ board were regenerated; one new t1 test checks `swap_pixel` is used in *both*
+paths and that the buffer is sized from `kLinePixels`.
+
+**Lesson:** "the colour order is wrong" and "the byte order is wrong" look identical on the glass and are fixed in
+different files. The way to tell them apart is to ask what the *other* working implementation sends — here,
+mipidsi's MADCTL byte — and then whether anything else in the path is allowed to differ. It was.
