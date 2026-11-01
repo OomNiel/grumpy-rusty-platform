@@ -173,3 +173,71 @@ test('the file is a C++ file: the callbacks are ours, and the handlers are exter
     contains(source, 'on_go_clicked();', 'and it calls the handler the project defines');
     notContains(source, 'extern "C" void on_go_clicked', 'which is declared in the header, not here');
 });
+
+// --------------------------------------------------------------------- the clock
+
+/** The design from the bench (2026-11-01): one clock and nothing else. */
+function clockDesign(overrides = {}) {
+    const document = createDocument({ boardId: 'pico2w', panelWidth: 240, panelHeight: 320, rotation: 3, screenId: 'RustyPanel' });
+    document.widgets = [
+        {
+            id: 'clock',
+            tag: 'clock',
+            x: 0,
+            y: 0,
+            width: 320,
+            height: 240,
+            props: {
+                hour: 10,
+                minute: 10,
+                second: 0,
+                hour_color: '#ffffff',
+                minute_color: '#ffffff',
+                second_color: '#ff0000',
+                hour_tick_color: '#808080',
+                minute_tick_color: '#525252',
+                label_color: '#ffffff',
+                show_labels: true,
+                movement: true,
+                ...overrides,
+            },
+            events: [],
+        },
+    ];
+    return document;
+}
+
+test('the clock is drawn, not dropped: 12 hour ticks, 60 minute ticks and three hands', () => {
+    // It was missing from SUPPORTED_TAGS, so a design that was only a clock emitted an empty view and the board
+    // showed a blank screen (bench, 2026-11-01).
+    const source = emitUiCpp(clockDesign());
+    equal(unsupportedTags(clockDesign()).join(' '), '', 'nothing is unsupported about a clock');
+    equal((source.match(/lv_line_create/g) ?? []).length, 63, '60 minute ticks, 12 hour ticks, 3 hands');
+    contains(source, 'struct ui_clock {', 'the face has state of its own');
+    contains(source, 'static const float ui_clock_sin[60]', 'and a table instead of a trigonometry library');
+    contains(source, 'lv_label_set_text(numeral_clock_12, "12");', 'the numerals');
+    contains(source, 'lv_color_hex(0xff0000)', 'the second hand keeps its colour');
+});
+
+test('a clock with movement runs, and one without does not', () => {
+    contains(emitUiCpp(clockDesign()), 'ui_clock_tick(&clock_clock);', 'a ticking clock advances in ui_tick');
+    const still = emitUiCpp(clockDesign({ movement: false }));
+    notContains(still, 'ui_clock_tick(&clock_clock);', 'a still clock is not touched every loop');
+    contains(still, 'nothing to recompute here', 'and says so');
+});
+
+test('the face starts at the time the design shows, and an app can hand over the real one', () => {
+    const source = emitUiCpp(clockDesign());
+    contains(source, 'clock_clock.hour = 10;', 'the designed hour');
+    contains(source, 'clock_clock.minute = 10;', 'and minute');
+    contains(source, 'void ui_clock_clock_set_time(int hour, int minute, int second) {', 'the setter exists');
+    contains(source, 'clock_clock.hour = ((hour % 24) + 24) % 24;', 'and folds a value into range');
+    contains(emitUiCppHeader(clockDesign()), 'void ui_clock_clock_set_time(int hour, int minute, int second);', 'declared for the app');
+    equal(emitUiCppHeader(design()).includes('set_time'), false, 'a design with no clock declares none');
+});
+
+test('a clock with no numerals draws no labels', () => {
+    const source = emitUiCpp(clockDesign({ show_labels: false }));
+    equal(/numeral_clock_1 = lv_label_create/.test(source), false, 'no numeral objects at all');
+    equal((source.match(/lv_line_create/g) ?? []).length, 63, 'and the ticks and hands are still there');
+});

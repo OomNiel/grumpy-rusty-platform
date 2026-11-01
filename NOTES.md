@@ -8677,3 +8677,30 @@ Flashing the user's project with the fixed FQBN: OpenOCD programs, `** Verified 
 **Lesson:** a failure message from the *tool* is a question about which route it took, not about the board. "No
 drive to deploy" is the UF2 route saying it has no drive; the answer is a different upload method, and the fact that
 the compiler's own menu already knows which is what the offer should read.
+### 178. A blank screen, because the clock tag had no case
+
+`cpp_designer_pico2w_1` is a design with one widget: a `clock`. The board showed a black screen with the backlight
+on. The cause was one missing line in `SUPPORTED_TAGS` — `clock` was not in the C++ emitter's list, `widgetLines`
+returned `[]` for it, and the view was emitted empty. The Designer's own report would have been honest about that
+(`unsupportedTags` names it), but the project was generated from the wizard, where nothing looks at the design.
+
+The face is now built from ordinary LVGL objects, and the split between static and moving geometry is what makes
+it cheap:
+
+- **Ticks and numerals never move**, so `clockGeometry()` works them out in TypeScript and the emitter writes
+  literals: 12 hour ticks (from `.82r` to `.94r`), 60 minute ticks (`.90r` to `.94r`), and 12 numerals aligned with
+  `lv_obj_align(LV_ALIGN_CENTER, dx, dy)`. **No trigonometry in the firmware, no `math.h`.**
+- **Only the hands move**, so they need a table: `ui_clock_cos`/`ui_clock_sin`, 60 entries of six degrees each,
+  emitted as literals too. `ui_clock_place()` multiplies by the hand's length with rounding, so a 320x240 face
+  lands on the same pixel the canvas draws.
+- `movement` turns the held time into a running one with `millis()`, in `ui_tick()`; `ui_clock_<id>_set_time()` in
+  `ui.h` is the way in for an app that knows the real time. That mirrors the Rust side exactly (`advance_clock`,
+  `set_clock_time`, `has_wall_clock`), minus the wall clock: a C++ board with no RTC has nothing to ask.
+
+Two mistakes of mine on the way: the `struct ui_clock` definition was missing from the emitted helpers (eleven
+`invalid use of incomplete type` errors), and the colour names were shared globals before they became per-clock
+literals — a second clock in one design would have coloured itself with the first one's choices.
+
+**Lesson:** `SUPPORTED_TAGS` is the whole vocabulary of the canvas, and a tag missing from it fails *at runtime, on
+the glass*, with no error anywhere. When a widget is added to the Designer, the C++ emitter is a second list to
+update — and the honest way to check is to build and flash a design that contains only that widget.

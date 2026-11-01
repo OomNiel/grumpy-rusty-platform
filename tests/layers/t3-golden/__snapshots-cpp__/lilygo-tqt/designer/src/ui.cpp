@@ -85,6 +85,5 @@ void ui_init() {
 }
 
 void ui_tick() {
-    // Nothing in this design recomputes itself. A clock's hands, or a value read from the board, is emitted
-    // here when the design asks for one.
+    // No clock in this design runs by itself; nothing to recompute here.
 }

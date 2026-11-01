@@ -11,6 +11,19 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.18.20] - 2026-11-01
+
+### Added
+
+- **The clock widget is drawn on the C++ canvas.** It was missing from the emitter's supported tags, so a design
+  whose only widget was a clock emitted an empty view — the board showed a blank screen with the backlight on
+  (bench, 2026-11-01). The face is now real LVGL objects: 60 minute ticks, 12 hour ticks, the numerals, and three
+  `lv_line` hands. Ticks and numerals are fixed geometry, so it is worked out in the emitter and written as
+  literals — no trigonometry is linked into the firmware, only a 60-entry table of unit vectors for the hands.
+  `movement` makes it run a second at a time from `millis()` (what a board with no RTC can honestly do), and
+  `ui_clock_<id>_set_time(hour, minute, second)` in `ui.h` is how an app that knows the real time (NTP, an RTC)
+  hands it over.
+
 ## [0.18.19] - 2026-11-01
 
 ### Fixed
