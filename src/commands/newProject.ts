@@ -7,7 +7,7 @@ import {
     isAcceptableProjectName,
     requiredFirmware,
 } from '../generate/files';
-import { SketchBackend, availableBackends, projectFiles } from '../generate/backends';
+import { SketchBackend, availableBackends, projectFiles, requiredTemplateFiles } from '../generate/backends';
 import { showDesigner } from '../designer/editor';
 import { copyVendoredCrates } from '../designer/vendored';
 import { forgetPendingDesigner, requestDesignerAfterReload } from '../designer/pendingOpen';
@@ -353,10 +353,15 @@ export function registerNewProjectCommand(
             return;
         }
 
+        // Named after the template, not always "blinky": the default used to be `blinky-<board>` whatever was
+        // chosen, so a WYSIWYG project arrived as `blinky_pico2w` — a folder, a sketch and a README that all say
+        // blinky, from a menu item called WYSIWYG designer (bench, 2026-11-01). The first thing a person checks
+        // is the name, so the name has to be true.
+        const templateLabel = backend.templatesOfferedFor(board).find((info) => info.id === template)?.label ?? template;
         const projectName = await vscode.window.showInputBox({
             title: `${board.name} — project name`,
-            prompt: 'Folder name and crate name for the new project',
-            value: `blinky-${board.id}`,
+            prompt: `Folder and project name (${templateLabel})`,
+            value: `${template}-${board.id}`,
             validateInput: (value) => {
                 const verdict = isAcceptableProjectName(value);
                 return verdict === true ? undefined : verdict;
@@ -389,6 +394,19 @@ export function registerNewProjectCommand(
             // thing here that knows the offset. getTimezoneOffset counts minutes west of UTC.
             clockOffsetMinutes: -new Date().getTimezoneOffset(),
         });
+        // What was asked for has to be what is written. A WYSIWYG project without its design or its
+        // code-behind is a blinky with a different label, and a wizard that reports success is how that stays
+        // unnoticed until the canvas opens empty.
+        const signatures = requiredTemplateFiles(backend, template).filter(
+            (path) => !files.some((file) => file.path === path),
+        );
+        if (signatures.length > 0) {
+            void vscode.window.showErrorMessage(
+                `The ${templateLabel} project was not written: this generator does not produce ` +
+                    `${signatures.join(', ')} for ${board.name}. Nothing was created.`,
+            );
+            return;
+        }
         for (const file of files) {
             const segments = file.path.split('/');
             const directory = vscode.Uri.joinPath(target, ...segments.slice(0, -1));
@@ -473,7 +491,7 @@ export function registerNewProjectCommand(
         const buttons = backend.id === 'rust' ? [opening, 'Build Now', 'Later'] : [opening, 'Later'];
         const action = await vscode.window.showInformationMessage(
             `Created ${backend.id === 'rust' ? crateName : folderName
-            } for ${board.name} (${template}, ${files.length} files).`,
+            } for ${board.name} — ${templateLabel}, ${files.length} files.`,
             ...buttons,
         );
 

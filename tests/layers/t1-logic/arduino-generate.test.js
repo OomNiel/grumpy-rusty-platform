@@ -18,6 +18,7 @@
 
 const { test, ok, notOk, equal, contains, notContains, throws, compiled } = require('../../lib/harness');
 const { BOARDS } = compiled('boards/catalog');
+const { arduinoBackend } = compiled('generate/backends');
 const { defaultWiring, PANEL_MODULES } = compiled('boards/panels');
 const {
     ARDUINO_TEMPLATE_IDS,
@@ -395,4 +396,19 @@ test('every board offers the WYSIWYG designer in the wizard, and it is called th
         }
     }
     equal(problems.length, 0, problems.slice(0, 5).join('; '));
+});
+
+test('a designer project is refused unless it really carries its design', () => {
+    // The wizard's last line of defence: a template that quietly produces something else must not be written and
+    // called WYSIWYG. Found on the bench 2026-11-01, when a WYSIWYG project arrived named `blinky_pico2w`.
+    const { requiredTemplateFiles } = compiled('generate/backends');
+    equal(requiredTemplateFiles(arduinoBackend, 'designer').join(' '), 'designer/panel.ui.json src/ui_handlers.cpp', 'a sketch needs its design and its code-behind');
+    equal(requiredTemplateFiles(arduinoBackend, 'blinky').length, 0, 'a blinky has no signature to check');
+    for (const board of BOARDS) {
+        const files = generateArduinoProjectFiles(project(board.id, 'designer'));
+        const missing = requiredTemplateFiles(arduinoBackend, 'designer').filter(
+            (path) => !files.some((file) => file.path === path),
+        );
+        equal(missing.length, 0, `${board.id}: ${missing.join(', ')}`);
+    }
 });

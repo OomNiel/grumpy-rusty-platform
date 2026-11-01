@@ -273,3 +273,18 @@ test('a new WYSIWYG project offers to open the canvas, in either language', () =
     contains(source, 'const canDesign = template === \'designer\';', 'the canvas follows the template, not the language');
     notContains(source, "canDesign = backend.id === 'rust'", 'and not the backend');
 });
+
+test('a new project is named after the template, not always after blinky', () => {
+    // The name box was always pre-filled `blinky-<board>`, so a WYSIWYG project arrived as `blinky_pico2w` -- a
+    // folder, a sketch and a README that all say blinky, from a menu item called WYSIWYG designer
+    // (bench, 2026-11-01). The first thing a person checks is the name.
+    const fs = require('fs');
+    const path = require('path');
+    const source = fs.readFileSync(
+        path.join(__dirname, '..', '..', '..', 'src', 'commands', 'newProject.ts'),
+        'utf8',
+    );
+    contains(source, 'value: `${template}-${board.id}`', 'the template decides the name');
+    notContains(source, 'value: `blinky-${board.id}`', 'and never a fixed one');
+    contains(source, '(${templateLabel})', 'the prompt names the template being created');
+});

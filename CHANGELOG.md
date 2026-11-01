@@ -11,6 +11,19 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.18.18] - 2026-11-01
+
+### Fixed
+
+- **A WYSIWYG project is no longer born called `blinky_pico2w`.** The name box was pre-filled `blinky-<board>`
+  whatever template had been chosen, so the folder, the `.ino`, the README title and the generated code all said
+  blinky for a project made from the *WYSIWYG designer* item — which is exactly what makes "a blinky was created"
+  the honest reading of what you see. The default now follows the template (`designer-pico2w`), the prompt names
+  the template being created, and the completion message uses its label rather than its id.
+- **A project that is not the template that was asked for is refused, not written.** The wizard now checks each
+  template's signature file before writing anything (a designer project must produce `designer/panel.ui.json`
+  and the code-behind for its language) and says so instead of reporting success over the wrong project.
+
 ## [0.18.17] - 2026-11-01
 
 ### Fixed

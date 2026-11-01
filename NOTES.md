@@ -8622,3 +8622,28 @@ name first.
 
 **Lesson:** when a feature ships, sweep the *words* about it in the same release — a stale label costs a user a
 whole evening of "it's missing", and the code that should have opened it had been correct for eight versions.
+### 176. "A blinky was created" — because it was called blinky
+
+Selecting **WYSIWYG designer** for a Pico 2 W produced a project that looked like a blinky. The generator was
+fine: `projectFiles(arduinoBackend, { template: 'designer' })` has produced `designer/panel.ui.json`,
+`lv_conf.h`, `src/ui.cpp` and `src/ui_handlers.cpp` since 0.18.11, and it still does for every board. What was
+wrong was the **name**:
+
+    value: `blinky-${board.id}`,
+
+in the project-name box, whatever template had been chosen. So a WYSIWYG project arrived as `blinky_pico2w` — the
+folder name, the `.ino` name, the README title, and the file tree of a fresh Arduino sketch, which is a hundred
+files of `lvgl_display`, `panel`, `ui` and `ui_handlers` that look nothing like a blinky to someone who knows the
+code and exactly like one to someone looking at the title.
+
+Fixed three ways:
+
+1. the default name follows the template (`designer-pico2w`), and the prompt says which template it is;
+2. the completion message uses the template's **label** ("WYSIWYG designer, 18 files"), not its id;
+3. `requiredTemplateFiles(backend, template)` gives the wizard a signature to check before writing anything — a
+   designer project must produce `designer/panel.ui.json` and `backend.handlersPath()` — so a generator that
+   quietly produces something else is a refusal, not a success.
+
+**Lesson:** an artefact is judged by its name first. A default that ignores the choice made one line earlier reads
+as a wrong feature, and it cost a release to find. When a user says "the wrong thing was created", look at the
+*name* of what was created before doubting the code that made it.

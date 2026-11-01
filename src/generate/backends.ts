@@ -17,7 +17,7 @@
  */
 
 import { BoardProfile } from '../boards/types';
-import { DESIGNER_HANDLERS_PATH } from '../designer/model';
+import { DESIGNER_DOCUMENT_PATH, DESIGNER_HANDLERS_PATH } from '../designer/model';
 import {
     DEFAULT_LANGUAGE,
     LANGUAGE_MARKER,
@@ -126,6 +126,19 @@ export const BACKENDS: readonly SketchBackend[] = [rustBackend, arduinoBackend];
 /** The languages the wizard can offer, in the order it offers them. */
 export function availableBackends(): readonly SketchBackend[] {
     return BACKENDS;
+}
+
+/**
+ * The files a template cannot do without, and empty for a template that has no signature.
+ *
+ * A Designer project *is* its design plus the code-behind it fills in. Every branch of the generator that
+ * knows this also has a branch that can quietly produce something else, and a project that says "WYSIWYG
+ * designer" while holding a blinky is worse than a refusal — the wizard checks this before writing anything
+ * (bench, 2026-11-01: a WYSIWYG project was created called `blinky_pico2w`, and the name was all anyone could
+ * see).
+ */
+export function requiredTemplateFiles(backend: SketchBackend, template: AppTemplate): string[] {
+    return template === 'designer' ? [DESIGNER_DOCUMENT_PATH, backend.handlersPath()] : [];
 }
 
 /**
