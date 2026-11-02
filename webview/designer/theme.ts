@@ -28,6 +28,7 @@
  */
 
 import { widgetSpec } from '../../src/designer/catalog';
+import { paintIcon } from './icons';
 import type { DesignerWidget } from '../../src/designer/model';
 import { triangleBoxOf, triangleVertices } from '../../src/designer/model';
 import { VERTEX_HANDLE_SIZE, vertexHandles } from '../../src/designer/hit';
@@ -306,9 +307,15 @@ export function drawWidget(
             // pixels yet say which file it is waiting for. The plain face it used to get was the same colour as
             // every other widget's, which made a view holding only an image read as an empty screen (reported
             // 2026-10-24).
+            //
+            // An icon is a picture made of several files, so it is composited the way the board composites it:
+            // threshold, tint, nearest-neighbour scale, then the align. Drawing it as a face was the one thing
+            // an icon never is.
             const source = spec?.tag === 'image' ? widget.props.src : undefined;
             const bitmap = typeof source === 'string' ? bitmapFor(source) : undefined;
-            if (bitmap !== undefined) {
+            if (spec?.tag === 'icon' && paintIcon(context, widget)) {
+                previewed = true;
+            } else if (bitmap !== undefined) {
                 drawImageAsset(context, bitmap, widget);
                 previewed = true;
             } else {

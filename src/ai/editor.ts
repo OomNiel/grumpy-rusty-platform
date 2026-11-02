@@ -75,6 +75,7 @@ import {
 } from './rustCode';
 import { boardFacts } from './boardFacts';
 import { findPromptBlock, hasPromptBlock, promptSnippet, stripPromptBlock } from './prompt';
+import { assistLanguageOfDocument } from './assistLanguage';
 import {
     buildProject,
     clearBuildDiagnostics,
@@ -353,8 +354,10 @@ async function rustContext(): Promise<EditContext | undefined> {
         return undefined;
     }
     const document = editor.document;
-    if (document.languageId !== 'rust') {
-        void vscode.window.showWarningMessage(`The AI assist edits Rust files; this one is "${document.languageId}".`);
+    if (assistLanguageOfDocument(document.languageId) === undefined) {
+        void vscode.window.showWarningMessage(
+            `The AI assist edits Rust, C++ and Arduino files; this one is "${document.languageId}".`,
+        );
         return undefined;
     }
     return { document, text: document.getText(), project: await readActiveProject() };
@@ -562,8 +565,8 @@ function unreachable(error: unknown): string {
  */
 export async function implementInFunction(): Promise<void> {
     const editor = vscode.window.activeTextEditor;
-    if (!editor || editor.document.languageId !== 'rust') {
-        void vscode.window.showWarningMessage('Put the caret in a Rust file and try again.');
+    if (!editor || assistLanguageOfDocument(editor.document.languageId) === undefined) {
+        void vscode.window.showWarningMessage('Put the caret in a Rust, C++ or Arduino file and try again.');
         return;
     }
     await editor.insertSnippet(new vscode.SnippetString(promptSnippet(editor.document.languageId)), editor.selection.active);
@@ -723,7 +726,7 @@ async function chatCodeTarget(): Promise<vscode.Uri | undefined> {
     // still a visible choice, and a wrong one costs a Discard. (Asking here was the first version; it made a
     // two-item picker appear for every answer even with the target on screen, which is noise, not consent.)
     const active = vscode.window.activeTextEditor;
-    if (active && active.document.languageId === 'rust' && active.document.uri.scheme === 'file') {
+    if (active && assistLanguageOfDocument(active.document.languageId) !== undefined && active.document.uri.scheme === 'file') {
         return active.document.uri;
     }
 
@@ -920,8 +923,10 @@ export async function fixLineWithAI(uri: vscode.Uri, line: number, message: stri
     const cfg = await ready('fix one line');
     if (!cfg) return false;
     const document = await vscode.workspace.openTextDocument(uri);
-    if (document.languageId !== 'rust') {
-        void vscode.window.showWarningMessage(`The AI assist edits Rust files; this one is "${document.languageId}".`);
+    if (assistLanguageOfDocument(document.languageId) === undefined) {
+        void vscode.window.showWarningMessage(
+            `The AI assist edits Rust, C++ and Arduino files; this one is "${document.languageId}".`,
+        );
         return false;
     }
     const text = document.getText();
@@ -1334,7 +1339,7 @@ export async function showStatus(): Promise<void> {
 /** Offers Send / Discard on the marker block, so the request is submitted from where it was written. */
 export class PromptBlockLensProvider implements vscode.CodeLensProvider {
     provideCodeLenses(document: vscode.TextDocument): vscode.CodeLens[] {
-        if (document.languageId !== 'rust') return [];
+        if (assistLanguageOfDocument(document.languageId) === undefined) return [];
         const text = document.getText();
         if (!hasPromptBlock(text)) return [];
         const found = findPromptBlock(text);
@@ -1357,7 +1362,7 @@ export class AssistantCodeActionProvider implements vscode.CodeActionProvider {
         _range: vscode.Range,
         context: vscode.CodeActionContext
     ): vscode.CodeAction[] {
-        if (document.languageId !== 'rust') return [];
+        if (assistLanguageOfDocument(document.languageId) === undefined) return [];
         const actions: vscode.CodeAction[] = [];
         for (const diagnostic of context.diagnostics) {
             // The line fix first: it is the smaller change, the only one that cannot delete anything else, and
@@ -1396,10 +1401,16 @@ export async function refreshPanels(): Promise<void> {
 export function registerAssistantEditorCommands(): vscode.Disposable[] {
     return [
         vscode.workspace.registerTextDocumentContentProvider(PROPOSAL_SCHEME, proposalContent),
-        vscode.languages.registerCodeLensProvider({ language: 'rust' }, new PromptBlockLensProvider()),
-        vscode.languages.registerCodeActionsProvider({ language: 'rust' }, new AssistantCodeActionProvider(), {
-            providedCodeActionKinds: [vscode.CodeActionKind.QuickFix]
-        }),
+        // One provider per language, because VS Code's selector is per language: Rust first, then the C++ family
+        // an Arduino sketch is written in.
+        ...['rust', 'cpp', 'c', 'ino'].map((language) =>
+            vscode.languages.registerCodeLensProvider({ language }, new PromptBlockLensProvider()),
+        ),
+        ...['rust', 'cpp', 'c', 'ino'].map((language) =>
+            vscode.languages.registerCodeActionsProvider({ language }, new AssistantCodeActionProvider(), {
+                providedCodeActionKinds: [vscode.CodeActionKind.QuickFix]
+            }),
+        ),
         vscode.commands.registerCommand('rustyPlatform.assistant.implement', () => implementInFunction()),
         vscode.commands.registerCommand('rustyPlatform.assistant.sendPrompt', () => sendAiPrompt()),
         vscode.commands.registerCommand('rustyPlatform.assistant.cancelPrompt', () => cancelAiPrompt()),

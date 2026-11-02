@@ -111,6 +111,16 @@ defmt stream that would otherwise be drowned out by everything beside it.
 **Abort** stops the answer that is being written. It is enabled only while something is running; the partial
 answer is not kept, because half a function is what your next question would be answered against.
 
+**A C++ project is answered in C++.** The assistant reads the project's language from its marker (`sketch.yaml`
+makes it a sketch) and four things change with it: the standing instruction becomes *a precise C++ coding
+assistant for Arduino sketches built with `arduino-cli`, drawing with LVGL 9*, the answer-shape rules are
+phrased in C++ instead of in `fn`/`impl`, the project facts say which files are generated (`src/ui.cpp` and
+`src/ui.h` are the Designer's, `src/panel.cpp` holds the pins and the rotation, `src/ui_handlers.cpp` is yours)
+instead of listing Cargo dependencies, and only blocks fenced `cpp`, `c`, `h`, `hpp` or `ino` — or unfenced ones
+— are offered under an answer for applying. A block that says `rust` in a sketch is left where it is: a Rust
+listing pasted into a `.cpp` file is worse than no offer at all. The Problems pane works the same either way,
+because the C++ build publishes `arduino-cli`'s own compiler errors there.
+
 The conversation follows the newest row while you are at the bottom of it, and stops following the moment you
 scroll up to re-read something; asking a question starts following again.
 Follow-up questions keep the thread.
@@ -206,6 +216,30 @@ ones you tick. Accepted rules go into **every** prompt afterwards — the chat's
 They live in `rustyPlatform.assistant.conventions`, and you can add rules by hand in the same setting (or in the
 panel's own rules editor) alongside the measured ones. Nothing reads `AGENTS.md`: if you want a rule followed,
 it has to be in this setting.
+
+The measurement is Rust's: the counters look for Rust idioms, so a C++ project produces no measured rules. Rules
+you write by hand in `rustyPlatform.assistant.conventions` are sent either way, which is the way to state a
+sketch's house style.
+
+## 6a. Code Assist in a sketch
+
+**Rust Assist** watches for `//~ keyword` in the active editor, and in a C++ project that includes `.cpp`, `.c`
+and `.ino` files. The keyword is answered in the language of the *file* it was typed in, so a `.rs` file gets the
+Rust examples wherever it lives and a `.cpp` file gets C++ ones:
+
+| `//~` | What comes back |
+|---|---|
+| `struct` | a plain struct, one with default member initialisers, one with a constructor, an aggregate built in place |
+| `class` | public method and private state; a constructor with a static factory |
+| `switch` | a statement switch, and several labels for one arm |
+| `for` | counting up, counting down, over a fixed array, range-for |
+| `while` | a plain while, do/while, and a bounded wait that cannot block forever |
+| `if` | simple, if/else, else-if chain, and the guard clause |
+| `fn` | a free function, a reference argument, a `const char *` argument, a `static` helper |
+| `lvgl` | the four calls every widget starts with, a style on one object, an event callback, and `loop()` driving `lv_timer_handler()` |
+
+The examples are compiled-in text, not a model call: they are the same every time, cost nothing, and are a
+starting point to edit rather than an answer to review.
 
 ## Commands
 

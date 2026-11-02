@@ -79,7 +79,7 @@ Board catalog and project templates. Create new projects; refresh to re-scan.
 The active project's metadata: dependencies, features, designer entry. Add/reveal dependencies; open the designer when a designer project is detected.
 
 ### 4.4 AI Assist (webview)
-The local AI assistant panel. Two modes: **Full Assist** (ask in your own words) and **Rust Assist** (watches the active `.rs` file for `//~ keyword` lines and posts worked examples). Conversations are kept per project. The prompt carries the **selected lines** (or the file you are looking at), the **Problems pane** and the **Debug Console**; **Console only** sends just the console. **Enter** sends, **Shift+Enter** starts a new line, **Abort** stops the answer, and the log follows the newest row until you scroll up. See §16 and `AI_ASSIST.md`.
+The local AI assistant panel. Two modes: **Full Assist** (ask in your own words) and **Rust Assist** (watches the active `.rs` file — or a `.cpp`/`.ino` one in a C++ project — for `//~ keyword` lines and posts worked examples). Conversations are kept per project. The prompt carries the **selected lines** (or the file you are looking at), the **Problems pane** and the **Debug Console**; **Console only** sends just the console. **Enter** sends, **Shift+Enter** starts a new line, **Abort** stops the answer, and the log follows the newest row until you scroll up. See §16 and `AI_ASSIST.md`.
 
 ---
 
@@ -125,9 +125,31 @@ Run **New Project…**. Choose board family:
 - **RP2040/RP2350**: Pico, Pico 2, Pico W, Pico 2 W. Templates: blinky, sensors, etc.
 - **ESP32 family**: Sunton CYD, LilyGo T-QT, DevKitC V4 (ST7789 / ILI9341-with-touch / 4" ST7796-with-touch module), ESP32-035.
 
+The first step of the wizard also asks for the **language**: **Rust** (Embassy) or **C++** (an Arduino sketch built with `arduino-cli`). Everything after it follows that answer — see *6a. C++ projects* below for what is different.
+
 For boards supporting multiple display modules, you are asked which module is wired; the answer is recorded in `Cargo.toml`. The T-QT's GC9A01 panel revisions get special handling (inverted colors, BGR order, RAM offset). ESP32-035 is design-first (goes straight to designer). DevKitC V4 offers only designer and BLE peripheral.
 
 Generated code uses `setup()` + `main()` loops, separating board config and headers.
+
+---
+
+## 6a. C++ projects
+
+A project created with the **C++** language is an Arduino sketch, not a crate. The wizard writes the folder, the `.ino` and `sketch.yaml` (which records the board, so `arduino-cli compile` in that folder needs no arguments), and from then on:
+
+| | Rust project | C++ project |
+|---|---|---|
+| Screen | `src/ui.rs` is generated, `src/ui_handlers.rs` is yours | `src/ui.cpp` + `src/ui.h` are generated, `src/ui_handlers.cpp` is yours |
+| Pins and rotation | `src/panel.rs`, plus `.cargo/*.toml` | `src/panel.cpp` (one constant, `kRotation`, for the rotation) |
+| Display | the crate's own renderer | LVGL 9 |
+| Build | `cargo build` | `arduino-cli compile` |
+| Flash | `probe-rs` / `espflash` | UF2 or `picoprobe_cmsis_dap` / the ESP32 serial uploader |
+
+The Designer works exactly the same way in both, and so does everything below about views, events, fonts and pictures. Three things are particular to C++:
+
+- **Pictures are baked in.** LVGL draws pixels, not file names, so a design's images and composite icons are decoded when the design is saved and written into `src/ui.cpp` as an `lv_image_dsc_t`. BMP (any usual depth) and PNG (greyscale, palette and truecolour, with or without alpha) are read; a JPEG, GIF or WebP is named in the output channel with the advice to save it as PNG, and the widget draws as an empty box until it is. Transparency costs a third more flash and is used only when a picture has it.
+- **The mesh is not drawn.** LVGL has no 3D rasteriser, so the toolbox lists **3D mesh** greyed out in a C++ project, with the reason on hover.
+- **Fonts are LVGL's Montserrat.** A design's font is mapped to the nearest compiled-in size, and `lv_conf.h` is rewritten beside the design so the size is always available.
 
 ---
 
@@ -141,6 +163,10 @@ Settings: `rustyPlatform.cargoPath`, `flashProfile` (`auto`/debug/release), `def
 
 Output goes to the terminal; problems reported to the Problems panel.
 
+**In a C++ project** Build runs `arduino-cli compile` with the project's own FQBN from `sketch.yaml`, writing its cache to `.arduino/build` and the artefacts to `build/`. Compiler errors and warnings arrive in the Problems pane with their file and line, so a click jumps to the code. **Clean** deletes both folders and says how much was freed; the configuration (board, port, upload method) is left alone.
+
+Not found? The sidebar's **Toolchain** view detects `arduino-cli` and the `rp2040`/`esp32` cores and offers to install them — nothing else needs to be on the machine for a sketch to build.
+
 ---
 
 ## 8. Flashing
@@ -151,6 +177,8 @@ Output goes to the terminal; problems reported to the Problems panel.
 - ESP boards flash via `espflash`; RP boards via `probe-rs`.
 
 Settings: `rustyPlatform.espflashPath`, `serialPort`, `rustyPlatform.probeRsPath`.
+
+**In a C++ project** Flash asks the board's upload method: **UF2 over BOOTSEL** (hold BOOTSEL, drag the artefact) or **Debug probe (SWD)**, which programs through a Debug Probe with no port at all — the Pico 2 W on this bench is flashed that way, with `uploadmethod=picoprobe_cmsis_dap` on both the build and the upload. An ESP32 board uploads over its serial port. **Monitor** opens that port at the sketch's baud rate.
 
 ---
 
@@ -310,7 +338,7 @@ Optional, fully local, privacy-first. See `AI_ASSIST.md` for full details.
 Summary:
 - Two backends: **A server I run** (external OpenAI-compatible) or **The extension's own runtime** (bundled, builds llama.cpp).
 - Models: your own llama-server (extension offers to download prebuilt server + 27B model), any Hugging Face `.gguf`, or bundled runtime/LM Studio.
-- Two modes in panel: Full Assist and Rust Assist (`//~ keyword`).
+- Two modes in panel: Full Assist and Rust Assist (`//~ keyword`) — the same mode in a `.cpp`/`.ino` file, with C++ and LVGL examples. See §6a.
 - The chat reads the **selection** (numbered, with a marked window), the **Problems pane** (errors first, deduplicated) and the **Debug Console** of a `probe-rs` session (output, `[stopped]`, `[exited]`). **Console only** sends just the console.
 - **Enter** sends, **Shift+Enter** starts a new line, **Abort** stops the answer in flight; the log follows the newest row until you scroll up.
 - Implement in Function: insert `✎ AI` block, type request as comments, `Ctrl+Alt+Enter` to send. Answer opens as diff; Apply/Discard.

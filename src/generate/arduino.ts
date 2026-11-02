@@ -406,6 +406,24 @@ export function generateArduinoProjectFiles(options: GenerateOptions): Generated
 }
 
 /**
+ * `src/panel.cpp` with a different rotation in it.
+ *
+ * The rotation is not a separate setting in a C++ project: it is one constant in the panel driver, next to the
+ * pins, because MADCTL is what turns the glass. Rewriting that line rather than regenerating the file keeps
+ * whatever a person did to their pins -- and to anything else in there -- out of the argument.
+ *
+ * Returns the text unchanged when the constant is missing or already right, so a caller can compare and skip the
+ * write.
+ */
+export function setPanelRotation(source: string, rotation: LcdRotation): string {
+    const pattern = /constexpr\s+uint8_t\s+kRotation\s*=\s*\d+\s*;/;
+    if (!pattern.test(source)) {
+        return source;
+    }
+    return source.replace(pattern, `constexpr uint8_t kRotation = ${rotation};`);
+}
+
+/**
  * `src/panel.cpp` for a design whose pins have moved.
  *
  * This is the C++ twin of `emitPanelRs` in the Designer's save path: the wiring the Hardware panel edits is the

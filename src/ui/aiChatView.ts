@@ -21,13 +21,23 @@ import * as fs from 'fs';
 import * as path from 'path';
 import {
     assistantEnabled,
+    codeBlocks,
     describeEmptyAnswer,
     describeModel,
-    rustCodeBlocks,
     selectionContext,
     type ChatMessage
 } from '../ai/assistant';
 import { describeProgress } from '../ai/assistant';
+import {
+    assistLanguageOfDocument,
+    assistLanguageOfProject,
+    chatSystemPrompt,
+    codeFenceFor,
+    cppAssistExamples,
+    isCodeBlockFor,
+    sketchBrief,
+    type AssistLanguage
+} from '../ai/assistLanguage';
 import { boardFacts } from '../ai/boardFacts';
 import { formatProblems, type PaneDiagnostic } from '../ai/panes';
 import { debugConsoleBlock } from '../ai/debugConsole';
@@ -83,8 +93,18 @@ let busy = false;
  */
 let abortable: AbortController | undefined;
 
-/** Rust Assist mode: watch the active .rs editor for `//~ keyword` triggers. */
+/** Code Assist mode: watch the active editor for `//~ keyword` triggers. */
 let rustAssistDisposable: vscode.Disposable | undefined;
+
+/**
+ * The language the project in front of us is written in.
+ *
+ * Cached rather than passed down because three of the places that need it are synchronous -- the history the
+ * view is sent, the file block, the code-block guard -- and asking the filesystem from each of them would make
+ * a list of turns a series of `stat`s. It is refreshed wherever the project is already read, and defaults to
+ * Rust, which is what a workspace with no project of ours is.
+ */
+let assistLanguage: AssistLanguage = 'rust';
 
 function rustAssistExamples(keyword: string): string {
     if (keyword === 'let') {
@@ -504,12 +524,24 @@ function rustAssistExamples(keyword: string): string {
     return `No examples yet for keyword "${keyword}".`;
 }
 
+/** The examples for a `//~` keyword, in the language of the file it was typed in. */
+function assistExamples(language: AssistLanguage, keyword: string): string {
+    return language === 'cpp' ? cppAssistExamples(keyword) : rustAssistExamples(keyword);
+}
+
+/**
+ * Code Assist mode: `//~ keyword` on its own line in an assistable file answers with examples of that construct.
+ *
+ * The language comes from the document rather than from the project, because the trigger is typed in a file: a
+ * `.cpp` in a sketch gets C++ examples, and a `.rs` anywhere gets Rust ones, whatever the workspace looks like.
+ */
 function enableRustAssist(): void {
     rustAssistDisposable?.dispose();
     rustAssistDisposable = vscode.workspace.onDidChangeTextDocument((event) => {
         const editor = vscode.window.activeTextEditor;
         if (!editor || editor.document !== event.document) return;
-        if (!event.document.fileName.endsWith('.rs')) return;
+        const language = assistLanguageOfDocument(event.document.languageId);
+        if (language === undefined) return;
         for (const change of event.contentChanges) {
             const startLine = change.range.start.line;
             const lines = change.text.split('\n');
@@ -521,7 +553,7 @@ function enableRustAssist(): void {
                 if (!match) continue;
                 const keyword = match[1] ?? '';
                 const chat = ensureActive();
-                const answer = rustAssistExamples(keyword);
+                const answer = assistExamples(language, keyword);
                 chat.turns.push({ role: 'assistant', text: answer });
                 remember();
                 postChats();
@@ -611,8 +643,8 @@ function turnsForView(turns: readonly { role: string; text: string }[]): { role:
  * buttons only after the panel was reloaded was this rule written twice, once live and once for the history,
  * and the two disagreed (2026-10-13).
  */
-function codeLabels(role: string, text: string): string[] | undefined {
-    const blocks = role === 'assistant' ? rustCodeBlocks(text) : [];
+function codeLabels(role: string, text: string, language: AssistLanguage = 'rust'): string[] | undefined {
+    const blocks = role === 'assistant' ? codeBlocks(text).filter((block) => isCodeBlockFor(language, block)) : [];
     return blocks.length ? blocks.map((b) => codeBlockLabel(b.code)) : undefined;
 }
 
@@ -650,9 +682,21 @@ function post(message: unknown): void {
  */
 async function projectFacts(): Promise<string> {
     const project = await readActiveProject();
+    assistLanguage = assistLanguageOfProject(project?.language);
     const parts: string[] = [];
     if (project?.board) parts.push(boardFacts(project.board, project.chip));
-    if (project) parts.push(`Cargo.toml dependencies:\n${crateList(project.cargoToml)}`);
+    if (assistLanguage === 'cpp') {
+        // A sketch has no dependency list worth sending; what a model cannot guess is which files it may touch.
+        parts.push(
+            sketchBrief({
+                board: project?.board?.name,
+                kind: project?.board?.kind,
+                designer: project?.designer,
+            }),
+        );
+    } else if (project) {
+        parts.push(`Cargo.toml dependencies:\n${crateList(project.cargoToml)}`);
+    }
     parts.push(houseRules());
     return parts.filter(Boolean).join('\n\n');
 }
@@ -672,12 +716,12 @@ function houseRules(): string {
  */
 let lastRustEditor: vscode.TextEditor | undefined;
 vscode.window.onDidChangeActiveTextEditor((editor) => {
-    if (editor && editor.document.languageId === 'rust') lastRustEditor = editor;
+    if (editor && assistLanguageOfDocument(editor.document.languageId) !== undefined) lastRustEditor = editor;
 });
 
 function promptEditor(): vscode.TextEditor | undefined {
     const active = vscode.window.activeTextEditor;
-    if (active && active.document.languageId === 'rust') return active;
+    if (active && assistLanguageOfDocument(active.document.languageId) !== undefined) return active;
     return lastRustEditor && !lastRustEditor.document.isClosed ? lastRustEditor : undefined;
 }
 
@@ -701,7 +745,10 @@ function fileBlock(): string {
     }
     const text = editor.document.getText();
     const clipped = text.length > 12_000 ? `${text.slice(0, 12_000)}\n// … (file clipped)` : text;
-    return `The file the developer is looking at (${relative}):\n\`\`\`rust\n${clipped}\n\`\`\``;
+    // The fence names the file's own language, not the project's: a sketch holds C++ and a crate holds Rust, and
+    // a model told the wrong one writes the wrong one back.
+    const fence = codeFenceFor(assistLanguageOfDocument(editor.document.languageId) ?? assistLanguage);
+    return `The file the developer is looking at (${relative}):\n\`\`\`${fence}\n${clipped}\n\`\`\``;
 }
 
 /**
@@ -753,26 +800,7 @@ async function contextBlock(consoleOnly = false): Promise<string> {
 function chatSystem(context: string): ChatMessage {
     return {
         role: 'system',
-        content:
-            'You are a precise Rust coding assistant for embedded, often `no_std`, firmware built on the ' +
-            'Embassy async framework. Answer in short, concrete Rust. Never invent a crate, a pin or an ' +
-            'API that is not in the context below; if something is missing, say what is missing. Prefer ' +
-            'showing the code to describing it.\n\n' +
-            // The shape of the answer, spelled out because the shape is what decides whether applying it is
-            // safe. A model that answers "add this to the loop" with a reconstructed whole file deletes
-            // everything it did not feel like reproducing (2026-10-12), and a placeholder is the same mistake
-            // with a comment on it.
-            'When asked to change code, return ONLY the item that changes — the one `fn`, `impl` or `struct` — ' +
-            'and leave every other item out of your answer entirely. "Only the item" means that item WHOLE: ' +
-            'reproduce every line of it, including the lines you did not change, because the item replaces the ' +
-            'real one and a function that arrives carrying only the changed lines deletes the rest. Do not ' +
-            'return the whole file unless the developer asks for the whole file. Never write `...`, ' +
-            '`// ...` or any other placeholder for code ' +
-            'you did not write: if something is too long to include, say so in a sentence instead of guessing. ' +
-            'Never reproduce a file from the context to "keep it unchanged" — leaving it out is how it stays ' +
-            'unchanged. Keep the file\'s own attributes, signature and names as they are; put any `use` a new ' +
-            'path needs inside the function body, which is legal Rust.\n\n' +
-            context
+        content: `${chatSystemPrompt(assistLanguage)}\n\n${context}`
     };
 }
 
@@ -1499,7 +1527,10 @@ export class AiChatViewProvider implements vscode.WebviewViewProvider {
                 // The button under an answer: the block is taken from the *stored* turn, so what is applied is
                 // what the conversation actually says — not a copy the view kept.
                 const turn = active?.turns[message.index ?? -1];
-                const blocks = turn && turn.role === 'assistant' ? rustCodeBlocks(turn.text) : [];
+                const blocks =
+                    turn && turn.role === 'assistant'
+                        ? codeBlocks(turn.text).filter((block) => isCodeBlockFor(assistLanguage, block))
+                        : [];
                 const chosen = message.block ?? 0;
                 const block = blocks[chosen];
                 if (!block) {
@@ -1537,7 +1568,10 @@ export class AiChatViewProvider implements vscode.WebviewViewProvider {
                         return;
                     }
                     enableRustAssist();
-                    post({ type: 'status', text: 'Rust Assist on — type //~ let or //~ loop in a .rs file' });
+                    post({
+                        type: 'status',
+                        text: 'Code Assist on — type //~ let in a .rs file, or //~ struct or //~ lvgl in a .cpp file',
+                    });
                 } else {
                     disableRustAssist();
                     post({ type: 'status', text: 'Full Assist on' });

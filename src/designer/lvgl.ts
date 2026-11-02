@@ -416,8 +416,7 @@ function clockBlock(widget: DesignerWidget, document: DesignerDocument): string 
                 `    lv_label_set_text(numeral_${id}_${index + 1}, "${index + 1}");`,
                 `    lv_obj_set_style_text_color(numeral_${id}_${index + 1}, ${labelColour}, 0);`,
                 `    lv_obj_set_style_text_font(numeral_${id}_${index + 1}, ${numeralFont}, 0);`,
-                `    lv_obj_align(numeral_${id}_${index + 1}, LV_ALIGN_CENTER, ${(x ?? 0) - geometry.cx}, ${
-                    (y ?? 0) - geometry.cy + numeralY
+                `    lv_obj_align(numeral_${id}_${index + 1}, LV_ALIGN_CENTER, ${(x ?? 0) - geometry.cx}, ${(y ?? 0) - geometry.cy + numeralY
                 });`,
             );
         });
@@ -991,7 +990,7 @@ function widgetLines(
             lines.push(`    lv_obj_t *${variable} = lv_image_create(${parent});`, ...geometry);
             lines.push(
                 `    ui_image_attach(&img_${cppId(widget.id)}, img_${cppId(widget.id)}_data, ` +
-                    `${image.bytes.byteLength}, ${image.format}, ${image.width}, ${image.height}, ${image.stride});`,
+                `${image.bytes.byteLength}, ${image.format}, ${image.width}, ${image.height}, ${image.stride});`,
             );
             lines.push(`    lv_image_set_src(${variable}, &img_${cppId(widget.id)});`);
             // `stretch` fills the widget's box and `center` draws the picture at its own size in the middle of
@@ -1003,8 +1002,8 @@ function widgetLines(
                         ? 'LV_IMAGE_ALIGN_TOP_LEFT'
                         : 'LV_IMAGE_ALIGN_CENTER'
                     : widget.props.fit === 'center'
-                      ? 'LV_IMAGE_ALIGN_CENTER'
-                      : 'LV_IMAGE_ALIGN_STRETCH';
+                        ? 'LV_IMAGE_ALIGN_CENTER'
+                        : 'LV_IMAGE_ALIGN_STRETCH';
             lines.push(`    lv_image_set_inner_align(${variable}, ${placement});`);
             break;
         }
@@ -1345,14 +1344,13 @@ ${widgetBlocks.join('\n\n')}
 }
 
 void ui_tick() {
-${
-    clocks.filter((clock) => boolProp(clock, 'movement')).length === 0
-        ? '    // No clock in this design runs by itself; nothing to recompute here.'
-        : clocks
-              .filter((clock) => boolProp(clock, 'movement'))
-              .map((clock) => `    ui_clock_tick(&clock_${cppId(clock.id)});`)
-              .join('\n')
-}\n}
+${clocks.filter((clock) => boolProp(clock, 'movement')).length === 0
+            ? '    // No clock in this design runs by itself; nothing to recompute here.'
+            : clocks
+                .filter((clock) => boolProp(clock, 'movement'))
+                .map((clock) => `    ui_clock_tick(&clock_${cppId(clock.id)});`)
+                .join('\n')
+        }\n}
 `;
 }
 
@@ -1376,16 +1374,16 @@ void ui_tick();
 /** Shows one view of the design, hiding the others. A navigate event calls this. */
 void ui_show_view(const char *view_id);
 ${document === undefined
-    ? ''
-    : document.widgets
-          .filter((widget) => widget.tag === 'clock')
-          .map(
-              (clock) =>
-                  `\n/** Sets the time one clock face shows. A running clock advances from millis() by itself; */\n` +
-                  `/** this is how an app that knows the real time (NTP, an RTC) hands it over. */\n` +
-                  `void ui_clock_${cppId(clock.id)}_set_time(int hour, int minute, int second);`,
-          )
-          .join('')}`;
+            ? ''
+            : document.widgets
+                .filter((widget) => widget.tag === 'clock')
+                .map(
+                    (clock) =>
+                        `\n/** Sets the time one clock face shows. A running clock advances from millis() by itself; */\n` +
+                        `/** this is how an app that knows the real time (NTP, an RTC) hands it over. */\n` +
+                        `void ui_clock_${cppId(clock.id)}_set_time(int hour, int minute, int second);`,
+                )
+                .join('')}`;
 }
 
 // ---------------------------------------------------------------------- handlers

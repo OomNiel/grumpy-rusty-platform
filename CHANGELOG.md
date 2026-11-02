@@ -11,6 +11,38 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.19.0] - 2026-11-02
+
+The C++ (Arduino + LVGL) option is complete enough to use, and this release is the one that says so.
+
+### Added
+
+- **The C++ language, end to end.** A project is created as an Arduino sketch for any board in the catalogue, is
+  built with `arduino-cli` into its own `.arduino` build folder, flashed over a Debug Probe or as a UF2 (or over
+  serial on an ESP32), and gets the same WYSIWYG Designer as a Rust project: one `designer/panel.ui.json`, views,
+  events and handler stubs, a generated `src/ui.cpp`/`src/ui.h`, and the person's code in `src/ui_handlers.cpp`.
+- **Thirty-four of the thirty-five toolbox widgets draw on LVGL 9**, including the clock with its hands, ticks and
+  numerals, and every shape. The mesh is the one exception, and the toolbox lists it greyed out in a C++ project
+  with the reason.
+- **Images and composite icons**, decoded when the design is saved and emitted into `src/ui.cpp` as an
+  `lv_image_dsc_t` (BMP and PNG, RGB565 or RGB565A8 when the picture has transparency).
+- **The AI assist speaks C++.** A sketch's assistant is told what a sketch is: LVGL 9, the generated files it may
+  not edit, where a person's code goes. `//~` triggers work in `.cpp` and `.ino` files with their own example set
+  (including `//~ lvgl`), only code in the project's language is offered for applying, and the editor's prompt
+  block, code lenses and fixes work in both languages.
+- The canvas previews a composite icon as the glyph it is — thresholded, tinted, scaled — instead of a widget
+  face.
+
+### Fixed
+
+- The Designer's rotation now reaches a C++ project's `src/panel.cpp`, so the glass is turned the way the canvas
+  is. It used to be written only when the Hardware panel changed.
+- The clock's minute ticks all render (they were `lv_line` objects, and a line has no area for LVGL to
+  invalidate), and all sixty pivot on the face's centre rather than on their own ends.
+- A design's padding no longer insets the screen, and RGB565 is written high byte first, so red stops arriving as
+  blue.
+- Flashing a sketch over USB offers the debug probe and retries when there is nothing on the port.
+
 ## [0.18.29] - 2026-11-01
 
 ### Added

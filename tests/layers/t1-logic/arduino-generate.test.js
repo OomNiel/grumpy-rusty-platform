@@ -28,6 +28,7 @@ const {
     fqbnFor,
     generateArduinoProjectFiles,
     isArduinoTemplate,
+    setPanelRotation,
     sketchNameFrom,
     templatesForArduino,
 } = compiled('generate/arduino');
@@ -438,4 +439,22 @@ test('pixels go out high byte first, or every colour is byte-swapped', () => {
         }
     }
     equal(problems.length, 0, problems.slice(0, 4).join('; '));
+});
+
+test('the design\'s rotation is written into the panel driver, and nothing else moves', () => {
+    // The rotation is one constant in `panel.cpp`; a design save used to leave it alone, so turning the design
+    // changed the canvas and not the glass.
+    const source = [
+        '// a panel driver',
+        'constexpr int kCs = 9;',
+        'constexpr uint8_t kRotation = 0;',
+        'constexpr uint8_t kMadctlBgr = 0x08;',
+    ].join('\n');
+    const turned = setPanelRotation(source, 3);
+    contains(turned, 'constexpr uint8_t kRotation = 3;', 'the constant follows the design');
+    contains(turned, 'constexpr int kCs = 9;', 'the pins are left alone');
+    contains(turned, 'constexpr uint8_t kMadctlBgr = 0x08;', 'and so is everything else');
+    equal(setPanelRotation(turned, 3), turned, 'a second save writes nothing');
+    // A hand-written driver with no such constant is left as it is rather than gaining one.
+    equal(setPanelRotation('int main() {}', 1), 'int main() {}', 'a file without the constant is untouched');
 });

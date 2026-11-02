@@ -72,7 +72,7 @@ import {
     syncHandlerStubsCpp,
     unavailableCppWidgets,
 } from './lvgl';
-import { emitArduinoPanel } from '../generate/arduino';
+import { emitArduinoPanel, setPanelRotation } from '../generate/arduino';
 import { sdImagesNeedingCard } from './model';
 import { lvConfHeader } from '../generate/arduino';
 import { isFeatureInDefault, setFeatureInDefault } from './features';
@@ -1372,8 +1372,19 @@ class DesignerPanel {
     /** Keeps the project's own rotation setting in step with the design it was drawn for. */
     private async syncRotation(rotation: LcdRotation): Promise<void> {
         if (this.isCppProject()) {
-            // A C++ project's rotation lives in src/panel.cpp (the MADCTL bits), which the project generator
-            // writes; rewriting it from a design save is the panel-rewrite step that is not in yet.
+            // A C++ project's rotation is one constant in the panel driver, so the design's rotation is written
+            // into that line rather than into a config file. The canvas in `ui.cpp` follows the document on its
+            // own, so this is the only file that has to move.
+            const panelUri = vscode.Uri.joinPath(this.folder, 'src', 'panel.cpp');
+            const panel = await readText(panelUri);
+            if (panel === undefined) {
+                return;
+            }
+            const updated = setPanelRotation(panel, rotation);
+            if (updated !== panel) {
+                await writeProjectFile(this.folder, 'src/panel.cpp', updated);
+                this.output.appendLine(`[designer] src/panel.cpp: kRotation set to ${rotation}`);
+            }
             return;
         }
         const configUri = vscode.Uri.joinPath(this.folder, ...this.configRelative.split('/'));

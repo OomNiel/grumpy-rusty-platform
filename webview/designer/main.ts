@@ -18,6 +18,7 @@ import { registerDesignFont } from './glyphs';
 import { rasteriseFont } from './rasterise';
 import { CanvasView } from './canvas';
 import { clearBitmaps, setBitmap } from './bitmaps';
+import { clearIconCache } from './icons';
 import type { DesignerImageAsset } from '../../src/designer/imageAssets';
 import {
     type ContextMenuItem,
@@ -280,6 +281,9 @@ window.addEventListener('message', (event: MessageEvent<
         // Pictures before the first paint when they are already here; the redraw each one triggers is cheap and
         // happens once, so the canvas is never left showing an asset placeholder over a file it did receive.
         clearBitmaps();
+        // The icon cache is keyed by the settings that produced its pixels, and a new project may reuse a path
+        // for a different file: dropping it with the bitmaps is what keeps that from painting the old glyph.
+        clearIconCache();
         loadBitmaps(message.images);
         // The design opens on the view the board starts on, which is what the glass shows when it powers up.
         // Set before the first state, so the first paint is already the right view and the design is drawn once.
