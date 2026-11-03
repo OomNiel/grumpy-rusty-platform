@@ -654,7 +654,7 @@ test('the canvas names an SD image instead of drawing a picture it cannot read',
     // What it can do honestly is say which file the board will open, which is also how a typo in the path is
     // noticed before the project is built.
     const { calls } = boot(
-        documentWith(widgetOf('image', { src: 'sd:PIC1.BMP', fit: 'stretch', mode: 'color', tint: '' })),
+        documentWith(widgetOf('image', { src: 'sd:PIC1.BMP', fit: 'stretch' })),
     );
     const texts = calls.filter((call) => call.method === 'fillText').map((call) => String(call.args[0]));
     ok(
@@ -664,7 +664,7 @@ test('the canvas names an SD image instead of drawing a picture it cannot read',
     // An embedded asset says the same kind of thing for its own case, and a missing one still says "needs an
     // asset": the three states are not allowed to look alike.
     const asset = boot(
-        documentWith(widgetOf('image', { src: 'assets/logo.bmp', fit: 'stretch', mode: 'color', tint: '' })),
+        documentWith(widgetOf('image', { src: 'assets/logo.bmp', fit: 'stretch' })),
     );
     const assetTexts = asset.calls
         .filter((call) => call.method === 'fillText')
@@ -673,7 +673,7 @@ test('the canvas names an SD image instead of drawing a picture it cannot read',
         assetTexts.some((text) => text.startsWith('SD card:')),
         'an embedded image is not announced as a card file',
     );
-    const missing = boot(documentWith(widgetOf('image', { src: '', fit: 'stretch', mode: 'color', tint: '' })));
+    const missing = boot(documentWith(widgetOf('image', { src: '', fit: 'stretch' })));
     ok(
         missing.calls.some(
             (call) => call.method === 'fillText' && String(call.args[0]).includes('needs an asset'),
@@ -1014,7 +1014,7 @@ test('the keypad is drawn: an entry box, keys in the design colours, and the mod
     ok(colours.includes(entryBorder), 'and its border');
     // Key faces, and the accent worn by the keys that act rather than type.
     ok(colours.includes(keyFace), 'the key faces are drawn');
-    ok(colours.includes(accent), 'the Shift / mode / Enter keys wear the accent');
+    ok(colours.includes(accent), 'the Shift / Caps / mode / Enter keys wear the accent');
 
     // The entry box sits on the top edge of the widget, and the keys start below it.
     const entry = fillsWithColour(calls, entryFace)[0];
@@ -1026,12 +1026,18 @@ test('the keypad is drawn: an entry box, keys in the design colours, and the mod
     ok(key.args[1] > entry.args[1] + entry.args[3], 'the keys are below the entry box');
 
     // Caps lock: the canvas follows the Shift setting the design was saved with -- the letter keys
-    // say what they will type, and the Shift key wears the pressed face.
+    // say what they will type, and the CAPS key wears the pressed face (2026-11-02).
     const capsPad = { ...pad, props: { ...pad.props, shift: true, pressed_key_color: '#ff0000' } };
     const capsCalls = boot(documentWith(capsPad)).calls;
+    // The typed-text colour is red here too, and it paints the legends of the acting keys one pixel
+    // at a time, so the lit face is the one wide red fill, not any red fill.
+    const lit = fillsWithColour(capsCalls, 'rgb(255,0,0)').filter((call) => call.args[2] > 10);
+    ok(lit.length === 1, 'exactly one key is lit while the design starts in caps lock');
+    // The control row is five two-column keys: SHIFT 2..65, CAPS 65..128, mode 128..191,
+    // Space 191..254, BKSP 254..318 -- and a lit face is drawn one pixel inside its cell.
     ok(
-        fillColours(capsCalls).includes('rgb(255,0,0)'),
-        'the Shift key is lit while the design starts in caps lock',
+        lit[0].args[0] >= 66 && lit[0].args[0] < 128,
+        `the lit key is Caps, not Shift: x=${lit[0].args[0]}`,
     );
     // The same number of keys, but not the same drawing: `q` and `Q` are two glyphs of one face.
     const drawing = (all) => JSON.stringify(all.map((call) => [call.method, call.args]));
@@ -1047,9 +1053,9 @@ test('the keypad is drawn: an entry box, keys in the design colours, and the mod
     ok(width > 60, `a digit key is wide, not a tenth of the row: ${width}`);
 
     // The space bar types a space, but a space on the glass is nothing to read, so the bar wears the
-    // word "Space". Its cell (row 4, the four-wide third of the 10-weight control row) is dark, so the
-    // only 1x1 ink in it is the rendered word -- where a blank used to be drawn.
-    const spaceBox = { x: 128, y: 428, width: 126, height: 23 };
+    // word "Space". It gave up two of its four columns to the Caps key, so its cell (row 4, 191..254
+    // of the 10-weight control row) is dark, and the only ink in it is the rendered word.
+    const spaceBox = { x: 191, y: 428, width: 63, height: 23 };
     ok(
         inkPixels(calls, spaceBox).length > 0,
         'the space bar shows the word Space, not a blank',

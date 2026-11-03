@@ -1566,6 +1566,27 @@ where
         self.draw_image_region(rect, image, fit, Rect::new(0, 0, image.width, image.height))
     }
 
+    /// Draws an image with its corners cut to a rounded rectangle.
+    ///
+    /// The picture is opaque, so a rounded widget cannot paint it square and then restore the cut-outs:
+    /// the corner pixels have to be *not drawn*. This is the mask the image widget renders with
+    /// (`render_image`), and [`Self::draw_image`] is the same call at a radius of zero.
+    pub fn draw_image_rounded(
+        &mut self,
+        rect: Rect,
+        image: ImageRef<'_>,
+        fit: ImageFit,
+        radius: u8,
+    ) -> Result<(), D::Error> {
+        self.draw_image_masked(
+            rect,
+            image,
+            fit,
+            Rect::new(0, 0, image.width, image.height),
+            radius,
+        )
+    }
+
     pub fn draw_image_region(
         &mut self,
         rect: Rect,
@@ -1573,10 +1594,23 @@ where
         fit: ImageFit,
         src_rect: Rect,
     ) -> Result<(), D::Error> {
+        self.draw_image_masked(rect, image, fit, src_rect, 0)
+    }
+
+    fn draw_image_masked(
+        &mut self,
+        rect: Rect,
+        image: ImageRef<'_>,
+        fit: ImageFit,
+        src_rect: Rect,
+        radius: u8,
+    ) -> Result<(), D::Error> {
         let bounds = image.bounds_at(rect, fit);
         if bounds.is_empty() || image.width == 0 || image.height == 0 {
             return Ok(());
         }
+        // The clamp a rounded fill makes, so the mask and the block's own corners agree pixel for pixel.
+        let radius = radius.min((bounds.w.min(bounds.h) / 2) as u8);
         let src_w = image.width as usize;
         let layer = self.current_layer();
         let is_1to1 = fit == ImageFit::Center || (bounds.w == src_rect.w && bounds.h == src_rect.h);
@@ -1592,18 +1626,30 @@ where
             }
             let src_y_base = src_rect.y.max(0) as usize;
             let src_x_base = src_rect.x.max(0) as usize;
-            let off_x = (vis.x - bounds.x).max(0) as usize;
-            let off_y = (vis.y - bounds.y).max(0) as usize;
-            let w = vis.w as usize;
 
-            for (row_idx, dy) in (vis.y..vis.bottom()).enumerate() {
-                let sy = src_y_base + off_y + row_idx;
-                let sx = src_x_base + off_x;
+            for dy in vis.y..vis.bottom() {
+                // A rounded corner row is shorter than the image; that run is this row's visible width.
+                let span = if radius == 0 {
+                    Some((bounds.x, bounds.right()))
+                } else {
+                    rounded_row_extent(bounds, radius, dy)
+                };
+                let Some((span_x0, span_x1)) = span else {
+                    continue;
+                };
+                let x0 = vis.x.max(span_x0);
+                let x1 = vis.right().min(span_x1);
+                if x1 <= x0 {
+                    continue;
+                }
+                let sy = src_y_base + (dy - bounds.y).max(0) as usize;
+                let sx = src_x_base + (x0 - bounds.x) as usize;
                 let start_idx = sy * src_w + sx;
+                let w = (x1 - x0) as usize;
                 if let Some(row_slice) = image.pixels.get(start_idx..start_idx + w) {
                     let eg_rect = embedded_graphics_core::primitives::Rectangle::new(
-                        Point::new(vis.x, dy),
-                        embedded_graphics_core::geometry::Size::new(vis.w, 1),
+                        Point::new(x0, dy),
+                        embedded_graphics_core::geometry::Size::new(w as u32, 1),
                     );
                     self.target.fill_contiguous(
                         &eg_rect,
@@ -1627,11 +1673,17 @@ where
         let src_x_base = src_rect.x.max(0) as usize;
 
         for y in 0..bounds.h {
+            let dest_y = bounds.y + y as i32;
             let src_y = match fit {
                 ImageFit::Stretch => src_y_base + (((y as u64 * y_step_fp) >> 16) as usize),
                 ImageFit::Center => src_y_base + y as usize,
             };
             for x in 0..bounds.w {
+                if radius > 0
+                    && !in_rounded_rect(bounds.x + x as i32, dest_y, bounds, radius)
+                {
+                    continue;
+                }
                 let src_x = match fit {
                     ImageFit::Stretch => src_x_base + (((x as u64 * x_step_fp) >> 16) as usize),
                     ImageFit::Center => src_x_base + x as usize,
@@ -1643,7 +1695,7 @@ where
                         ((raw >> 5) & 0x3F) as u8,
                         (raw & 0x1F) as u8,
                     );
-                    self.pixel(bounds.x + x as i32, bounds.y + y as i32, color, 255)?;
+                    self.pixel(bounds.x + x as i32, dest_y, color, 255)?;
                 }
             }
         }
@@ -2620,6 +2672,40 @@ fn in_rounded_rect(x: i32, y: i32, rect: Rect, radius: u8) -> bool {
     let dx = x - cx;
     let dy = y - cy;
     dx * dx + dy * dy <= radius * radius
+}
+
+/// The run of `x` inside a rounded rectangle on row `y`, as `[start, end)` -- or `None` outside it.
+///
+/// The same integer circle test [`in_rounded_rect`] makes, solved for x, so a mask built from these spans
+/// lands on exactly the pixels the block's own rounded fill paints. A row whose whole width is inside --
+/// the straight sides -- comes back as the full rect. Public because a custom widget that paints its own
+/// surface (`rusty_gui_widgets::BmpImage`) masks its rows with the same rule.
+pub fn rounded_row_extent(rect: Rect, radius: u8, y: i32) -> Option<(i32, i32)> {
+    if y < rect.y || y >= rect.bottom() {
+        return None;
+    }
+    let radius = radius.min((rect.w.min(rect.h) / 2) as u8) as i32;
+    if radius <= 0 {
+        return Some((rect.x, rect.right()));
+    }
+
+    let left = rect.x;
+    let right = rect.right() - 1;
+    let inner_left = left + radius;
+    let inner_right = right - radius;
+    let inner_top = rect.y + radius;
+    let inner_bottom = rect.bottom() - 1 - radius;
+    if y >= inner_top && y <= inner_bottom {
+        return Some((left, right + 1));
+    }
+
+    let dy = if y < inner_top {
+        inner_top - y
+    } else {
+        y - inner_bottom
+    };
+    let dx = ((radius * radius - dy * dy).max(0) as u32).isqrt() as i32;
+    Some((inner_left - dx, inner_right + dx + 1))
 }
 
 fn line_len_at(text: &str, start: usize, max_chars: usize, wrap: TextWrap) -> (usize, bool) {

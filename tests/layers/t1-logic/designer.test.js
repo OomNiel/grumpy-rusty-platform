@@ -1479,7 +1479,7 @@ test('every property and every widget has a hover description', () => {
 test('the properties that mean something different per widget say so', () => {
     // A shared name would otherwise describe the wrong thing: `mode` selects between quite different
     // drawings, and `scale` is a glyph's growth on an icon but the model's size on a mesh.
-    ok(propertyHelp('scale', 'mode') !== propertyHelp('image', 'mode'), 'mode differs');
+    ok(propertyHelp('keypad', 'mode') !== propertyHelp('scale', 'mode'), 'mode differs');
     ok(propertyHelp('icon', 'scale') !== propertyHelp('mesh', 'scale'), 'scale differs');
     equal(propertyHelp('label', 'text'), propertyHelp('button', 'text'), 'and a shared one is shared');
 });

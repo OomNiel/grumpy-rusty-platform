@@ -539,6 +539,56 @@ function blockInner(rect: Rect, style: Style): Rect {
     });
 }
 
+/**
+ * The corner radius a block's inner rect carries, from the radius of the block itself.
+ *
+ * The inner rect is inset by the border and the padding, so concentric arcs put its radius at the
+ * outer one less the smaller inset (`render_progress`, `widgets/mod.rs`). A fill narrower than its
+ * own two corners is rounded as far as its width allows by `fillSolid`, i.e. drawn as a pill.
+ */
+function innerCornerRadius(rect: Rect, inner: Rect, radius: number): number {
+    const dx = Math.min(inner.x - rect.x, rectRight(rect) - rectRight(inner));
+    const dy = Math.min(inner.y - rect.y, rectBottom(rect) - rectBottom(inner));
+    const inset = Math.min(Math.max(0, Math.min(dx, dy)), radius);
+    return Math.max(0, radius - inset);
+}
+
+/**
+ * Clips to a rounded rectangle, for a picture that has to be cut to its widget's corners.
+ *
+ * An image is opaque, so the board *masks* it to the rounded rect rather than painting over the
+ * cut-outs (`draw_image_rounded`, `render/mod.rs`); a clip is the canvas' way of doing the same.
+ */
+function clipRoundedRect(context: CanvasRenderingContext2D, rect: Rect, radius: number): void {
+    const r = clampRadius(rect, radius);
+    context.beginPath();
+    if (r <= 0) {
+        context.rect(rect.x, rect.y, rect.w, rect.h);
+        context.clip();
+        return;
+    }
+    context.moveTo(rect.x + r, rect.y);
+    context.lineTo(rect.x + rect.w - r, rect.y);
+    context.quadraticCurveTo(rect.x + rect.w, rect.y, rect.x + rect.w, rect.y + r);
+    context.lineTo(rect.x + rect.w, rect.y + rect.h - r);
+    context.quadraticCurveTo(rect.x + rect.w, rect.y + rect.h, rect.x + rect.w - r, rect.y + rect.h);
+    context.lineTo(rect.x + r, rect.y + rect.h);
+    context.quadraticCurveTo(rect.x, rect.y + rect.h, rect.x, rect.y + rect.h - r);
+    context.lineTo(rect.x, rect.y + r);
+    context.quadraticCurveTo(rect.x, rect.y, rect.x + r, rect.y);
+    context.closePath();
+    context.clip();
+}
+
+/** The decoded size of a bitmap, which differs by the kind of source the browser handed back. */
+function bitmapSize(bitmap: CanvasImageSource): { width: number; height: number } {
+    const size = bitmap as { width?: number; height?: number; naturalWidth?: number; naturalHeight?: number };
+    return {
+        width: size.width ?? size.naturalWidth ?? 0,
+        height: size.height ?? size.naturalHeight ?? 0,
+    };
+}
+
 /** `Block::title_area(rect)` (spec 3.6, `block.rs:70-83`); only meaningful when a title is set. */
 function titleArea(rect: Rect, style: Style): Rect {
     const border = style.border.width;
@@ -1421,6 +1471,52 @@ function previewPanel(context: CanvasRenderingContext2D, widget: DesignerWidget,
     drawBlock(context, rectOf(widget), resolveVisual(panelStyle(widget), state));
 }
 
+/**
+ * Image (`render_image`, `widgets/mod.rs`): the block, then the picture inside it.
+ *
+ * Asked for 2026-11-02: *"add Border (Colour, Width) and Rounded corners properties to the Image widget"*.
+ * The board paints the surface as a block and masks the picture to the block's inner rounded rect -- an
+ * image is opaque, so its corners have to be *not drawn* rather than painted over with a colour the design
+ * may not have -- and the border stays outside that rect. This mirrors the order: block, clipped picture.
+ *
+ * `bitmap` is the decoded file the extension sent. Without one the block is still drawn and the caller's
+ * asset placeholder says which file is being waited for.
+ */
+export function previewImage(
+    context: CanvasRenderingContext2D,
+    widget: DesignerWidget,
+    bitmap: CanvasImageSource | undefined,
+): boolean {
+    const style = resolveVisual(designStyle(widget, styleNew()), 'normal');
+    const rect = rectOf(widget);
+    if (bitmap === undefined) {
+        // No pixels yet: the caller's own fallback box and asset placeholder are the honest drawing, and
+        // painting an empty block here would hide the widget instead.
+        return false;
+    }
+    drawBlock(context, rect, style);
+    const inner = blockInner(rect, style);
+    if (rectEmpty(inner)) {
+        return true;
+    }
+    context.save();
+    clipRoundedRect(context, inner, innerCornerRadius(rect, inner, style.cornerRadius));
+    // `stretch` fills the cell and `center` draws the file at its own size in the middle of it, which is
+    // what `render_image`'s `ImageFit` does.
+    if (stringProp(widget.props, 'fit') === 'center') {
+        const size = bitmapSize(bitmap);
+        context.drawImage(
+            bitmap,
+            inner.x + Math.floor((inner.w - size.width) / 2),
+            inner.y + Math.floor((inner.h - size.height) / 2),
+        );
+    } else {
+        context.drawImage(bitmap, inner.x, inner.y, inner.w, inner.h);
+    }
+    context.restore();
+    return true;
+}
+
 /** Label (spec 4.2, `widgets/mod.rs:1325-1344`): block, then left/top text; the label ignores the live state. */
 function previewLabel(context: CanvasRenderingContext2D, widget: DesignerWidget, _state: VisualState): void {
     // §4.2 resolves VisualState::Normal for a label whatever the input state is.
@@ -1654,7 +1750,15 @@ function previewProgress(context: CanvasRenderingContext2D, widget: DesignerWidg
     const fillWidth = Math.min(Math.trunc(inner.w * value), inner.w);
     if (fillWidth > 0) {
         const colour = state === 'focused' ? style.accent : style.foreground;
-        fillSolid(context, { x: inner.x, y: inner.y, w: fillWidth, h: inner.h }, 0, colour, 255);
+        // The fill follows the track's rounded corners (2026-11-02): the inner radius is the outer
+        // one less the inset between the two rects, so the arcs stay concentric.
+        fillSolid(
+            context,
+            { x: inner.x, y: inner.y, w: fillWidth, h: inner.h },
+            innerCornerRadius(rect, inner, style.cornerRadius),
+            colour,
+            255,
+        );
     }
 }
 
@@ -2993,9 +3097,10 @@ const KEYPAD_TEXT_ROWS: readonly (readonly KeypadKeySpec[])[] = [
     letterRow('qwertyuiop'),
     letterRow('asdfghjkl;'),
     letterRow('zxcvbnm,./'),
-    // Shift and the mode key are wide enough to hit with a thumb; the space bar takes the middle.
+    // Shift, Caps Lock and the mode key are wide enough to hit with a thumb; the space bar gave up
+    // two of its columns to seat the lock beside Shift (2026-11-02).
     // The keys that act are labelled with words, not single letters that read as alphabet keys.
-    [['SHIFT', 2], [KEYPAD_MODE_KEY, 2], ['Space', 4], ['BKSP', 2]],
+    [['SHIFT', 2], ['CAPS', 2], [KEYPAD_MODE_KEY, 2], ['Space', 2], ['BKSP', 2]],
     // The cursor keys sit left of Enter in every mode (2026-10-21).
     [['CLR', 3], [KEYPAD_CURSOR_LEFT, 1], [KEYPAD_CURSOR_RIGHT, 1], ['ENT', 5]],
 ];
@@ -3068,7 +3173,8 @@ function previewKeypad(
     const keyColour = colourProp(widget.props, 'key_color') ?? rgb(6, 12, 16);
     const legendColour = colourProp(widget.props, 'legend_color') ?? rgb(31, 63, 31);
     const accentColour = colourProp(widget.props, 'accent_color') ?? rgb(2, 16, 24);
-    // Caps lock is shown the only way a keypad can show it: the Shift key wears the pressed face.
+    // The design's Shift property is the Caps Lock: the CAPS key wears the pressed face while it is
+    // on, and the letter keys say the capitals it will type.
     const pressedColour = colourProp(widget.props, 'pressed_key_color') ?? rgb(12, 24, 31);
     const entryFace = colourProp(widget.props, 'entry_face') ?? rgb(1, 2, 4);
     const entryBorder = colourProp(widget.props, 'entry_border') ?? rgb(16, 32, 16);
@@ -3115,18 +3221,19 @@ function previewKeypad(
             // The cursor keys are sentinels: the symbol page types its own `<` and `>`.
             const control =
                 legend === 'SHIFT'
+                || legend === 'CAPS'
                 || legend === KEYPAD_MODE_KEY
                 || legend === 'BKSP'
                 || legend === 'CLR'
                 || legend === 'ENT'
                 || legend === KEYPAD_CURSOR_LEFT
                 || legend === KEYPAD_CURSOR_RIGHT;
-            const lit = control && legend === 'SHIFT' && shift;
+            const lit = control && legend === 'CAPS' && shift;
             const face = lit ? pressedColour : control ? accentColour : keyColour;
             const inner: Rect = { x: cell.x + 1, y: cell.y + 1, w: cell.w - 2, h: cell.h - 2 };
             fillSolid(context, inner, 0, face, 255);
-            // Shift is a caps lock: the letter keys say what they will type, exactly as the widget
-            // redraws them when it toggles.
+            // Shift is a one-shot capital and the Caps key locks capitals on: the letter keys say
+            // what they will type, exactly as the widget redraws them when it toggles.
             const shifted = shift && legend.length === 1 && /[a-z]/.test(legend);
             const label =
                 legend === KEYPAD_MODE_KEY

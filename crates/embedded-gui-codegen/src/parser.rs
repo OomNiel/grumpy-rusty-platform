@@ -403,7 +403,8 @@ pub fn parse_widget(node: &KdlNode) -> Result<(GridPlacementDef, WidgetDef), Cod
             let text = get_string_prop(node, "text")
                 .or_else(|| node.entries().first().and_then(entry_to_str))
                 .unwrap_or("Button")
-                .to_string();            let on_click = get_string_prop(node, "on_click")
+                .to_string();
+            let on_click = get_string_prop(node, "on_click")
                 .or_else(|| get_string_prop(node, "onClick"))
                 .map(|s| s.to_string());
             let bg = get_string_prop(node, "bg")
@@ -564,9 +565,7 @@ pub fn parse_widget(node: &KdlNode) -> Result<(GridPlacementDef, WidgetDef), Cod
             let hour = get_i64_prop(node, "hour").unwrap_or(10).clamp(0, 23) as u8;
             let minute = get_i64_prop(node, "minute").unwrap_or(10).clamp(0, 59) as u8;
             let second = get_i64_prop(node, "second").unwrap_or(0).clamp(0, 59) as u8;
-            let label_scale = get_i64_prop(node, "label_scale")
-                .unwrap_or(1)
-                .clamp(1, 4) as u8;
+            let label_scale = get_i64_prop(node, "label_scale").unwrap_or(1).clamp(1, 4) as u8;
             // In character widths, in tenths: the Designer's Number inset steps by 0.1, and 0.5 is what
             // a clock that says nothing gets (the shipping look since 2026-10-21).
             let label_inset = get_f64_prop(node, "label_inset")
@@ -596,8 +595,7 @@ pub fn parse_widget(node: &KdlNode) -> Result<(GridPlacementDef, WidgetDef), Cod
             let value = get_f64_prop(node, "value").unwrap_or(0.0) as f32;
             // Pixels, and clamped to what a widget can hold: a negative or absurd width is a design mistake,
             // not something the renderer should have to guard against.
-            let knob_width = get_i64_prop(node, "knob_width")
-                .map(|w| w.clamp(0, 1024) as u32);
+            let knob_width = get_i64_prop(node, "knob_width").map(|w| w.clamp(0, 1024) as u32);
             WidgetDef::Slider {
                 id,
                 min,
@@ -874,6 +872,7 @@ pub fn parse_widget(node: &KdlNode) -> Result<(GridPlacementDef, WidgetDef), Cod
                         // `sd:PIC1.BMP` are the same file and neither is written with a leading slash.
                         path: path.trim_start_matches('/').to_string(),
                         fit,
+                        style,
                     },
                 ));
             }
@@ -883,6 +882,7 @@ pub fn parse_widget(node: &KdlNode) -> Result<(GridPlacementDef, WidgetDef), Cod
                 fit,
                 mode,
                 tint,
+                style,
             }
         }
         "carousel" => {

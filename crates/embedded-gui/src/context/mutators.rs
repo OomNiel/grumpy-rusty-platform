@@ -749,7 +749,7 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
         }
     }
 
-    /// Whether a keypad is typing upper case.
+    /// Whether a keypad is typing upper case -- a pending Shift or the Caps Lock.
     #[cfg(feature = "rich-widgets")]
     pub fn keypad_shift(&self, id: WidgetId) -> Option<bool> {
         match self.node(id)?.kind {
@@ -794,10 +794,11 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
         }
     }
 
-    /// Turns Shift on or off; every letter legend changes, so the grid is damaged as a whole.
+    /// Sets a keypad's Caps Lock; every letter legend changes, so the grid is damaged as a whole.
     ///
-    /// Setting it **on** locks it, because a design's `shift` property means "letters start in upper case"
-    /// and that is a lock: the one-shot state is something only the key on the glass produces (2026-10-31).
+    /// Setting it **on** locks capitals, because a design's `shift` property means "letters start in
+    /// upper case" and that is a lock: the one-shot state is something only the Shift key on the
+    /// glass produces (2026-11-02).
     #[cfg(feature = "rich-widgets")]
     pub fn set_keypad_shift(&mut self, id: WidgetId, shift: bool) -> Result<(), GuiError> {
         let rect = self.absolute_rect(id).ok_or(GuiError::NotFound)?;

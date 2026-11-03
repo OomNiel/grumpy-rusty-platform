@@ -375,7 +375,7 @@ pub fn generate_rust_code(screen: &ScreenDef) -> String {
             } => {
                 // A keypad is one widget with six surfaces a design colours separately: the line
                 // being typed, the key faces, their legends, the key under a finger, the keys that
-                // act (Shift, mode, backspace, clear, Enter) and the entry box. The fallbacks are
+                // act (Shift, Caps, mode, backspace, clear, Enter) and the entry box. The fallbacks are
                 // `KeypadWidget::new`'s own, so a design that names none of them draws what a
                 // hand-written `add_keypad` would.
                 let st = style_expr(style.as_deref(), "Style::panel()");
@@ -460,7 +460,10 @@ pub fn generate_rust_code(screen: &ScreenDef) -> String {
                 // A design that names no alignment keeps upstream's builder, and with it the left-aligned
                 // text every design written before this choice existed expects. Only an explicit `align`
                 // reaches the builder that takes one.
-                match align.as_deref().map(|value| value.trim().to_ascii_lowercase()) {
+                match align
+                    .as_deref()
+                    .map(|value| value.trim().to_ascii_lowercase())
+                {
                     Some(value) => {
                         let align = match value.as_str() {
                             "middle" | "center" | "centre" => "TextAlign::Center",
@@ -777,7 +780,9 @@ pub fn generate_rust_code(screen: &ScreenDef) -> String {
                     var_name, idx
                 );
             }
-            WidgetDef::SdImage { path, fit, .. } => {
+            WidgetDef::SdImage {
+                path, fit, style, ..
+            } => {
                 // The pixels are on the card, so there is nothing to embed and no asset to replace: this is a
                 // custom widget over `rusty_gui_widgets::BmpImage`, which reads the file row by row as it draws.
                 // `crate::sd::with_file` is the function the project's own `src/sd.rs` provides; a project
@@ -787,7 +792,8 @@ pub fn generate_rust_code(screen: &ScreenDef) -> String {
                     "path: \"{}\", stretch: {}, with_file: crate::sd::with_file",
                     path, stretch
                 );
-                emit_custom_widget(&mut out, &var_name, idx, "BmpImage", &fields);
+                let st = style_expr(style.as_deref(), "Style::default()");
+                emit_custom_widget(&mut out, &var_name, idx, "BmpImage", &st, &fields);
             }
             WidgetDef::VectorPath {
                 stroke_width,
@@ -823,7 +829,14 @@ pub fn generate_rust_code(screen: &ScreenDef) -> String {
                     opt_rgb565(colour),
                     verbs_joined
                 );
-                emit_custom_widget(&mut out, &var_name, idx, "VectorPath", &fields);
+                emit_custom_widget(
+                    &mut out,
+                    &var_name,
+                    idx,
+                    "VectorPath",
+                    "Style::default()",
+                    &fields,
+                );
             }
             WidgetDef::RectShape {
                 radius,
@@ -841,7 +854,14 @@ pub fn generate_rust_code(screen: &ScreenDef) -> String {
                     opt_rgb565(&fill_color),
                     opt_rgb565(&stroke_color),
                 );
-                emit_custom_widget(&mut out, &var_name, idx, "Rectangle", &fields);
+                emit_custom_widget(
+                    &mut out,
+                    &var_name,
+                    idx,
+                    "Rectangle",
+                    "Style::default()",
+                    &fields,
+                );
             }
             WidgetDef::LineShape {
                 stroke_width,
@@ -855,7 +875,14 @@ pub fn generate_rust_code(screen: &ScreenDef) -> String {
                     stroke_width,
                     opt_rgb565(&color)
                 );
-                emit_custom_widget(&mut out, &var_name, idx, "Line", &fields);
+                emit_custom_widget(
+                    &mut out,
+                    &var_name,
+                    idx,
+                    "Line",
+                    "Style::default()",
+                    &fields,
+                );
             }
             WidgetDef::CircleShape {
                 fill_color,
@@ -872,7 +899,14 @@ pub fn generate_rust_code(screen: &ScreenDef) -> String {
                     opt_rgb565(&fill_color),
                     opt_rgb565(&stroke_color),
                 );
-                emit_custom_widget(&mut out, &var_name, idx, "Circle", &fields);
+                emit_custom_widget(
+                    &mut out,
+                    &var_name,
+                    idx,
+                    "Circle",
+                    "Style::default()",
+                    &fields,
+                );
             }
             WidgetDef::TriangleShape {
                 stroke_width,
@@ -896,7 +930,14 @@ pub fn generate_rust_code(screen: &ScreenDef) -> String {
                     points[4],
                     points[5],
                 );
-                emit_custom_widget(&mut out, &var_name, idx, "Triangle", &fields);
+                emit_custom_widget(
+                    &mut out,
+                    &var_name,
+                    idx,
+                    "Triangle",
+                    "Style::default()",
+                    &fields,
+                );
             }
             WidgetDef::Table {
                 headers,
@@ -1716,7 +1757,11 @@ pub fn {var_name}_mesh_panel() -> MeshPanel<'static> {{\n\
 
     for (idx, (_, widget)) in screen.grid.children.iter().enumerate() {
         let WidgetDef::Image {
-            source, fit, mode, ..
+            source,
+            fit,
+            mode,
+            style,
+            ..
         } = widget
         else {
             continue;
@@ -1749,9 +1794,13 @@ pub fn {var_name}_mesh_panel() -> MeshPanel<'static> {{\n\
         } else {
             "ImageFit::Stretch"
         };
+        // The surface the design asked for (a border, rounded corners) rides in the style expression;
+        // `render_image` paints it as a block and masks the picture to the rounded inner rect, which is
+        // why the image does not simply paint over the corners.
+        let st = style_expr(style.as_deref(), "Style::default()");
         let replacement = format!(
-            "        let {} = gui.add_image(cells[{}], ImageRef::new({}, {}, {}), {}, Style::default())?;",
-            var_name, idx, asset.width, asset.height, const_name, fit_expr
+            "        let {} = gui.add_image(cells[{}], ImageRef::new({}, {}, {}), {}, {})?;",
+            var_name, idx, asset.width, asset.height, const_name, fit_expr, st
         );
         out = out.replace(&needle, &replacement);
     }
@@ -1848,13 +1897,21 @@ fn rgb565_or(token: &Option<String>, default: &str) -> String {
 /// call. The `static` (rather than an inline temporary) is what lets the borrowed
 /// `&dyn CustomWidget` outlive the gui: the cell rect is what gives the shape its
 /// geometry, so the widget carries only style.
-fn emit_custom_widget(out: &mut String, var_name: &str, idx: usize, type_name: &str, fields: &str) {
+fn emit_custom_widget(
+    out: &mut String,
+    var_name: &str,
+    idx: usize,
+    type_name: &str,
+    style: &str,
+    fields: &str,
+) {
     let _ = writeln!(
         out,
-        "        static __shape_{var}: rusty_gui_widgets::{type_name} = rusty_gui_widgets::{type_name} {{ {fields} }};\n        let {var} = gui.add_custom_widget(cells[{i}], &__shape_{var}, Style::default())?;",
+        "        static __shape_{var}: rusty_gui_widgets::{type_name} = rusty_gui_widgets::{type_name} {{ {fields} }};\n        let {var} = gui.add_custom_widget(cells[{i}], &__shape_{var}, {style})?;",
         var = var_name,
         i = idx,
         type_name = type_name,
         fields = fields,
+        style = style,
     );
 }

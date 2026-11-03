@@ -769,6 +769,31 @@ test('a progress bar fills in proportion to value, and not at all at zero', () =
     equal(fillWidths(1), [160], 'and the whole width at one');
 });
 
+test('a rounded progress bar fills inside its corners, at both ends', () => {
+    // Reported 2026-11-02: "When using rounded corners the fill pattern ends are not rounded". The fill
+    // used to be one square fillRect over the inner rect, painting the track's cut-out corners straight
+    // back; it now follows the block's radius, the outer one less the inset between the two rects.
+    const fills = (cornerRadius) => {
+        const { calls } = boot(documentWith(widgetOf('progress', { value: 1, corner_radius: cornerRadius })));
+        return fillsWithColour(calls, TEXT_WHITE);
+    };
+    const square = fills(0);
+    ok(
+        square.some((call) => call.args[2] === 160 && call.args[3] === 20),
+        'a square track fills with one rectangle',
+    );
+    const rounded = fills(8);
+    ok(rounded.length > 3, 'a rounded fill is drawn row by row');
+    ok(
+        rounded.every((call) => call.args[3] === 1),
+        'one pixel per row, which is how the crate draws a rounded fill',
+    );
+    const widths = rounded.map((call) => call.args[2]);
+    ok(widths[0] < Math.max(...widths), 'the top row stops inside the corner');
+    ok(widths[widths.length - 1] < Math.max(...widths), 'and so does the bottom row');
+    equal(Math.max(...widths), 160, 'the middle of the bar is the full inner width');
+});
+
 test('a toggle track uses the accent when checked and the dark track when not', () => {
     // `render_toggle` draws a fixed track at the right whose colour is the state (preview-spec.md §4.4):
     // accent new(0,42,31) when on, new(7,10,10) when off.
@@ -1296,6 +1321,89 @@ test('an image widget names its file on the canvas, and draws the picture once t
     messages.length = 0;
     window.emit('message', { data: { type: 'report', problems: [], wroteDocument: true, images: [] } });
     equal(messages.length, 0, 'and an empty asset list asks the extension for nothing');
+});
+
+test('the canvas zoom goes up to 250% and 300%', () => {
+    // Asked for 2026-11-02: "Add 250% and 300% canvas zoom options in the designer." The zoom is a CSS scale of
+    // the canvas, so a new factor only needs the menu entry; a click is divided by it either way.
+    const { root } = boot(documentWith(widgetOf('label', {})));
+    const selects = root.descendants().filter((element) => element.tagName === 'SELECT');
+    const zoom = selects.find((select) =>
+        select.children.some((option) => option.textContent === '200%'),
+    );
+    ok(zoom !== undefined, 'the toolbar has a zoom menu');
+    const labels = zoom.children.map((option) => option.textContent);
+    for (const label of ['50%', '100%', '150%', '200%', '250%', '300%']) {
+        ok(labels.includes(label), `the menu offers ${label}: ${labels.join(', ')}`);
+    }
+});
+
+test('an image widget draws its border and cuts the picture to its rounded corners', async () => {
+    // Asked for 2026-11-02: border (colour, width) and rounded corners on the Image widget. The picture is
+    // opaque, so it is clipped to the block's inner rounded rect exactly as the board masks it, and the border
+    // is outside that rect. The stub DOM has no `Image`; this stands in for the browser's decoder.
+    const previousImage = globalThis.Image;
+    class FakeImage {
+        width = 32;
+        height = 32;
+        decode() {
+            return Promise.resolve();
+        }
+    }
+    globalThis.Image = FakeImage;
+    try {
+        const widget = widgetOf('image', {
+            src: 'assets/photo.bmp',
+            fit: 'stretch',
+            border_color: '#ff0000',
+            border_width: 2,
+            corner_radius: 9,
+        });
+        const { window, calls } = boot(documentWith(widget));
+        window.emit('message', {
+            data: {
+                type: 'report',
+                problems: [],
+                wroteDocument: true,
+                images: [{ src: 'assets/photo.bmp', mime: 'image/bmp', data: 'AA==' }],
+            },
+        });
+        // The decode is a promise, and the panel repaints in its `then`.
+        await Promise.resolve();
+        await Promise.resolve();
+
+        const drawn = calls.filter((call) => call.method === 'drawImage');
+        ok(drawn.length > 0, 'the picture is drawn once its bytes arrive');
+        // The widget is 96x96 at (40,60) and the border is two pixels, so the picture is drawn inside it.
+        equal(
+            drawn[drawn.length - 1].args.slice(1),
+            [42, 62, 92, 92],
+            'the picture starts inside the border',
+        );
+        ok(
+            calls.some((call) => call.method === 'clip'),
+            'and is clipped to the rounded inner rect',
+        );
+        ok(
+            calls.some((call) => call.method === 'quadraticCurveTo'),
+            'which is a rounded path, not the square cell',
+        );
+        // The border's top band: the straight section between the two rounded corners, two pixels thick,
+        // starting where the corner's radius ends (`strokeRounded`, `preview.ts`).
+        ok(
+            calls.some(
+                (call) =>
+                    call.method === 'fillRect' &&
+                    call.args[0] === 49 &&
+                    call.args[1] === 60 &&
+                    call.args[2] === 78 &&
+                    call.args[3] === 2,
+            ),
+            'the border ring is painted around the picture',
+        );
+    } finally {
+        globalThis.Image = previousImage;
+    }
 });
 
 /**

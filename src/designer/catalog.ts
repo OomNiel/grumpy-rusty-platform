@@ -945,7 +945,8 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         note:
             'A whole keypad in one widget: a one-line entry box on its top edge and the keys beneath it. ' +
             'The letters page carries a row of digits above QWERTY and its mode key leads to the symbols; ' +
-            'Shift toggles capitals (digits are unaffected), and Backspace, Clear and Enter act on the ' +
+            'Shift capitalises one character and the Caps key locks capitals on (digits are unaffected), ' +
+            'and Backspace, Clear and Enter act on the ' +
             'line. The keypad always fills the bottom of the panel -- a third of it ' +
             'in portrait, half in landscape -- so its box is pinned there rather than dragged.',
         // The pinned box is what the designer writes; the fraction follows the panel's shape.
@@ -958,14 +959,14 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
                 defaultValue: 'text',
                 options: ['text', 'numeric', 'symbol'],
             },
-            { name: 'shift', kind: 'bool', label: 'Start shifted', defaultValue: false },
+            { name: 'shift', kind: 'bool', label: 'Start in caps lock', defaultValue: false },
             // Six surfaces a design has to be able to tell apart: the line, the key faces, their
             // legends, the key under a finger, the keys that act, and the entry box (face and edge).
             { name: 'text_color', kind: 'color', label: 'Typed text', defaultValue: '#ffffff' },
             { name: 'key_color', kind: 'color', label: 'Key face', defaultValue: '#0c1820' },
             { name: 'legend_color', kind: 'color', label: 'Key legend', defaultValue: '#ffffff' },
             { name: 'pressed_key_color', kind: 'color', label: 'Pressed key', defaultValue: '#183031' },
-            { name: 'accent_color', kind: 'color', label: 'Shift / mode / Enter', defaultValue: '#021018' },
+            { name: 'accent_color', kind: 'color', label: 'Shift / Caps / mode / Enter', defaultValue: '#021018' },
             { name: 'entry_face', kind: 'color', label: 'Entry box', defaultValue: '#010508' },
             { name: 'entry_border', kind: 'color', label: 'Entry border', defaultValue: '#808080' },
             { name: 'font', kind: 'font', label: 'Font', defaultValue: '' },
@@ -1202,8 +1203,34 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
                 defaultValue: 'stretch',
                 options: ['stretch', 'center'],
             },
-            { name: 'mode', kind: 'text', label: 'Mode', defaultValue: 'color' },
-            { name: 'tint', kind: 'color', label: 'Tint', defaultValue: '' },
+            // `mode` and `tint` were offered here until 2026-11-02. They are build-time options of
+            // `include_gui!` (a mask decode and its ink colour), not properties of the widget: the canvas
+            // could not show them and the runtime never reads them, so they were two controls with no
+            // visible effect. The markup still accepts them for hand-written KDL.
+            // The surface around the picture (asked for 2026-11-02: "add Border (Colour, Width) and
+            // Rounded corners properties to the Image widget"). They ride in the style expression,
+            // which the codegen hands to `add_image`, and the runtime *masks* the picture to the
+            // rounded inner rect: an image is opaque, so its corners have to be not drawn rather
+            // than painted over with a colour the design may not have.
+            { name: 'border_color', kind: 'color', label: 'Border colour', defaultValue: '', viaStyle: 'border' },
+            {
+                name: 'border_width',
+                kind: 'int',
+                label: 'Border width',
+                defaultValue: 0,
+                min: 0,
+                max: 16,
+                viaStyle: 'borderWidth',
+            },
+            {
+                name: 'corner_radius',
+                kind: 'int',
+                label: 'Corner radius',
+                defaultValue: 0,
+                min: 0,
+                max: 64,
+                viaStyle: 'radius',
+            },
         ],
         events: [],
     },
@@ -1610,12 +1637,12 @@ const TAG_PROPERTY_HELP: Record<string, string> = {
     'keypad.text_color': 'The line being typed, and the cursor under the character it will overwrite',
     'keypad.key_color': 'The face of a key that types a character',
     'keypad.legend_color': 'The character drawn on a key',
-    'keypad.pressed_key_color': 'The face of the key under a finger',
-    'keypad.accent_color': 'Shift, the mode key, Backspace, Clear and Enter',
+    'keypad.pressed_key_color': 'The face of the key under a finger, and of the Caps key while capitals are locked',
+    'keypad.accent_color': 'Shift, Caps, the mode key, Backspace, Clear and Enter',
     'keypad.entry_face': 'The inside of the entry box',
     'keypad.entry_border': 'The line around the entry box',
     'keypad.mode': 'Which key set a new keypad starts with; the mode key cycles at run time',
-    'keypad.shift': 'Whether letters start in upper case',
+    'keypad.shift': 'Whether letters start in upper case -- the Caps Lock at power-on',
     'checkbox.box_size': 'Zero keeps the crate\'s own rule: the row height, up to eight pixels',
     'arc.arc_radius': 'Zero fits the arc to the widget\'s shorter side',
     'busy_wheel.phase': 'One full turn is 0 to 1; feed it from your animation clock',
@@ -1628,7 +1655,6 @@ const TAG_PROPERTY_HELP: Record<string, string> = {
     'image.src':
         'A file in the project, which is embedded in the flash at build time, or `sd:NAME.BMP` to read it from ' +
         'the SD card as it is drawn (the card is read with short 8.3 names, from its root)',
-    'image.mode': 'How the pixels are interpreted, e.g. colour or monochrome',
     'rect.radius': 'Corner radius in pixels',
     'icon.scale': 'How much to enlarge the glyph',
     'circle.line_color': 'Colour of the circle\'s outline',

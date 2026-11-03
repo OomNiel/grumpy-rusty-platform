@@ -267,6 +267,64 @@ fn image_assets_round_trip_and_generate_static_rgb565() {
     assert!(generated.contains("ImageFit::Center"));
 }
 
+/// Asked for 2026-11-02: *"add Border (Colour, Width) and Rounded corners properties to the Image
+/// widget."* They travel as the widget's style expression, which the emitter passes to `add_image`
+/// (and which the serializer writes back), instead of being parsed and then thrown away.
+#[test]
+fn an_images_style_reaches_the_builder_and_the_serializer() {
+    let style = "{ let mut style = Style::label(); style.border.color = Rgb565::new(31, 63, 31); \
+                 style.border.width = 2; style.corner_radius = 8; style }";
+    let kdl = format!(
+        r##"screen id="Rounded" width=96 height=64 {{
+    grid cols="1fr" rows="1fr" {{
+        image id="logo" src="assets/logo.png" fit="center" mode="color" style="{style}" col=0 row=0
+    }}
+}}"##
+    );
+    let screen = parse_kdl_screen(&kdl).unwrap();
+    assert_eq!(
+        parse_kdl_screen(&serialize_kdl_screen(&screen)).unwrap(),
+        screen,
+        "the style survives a serialize/parse round trip"
+    );
+
+    let generated = generate_rust_code_with_image_assets(
+        &screen,
+        &[ImageAssetDef {
+            source: "assets/logo.png".into(),
+            width: 1,
+            height: 1,
+            pixels: vec![0xFFFF],
+        }],
+    );
+    assert!(
+        generated.contains(&format!(
+            "ImageRef::new(1, 1, __IMAGE_ASSET_0_PIXELS), ImageFit::Center, {style})"
+        )),
+        "the design's surface reaches add_image: {generated}"
+    );
+}
+
+/// The card-backed image is a custom widget, so its style is handed to `add_custom_widget` rather than
+/// to `add_image`; `BmpImage` draws the block itself and masks the rows it streams.
+#[test]
+fn a_styled_sd_image_passes_its_style_to_the_card_widget() {
+    let kdl = r##"screen id="Card" width=320 height=240 {
+    grid cols="1fr" rows="1fr" {
+        image id="pic" src="sd:PIC.BMP" fit="center" style="Style::panel()" col=0 row=0
+    }
+}"##;
+    let rust = compile_kdl_to_rust(kdl).unwrap();
+    assert!(
+        rust.contains("static __shape_pic: rusty_gui_widgets::BmpImage"),
+        "the card image is the custom widget: {rust}"
+    );
+    assert!(
+        rust.contains("gui.add_custom_widget(cells[0], &__shape_pic, Style::panel())?;"),
+        "and it is given the design's surface: {rust}"
+    );
+}
+
 #[test]
 fn test_custom_button_styling_declarative_and_named_colors() {
     let kdl = r##"screen id="HackswellScreen" width=320 height=240 {
@@ -894,7 +952,7 @@ screen id="Named" width=200 height=100 {
 /// A keypad's markup becomes one `add_keypad_styled` call carrying its mode and every colour.
 ///
 /// The widget is whole: a design that asks for a keypad gets the entry box, the three key sets,
-/// Shift, backspace, clear and Enter in one place, which is why the emitted call carries colours
+/// Shift, Caps, backspace, clear and Enter in one place, which is why the emitted call carries colours
 /// and a mode rather than twenty keys.
 #[test]
 fn a_keypad_reaches_the_builder_with_its_mode_and_colours() {
@@ -1065,11 +1123,16 @@ screen id="Log" width=240 height=320 {
 }
 "#;
     let code = compile_kdl_to_rust(kdl).unwrap();
-    assert!(code.contains("pub console: WidgetId,"), "the panel is addressable by name");
+    assert!(
+        code.contains("pub console: WidgetId,"),
+        "the panel is addressable by name"
+    );
     assert!(
         code.contains(r#"gui.add_text_lines(cells[0], &["booting", "he said \"hi\""], 2, "#),
         "the entries and the gap reach the builder: {}",
-        code.lines().find(|l| l.contains("add_text_lines")).unwrap_or("")
+        code.lines()
+            .find(|l| l.contains("add_text_lines"))
+            .unwrap_or("")
     );
 
     // The `text` attribute is the hand-written spelling: newlines split it into entries.

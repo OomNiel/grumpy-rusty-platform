@@ -225,6 +225,49 @@ pub trait CustomCanvas {
         radius: u8,
         color: embedded_graphics_core::pixelcolor::Rgb565,
     ) -> Result<(), crate::GuiError>;
+    /// Strokes a rounded rectangle, `width` pixels thick.
+    ///
+    /// The default walks the outer ring a row at a time, using the same span the rounded fills use, so a
+    /// custom widget that draws its own surface (`BmpImage`) gets the corners the block has without every
+    /// canvas implementation having to learn a new primitive. A canvas with a real rounded stroke can
+    /// override it.
+    fn draw_rounded_rect(
+        &mut self,
+        rect: Rect,
+        radius: u8,
+        width: u8,
+        color: embedded_graphics_core::pixelcolor::Rgb565,
+    ) -> Result<(), crate::GuiError> {
+        if width == 0 || rect.w == 0 || rect.h == 0 {
+            return Ok(());
+        }
+        let inner = rect.inset(crate::geometry::EdgeInsets::all(width as i16));
+        let inner_radius = radius.saturating_sub(width);
+        for y in rect.y..rect.bottom() {
+            let Some((outer_x0, outer_x1)) = crate::render::rounded_row_extent(rect, radius, y) else {
+                continue;
+            };
+            let inner_row = if inner.is_empty() {
+                None
+            } else {
+                crate::render::rounded_row_extent(inner, inner_radius, y)
+            };
+            let (inner_x0, inner_x1) = inner_row.unwrap_or((outer_x0, outer_x0));
+            if inner_x0 > outer_x0 {
+                self.fill_rect(
+                    Rect::new(outer_x0, y, (inner_x0 - outer_x0) as u32, 1),
+                    color,
+                )?;
+            }
+            if inner_x1 < outer_x1 {
+                self.fill_rect(
+                    Rect::new(inner_x1, y, (outer_x1 - inner_x1) as u32, 1),
+                    color,
+                )?;
+            }
+        }
+        Ok(())
+    }
     fn draw_rect(
         &mut self,
         rect: Rect,

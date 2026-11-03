@@ -353,8 +353,20 @@ pub enum WidgetDef {
         id: Option<String>,
         source: String,
         fit: String,
+        /// How `include_gui!` decodes the file: `color`, or `mask`/`mono` for a 1-bit mask.
+        ///
+        /// **Do not remove these two fields.** They are build-time options the published
+        /// `embedded-gui-macros` reads while embedding the asset, and that crate pattern-matches this
+        /// variant with `{ source, mode, tint, .. }` -- a project patches `embedded-gui-codegen` to this
+        /// fork, so dropping a field it names makes every Designer project fail to compile. The designer
+        /// no longer offers them as properties (2026-11-02: they were two controls with no effect on the
+        /// canvas), but hand-written KDL may still use them.
         mode: String,
         tint: Option<String>,
+        /// The surface around the picture (2026-11-02): a border and rounded corners, which the runtime
+        /// paints as a block and masks the picture to. A design with no `style` keeps `Style::default()`,
+        /// so old markup emits the call it always did.
+        style: Option<String>,
     },
     /// An image the *device* reads at runtime -- a file on a mounted card -- rather than one embedded at build
     /// time.
@@ -368,6 +380,9 @@ pub enum WidgetDef {
         /// The path as the driver wants it, without the `sd:` prefix the design writes.
         path: String,
         fit: String,
+        /// The same surface an embedded image can carry: `BmpImage` draws its own block and masks the
+        /// rows it streams to the rounded inner rect.
+        style: Option<String>,
     },
     /// Wrap-around scrolling list with slot falloff, edge fade, and chrome masks.
     Carousel {

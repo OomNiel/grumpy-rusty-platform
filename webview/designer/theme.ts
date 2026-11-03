@@ -32,7 +32,7 @@ import { paintIcon } from './icons';
 import type { DesignerWidget } from '../../src/designer/model';
 import { triangleBoxOf, triangleVertices } from '../../src/designer/model';
 import { VERTEX_HANDLE_SIZE, vertexHandles } from '../../src/designer/hit';
-import { previewWidget } from './preview';
+import { previewImage, previewWidget } from './preview';
 import { bitmapFor } from './bitmaps';
 
 export interface Palette {
@@ -315,9 +315,10 @@ export function drawWidget(
             const bitmap = typeof source === 'string' ? bitmapFor(source) : undefined;
             if (spec?.tag === 'icon' && paintIcon(context, widget)) {
                 previewed = true;
-            } else if (bitmap !== undefined) {
-                drawImageAsset(context, bitmap, widget);
-                previewed = true;
+            } else if (spec?.tag === 'image') {
+                // The image paints its own surface now -- a border and rounded corners cut the picture --
+                // so it goes through `preview.ts` like every other widget the crate draws.
+                previewed = previewImage(context, widget, bitmap);
             } else {
                 previewed = previewWidget(context, widget, {});
             }
@@ -380,35 +381,6 @@ export function drawWidget(
             context.restore();
         }
     }
-}
-
-/**
- * Paints an image widget's file, honouring the widget's `fit` the way the crate does.
- *
- * `stretch` fills the cell and `center` draws the picture at its own size in the middle of it; the widget is
- * already clipped to its cell by the caller, so an oversized picture is cropped exactly where the board crops it.
- */
-function drawImageAsset(context: CanvasRenderingContext2D, bitmap: CanvasImageSource, widget: DesignerWidget): void {
-    const fit = widget.props.fit === 'center' ? 'center' : 'stretch';
-    if (fit === 'center') {
-        const size = bitmapSize(bitmap);
-        context.drawImage(
-            bitmap,
-            widget.x + Math.floor((widget.width - size.width) / 2),
-            widget.y + Math.floor((widget.height - size.height) / 2),
-        );
-        return;
-    }
-    context.drawImage(bitmap, widget.x, widget.y, widget.width, widget.height);
-}
-
-/** The decoded size of a bitmap, which differs by the kind of source the browser handed back. */
-function bitmapSize(bitmap: CanvasImageSource): { width: number; height: number } {
-    const size = bitmap as { width?: number; height?: number; naturalWidth?: number; naturalHeight?: number };
-    return {
-        width: size.width ?? size.naturalWidth ?? 0,
-        height: size.height ?? size.naturalHeight ?? 0,
-    };
 }
 
 /**

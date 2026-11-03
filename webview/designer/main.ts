@@ -782,7 +782,7 @@ function refreshToolbar(): void {
 
     const zoom = document.createElement('select');
     zoom.className = 'tool-select';
-    for (const factor of [0.5, 1, 1.5, 2]) {
+    for (const factor of [0.5, 1, 1.5, 2, 2.5, 3]) {
         const option = document.createElement('option');
         option.value = String(factor);
         option.textContent = `${factor * 100}%`;

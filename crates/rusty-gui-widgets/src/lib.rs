@@ -17,7 +17,7 @@
 //! `stroke_width` by drawing concentric borders / parallel offsets.
 #![no_std]
 
-use embedded_gui::prelude::{CustomCanvas, CustomWidget, GuiError, Rect, Rgb565};
+use embedded_gui::prelude::{CustomCanvas, CustomWidget, EdgeInsets, GuiError, Rect, Rgb565};
 use embedded_gui::style::{VisualState, WidgetStyle};
 
 /// A circle inscribed in the cell `rect`: centre and radius are derived from the
@@ -920,6 +920,7 @@ impl BmpImage {
         canvas: &mut dyn CustomCanvas,
         rect: Rect,
         visible: Rect,
+        radius: u8,
     ) -> Result<(), ()> {
         let mut stream = Stream { source };
         let header = BmpHeader::parse(&mut stream)?;
@@ -994,7 +995,27 @@ impl BmpImage {
             }
             // An enlarged image feeds one source row to several destination rows; the row is still cached, so
             // those cost a paint rather than another read.
-            draw_row(canvas, &row, samples, area, dy);
+            //
+            // A rounded widget masks each row to the run its own corners leave (2026-11-02). The picture is
+            // opaque, so the cut-out pixels have to be *not drawn*: painting the image square and restoring
+            // the corners would need a colour the design may not have.
+            let span = if radius == 0 {
+                Some((0u32, area.w))
+            } else {
+                embedded_gui::render::rounded_row_extent(area, radius, area.y + dy as i32).map(
+                    |(x0, x1)| {
+                        (
+                            (x0 - area.x).max(0) as u32,
+                            (x1 - area.x).max(0).min(area.w as i32) as u32,
+                        )
+                    },
+                )
+            };
+            if let Some((start, end)) = span {
+                if end > start {
+                    draw_row(canvas, &row, samples, area, dy, start, end);
+                }
+            }
         }
         Ok(())
     }
@@ -1078,26 +1099,44 @@ fn draw_row(
     samples: usize,
     area: Rect,
     destination_y: u32,
+    start_col: u32,
+    end_col: u32,
 ) {
-    if samples == area.w as usize {
-        let rect = Rect::new(area.x, area.y + destination_y as i32, area.w, 1);
-        let _ = canvas.fill_row(rect, &row[..samples]);
+    if end_col <= start_col {
         return;
     }
-    let mut run_start = 0u32;
-    let mut run_colour = row[0];
-    for dx in 1..=area.w {
-        let colour = if dx == area.w {
+    if samples == area.w as usize {
+        let rect = Rect::new(
+            area.x + start_col as i32,
+            area.y + destination_y as i32,
+            end_col - start_col,
+            1,
+        );
+        let _ = canvas.fill_row(rect, &row[start_col as usize..end_col as usize]);
+        return;
+    }
+    let column_colour = |dx: u32| -> Rgb565 {
+        if dx >= area.w {
             row[samples - 1]
         } else {
             row[(dx as u64 * samples as u64 / area.w as u64) as usize]
-        };
-        let changed = dx == area.w || colour != run_colour;
-        if changed {
+        }
+    };
+    let mut run_start = start_col;
+    let mut run_colour = column_colour(start_col);
+    for dx in (start_col + 1)..=end_col {
+        let colour = column_colour(dx);
+        let last = dx == end_col;
+        if last || colour != run_colour {
             let run_width = dx.saturating_sub(run_start);
             if run_width > 0 {
                 let _ = canvas.fill_rect(
-                    Rect::new(area.x + run_start as i32, area.y + destination_y as i32, run_width, 1),
+                    Rect::new(
+                        area.x + run_start as i32,
+                        area.y + destination_y as i32,
+                        run_width,
+                        1,
+                    ),
                     run_colour,
                 );
             }
@@ -1112,23 +1151,57 @@ impl CustomWidget for BmpImage {
         &self,
         canvas: &mut dyn CustomCanvas,
         rect: Rect,
-        _style: &WidgetStyle,
-        _state: VisualState,
+        style: &WidgetStyle,
+        state: VisualState,
     ) -> Result<(), GuiError> {
         if rect.w == 0 || rect.h == 0 {
             return Ok(());
         }
+        // The surface the design asked for (2026-11-02): a background and a border, with the picture masked
+        // to the corners they leave. `Style::default()` asks for none of it, so a design that colours nothing
+        // keeps the call it always made. A gradient is not painted -- the custom canvas has no gradient
+        // primitive, and an image's surface in this catalogue is a flat colour.
+        let style = style.resolve(state);
+        let border = style.border.width as i16;
+        let inner = rect.inset(EdgeInsets {
+            left: style.padding.left.saturating_add(border),
+            right: style.padding.right.saturating_add(border),
+            top: style.padding.top.saturating_add(border),
+            bottom: style.padding.bottom.saturating_add(border),
+        });
+        if let Some(background) = style.background {
+            canvas.fill_rounded_rect(rect, style.corner_radius, background)?;
+        }
+        if style.border.width > 0 {
+            canvas.draw_rounded_rect(
+                rect,
+                style.corner_radius,
+                style.border.width,
+                style.border.color,
+            )?;
+        }
+        if inner.is_empty() {
+            return Ok(());
+        }
+        // The mask's radius is the outer one less the inset, so it is concentric with the border.
+        let inset_x = (inner.x - rect.x).min(rect.right() - inner.right()).max(0);
+        let inset_y = (inner.y - rect.y).min(rect.bottom() - inner.bottom()).max(0);
+        let mask_radius = style
+            .corner_radius
+            .saturating_sub(inset_x.min(inset_y).min(255) as u8);
         // Nothing of the image is on the part of the screen being repainted, so there is nothing to read. This is
         // the whole reason the canvas is asked first: the engine renders every widget whose cell it walks, and a
         // touch elsewhere used to open the file and stream it again for a frame that paints none of it.
-        let visible = canvas.visible_rect(rect);
+        let visible = canvas.visible_rect(inner);
         if visible.is_empty() {
             return Ok(());
         }
         // The reader owns the file handle for this whole call; the closure is the drawing pass inside it. A
         // failure is not an error the engine has to carry: an image that is missing or not a BMP leaves the
         // cell as it was, which is what a placeholder does on the glass.
-        let mut sink = |source: &mut dyn ByteSource| self.draw(source, canvas, rect, visible);
+        let mut sink = |source: &mut dyn ByteSource| {
+            self.draw(source, canvas, inner, visible, mask_radius)
+        };
         let _ = (self.with_file)(self.path, &mut sink);
         Ok(())
     }

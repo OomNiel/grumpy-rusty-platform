@@ -2009,15 +2009,32 @@ where
     let inner = block.inner(rect);
     let fill_w = ((inner.w as f32 * value.clamp(0.0, 1.0)) as u32).min(inner.w);
     if fill_w > 0 {
+        // The fill follows the track's own corners. A square bar inside a rounded block painted the
+        // arc's cut-out straight back at both ends (reported 2026-11-02: *"when using rounded corners
+        // the fill pattern ends are not rounded"*), which left a pill-shaped track with a square fill.
+        let radius = inner_corner_radius(rect, inner, style.corner_radius);
         // Always the foreground: the fill used to switch to the accent while the bar had focus, so the
         // same value read differently depending on where the focus happened to be. That is the same report
         // as the focused block colour (2026-10-14).
-        ctx.fill_rect(
+        ctx.fill_rounded_rect(
             Rect::new(inner.x, inner.y, fill_w, inner.h),
+            radius,
             style.foreground,
         )?;
     }
     Ok(())
+}
+
+/// The corner radius a block's inner rectangle carries, from the radius of the block itself.
+///
+/// The inner rectangle is inset by the border and the padding, so concentric arcs put its radius at the
+/// outer one less the smaller inset. A fill narrower than its own two corners is rounded as far as its
+/// width allows by the renderer, which turns a short fill into a pill rather than an error.
+fn inner_corner_radius(outer: Rect, inner: Rect, radius: u8) -> u8 {
+    let dx = (inner.x - outer.x).min(outer.right() - inner.right());
+    let dy = (inner.y - outer.y).min(outer.bottom() - inner.bottom());
+    let inset = dx.min(dy).max(0).min(radius as i32) as u8;
+    radius - inset
 }
 
 #[cfg(feature = "rich-widgets")]
@@ -4236,7 +4253,12 @@ where
     let style = style.resolve(state);
     let block = Block::styled(style);
     block.render(rect, ctx)?;
-    ctx.draw_image(block.inner(rect), image, fit)
+    let inner = block.inner(rect);
+    // The picture is masked to the block's inner corners (2026-11-02): it is opaque, so a rounded image
+    // widget has to *not draw* the cut-outs rather than paint over them with a colour the design may not
+    // have. The radius is the outer one less the border/padding inset, so the arcs stay concentric.
+    let radius = inner_corner_radius(rect, inner, style.corner_radius);
+    ctx.draw_image_rounded(inner, image, fit, radius)
 }
 
 fn render_carousel<D, C>(
@@ -5176,6 +5198,111 @@ mod tests {
         assert!(hidden
             .render_at(&mut ctx, Rect::new(0, 0, 5, 5), VisualState::Pressed)
             .is_ok());
+    }
+
+    /// Reported 2026-11-02: *"When using rounded corners the fill pattern ends are not rounded."*
+    ///
+    /// The fill used to be a square `fill_rect`, which painted the arc's cut-out straight back inside a
+    /// rounded track. It takes the block's own corners now, so a filled bar and a half-filled bar both
+    /// stop inside the pill.
+    #[cfg(feature = "rich-widgets")]
+    #[test]
+    fn a_rounded_progress_bar_fills_inside_its_corners() {
+        use crate::context::GuiContext;
+        use crate::test_buffer::TestBuffer;
+
+        let rect = Rect::new(10, 10, 120, 24);
+        let style = Style::new().with_bg(Rgb565::BLACK).with_corner_radius(8);
+        let mut ctx: GuiContext<16, 8, 8> = GuiContext::new(Rect::new(0, 0, 140, 44));
+        ctx.add_progress_bar(rect, 1.0, style).unwrap();
+        let mut buffer = TestBuffer::new(140, 44);
+        ctx.render(&mut buffer).unwrap();
+
+        let filled =
+            |buffer: &TestBuffer, x: i32, y: i32| buffer.pixel_at(x, y) == Some(Rgb565::WHITE);
+        assert!(
+            !filled(&buffer, rect.x, rect.y),
+            "a square fill would paint the block's top-left corner"
+        );
+        assert!(
+            !filled(&buffer, rect.x, rect.bottom() - 1),
+            "and its bottom-left one"
+        );
+        assert!(
+            filled(
+                &buffer,
+                rect.x + rect.w as i32 / 2,
+                rect.y + rect.h as i32 / 2
+            ),
+            "the middle of the bar is filled"
+        );
+        assert!(
+            filled(&buffer, rect.x, rect.y + rect.h as i32 / 2),
+            "the left end is a rounded cap, not a gap"
+        );
+
+        // A partial bar rounds its own right end too, rather than ending in a square edge.
+        let mut ctx: GuiContext<16, 8, 8> = GuiContext::new(Rect::new(0, 0, 140, 44));
+        ctx.add_progress_bar(rect, 0.5, style).unwrap();
+        let mut half = TestBuffer::new(140, 44);
+        ctx.render(&mut half).unwrap();
+        let right = rect.x + (rect.w / 2) as i32;
+        assert!(
+            filled(&half, right - 1, rect.y + rect.h as i32 / 2),
+            "the fill reaches the value it was given"
+        );
+        assert!(
+            !filled(&half, right - 1, rect.y),
+            "and its right end is rounded like the track's left one"
+        );
+    }
+
+    /// Asked for 2026-11-02: *"add Border (Colour, Width) and Rounded corners properties to the Image
+    /// widget."* The picture is opaque, so a rounded image has to be **masked** -- painting it square and
+    /// restoring the corners is not possible -- and the border has to sit outside the mask.
+    #[test]
+    fn a_rounded_image_is_masked_to_its_corners_and_not_painted_square() {
+        use crate::context::GuiContext;
+        use crate::test_buffer::TestBuffer;
+
+        let red = [0xF800u16; 4];
+        let rect = Rect::new(0, 0, 16, 16);
+        let mut ctx: GuiContext<16, 8, 8> = GuiContext::new(Rect::new(0, 0, 16, 16));
+        let style = Style::new()
+            .with_bg(Rgb565::BLACK)
+            .with_border(Border::one(Rgb565::WHITE))
+            .with_corner_radius(6);
+        ctx.add_image(rect, ImageRef::new(2, 2, &red), ImageFit::Stretch, style)
+            .unwrap();
+        let mut buffer = TestBuffer::new(16, 16);
+        ctx.render(&mut buffer).unwrap();
+
+        let at = |x: i32, y: i32| buffer.pixel_at(x, y);
+        // A square blit would paint the block's own cut-out corners red; a masked one leaves them to the
+        // background (or the border), which is the whole point of the mask.
+        assert_ne!(at(0, 0), Some(Rgb565::RED), "the top-left corner is not drawn");
+        assert_ne!(at(15, 0), Some(Rgb565::RED), "nor the top-right one");
+        assert_ne!(at(0, 15), Some(Rgb565::RED), "nor the bottom-left one");
+        assert_eq!(
+            at(8, 1),
+            Some(Rgb565::RED),
+            "the middle of the picture's top row is inside the rounded shape"
+        );
+        assert_eq!(
+            at(0, 8),
+            Some(Rgb565::WHITE),
+            "the border sits outside the picture, on the straight left side"
+        );
+        assert_eq!(
+            at(1, 8),
+            Some(Rgb565::RED),
+            "and the picture starts inside it"
+        );
+        assert_eq!(
+            at(8, 8),
+            Some(Rgb565::RED),
+            "the middle of the picture is drawn"
+        );
     }
 
     #[test]

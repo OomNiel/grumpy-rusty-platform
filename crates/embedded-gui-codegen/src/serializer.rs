@@ -169,7 +169,8 @@ pub fn serialize_kdl_screen(screen: &ScreenDef) -> String {
                 }
             }
             WidgetDef::Button {
-                id,                text,
+                id,
+                text,
                 on_click,
                 style,
                 bg,
@@ -850,15 +851,24 @@ pub fn serialize_kdl_screen(screen: &ScreenDef) -> String {
                     id_attr, style_attr, span_attrs, p.col, p.row
                 );
             }
-            WidgetDef::SdImage { id, path, fit } => {
+            WidgetDef::SdImage {
+                id,
+                path,
+                fit,
+                style,
+            } => {
                 let id_attr = id
                     .as_ref()
                     .map(|s| format!(" id=\"{}\"", s))
                     .unwrap_or_default();
+                let style_attr = style
+                    .as_ref()
+                    .map(|s| format!(" style=\"{}\"", s))
+                    .unwrap_or_default();
                 let _ = writeln!(
                     &mut out,
-                    "        image{} src=\"sd:{}\" fit=\"{}\"{} col={} row={}",
-                    id_attr, path, fit, span_attrs, p.col, p.row
+                    "        image{} src=\"sd:{}\" fit=\"{}\"{}{} col={} row={}",
+                    id_attr, path, fit, style_attr, span_attrs, p.col, p.row
                 );
             }
             WidgetDef::Image {
@@ -867,6 +877,7 @@ pub fn serialize_kdl_screen(screen: &ScreenDef) -> String {
                 fit,
                 mode,
                 tint,
+                style,
             } => {
                 let id_attr = id
                     .as_ref()
@@ -876,10 +887,14 @@ pub fn serialize_kdl_screen(screen: &ScreenDef) -> String {
                     .as_ref()
                     .map(|s| format!(" tint=\"{}\"", s))
                     .unwrap_or_default();
+                let style_attr = style
+                    .as_ref()
+                    .map(|s| format!(" style=\"{}\"", s))
+                    .unwrap_or_default();
                 let _ = writeln!(
                     &mut out,
                     "        image{} src=\"{}\" fit=\"{}\" mode=\"{}\"{}{} col={} row={}",
-                    id_attr, source, fit, mode, tint_attr, span_attrs, p.col, p.row
+                    id_attr, source, fit, mode, tint_attr, style_attr, p.col, p.row
                 );
             }
             WidgetDef::Carousel {

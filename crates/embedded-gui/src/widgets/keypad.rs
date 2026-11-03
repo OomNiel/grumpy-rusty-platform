@@ -1,9 +1,9 @@
 //! A touch keypad: a one-line entry box and a grid of keys beneath it.
 //!
 //! The widget is the whole keypad, not a set of keys: it owns the line being typed, which of the
-//! three modes it is in (letters, digits, symbols), whether Shift is down, and the last line an
-//! Enter submitted. That is what makes a mode or a Shift a single `ui_handlers` call away and keeps
-//! the design from having to wire twenty buttons together.
+//! three modes it is in (letters, digits, symbols), whether a one-shot Shift or the Caps Lock is in
+//! force, and the last line an Enter submitted. That is what makes a mode or a Shift a single
+//! `ui_handlers` call away and keeps the design from having to wire twenty buttons together.
 //!
 //! Two properties were asked for and are built in (2026-10-17):
 //!
@@ -86,8 +86,10 @@ pub enum KeypadKey {
     Clear,
     /// Submits the line: the handler runs and the line is cleared.
     Enter,
-    /// Toggles uppercase.
+    /// Capitalises the **next character only**: a one-shot Shift.
     Shift,
+    /// Locks capitals on until it is pressed again.
+    CapsLock,
     /// Moves to the next mode.
     Mode,
     /// Moves the cursor one character left, so the next key overwrites *that* character.
@@ -159,11 +161,14 @@ const TEXT_ROWS: &[&[KeySpec]] = &[
         (KeypadKey::Char('.'), 1),
         (KeypadKey::Char('/'), 1),
     ],
-    // Shift and the mode key are wide enough to hit with a thumb; the space bar takes the middle.
+    // Shift, Caps Lock and the mode key are wide enough to hit with a thumb. The space bar gave up
+    // two of its four columns to seat the lock beside Shift (asked for 2026-11-02), so the row is
+    // five two-column keys rather than four of mixed width.
     &[
         (KeypadKey::Shift, 2),
+        (KeypadKey::CapsLock, 2),
         (KeypadKey::Mode, 2),
-        (KeypadKey::Space, 4),
+        (KeypadKey::Space, 2),
         (KeypadKey::Backspace, 2),
     ],
     &[
@@ -293,14 +298,17 @@ pub fn keypad_row_count(mode: KeypadMode) -> usize {
 pub struct KeypadWidget {
     /// Which of the three key sets is showing.
     pub mode: KeypadMode,
-    /// Whether letters are typed in upper case.
-    pub shift: bool,
-    /// Whether that upper case is a **lock** rather than the one letter a single tap gives.
+    /// Whether the next character typed is capitalised.
     ///
-    /// Asked for 2026-10-31: *"Toggling to upper case must only persist for one typed character, then
-    /// revert back to lower case"* and *"Double tapping the SHIFT key must act like a 'Shift-Lock'
-    /// key"*. `shift` alone cannot say which of the two is in force, and the difference is what the
-    /// next key press does: a `true` here survives typing, a `false` does not.
+    /// True while the Caps Lock is on as well: the lock is what holds it true, the Shift key makes
+    /// it true for one character and typing spends it.
+    pub shift: bool,
+    /// Whether capitals are **locked** on rather than waiting for one character.
+    ///
+    /// Asked for 2026-11-02: *"Add a 'Caps-Lock' key for locking caps ... SHIFT key tapped once will
+    /// type out the 1st character as shifted and then revert back to lower case."* The two states
+    /// have a key each now, and `shift` alone cannot say which is in force: a `true` here survives
+    /// typing, a `true` from a Shift tap does not.
     shift_locked: bool,
     /// The typed line.
     text_buf: [u8; KEYPAD_CAPACITY],
@@ -535,34 +543,29 @@ impl KeypadWidget {
         self.mode = self.mode.next();
     }
 
-    /// The Shift key was pressed: one tap capitalises **one** letter, a second tap locks it on.
+    /// The Shift key was pressed: one tap capitalises **one** character.
     ///
-    /// Asked for 2026-10-31: *"Toggling to upper case must only persist for one typed character, then
-    /// revert back to lower case"* and *"Double tapping the SHIFT key must act like a 'Shift-Lock' key.
-    /// Characters typed will all be upper case until the SHIFT key is touched again."*
+    /// Asked for 2026-11-02: *"SHIFT key tapped once will type out the 1st character as shifted and
+    /// then revert back to lower case."* The double tap that used to lock capitals is gone -- a lock
+    /// has a key of its own now ([`KeypadKey::CapsLock`]) -- so this is a plain toggle of the
+    /// one-shot, and pressing it again before a character is typed cancels it.
     ///
-    /// So the key has three states, and the press moves round them:
-    ///
-    /// | now | after a tap | what the next letter does |
-    /// |---|---|---|
-    /// | off | **one shot** | is a capital, and the shift is spent |
-    /// | one shot | **locked** | is a capital, and so is every one after it |
-    /// | locked | off | is lower case again |
-    ///
-    /// The second tap must come **before a letter is typed**, which is what a double tap is on a
-    /// keypad with no clock: [`Self::consume_shift`] is what ends a one-shot, so tapping twice in a
-    /// row locks and tapping once then typing does not. That is why this needs no elapsed-time
-    /// bookkeeping in a `no_std` widget that has no clock of its own.
+    /// While the Caps Lock is on the key does nothing: capitals are already being typed, and the
+    /// lock is turned off by its own key rather than by Shift.
     pub fn press_shift(&mut self) {
         if self.shift_locked {
-            self.shift_locked = false;
-            self.shift = false;
-        } else if self.shift {
-            // The one shot is still unspent, so this tap is the second of a double tap.
-            self.shift_locked = true;
-        } else {
-            self.shift = true;
+            return;
         }
+        self.shift = !self.shift;
+    }
+
+    /// The Caps Lock key was pressed: capitals stay on until it is pressed again.
+    ///
+    /// Turning the lock off also drops a Shift that was still waiting, so the character after the
+    /// press is lower case -- what the finger that just pressed "off" expects.
+    pub fn press_caps(&mut self) {
+        self.shift_locked = !self.shift_locked;
+        self.shift = self.shift_locked;
     }
 
     /// The old name for [`Self::press_shift`]. Kept because the key used to be a plain toggle and a
@@ -594,9 +597,9 @@ impl KeypadWidget {
 
     /// The character a key types, after Shift.
     ///
-    /// Shift is a *caps lock*: it stays on until it is pressed again, so every letter typed while it
-    /// is on is upper case -- and every letter *key* says so, which is what makes the state visible
-    /// without a second indicator.
+    /// Shift and the Caps Lock both put the letters in upper case -- the lock holds them there,
+    /// a Shift tap does it for one character -- and every letter *key* says so, which is what
+    /// makes the state visible without a second indicator.
     ///
     /// `None` for the keys that act rather than type: those are labelled with
     /// [`Self::key_label`], and a one-character stand-in for them would be a lie on the glass.
@@ -615,6 +618,7 @@ impl KeypadWidget {
             | KeypadKey::Clear
             | KeypadKey::Enter
             | KeypadKey::Shift
+            | KeypadKey::CapsLock
             | KeypadKey::Mode
             | KeypadKey::Left
             | KeypadKey::Right => None,
@@ -637,6 +641,9 @@ impl KeypadWidget {
             KeypadKey::Clear => Some("CLR"),
             KeypadKey::Enter => Some("ENT"),
             KeypadKey::Shift => Some("SHIFT"),
+            // The lock is a key of its own since 2026-11-02: SHIFT buys one capital, CAPS holds
+            // capitals on, and the word has to fit a two-column key ("CAPS LOCK" does not).
+            KeypadKey::CapsLock => Some("CAPS"),
             KeypadKey::Mode => Some(self.mode.key_label()),
             KeypadKey::Backspace => Some("BKSP"),
             // Two characters, so the cursor keys cannot be mistaken for the symbol page's own `<`
@@ -650,12 +657,17 @@ impl KeypadWidget {
         }
     }
 
-    /// Whether a key is lit as if it were held down: the Shift key while caps lock is on.
+    /// Whether a key is lit as if it were held down.
     ///
-    /// The face colour is the only room there is for a state on a keypad with no status line, and
-    /// the letters say the same thing from the other direction.
+    /// The Caps Lock wears the lit face while it holds capitals on, and the Shift key while its one
+    /// character is still waiting. The face colour is the only room there is for a state on a keypad
+    /// with no status line, and the letters say the same thing from the other direction.
     pub fn key_lit(&self, key: KeypadKey) -> bool {
-        key == KeypadKey::Shift && self.shift
+        match key {
+            KeypadKey::Shift => self.shift && !self.shift_locked,
+            KeypadKey::CapsLock => self.shift_locked,
+            _ => false,
+        }
     }
 
     /// The entry box: the top `line_height + 5` of the widget, inset by two pixels.
@@ -932,15 +944,15 @@ mod tests {
         );
         assert!((first.w as i32 - area.w as i32 / 10).abs() <= 1);
         // The space bar of the control row is wider than the letters, and Enter is wider still.
-        // The letters page is the digit row, three letter rows, then Shift, mode, space and
+        // The letters page is the digit row, three letter rows, then Shift, Caps, mode, space and
         // backspace: 40 typed keys before the control row starts.
         let space = pad
-            .key_rect_at(RECT, 40 + 2, FontId::Tiny3x5)
+            .key_rect_at(RECT, 40 + 3, FontId::Tiny3x5)
             .expect("the space bar");
         assert!(space.w > first.w, "space is a wide key, not a letter");
         // Six rows, and the last one ends at the bottom of the key area.
         let last_row_first = pad
-            .key_rect_at(RECT, 44, FontId::Tiny3x5)
+            .key_rect_at(RECT, 45, FontId::Tiny3x5)
             .expect("the clear key");
         assert_eq!(
             last_row_first.y + last_row_first.h as i32,
@@ -954,8 +966,8 @@ mod tests {
         assert_eq!(pad.mode, KeypadMode::Text);
         assert_eq!(
             pad.key_count(),
-            48,
-            "ten digits, thirty letters, four controls and the last row of four"
+            49,
+            "ten digits, thirty letters, five controls and the last row of four"
         );
         // The digits are part of the letters page now, above `qwerty` (asked for 2026-10-17).
         assert_eq!(pad.key_for_index(0), Some(KeypadKey::Char('1')));
@@ -1057,6 +1069,8 @@ mod tests {
         assert_eq!(pad.key_label(KeypadKey::Clear), Some("CLR"));
         assert_eq!(pad.key_label(KeypadKey::Enter), Some("ENT"));
         assert_eq!(pad.key_label(KeypadKey::Shift), Some("SHIFT"));
+        // The lock is its own key (2026-11-02), and the word fits a two-column key.
+        assert_eq!(pad.key_label(KeypadKey::CapsLock), Some("CAPS"));
         // The mode key still says where it goes, and a key that types has no word.
         assert_eq!(pad.key_label(KeypadKey::Mode), Some("%%..."));
         assert_eq!(pad.key_label(KeypadKey::Char('q')), None);
@@ -1141,31 +1155,34 @@ mod tests {
         assert_eq!(pad.text(), "Qw");
     }
 
-    /// Asked for 2026-10-31: *"Double tapping the SHIFT key must act like a 'Shift-Lock' key.
-    /// Characters typed will all be upper case until the SHIFT key is touched again."* The second tap
-    /// is the one that arrives while the one-shot is still unspent -- which, on a keypad with no
-    /// clock, is exactly what a double tap is.
+    /// Asked for 2026-11-02: *"Add a 'Caps-Lock' key for locking caps ... with caps-lock on all
+    /// typing use shifted chars."* The lock is its own key now, and it outlives every letter until
+    /// it is pressed again.
     #[test]
-    fn a_second_shift_tap_locks_capitals_until_it_is_tapped_again() {
+    fn the_caps_key_locks_capitals_until_it_is_pressed_again() {
         let mut pad = keypad();
-        pad.press_shift();
-        pad.press_shift();
+        assert!(!pad.key_lit(KeypadKey::CapsLock), "the lock starts off");
+        pad.press_caps();
         assert!(pad.shift);
-        assert!(pad.shift_locked(), "the second tap locks it");
+        assert!(pad.shift_locked(), "the Caps key is the lock");
         assert!(
-            pad.key_lit(KeypadKey::Shift),
-            "and the key stays lit while it is on"
+            pad.key_lit(KeypadKey::CapsLock),
+            "and the lock's own key stays lit"
+        );
+        assert!(
+            !pad.key_lit(KeypadKey::Shift),
+            "a Shift that nobody pressed is not lit"
         );
         assert_eq!(pad.legend(KeypadKey::Char('q')), Some('Q'));
-        // Typing does not consume a lock: that is the difference between the two states.
+        // Typing does not consume a lock: that is the difference between the two keys.
         for ch in ['q', 'w', 'e'] {
             pad.push(pad.legend(KeypadKey::Char(ch)).unwrap());
             pad.consume_shift();
         }
         assert_eq!(pad.text(), "QWE");
         assert!(pad.shift, "still on after three letters");
-        // One more tap turns it off, and the next letter is lower case again.
-        pad.press_shift();
+        // One more press turns it off, and the next letter is lower case again.
+        pad.press_caps();
         assert!(!pad.shift);
         assert!(!pad.shift_locked());
         assert_eq!(pad.legend(KeypadKey::Char('q')), Some('q'));
@@ -1174,9 +1191,27 @@ mod tests {
         assert_eq!(pad.text(), "QWEq");
     }
 
-    /// The lit Shift key is the only visible sign of caps lock, so it has to be drawn.
+    /// The double tap is gone (2026-11-02): a second Shift tap while its character is still waiting
+    /// cancels it, and Shift under a locked Caps Lock does nothing at all.
     #[test]
-    fn a_lit_shift_key_wears_the_pressed_face() {
+    fn shift_toggles_its_one_character_and_never_locks() {
+        let mut pad = keypad();
+        pad.press_shift();
+        pad.press_shift();
+        assert!(!pad.shift, "the second tap takes the capital back");
+        assert!(!pad.shift_locked(), "and does not lock anything");
+
+        pad.press_caps();
+        pad.press_shift();
+        assert!(
+            pad.shift && pad.shift_locked(),
+            "Shift cannot turn off a lock; the Caps key owns it"
+        );
+    }
+
+    /// The lit Caps key is the only visible sign of the lock, so it has to be drawn.
+    #[test]
+    fn the_caps_key_wears_the_pressed_face_while_capitals_are_locked() {
         use crate::context::GuiContext;
         use crate::test_buffer::TestBuffer;
 
@@ -1186,10 +1221,10 @@ mod tests {
         pad.pressed_key_color = Rgb565::RED;
         let id = ctx.add_keypad_styled(RECT, pad, Style::panel()).unwrap();
 
-        let shift_index = (0..pad.key_count())
-            .find(|index| pad.key_for_index(*index) == Some(KeypadKey::Shift))
-            .expect("the text mode has a Shift key");
-        let cell = pad.key_rect_at(RECT, shift_index, FontId::Tiny3x5).unwrap();
+        let caps_index = (0..pad.key_count())
+            .find(|index| pad.key_for_index(*index) == Some(KeypadKey::CapsLock))
+            .expect("the text mode has a Caps Lock key");
+        let cell = pad.key_rect_at(RECT, caps_index, FontId::Tiny3x5).unwrap();
 
         let mut off = TestBuffer::new(320, 158);
         ctx.render(&mut off).unwrap();
@@ -1201,7 +1236,7 @@ mod tests {
         assert_eq!(
             on.pixel_at(cell.x + 2, cell.y + 2),
             Some(Rgb565::RED),
-            "caps lock lights its own key"
+            "the lock lights its own key"
         );
     }
 

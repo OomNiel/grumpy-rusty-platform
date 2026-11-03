@@ -10,7 +10,7 @@
 use std::cell::RefCell;
 
 use embedded_gui::prelude::{CustomCanvas, CustomWidget, GuiError, Rect, Rgb565};
-use embedded_gui::style::{VisualState, WidgetStyle};
+use embedded_gui::style::{Border, Style, VisualState, WidgetStyle};
 use rusty_gui_widgets::{BmpImage, ByteSource, MAX_SOURCE_PIXELS};
 
 // The file the stub reader serves, per test thread: `#[test]` runs each case on its own thread, so a
@@ -622,4 +622,41 @@ fn a_zero_sized_cell_is_not_a_division_by_zero() {
     install(build_24_bit(2, 2, &[vec![RED_BYTES, GREEN_BYTES], vec![BLUE_BYTES, BLUE_BYTES]]));
     assert!(paint(true, Rect::new(0, 0, 0, 0)).rects.is_empty(), "no cell, nothing to draw");
     assert!(paint(true, Rect::new(0, 0, 4, 0)).rects.is_empty(), "and no height is not a reason to divide");
+}
+
+#[test]
+fn a_rounded_image_is_masked_to_its_corners_and_keeps_its_border_outside() {
+    // Asked for 2026-11-02: border colour/width and rounded corners on the Image widget. An image is opaque,
+    // so a rounded one has to *not paint* the cut-out pixels -- there is no colour to restore them with --
+    // and the border has to sit outside the masked picture rather than under it.
+    install(build_24_bit(2, 2, &[
+        vec![RED_BYTES, RED_BYTES],
+        vec![BLUE_BYTES, BLUE_BYTES],
+    ]));
+    let white = Rgb565::new(31, 63, 31);
+    let style: WidgetStyle = Style::new()
+        .with_bg(Rgb565::new(0, 0, 0))
+        .with_border(Border::one(white))
+        .with_corner_radius(6)
+        .into();
+    let mut mock = Mock::default();
+    image("/PIC.BMP", true)
+        .render(&mut mock, Rect::new(0, 0, 16, 16), &style, VisualState::Normal)
+        .unwrap();
+
+    // A square blit would paint the block's own cut-out corners in the picture's colour.
+    assert_eq!(pixel_at(&mock, 0, 0), None, "the top-left corner is left unpainted");
+    assert_eq!(pixel_at(&mock, 15, 0), None, "nor the top-right one");
+    assert_eq!(
+        pixel_at(&mock, 8, 1),
+        Some(BLUE),
+        "the middle of the picture's top row is inside the rounded shape"
+    );
+    assert_eq!(
+        pixel_at(&mock, 0, 8),
+        Some(white),
+        "the border is on the straight left side, outside the mask"
+    );
+    assert_eq!(pixel_at(&mock, 1, 8), Some(RED), "and the picture starts inside it");
+    assert_eq!(pixel_at(&mock, 8, 8), Some(RED), "the middle of the picture is drawn");
 }
