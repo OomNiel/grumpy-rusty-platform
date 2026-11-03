@@ -1,5 +1,10 @@
 # Crates that can draw Buttons (etc.) on this LCD
 
+> **Status (2026-11-03): historical.** This is the survey the project started from, kept for the reasoning.
+> Option 1 is what shipped: `embedded-gui` is vendored as a fork under `crates/` (patched into every Designer
+> project's `codegen/`), the Designer emits markup for `include_gui!`, and the C++ language draws the same
+> designs in LVGL 9. The ranking below is the decision as it was made, not the current state.
+
 This project targets the **ESP32-035 LCD Panel**: a 3.5" **ST7796** TFT,
 320×480, driven over SPI through `mipidsi` (the MIPI-CSI display driver) and
 painted with `embedded-graphics` 0.8 primitives. The question asked: are there

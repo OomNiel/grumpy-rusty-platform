@@ -1,6 +1,6 @@
 # User Manual — Grumpy's Rusty Platform for VS Code
 
-Version 0.17.13 · Extension ID `grumpy.grumpy-rusty-platform`
+Version 0.19.2 · Extension ID `grumpy.grumpy-rusty-platform`
 
 This manual covers every feature of the extension. For the AI assist in depth, see also `AI_ASSIST.md`.
 
@@ -44,11 +44,14 @@ Key capabilities: project wizard, toolchain installer, build/flash/debug, serial
 
 ## 2. Installation
 
-Not yet on the Marketplace. Install from the `.vsix`:
+Not yet on the Marketplace. Install the `.vsix` from the [latest release](https://github.com/OomNiel/grumpy-rusty-platform/releases/latest), or build it from source:
 
 ```bash
+git clone https://github.com/OomNiel/grumpy-rusty-platform.git
+cd grumpy-rusty-platform
 npm install && npm run compile
-code --install-extension grumpy-rusty-platform-0.13.30.vsix
+npx vsce package
+code --install-extension grumpy-rusty-platform-0.19.2.vsix
 ```
 
 Requirements: VS Code ≥ 1.90.0, Rust toolchain (installed via the extension if missing), Node.js for building.
@@ -204,7 +207,7 @@ The designer has three panes plus a toolbar and a footer:
 - **Toolbox** (left) — grouped catalog of every widget the crate can build. Each entry can be **dragged** onto the canvas, or **clicked**, which drops it in the middle of the canvas.
 - **Stage** (centre) — the canvas showing the panel at its native size, with the **view tabs** above it.
 - **Properties** (right) — the selected widget's properties, events, fonts, children.
-- **Toolbar/Footer** — control bar: cargo feature switches (**SD**), **Brightness** slider, layer ordering, problem verdict.
+- **Toolbar/Footer** — control bar: cargo feature switches (**SD**), **Brightness** slider, **zoom** menu (50 %–300 %, including 250 % and 300 %), layer ordering, problem verdict.
 
 The canvas size equals the designed area (panel size turned with the rotation).
 
@@ -217,7 +220,7 @@ The canvas size equals the designed area (panel size turned with the rotation).
 5. **Context menu:** right-click a widget for cut/copy/paste, delete, grouping, etc. Right-click a view tab to rename, duplicate, delete, or mark it as the start view.
 6. **Middle-click a widget** to jump to its **code behind** (see §10.4).
 
-Pictures: widgets can show BMP/PNG/JPEG/GIF/WebP files from the project. The extension reads the file and the panel decodes it, so the canvas shows what the board gets. A widget whose pixels are not available yet draws a dashed frame carrying the file name. An `sd:/NAME.BMP` picture is the board's to fetch and is flagged on save while the card is off.
+Pictures: widgets can show BMP/PNG/JPEG/GIF/WebP files from the project. The extension reads the file and the panel decodes it, so the canvas shows what the board gets. A widget whose pixels are not available yet draws a dashed frame carrying the file name. An image can also carry a **Border colour**, **Border width** and **Corner radius**: the board paints that surface and *cuts the picture* to the rounded inner rectangle (an image is opaque, so the corner pixels are not drawn rather than painted over), and the canvas clips it in the same place. A card (`sd:`) image is cut the same way by the row-by-row reader. An `sd:/NAME.BMP` picture is the board's to fetch and is flagged on save while the card is off. (The Image widget's old **Mode** and **Tint** properties were removed in 0.19.2: they were build-time options of `include_gui!` that neither the canvas nor the widget could show.)
 
 ### 10.2a The touch keypad
 
@@ -226,11 +229,15 @@ The Keypad widget types into its own entry box and hands the finished line to th
 - **`CLR`** empties the line, **`BKSP`** deletes one character, and the two cursor keys **`<-`** / **`->`** move
   the caret: the next character typed overwrites the one under it instead of inserting.
 - **`SHIFT`** capitalises **one** character — tap it, type a letter, and the key goes back to lower case by
-  itself. **Tap it twice** (the second tap before you type) and capitals **lock on**: every letter after it is
-  upper case until `SHIFT` is touched again. The key is lit while either state is in force.
-- The letters on the keys follow the state, so the keypad always says what it will type.
-- The design property *shift* ("letters start in upper case") starts the keypad **locked**, which is what that
-  property has always meant.
+  itself. Tapping it again before a character is typed cancels it. It never locks capitals.
+- **`CAPS`** locks capitals on until it is pressed again. The key is lit while the lock is in force, and
+  every letter key says what it will type — including going back to lower case in the same frame the last
+  one-shot capital is typed.
+- The letters on the keys follow both states, so the keypad always says what it will type.
+- The design property *shift* ("letters start in upper case") starts the keypad **locked**, which is what
+  that property has always meant.
+- The control row is `SHIFT · CAPS · mode · Space · BKSP`, two columns each: the Caps key took two of the
+  space bar's four columns.
 
 ### 10.3 Views (tabs)
 - A tab strip above the canvas holds one tab per view. Add with `+`.

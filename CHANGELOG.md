@@ -11,6 +11,48 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.19.2] - 2026-11-03
+
+The Designer's canvas grows two more zoom steps, the Image widget can carry a border and rounded
+corners that the picture is really cut to, and the two Image properties that never did anything are
+gone. The repository is public from this release.
+
+### Added
+
+- **Canvas zoom at 250 % and 300 %.** The control bar's zoom menu now offers 50, 100, 150, 200, 250
+  and 300 %. The canvas is scaled with CSS and a click's coordinates are divided by the factor, so
+  the new steps change nothing about selecting or dragging.
+- **Border colour, border width and corner radius on the Image widget.** They travel in the widget's
+  style expression, and the runtime paints the block and *masks* the picture to the rounded inner
+  rectangle: an image is opaque, so its corner pixels are simply not drawn rather than painted over
+  with a colour the design may not have. A card (`sd:`) image is treated the same way -- `BmpImage`
+  draws its own block and clips the rows it streams. The canvas draws the same surface and clips the
+  picture in the same place.
+
+### Changed
+
+- **Mode and Tint are no longer offered on the Image widget.** They were build-time options of
+  `include_gui!` (a mask decode and its ink colour), not properties of the widget: the canvas could
+  not show them and the runtime never read them, so they were two controls with no visible effect.
+  Hand-written KDL still honours both.
+
+## [0.19.1] - 2026-11-02
+
+### Added
+
+- **A Caps Lock key on the touch keypad.** `CAPS` locks capitals on until it is pressed again, and
+  **SHIFT is now a one-shot**: one tap capitalises the next character and the key goes back to lower
+  case by itself. The double tap that used to lock capitals is gone -- the lock has its own key --
+  and every letter key's caption follows both states, including the redraw when the one-shot is
+  spent. The lock took two of the space bar's four columns: the control row is now SHIFT · CAPS ·
+  mode · Space · BKSP, two columns each.
+
+### Fixed
+
+- **A rounded progress bar's fill follows the corners.** The fill was a square rectangle inside a
+  rounded track, painting the cut-outs straight back at both ends; it is now a rounded rectangle with
+  the block's inner radius, and a partial bar's right end is rounded as well.
+
 ## [0.19.0] - 2026-11-02
 
 The C++ (Arduino + LVGL) option is complete enough to use, and this release is the one that says so.

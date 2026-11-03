@@ -8827,3 +8827,48 @@ falling through `default: return []`), and another asserts the undrawable list i
 **What remains, and why:** `image` and `icon` need the asset decoded to pixels at generation time (the Rust crate
 does that in Rust, so there is nothing to reuse), and `mesh` is 3D shaded triangles — LVGL has no rasteriser. Those
 three are the whole of the gap, and they are written down in the test, not just in a conversation.
+
+### 183. Caps Lock, rounded fills, a bigger canvas, and an image's own surface (0.19.1–0.19.2, 2026-11-02/03)
+
+Four asks in two days, all of them in the widget runtime the Designer and the generated projects share.
+
+**The keypad's Shift became two keys (0.19.1).** Asked twice in the same words: *"Add a 'Caps-Lock' key for
+locking caps. Then remove the double-tap feature from the SHIFT key. So, with caps-lock on all typing use shifted
+chars. SHIFT key tapped once will type out the 1st character as shifted and then revert back to lower case"*,
+then *"You can make the 'Space' key narrower to fit the shift lock key in."* `KeypadKey::CapsLock` sits in the text
+page's control row, which is now five two-column keys — `SHIFT · CAPS · mode · Space · BKSP` — and the page has 49
+keys (the symbol and numeric pages are unchanged). `shift` means "the next character is capital"; `shift_locked`
+means the Caps key holds it there. `press_shift()` is a plain toggle and a no-op while locked (a second tap
+cancels); `press_caps()` toggles the lock. The part that is easy to miss is damage: spending a one-shot changes
+*every* letter's caption, so `keypad_release` must return `relayout = true` when the shift is spent, or the letters
+nobody typed keep their old capitals on the glass.
+
+**The progress bar's fill follows the corners (0.19.1).** *"When using rounded corners the fill pattern ends are not
+rounded."* The fill was a `fill_rect` over the block's inner rect, so it painted the block's arc cut-outs straight
+back at both ends. It is a `fill_rounded_rect` now, with radius `inner_corner_radius(outer, inner, style.corner_radius)`
+= outer radius minus the smaller border/padding inset (concentric arcs); the renderer clamps a radius to half the
+bar's width/height, so a short fill becomes a pill. The canvas mirrors it with `innerCornerRadius()` + `fillSolid`.
+
+**Zoom to 250 % and 300 % (0.19.2).** Only the factor list in `webview/designer/main.ts` changed: `canvas.ts` scales
+the canvas with CSS and divides pointer coordinates by the zoom, so a new factor is presentation and nothing else.
+
+**The Image widget's own surface (0.19.2).** *"Add Border (Colour, Width) and Rounded corners properties to the Image
+widgit."* The properties ride in the widget's style expression (`viaStyle`), which the codegen now passes to
+`add_image` — `WidgetDef::Image` and `WidgetDef::SdImage` gained a `style` and `emit_custom_widget` a style
+parameter. The runtime **masks** the picture rather than painting a square and restoring the corners: an image is
+opaque, so `RenderCtx::draw_image_rounded` only draws the pixels inside the rounded rect. `rounded_row_extent()`
+(public in `render/mod.rs`) is the same integer circle test as `in_rounded_rect`, solved for x, so the mask and the
+block's own corners agree pixel for pixel. Card images get the same treatment — `BmpImage` draws its own block, and
+`draw_row` clips the rows it streams to the span (a new default `CustomCanvas::draw_rounded_rect` paints the ring).
+
+**The trap in the cleanup.** *"What is the Image 'Mode' property box and 'Tint' color picker for? They have
+currently no effect."* They are build-time options of the published `embedded-gui-macros`: `mode="mask"`/`"mono"`
+turns the file into a 1-bit mask whose ink is `tint`. The canvas never showed them and the runtime has no such
+fields, so both were dropped from the catalogue (0.19.2). **The `mode`/`tint` fields stay in `WidgetDef::Image`**:
+the published macro pattern-matches `{ source, mode, tint, .. }` against the patched codegen crate, so deleting
+them breaks every Designer project's build. They are marked "do not remove" in `ast.rs`.
+
+Verified: `cargo test --lib` **328**, codegen **34**, `rusty-gui-widgets` `sd_image` **15**, the no-default-features
+build clean, `designer.test.js` **130**, `designer-webview` **33** (new zoom and rounded-image tests),
+`designer-preview-controls` **30**, `designer-widget-fonts` **7**, `npm run compile` clean.
+0.19.2 is tagged and released with its `.vsix`, and the repository is public from this release.
