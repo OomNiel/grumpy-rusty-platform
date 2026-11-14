@@ -1,8 +1,18 @@
 'use strict';
 
-const { test, ok, equal, notOk, contains } = require('../../lib/harness');
+const fs = require('fs');
+const path = require('path');
+const { test, ok, equal, notOk, contains, repoRoot } = require('../../lib/harness');
 const { compiled } = require('../../lib/harness');
 const { detectBoardFromProject, detectChipFromProject } = compiled('boards/detect');
+
+/** A generated project's manifest, as the generator actually wrote it. */
+function manifest(board, template) {
+    return fs.readFileSync(
+        path.join(repoRoot(), 'tests', 'layers', 't3-golden', '__snapshots__', board, template, 'Cargo.toml'),
+        'utf8',
+    );
+}
 
 const PICO_CARGO = `[package]
 name = "blinky"
@@ -81,4 +91,55 @@ test('the runner line is used when the board is unknown', () => {
 test('a project without any probe-rs runner reports no chip', () => {
     equal(detectChipFromProject({ cargoToml: '[package]\nname = "x"\n', cargoConfigToml: '[build]\n' }), undefined);
     contains('no chip', 'no chip');
+});
+
+// ------------------------------------------------------------------ ESP32-035 vs DevKitC
+//
+// Both are esp32 boards with a panel, so the feature guess alone cannot tell them apart -- and the
+// ESP32-035 has a soldered XPT2046, which the Designer offers a Touch switch for. Read as a DevKitC
+// it got that board's default module (an ST7789 with no controller) and the switch was disabled
+// (reported 2026-11-14).
+
+test('an ESP32-035 designer manifest is read as the ESP32-035, not a DevKitC', () => {
+    const board = detectBoardFromProject({ cargoToml: manifest('sunton-3248s035r', 'designer') });
+    ok(board);
+    equal(board.id, 'sunton-3248s035r');
+    equal(board.kind, 'esp');
+    ok(board.touch, 'the board carries its own touch controller');
+    equal(board.touch.controller, 'XPT2046');
+});
+
+test('a DevKitC designer manifest keeps its own board and its panel choice', () => {
+    const board = detectBoardFromProject({ cargoToml: manifest('esp32-devkitc', 'designer') });
+    ok(board);
+    equal(board.id, 'esp32-devkitc');
+    notOk(board.touch, 'a DevKitC has no controller of its own: the module brings it');
+});
+
+test('every generated manifest is read back as the board it names', () => {
+    const expected = [
+        ['pico', 'pico'],
+        ['pico2', 'pico2'],
+        ['picow', 'picow'],
+        ['pico2w', 'pico2w'],
+        ['esp32-devkitc', 'esp32-devkitc'],
+        ['lilygo-tqt', 'lilygo-tqt'],
+        ['sunton-3248s035r', 'sunton-3248s035r'],
+    ];
+    for (const [folder, id] of expected) {
+        const board = detectBoardFromProject({ cargoToml: manifest(folder, 'designer') });
+        equal(board?.id, id, `${folder}/designer`);
+    }
+});
+
+test('a manifest without the board header is still identified by its panel feature', () => {
+    const cargoToml = `[dependencies]
+esp-hal = { version = "~1.2.2", features = ["esp32", "log-04"] }
+mipidsi = "0.10.0"
+
+[features]
+default = ["panel-ili9341"]
+panel-ili9341 = []
+`;
+    equal(detectBoardFromProject({ cargoToml }).id, 'esp32-devkitc');
 });

@@ -1,5 +1,6 @@
 import { BoardProfile, isEspBoard, isRpBoard } from './types';
 import { BOARDS } from './catalog';
+import { panelChoiceFromCargo } from './esp';
 
 /**
  * Works out which board an existing project targets, from the files it contains.
@@ -15,17 +16,42 @@ export interface ProjectFiles {
 export function detectBoardFromProject(files: ProjectFiles): BoardProfile | undefined {
     const { cargoToml, cargoConfigToml } = files;
 
+    // --- the manifest's own header -------------------------------------------
+    // A generated manifest opens with `# Board: <name> (<family>, <flash>)`, and that line is the most
+    // precise answer a project gives. It has to be read before any guess: two ESP32 boards can both
+    // drive a panel -- the DevKitC through a plug-in module, the ESP32-035 through its soldered one --
+    // so "has mipidsi" no longer separates them, and the feature guess below took whichever board the
+    // catalogue lists first. That read an ESP32-035 project as a DevKitC, whose default module has no
+    // touch controller, which is why the Designer offered no Touch switch for a panel that has a
+    // soldered XPT2046 (reported 2026-11-14).
+    const header = /^#\s*Board:\s*(.+?)\s*$/m.exec(cargoToml)?.[1];
+    if (header !== undefined) {
+        const named = BOARDS.find(
+            (candidate) => header === candidate.name || header.startsWith(`${candidate.name} (`),
+        );
+        if (named !== undefined) {
+            return named;
+        }
+    }
+
     // --- Espressif -----------------------------------------------------------
     // An esp-hal project names its silicon in a feature ("esp32" / "esp32s3"), so the
-    // chip decides the family. Two boards share `esp32`, and the panel dependency is
-    // what separates them: only the CYD drives a display.
+    // chip decides the family. A board that takes a plug-in module records which one as a
+    // `panel-<id>` feature, which names the board as well as the glass.
     if (/^\s*esp-hal\s*=/m.test(cargoToml)) {
         const drivesDisplay = /^\s*mipidsi\s*=/m.test(cargoToml);
         const candidates = BOARDS.filter(isEspBoard).filter((board) =>
             new RegExp(`["']${board.espChip}["']`).test(cargoToml),
         );
+        const chosen = panelChoiceFromCargo(cargoToml);
+        const byPanel = chosen === undefined
+            ? undefined
+            : candidates.find((board) => board.displays.some((display) => display.panelChoice === chosen));
+        if (byPanel !== undefined) {
+            return byPanel;
+        }
         const matchingPanel = candidates.find(
-            (board) => board.displays.length > 0 === drivesDisplay,
+            (board) => (board.displays.length > 0) === drivesDisplay,
         );
         return matchingPanel ?? candidates[0];
     }
