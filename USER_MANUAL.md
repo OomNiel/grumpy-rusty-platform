@@ -1,6 +1,6 @@
 # User Manual — Grumpy's Rusty Platform for VS Code
 
-Version 0.19.2 · Extension ID `grumpy.grumpy-rusty-platform`
+Version 0.19.3 · Extension ID `grumpy.grumpy-rusty-platform`
 
 This manual covers every feature of the extension. For the AI assist in depth, see also `AI_ASSIST.md`.
 
@@ -51,7 +51,7 @@ git clone https://github.com/OomNiel/grumpy-rusty-platform.git
 cd grumpy-rusty-platform
 npm install && npm run compile
 npx vsce package
-code --install-extension grumpy-rusty-platform-0.19.2.vsix
+code --install-extension grumpy-rusty-platform-0.19.3.vsix
 ```
 
 Requirements: VS Code ≥ 1.90.0, Rust toolchain (installed via the extension if missing), Node.js for building.

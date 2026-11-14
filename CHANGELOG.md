@@ -11,6 +11,25 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.19.3] - 2026-11-14
+
+The Designer offers **Touch** again on the **ESP32-035 LCD Panel**. Its project was being read out of
+`Cargo.toml` as an ESP32-DevKitC, whose default display module brings no touch controller, so the
+toolbar's Touch select stayed disabled on a panel that carries a soldered XPT2046.
+
+### Fixed
+
+- **An ESP32-035 project is read back as the ESP32-035, not as an ESP32-DevKitC.** Board detection
+  guessed from features alone, and two boards now share `esp32` and `mipidsi` — the DevKitC through
+  its plug-in display modules, the ESP32-035 through its soldered ST7796 — so the first catalogue
+  match, the DevKitC, always won. The Designer therefore took the DevKitC's default 1.54" ST7789 as
+  the panel, that module has no controller, and `touchBoard` was false: the Touch select was disabled
+  ("This board has no touch controller"), the canvas note read `(no touch)`, and the board's own
+  XPT2046 (CS 33, IRQ 36) was never offered. Detection now reads the `# Board: …` header the
+  generator writes into every manifest first, and, failing that, the `panel-<id>` feature that only a
+  module board records. The sidebar's board name and the board's LED facts follow the same answer.
+  Existing projects need no regeneration — the fix is in the extension alone.
+
 ## [0.19.2] - 2026-11-03
 
 The Designer's canvas grows two more zoom steps, the Image widget can carry a border and rounded
