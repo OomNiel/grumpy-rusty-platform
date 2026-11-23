@@ -125,11 +125,11 @@ pub struct Designer {
     pub widgets: RustyPanelWidgets,
     down: bool,
     painted: bool,
-    /// The wall clock the hands follow once the board has been told the time: the local
-    /// time it was told, and the instant it was told. `None` until then -- and on a board
-    /// with no RTC that survives power-off, for ever.
+    /// The wall clock the hands and the date block follow once the board has been told the
+    /// time: the local seconds of day it was told, the calendar day when the hand-over
+    /// carried one, and the instant it was told. `None` until then.
     #[allow(dead_code)]
-    wall_base: Option<(Instant, u32)>,
+    wall_base: Option<(Instant, Option<i64>, u32)>,
 }
 
 impl Designer {
@@ -253,18 +253,30 @@ impl Designer {
         result
     }
 
-    /// Tells the design what time it is, as local time.
+    /// Tells the design the local date and time. This is what the generated firmware calls when its
+    /// RTC, a network answer or the host hands a full wall clock over.
     ///
-    /// The toolchain sends this over the console once the board is running: an ESP32's internal RTC
-    /// has no battery, so a board that has been powered off has no idea of the time until it is
-    /// told. The anchor is kept rather than the time being counted, so a frame that took two
-    /// seconds -- or a loop that was asleep -- cannot make the hands lose a second.
-    ///
-    /// Out-of-range fields are clamped rather than wrapped, the same rule the clock itself follows.
+    /// The anchor is kept rather than the time being counted, so a frame that took two seconds -- or
+    /// a loop that was asleep -- cannot make the hands lose a second. Out-of-range fields are clamped
+    /// rather than wrapped, the same rule the clock itself follows.
+    pub fn set_wall_datetime(&mut self, year: u16, month: u8, day: u8, hour: u8, minute: u8, second: u8) {
+        let now = Instant::now();
+        let year = year.clamp(2000, 9999);
+        let month = month.clamp(1, 12);
+        let day = day.clamp(1, embedded_gui::widgets::clock::days_in_month(year, month));
+        let days = embedded_gui::widgets::clock::days_from_civil(year as i64, month, day);
+        let start = hour.min(23) as u32 * 3600 + minute.min(59) as u32 * 60 + second.min(59) as u32;
+        self.wall_base = Some((now, Some(days), start % 86_400));
+
+    }
+
+    /// The time-only hand-over an older project's main.rs still calls. The clocks keep the date
+    /// their design gave them, because a time alone cannot say which day it belongs to.
+    #[allow(dead_code)]
     pub fn set_wall_clock(&mut self, hour: u8, minute: u8, second: u8) {
         let now = Instant::now();
         let start = hour.min(23) as u32 * 3600 + minute.min(59) as u32 * 60 + second.min(59) as u32;
-        self.wall_base = Some((now, start % 86_400));
+        self.wall_base = Some((now, None, start % 86_400));
 
     }
 

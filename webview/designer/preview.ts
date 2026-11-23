@@ -2766,6 +2766,8 @@ function previewClock(context: CanvasRenderingContext2D, widget: DesignerWidget,
         );
     }
     fillSolid(context, { x: cx - 3, y: cy - 3, w: 6, h: 6 }, 3, colourProp(widget.props, 'hour_color') ?? rgb(31, 63, 31), 255);
+    // The date block is painted over the hands, exactly as the crate draws it.
+    previewClockDate(context, widget, style, cx, cy, radius);
 }
 
 /** One straight stroke, the way `draw_line_styled` paints it: a colour, a width and a cap. */
@@ -2832,6 +2834,256 @@ function drawClockLabel(
         }
         cursor += advance;
     }
+}
+
+/** One measured line of the clock's date block, mirroring `DateLine` in the crate. */
+interface ClockDateLine {
+    readonly text: string;
+    readonly font: string;
+    /** The design's own size: 1 is the face's pixels, 1.5 is half again as large. */
+    readonly scale: number;
+    /** Ink size in pixels. */
+    readonly width: number;
+    readonly height: number;
+    /** The ink's origin inside the first glyph's cell, in pixels at scale one. */
+    readonly inkX: number;
+    readonly inkY: number;
+}
+
+/**
+ * The ink a word occupies, glyph pixel by glyph pixel -- the crate's `measure_ink`.
+ *
+ * The numerals are centred by a fixed three-by-five cell; a weekday is not, so the canvas walks
+ * the face's own pixels to find what the line really paints. A fractional scale resamples those
+ * pixels, so both edges are rounded once and a line at 1.5 is exactly as wide as it paints.
+ */
+function measureClockText(font: string, text: string, scale: number): ClockDateLine {
+    const base = glyphBlockSize(font);
+    const unit = Math.max(1, scale);
+    const advance = glyphMetrics(font).advance;
+    let minX = Number.POSITIVE_INFINITY;
+    let minY = Number.POSITIVE_INFINITY;
+    let maxX = Number.NEGATIVE_INFINITY;
+    let maxY = Number.NEGATIVE_INFINITY;
+    let pen = 0;
+    for (const ch of text) {
+        const rows = glyphRows(font, ch);
+        for (let row = 0; row < glyphRowCount(font); row += 1) {
+            const bits = rows[row] ?? 0;
+            for (let col = 0; col < glyphColumns(font); col += 1) {
+                if (!bitSet(bits, glyphColumns(font), col)) {
+                    continue;
+                }
+                const x = pen + col * base;
+                const y = row * base;
+                minX = Math.min(minX, x);
+                maxX = Math.max(maxX, x + base);
+                minY = Math.min(minY, y);
+                maxY = Math.max(maxY, y + base);
+            }
+        }
+        pen += advance;
+    }
+    if (!Number.isFinite(minX)) {
+        return {
+            text,
+            font,
+            scale: unit,
+            width: Math.round(advance * Array.from(text).length * unit),
+            height: 0,
+            inkX: 0,
+            inkY: 0,
+        };
+    }
+    return {
+        text,
+        font,
+        scale: unit,
+        width: Math.round((maxX - minX) * unit),
+        height: Math.round((maxY - minY) * unit),
+        inkX: minX,
+        inkY: minY,
+    };
+}
+
+/** Draws a measured line with its ink's left edge on `centreX` and its top ink row at `inkTop`. */
+function drawClockText(
+    context: CanvasRenderingContext2D,
+    line: ClockDateLine,
+    colour: Rgb565,
+    centreX: number,
+    inkTop: number,
+): void {
+    const base = glyphBlockSize(line.font);
+    const advance = glyphMetrics(line.font).advance;
+    const scale = Math.max(1, line.scale);
+    const left = centreX - Math.trunc(line.width / 2);
+    let pen = 0;
+    for (const ch of line.text) {
+        const rows = glyphRows(line.font, ch);
+        for (let row = 0; row < glyphRowCount(line.font); row += 1) {
+            const bits = rows[row] ?? 0;
+            for (let col = 0; col < glyphColumns(line.font); col += 1) {
+                if (!bitSet(bits, glyphColumns(line.font), col)) {
+                    continue;
+                }
+                // Both edges are scaled and rounded separately, so a fractional scale tiles the
+                // glyph exactly with no seams and no overlap -- the crate's `draw_ink_line`.
+                const x0 = pen + col * base - line.inkX;
+                const y0 = row * base - line.inkY;
+                const px0 = left + Math.round(x0 * scale);
+                const py0 = inkTop + Math.round(y0 * scale);
+                const px1 = left + Math.round((x0 + base) * scale);
+                const py1 = inkTop + Math.round((y0 + base) * scale);
+                context.fillStyle = css(colour);
+                context.fillRect(px0, py0, Math.max(1, px1 - px0), Math.max(1, py1 - py0));
+            }
+        }
+        pen += advance;
+    }
+}
+
+/** The calendar's full names, as the date block prints them. */
+const DATE_WEEKDAYS = ['SUNDAY', 'MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY'] as const;
+const DATE_MONTHS = [
+    'JANUARY', 'FEBRUARY', 'MARCH', 'APRIL', 'MAY', 'JUNE',
+    'JULY', 'AUGUST', 'SEPTEMBER', 'OCTOBER', 'NOVEMBER', 'DECEMBER',
+] as const;
+
+/**
+ * The date block under the pivot: the month and year on top, the weekday in the middle, and the day
+ * number in its box at the bottom.
+ *
+ * This is `ClockWidget::date_block` in the crate, arithmetic and all: the block is anchored above
+ * the six o'clock numeral, the three lines are stacked upward with half a line height between them,
+ * and each line is magnified by the design's own size -- the hour numerals' rule, no fitting. The
+ * whole stack can be nudged by `date_offset` pixels.
+ */
+function previewClockDate(
+    context: CanvasRenderingContext2D,
+    widget: DesignerWidget,
+    style: Style,
+    cx: number,
+    cy: number,
+    radius: number,
+): void {
+    const showWeekday = boolProp(widget.props, 'show_weekday', true);
+    const showMonth = boolProp(widget.props, 'show_month', true);
+    const showDate = boolProp(widget.props, 'show_date', true);
+    if (!showWeekday && !showMonth && !showDate) {
+        return;
+    }
+    const font = stringProp(widget.props, 'date_font') || style.font;
+    const colour = colourProp(widget.props, 'date_color') ?? rgb(31, 63, 31);
+    const year = Math.min(Math.max(Math.trunc(numberProp(widget.props, 'year', 2000)), 2000), 9999);
+    const month = Math.min(Math.max(Math.trunc(numberProp(widget.props, 'month', 1)), 1), 12);
+    const day = Math.min(Math.max(Math.trunc(numberProp(widget.props, 'day', 1)), 1), 31);
+    const weekday = weekDayOf(year, month, day);
+    const weekdayWeight = Math.min(Math.max(numberProp(widget.props, 'weekday_size', 1), 1), 4);
+    const monthWeight = Math.min(Math.max(numberProp(widget.props, 'month_size', 1), 1), 4);
+    const dayWeight = Math.min(Math.max(numberProp(widget.props, 'day_size', 1), 1), 4);
+
+    // The six o'clock numeral is the landmark the block sits above; without numerals the long tick
+    // is. The `- 2` is the gap the crate keeps, in design pixels.
+    const numbered = boolProp(widget.props, 'show_labels', true) && radius > 24;
+    let bottom: number;
+    if (numbered) {
+        const numeralScale = Math.max(1, Math.trunc(numberProp(widget.props, 'label_scale', 1)));
+        const advance = glyphMetrics(style.font).advance * numeralScale;
+        const insetChars = Math.max(0, Math.min(2, numberProp(widget.props, 'label_inset', 0.5)));
+        const inset = Math.max(0, radius - 16 - Math.round(advance * insetChars));
+        const numeralHeight = glyphRowCount(style.font) * glyphBlockSize(style.font) * numeralScale;
+        bottom = cy + inset - Math.trunc(numeralHeight / 2) - 2;
+    } else {
+        bottom = cy + radius - 8 - 2;
+    }
+    if (bottom <= cy + 2) {
+        return;
+    }
+
+    const weekdayText = DATE_WEEKDAYS[weekday] ?? DATE_WEEKDAYS[0];
+    const monthText = `${DATE_MONTHS[month - 1] ?? DATE_MONTHS[0]} ${year}`;
+    const dayText = String(day);
+    const baseBlock = glyphBlockSize(font);
+    // The design's own sizes, each glyph pixel magnified by the number given -- the same rule the hour
+    // numerals follow. Deliberately no fit to the control.
+    const weekdayScale = weekdayWeight;
+    const monthScale = monthWeight;
+    const dayScale = dayWeight;
+    const weekdayLine = showWeekday ? measureClockText(font, weekdayText, weekdayScale) : undefined;
+    const monthLine = showMonth ? measureClockText(font, monthText, monthScale) : undefined;
+    const dayLine = showDate ? measureClockText(font, dayText, dayScale) : undefined;
+
+    // One glyph pixel of air between the ink and the border's inner edge, plus the border itself:
+    // without it a scaled-up digit paints over the frame.
+    const borderWidth = Math.round(
+        Math.max(0, numberProp(widget.props, 'date_box_border_width', 1)) * dayScale,
+    );
+    const pad = showDate ? Math.max(2, borderWidth + Math.round(baseBlock * dayScale)) : 0;
+    const boxHeight = (dayLine?.height ?? 0) + 2 * pad;
+    // Two digits' worth of box: a clock turning over from the 9th to the 10th must not grow it.
+    const boxWidth = showDate ? measureClockText(font, '88', dayScale).width + 2 * pad : 0;
+    // Positive moves the block up, negative down; the whole stack moves together.
+    const shift = Math.trunc(numberProp(widget.props, 'date_offset', 0));
+    const box: Rect = {
+        x: cx - Math.trunc(boxWidth / 2),
+        y: bottom - boxHeight - shift,
+        w: Math.max(1, boxWidth),
+        h: Math.max(1, boxHeight),
+    };
+    let cursor = box.y;
+    let weekdayTop = cursor;
+    if (weekdayLine !== undefined) {
+        weekdayTop = cursor - Math.trunc(weekdayLine.height / 2) - weekdayLine.height;
+        cursor = weekdayTop;
+    }
+    let monthTop = cursor;
+    if (monthLine !== undefined) {
+        monthTop = cursor - Math.trunc(monthLine.height / 2) - monthLine.height;
+    }
+
+    if (dayLine !== undefined) {
+        const radiusPx = Math.min(
+            Math.round(Math.max(0, numberProp(widget.props, 'date_box_radius', 4)) * dayScale),
+            Math.trunc(Math.min(box.w, box.h) / 2),
+        );
+        const opacity = Math.round(
+            Math.min(Math.max(numberProp(widget.props, 'date_box_opacity', 100), 0), 100) * 255 / 100,
+        );
+        const fill = colourProp(widget.props, 'date_box_fill') ?? rgb(0, 0, 0);
+        const border = colourProp(widget.props, 'date_box_border') ?? rgb(31, 63, 31);
+        if (opacity > 0) {
+            fillSolid(context, box, radiusPx, fill, opacity);
+        }
+        if (borderWidth > 0) {
+            strokeRounded(context, box, radiusPx, { color: border, width: borderWidth }, 255);
+        }
+        const top = box.y + Math.trunc((box.h - dayLine.height) / 2);
+        drawClockText(context, dayLine, colour, box.x + Math.trunc(box.w / 2), top);
+    }
+    if (monthLine !== undefined) {
+        drawClockText(context, monthLine, colour, cx, monthTop);
+    }
+    if (weekdayLine !== undefined) {
+        drawClockText(context, weekdayLine, colour, cx, weekdayTop);
+    }
+}
+
+/** Days since 1970-01-01 for a civil date, mirrored from `days_from_civil` in the crate. */
+function daysFromCivil(year: number, month: number, day: number): number {
+    const y = month <= 2 ? year - 1 : year;
+    const era = Math.floor(y / 400);
+    const yoe = y - era * 400;
+    const shifted = month > 2 ? month - 3 : month + 9;
+    const doy = Math.floor((153 * shifted + 2) / 5) + day - 1;
+    const doe = yoe * 365 + Math.floor(yoe / 4) - Math.floor(yoe / 100) + doy;
+    return era * 146097 + doe - 719468;
+}
+
+/** The weekday of a civil date, 0 is Sunday. */
+function weekDayOf(year: number, month: number, day: number): number {
+    const days = daysFromCivil(year, month, Math.max(1, day));
+    return ((days + 4) % 7 + 7) % 7;
 }
 
 function previewArc(context: CanvasRenderingContext2D, widget: DesignerWidget, state: VisualState): void {

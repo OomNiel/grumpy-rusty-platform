@@ -114,12 +114,42 @@ const fn parse_i64(text: &str) -> Option<i64> {
     Some(if negative { -value } else { value })
 }
 
-/// The wall clock the firmware starts from: the build's own time, in local time.
+/// The civil date \`days\` days after 1970-01-01 (Howard Hinnant's civil_from_days).
+///
+/// Integer arithmetic only, no std and no timezone database, because a date block on a Pico has
+/// nothing else to read the calendar from.
 #[allow(dead_code)]
-pub fn boot_time() -> (u8, u8, u8) {
+pub fn civil_from_days(days: i64) -> (u16, u8, u8) {
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 157_908) / 365;
+    let mut year = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let month_day = (5 * doy + 2) / 153;
+    let day = (doy - (153 * month_day + 2) / 5 + 1) as u8;
+    let month = if month_day < 10 { month_day + 3 } else { month_day - 9 } as u8;
+    if month <= 2 {
+        year += 1;
+    }
+    (year as u16, month, day)
+}
+
+/// The wall clock the firmware starts from: the build's own date and time, in local time.
+///
+/// This is the firmware's RTC seed on a board with no chip RTC: the extension writes the build's
+/// Unix timestamp into \`.cargo/config.toml\` before every build, and a W board's SNTP answer
+/// replaces it once the network answers.
+#[allow(dead_code)]
+pub fn boot_datetime() -> (u16, u8, u8, u8, u8, u8) {
     let seconds = BUILD_EPOCH + UTC_OFFSET_MINUTES * 60;
+    let days = seconds.div_euclid(86_400);
     let of_day = seconds.rem_euclid(86_400);
+    let (year, month, day) = civil_from_days(days);
     (
+        year,
+        month,
+        day,
         (of_day / 3_600) as u8,
         ((of_day % 3_600) / 60) as u8,
         (of_day % 60) as u8,
@@ -226,9 +256,17 @@ mod net;
         // it, and there is no resync -- Update Time is the explicit way to ask again.
         #[cfg(feature = "time-wifi")]
         if ui::HAS_CLOCK {
-            if let Some((hour, minute, second)) = net::SYNCED_TIME.try_take() {
-                state.design.set_wall_clock(hour, minute, second);
-                info!("clock: the network says {:02}:{:02}:{:02}", hour, minute, second);
+            if let Some((year, month, day, hour, minute, second)) = net::SYNCED_TIME.try_take() {
+                state.design.set_wall_datetime(year, month, day, hour, minute, second);
+                info!(
+                    "clock: the network says {:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+                    year,
+                    month,
+                    day,
+                    hour,
+                    minute,
+                    second
+                );
             }
         }
 `
@@ -352,9 +390,17 @@ ${touch ? `    // A board that has never been calibrated asks for its four corne
     // A design with a clock starts from the time the board was built: better than 00:00:00, and what a
     // board with no radio and no PC on the cable will show until the app sets it.
     if ui::HAS_CLOCK {
-        let (hour, minute, second) = boot_time();
-        design.set_wall_clock(hour, minute, second);
-        info!("clock: starting from the build time {:02}:{:02}:{:02}", hour, minute, second);
+        let (year, month, day, hour, minute, second) = boot_datetime();
+        design.set_wall_datetime(year, month, day, hour, minute, second);
+        info!(
+            "clock: starting from the build time {:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second
+        );
     }
 
     info!(
@@ -701,11 +747,11 @@ bind_interrupts!(struct Irqs {
     DMA_IRQ_0 => dma::InterruptHandler<${cyw.dmaCh0}>;
 });
 
-/// The local time of day an NTP server gave, waiting for the main loop to put it on the design.
+/// The local date and time of day an NTP server gave, waiting for the main loop to put it on the design.
 ///
-/// Seconds only, because that is what a Clock widget draws: the date would be a second fact with its own
-/// leap-second questions, and a Pico design that needs one can read \`BUILD_EPOCH\` in the header.
-pub static SYNCED_TIME: Signal<CriticalSectionRawMutex, (u8, u8, u8)> = Signal::new();
+/// The calendar is part of it because a Clock widget draws the date: seconds alone would make a
+/// date block sit on the build day until the next flash.
+pub static SYNCED_TIME: Signal<CriticalSectionRawMutex, (u16, u8, u8, u8, u8, u8)> = Signal::new();
 
 /// The network the build was given. The same contract as the Wi-Fi template: read at compile time, never
 /// in the source tree, and filled in by the credential prompt before a build.
@@ -821,12 +867,12 @@ pub async fn time_task(rest: Rest) {
     }
 
     for attempt in 1..=3u32 {
-        if let Some((hour, minute, second)) = sntp_time(stack).await {
+        if let Some((year, month, day, hour, minute, second)) = sntp_time(stack).await {
             info!(
-                "clock: the network says {:02}:{:02}:{:02} (attempt {})",
-                hour, minute, second, attempt
+                "clock: the network says {:04}-{:02}-{:02} {:02}:{:02}:{:02} (attempt {})",
+                year, month, day, hour, minute, second, attempt
             );
-            SYNCED_TIME.signal((hour, minute, second));
+            SYNCED_TIME.signal((year, month, day, hour, minute, second));
             return;
         }
         Timer::after(Duration::from_secs(2)).await;
@@ -834,12 +880,12 @@ pub async fn time_task(rest: Rest) {
     warn!("clock: the time server did not answer; the design keeps the build time");
 }
 
-/// Asks the time server for the time of day, in local time.
+/// Asks the time server for the date and time, in local time.
 ///
 /// A 48-byte SNTP request: version 3, mode 3 (client) in the first byte, everything else zero. The server
 /// answers with the transmit timestamp at bytes 40..44, in seconds since 1900, which is 2,208,988,800
-/// before the Unix epoch.
-async fn sntp_time(stack: Stack<'static>) -> Option<(u8, u8, u8)> {
+/// before the Unix epoch. The calendar comes from the same integer date arithmetic the clock uses.
+async fn sntp_time(stack: Stack<'static>) -> Option<(u16, u8, u8, u8, u8, u8)> {
     let addresses = stack.dns_query(NTP_SERVER, DnsQueryType::A).await.ok()?;
     let address = *addresses.first()?;
 
@@ -872,8 +918,17 @@ async fn sntp_time(stack: Stack<'static>) -> Option<(u8, u8, u8)> {
     let seconds = u32::from_be_bytes([response[40], response[41], response[42], response[43]]);
     let unix = i64::from(seconds) - 2_208_988_800;
     let local = unix + crate::main_header::UTC_OFFSET_MINUTES * 60;
+    let days = local.div_euclid(86_400);
     let of_day = local.rem_euclid(86_400);
-    Some(((of_day / 3_600) as u8, ((of_day % 3_600) / 60) as u8, (of_day % 60) as u8))
+    let (year, month, day) = crate::main_header::civil_from_days(days);
+    Some((
+        year,
+        month,
+        day,
+        (of_day / 3_600) as u8,
+        ((of_day % 3_600) / 60) as u8,
+        (of_day % 60) as u8,
+    ))
 }
 `;
 }

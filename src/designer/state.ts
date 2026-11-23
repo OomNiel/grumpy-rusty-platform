@@ -35,6 +35,7 @@ import {
     triangleFromVertices,
     triangleVertices,
     uniqueWidgetId,
+    viewEnumName,
     widgetsInView,
     widgetViewId,
 } from './model';
@@ -161,16 +162,24 @@ function withWidget(
     return { ...document, widgets };
 }
 
-/** Adds a widget of the given tag at a point, keeping it inside the canvas. */
+/**
+ * Adds a widget of the given tag at a point, keeping it inside the canvas.
+ *
+ * `view` is the view being edited: a control dropped while a tab is open belongs to that tab, not to the
+ * first view. It is left off for the first view, exactly as `assignView` leaves it off, so a single-view
+ * design keeps the file it always had.
+ */
 export function addWidget(
     state: DesignerState,
     tag: string,
     x: number,
     y: number,
+    view?: string,
 ): DesignerState {
     const canvas = canvasOf(state.document);
     const placed = placeWidget(tag, x, y, canvas);
     return edit(state, undefined, (document) => {
+        const views = designViews(document);
         const widget: DesignerWidget = {
             id: uniqueWidgetId(document, tag),
             tag,
@@ -179,7 +188,17 @@ export function addWidget(
             events: [],
             children: defaultChildren(tag),
         };
-        return { ...document, widgets: [...document.widgets, widget] };
+        // Reported 2026-11-22: a control dropped on a second view landed on the main view, because the drop
+        // never named the tab the canvas was showing. An id the design does not have is not a view, and the
+        // first view's id is redundant -- a widget that names nothing already belongs to it.
+        const target =
+            view !== undefined && view !== views[0]?.id && views.some((entry) => entry.id === view)
+                ? view
+                : undefined;
+        return {
+            ...document,
+            widgets: [...document.widgets, target === undefined ? widget : { ...widget, view: target }],
+        };
     });
 }
 
@@ -432,13 +451,16 @@ export function declareFontFromPath(
     widgetId: string,
     path: string,
     extra: FontExtras = {},
+    property = 'font',
 ): DesignerState {
     return edit(state, undefined, (document) => {
         const { document: declared, id } = withFontDeclaration(document, path, extra);
         return {
             ...declared,
             widgets: declared.widgets.map((widget) =>
-                widget.id === widgetId ? { ...widget, props: { ...widget.props, font: id } } : widget,
+                widget.id === widgetId
+                    ? { ...widget, props: { ...widget.props, [property]: id } }
+                    : widget,
             ),
         };
     });
@@ -641,25 +663,71 @@ export function addView(state: DesignerState, id = freeViewId(state.document)): 
 }
 
 /**
- * Renames a view's id, and every widget that belonged to it.
+ * Renames a view's id, and everything that names it.
  *
- * Two things have to move together: the entry in `views`, and the `view` field of each widget of that view.
- * Renaming only the first would leave the widgets pointing at a name nothing has, which the validator reports
- * as a problem on every save.
+ * Three things have to move together: the entry in `views`, the `view` field of each widget of that view, and
+ * any `navigate` destination that points at it. Renaming only the first would leave the others pointing at a
+ * name nothing has, which the validator reports as a problem on every save.
  */
 export function renameView(state: DesignerState, from: string, to: string): DesignerState {
+    return edit(state, undefined, (document) => renameViewIn(document, from, to));
+}
+
+/**
+ * The document half of `renameView`, shared with the tab's one-step rename of id and caption.
+ *
+ * "A name two views cannot share" covers both spellings of one thing: the id itself, and the `View::` variant
+ * the generated code builds from it, so renaming `settings` to `Settings` is refused when `settings` -- which
+ * is already `View::Settings` -- is in use by another view.
+ */
+function renameViewIn(document: DesignerDocument, from: string, to: string): DesignerDocument {
+    const views = designViews(document);
+    if (
+        !views.some((view) => view.id === from) ||
+        from === to ||
+        !isRustIdentifier(to) ||
+        views.some((view) => view.id === to) ||
+        views.some((view) => view.id !== from && viewEnumName(view.id) === viewEnumName(to))
+    ) {
+        return document;
+    }
+    return {
+        ...document,
+        views: views.map((view) => (view.id === from ? { ...view, id: to } : view)),
+        widgets: document.widgets.map((widget) => {
+            // Only a widget that *names* the view follows it: one with no `view` belongs to the first view, and
+            // still does after the first view is renamed, so materialising the field would only grow the file.
+            const next = widget.view === from ? { ...widget, view: to } : widget;
+            return next.props.navigate_to === from
+                ? { ...next, props: { ...next.props, navigate_to: to } }
+                : next;
+        }),
+    };
+}
+
+/**
+ * Renames a view from its tab: the caption, and the id as far as it can follow.
+ *
+ * The caption is what the tab (and the View picker, and the Events destination list) shows, so the caption is
+ * what the user edits -- and a caption is free text: "Main screen" is a legal tab. The id, which names the
+ * generated `View::` variant, follows the caption whenever it can take it, so typing `Settings` leaves one name
+ * in the design instead of a tab that says one thing and a variant that says another. Reported 2026-11-22:
+ * the field used to edit the id, and a caption that was not the id never moved, so a duplicated view's tab
+ * looked unreachable. One edit, so one Ctrl+Z, whichever halves moved.
+ */
+export function renameViewWithLabel(state: DesignerState, from: string, label: string): DesignerState {
     return edit(state, undefined, (document) => {
         const views = designViews(document);
         const target = views.find((view) => view.id === from);
-        if (target === undefined || from === to || views.some((view) => view.id === to) || !isRustIdentifier(to)) {
+        const text = label.trim();
+        if (target === undefined || text === '' || (target.label === '' ? target.id : target.label) === text) {
             return document;
         }
+        const renamed = renameViewIn(document, from, text);
+        const id = renamed === document ? from : text;
         return {
-            ...document,
-            views: views.map((view) => (view.id === from ? { ...view, id: to } : view)),
-            widgets: document.widgets.map((widget) =>
-                widgetViewId(document, widget) === from ? { ...widget, view: to } : widget,
-            ),
+            ...renamed,
+            views: designViews(renamed).map((view) => (view.id === id ? { ...view, label: text } : view)),
         };
     });
 }

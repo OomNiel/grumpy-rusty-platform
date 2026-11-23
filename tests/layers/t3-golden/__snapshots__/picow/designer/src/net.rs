@@ -33,11 +33,11 @@ bind_interrupts!(struct Irqs {
     DMA_IRQ_0 => dma::InterruptHandler<DMA_CH0>;
 });
 
-/// The local time of day an NTP server gave, waiting for the main loop to put it on the design.
+/// The local date and time of day an NTP server gave, waiting for the main loop to put it on the design.
 ///
-/// Seconds only, because that is what a Clock widget draws: the date would be a second fact with its own
-/// leap-second questions, and a Pico design that needs one can read `BUILD_EPOCH` in the header.
-pub static SYNCED_TIME: Signal<CriticalSectionRawMutex, (u8, u8, u8)> = Signal::new();
+/// The calendar is part of it because a Clock widget draws the date: seconds alone would make a
+/// date block sit on the build day until the next flash.
+pub static SYNCED_TIME: Signal<CriticalSectionRawMutex, (u16, u8, u8, u8, u8, u8)> = Signal::new();
 
 /// The network the build was given. The same contract as the Wi-Fi template: read at compile time, never
 /// in the source tree, and filled in by the credential prompt before a build.
@@ -153,12 +153,12 @@ pub async fn time_task(rest: Rest) {
     }
 
     for attempt in 1..=3u32 {
-        if let Some((hour, minute, second)) = sntp_time(stack).await {
+        if let Some((year, month, day, hour, minute, second)) = sntp_time(stack).await {
             info!(
-                "clock: the network says {:02}:{:02}:{:02} (attempt {})",
-                hour, minute, second, attempt
+                "clock: the network says {:04}-{:02}-{:02} {:02}:{:02}:{:02} (attempt {})",
+                year, month, day, hour, minute, second, attempt
             );
-            SYNCED_TIME.signal((hour, minute, second));
+            SYNCED_TIME.signal((year, month, day, hour, minute, second));
             return;
         }
         Timer::after(Duration::from_secs(2)).await;
@@ -166,12 +166,12 @@ pub async fn time_task(rest: Rest) {
     warn!("clock: the time server did not answer; the design keeps the build time");
 }
 
-/// Asks the time server for the time of day, in local time.
+/// Asks the time server for the date and time, in local time.
 ///
 /// A 48-byte SNTP request: version 3, mode 3 (client) in the first byte, everything else zero. The server
 /// answers with the transmit timestamp at bytes 40..44, in seconds since 1900, which is 2,208,988,800
-/// before the Unix epoch.
-async fn sntp_time(stack: Stack<'static>) -> Option<(u8, u8, u8)> {
+/// before the Unix epoch. The calendar comes from the same integer date arithmetic the clock uses.
+async fn sntp_time(stack: Stack<'static>) -> Option<(u16, u8, u8, u8, u8, u8)> {
     let addresses = stack.dns_query(NTP_SERVER, DnsQueryType::A).await.ok()?;
     let address = *addresses.first()?;
 
@@ -204,6 +204,15 @@ async fn sntp_time(stack: Stack<'static>) -> Option<(u8, u8, u8)> {
     let seconds = u32::from_be_bytes([response[40], response[41], response[42], response[43]]);
     let unix = i64::from(seconds) - 2_208_988_800;
     let local = unix + crate::main_header::UTC_OFFSET_MINUTES * 60;
+    let days = local.div_euclid(86_400);
     let of_day = local.rem_euclid(86_400);
-    Some(((of_day / 3_600) as u8, ((of_day % 3_600) / 60) as u8, (of_day % 60) as u8))
+    let (year, month, day) = crate::main_header::civil_from_days(days);
+    Some((
+        year,
+        month,
+        day,
+        (of_day / 3_600) as u8,
+        ((of_day % 3_600) / 60) as u8,
+        (of_day % 60) as u8,
+    ))
 }

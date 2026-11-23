@@ -663,25 +663,38 @@ function movementMethodsFor(document: DesignerDocument, clocks: readonly Designe
         )
         .join('\n');
     // The same clocks, told the time a wall clock says rather than stepped by a count of ticks.
-    const shows = clocks
+    const showsDated = clocks
+        .map((widget) =>
+            guard(
+                widget,
+                `let _ = self.gui.borrow_mut().set_clock_datetime(self.widgets.${rustFieldName(widget.id)}, year, month, day, hour, minute, second);`,
+                '                    ',
+            ),
+        )
+        .join('\n');
+    const showsTime = clocks
         .map((widget) =>
             guard(
                 widget,
                 `let _ = self.gui.borrow_mut().set_clock_time(self.widgets.${rustFieldName(widget.id)}, hour, minute, second);`,
-                '            ',
+                '                    ',
             ),
         )
         .join('\n');
     return `
-    /// The time the design is showing: the wall clock advanced to now, or \`None\` before one has
-    /// been handed over.
-    pub fn wall_clock(&self) -> Option<(u8, u8, u8)> {
-        let (anchor, start) = self.wall_base?;
-        let seconds = (start + anchor.elapsed().as_secs() as u32) % 86_400;
+    /// The wall clock the movement follows: the local seconds of day, and the calendar day when
+    /// the hand-over carried one. A legacy time-only hand-over has no day, and the clocks keep the
+    /// date their design gave them.
+    pub fn wall_clock(&self) -> Option<(Option<i64>, u8, u8, u8)> {
+        let (anchor, days, start) = self.wall_base?;
+        let seconds = start + anchor.elapsed().as_secs() as u32;
+        let extra = i64::from(seconds / 86_400);
+        let of_day = seconds % 86_400;
         Some((
-            (seconds / 3600) as u8,
-            ((seconds / 60) % 60) as u8,
-            (seconds % 60) as u8,
+            days.map(|days| days + extra),
+            (of_day / 3600) as u8,
+            ((of_day / 60) % 60) as u8,
+            (of_day % 60) as u8,
         ))
     }
 
@@ -710,9 +723,17 @@ function movementMethodsFor(document: DesignerDocument, clocks: readonly Designe
     /// panel does not make the design's own time lose seconds either.
     fn tick_clocks(&mut self) {
         let shown = self.wall_clock();
-        if let Some((hour, minute, second)) = shown {
+        if let Some((days, hour, minute, second)) = shown {
             self.last_tick = Some(Instant::now());
-${shows}
+            match days {
+                Some(days) => {
+                    let (year, month, day) = embedded_gui::widgets::clock::civil_from_days(days);
+${showsDated}
+                }
+                None => {
+${showsTime}
+                }
+            }
             return;
         }
         let now = Instant::now();
@@ -744,18 +765,30 @@ ${advances}
 function wallMethodsFor(movement: boolean): string {
     const resume = movement ? '        self.last_tick = Some(now);\n' : '';
     return `
-    /// Tells the design what time it is, as local time.
+    /// Tells the design the local date and time. This is what the generated firmware calls when its
+    /// RTC, a network answer or the host hands a full wall clock over.
     ///
-    /// The toolchain sends this over the console once the board is running: an ESP32's internal RTC
-    /// has no battery, so a board that has been powered off has no idea of the time until it is
-    /// told. The anchor is kept rather than the time being counted, so a frame that took two
-    /// seconds -- or a loop that was asleep -- cannot make the hands lose a second.
-    ///
-    /// Out-of-range fields are clamped rather than wrapped, the same rule the clock itself follows.
+    /// The anchor is kept rather than the time being counted, so a frame that took two seconds -- or
+    /// a loop that was asleep -- cannot make the hands lose a second. Out-of-range fields are clamped
+    /// rather than wrapped, the same rule the clock itself follows.
+    pub fn set_wall_datetime(&mut self, year: u16, month: u8, day: u8, hour: u8, minute: u8, second: u8) {
+        let now = Instant::now();
+        let year = year.clamp(2000, 9999);
+        let month = month.clamp(1, 12);
+        let day = day.clamp(1, embedded_gui::widgets::clock::days_in_month(year, month));
+        let days = embedded_gui::widgets::clock::days_from_civil(year as i64, month, day);
+        let start = hour.min(23) as u32 * 3600 + minute.min(59) as u32 * 60 + second.min(59) as u32;
+        self.wall_base = Some((now, Some(days), start % 86_400));
+${resume}
+    }
+
+    /// The time-only hand-over an older project's main.rs still calls. The clocks keep the date
+    /// their design gave them, because a time alone cannot say which day it belongs to.
+    #[allow(dead_code)]
     pub fn set_wall_clock(&mut self, hour: u8, minute: u8, second: u8) {
         let now = Instant::now();
         let start = hour.min(23) as u32 * 3600 + minute.min(59) as u32 * 60 + second.min(59) as u32;
-        self.wall_base = Some((now, start % 86_400));
+        self.wall_base = Some((now, None, start % 86_400));
 ${resume}
     }
 `;
@@ -946,11 +979,11 @@ export function emitUiRs(document: DesignerDocument, touch = true): string {
     // The wall clock is a field of every design: `main.rs` hands the time over as soon as the board
     // is running, and a design with no clock in it still stores it (the app may add one later).
     const wallField =
-        '    /// The wall clock the hands follow once the board has been told the time: the local\n' +
-        '    /// time it was told, and the instant it was told. `None` until then -- and on a board\n' +
-        '    /// with no RTC that survives power-off, for ever.\n' +
+        '    /// The wall clock the hands and the date block follow once the board has been told the\n' +
+        '    /// time: the local seconds of day it was told, the calendar day when the hand-over\n' +
+        '    /// carried one, and the instant it was told. `None` until then.\n' +
         '    #[allow(dead_code)]\n' +
-        '    wall_base: Option<(Instant, u32)>,\n';
+        '    wall_base: Option<(Instant, Option<i64>, u32)>,\n';
     const wallInit = '            wall_base: None,\n';
     const movementField = movement
         ? '    /// When the clocks were last advanced. `None` until the first frame sets it.\n' +

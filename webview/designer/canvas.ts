@@ -467,9 +467,16 @@ export class CanvasView {
         event.preventDefault();
         const { x, y } = this.point(event);
         // The widget is centred on the pointer, because dropping by the corner makes it appear somewhere the
-        // user did not aim; the half-size comes from the catalogue so it is right for every tag.
+        // user did not aim; the half-size comes from the catalogue so it is right for every tag. The view being
+        // edited is passed with it: a drop on a second tab used to land on the first view (reported 2026-11-22).
         const size = widgetSpec(tag)?.defaultSize ?? { width: 48, height: 24 };
-        const placed = addWidget(state, tag, Math.round(x - size.width / 2), Math.round(y - size.height / 2));
+        const placed = addWidget(
+            state,
+            tag,
+            Math.round(x - size.width / 2),
+            Math.round(y - size.height / 2),
+            this.activeView,
+        );
         const added = placed.document.widgets[placed.document.widgets.length - 1];
         if (added !== undefined) {
             this.selected = added.id;

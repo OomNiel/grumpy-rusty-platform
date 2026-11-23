@@ -21,6 +21,7 @@ const {
     defaultProps,
     designViews,
     startViewId,
+    unknownProps,
     validateDocument,
     viewEnumName,
     widgetViewId,
@@ -32,12 +33,14 @@ const { emitUiRs } = compiled('designer/generate');
 const { requiredHandlers } = compiled('designer/generate');
 const {
     addView,
+    addWidget,
     assignView,
     duplicateView,
     initialState,
     freeViewId,
     removeView,
     renameView,
+    renameViewWithLabel,
     setStartView,
     setViewLabel,
     toggleEvent,
@@ -222,6 +225,107 @@ test('the last view cannot be deleted, and a view cannot be renamed onto another
     const two = addView(start, 'settings');
     equal(renameView(two, 'settings', 'main'), two, 'two views cannot share a name');
     equal(renameView(two, 'settings', 'not an id'), two, 'and a name rustc could not use is refused');
+});
+
+test('a view is renamed by its caption, and the id follows when it can', () => {
+    // Reported 2026-11-22: renaming a view at the top of the designer did not change the tab's label. The
+    // field edited the *id*, and only a caption that already was the id followed it -- so a duplicated view,
+    // whose caption is "Main copy", looked unrenamable however many times it was tried.
+    const doc = twoViewDocument();
+    doc.views = [
+        { id: 'main', label: 'Main' },
+        { id: 'view2', label: 'Main copy' },
+    ];
+    doc.widgets[1].view = 'view2';
+    const start = initialState(doc);
+
+    const renamed = renameViewWithLabel(start, 'view2', 'Screen2');
+    const views = viewsOf(renamed.document);
+    equal(views[1].label, 'Screen2', 'the caption becomes what was typed');
+    equal(views[1].id, 'Screen2', 'and so does the id, so the generated variant reads View::Screen2');
+
+    // One Ctrl+Z puts both halves back, whichever of them the edit moved.
+    const back = undo(renamed);
+    equal(viewsOf(back.document)[1].label, 'Main copy', 'one undo restores the caption');
+    equal(viewsOf(back.document)[1].id, 'view2', 'and the id with it');
+
+    // A caption that cannot be a Rust name renames the tab alone...
+    const free = renameViewWithLabel(start, 'view2', 'Main screen');
+    equal(viewsOf(free.document)[1].label, 'Main screen');
+    equal(viewsOf(free.document)[1].id, 'view2', 'the variant keeps a name rustc can use');
+    equal(validateDocument(free.document).length, 0, 'and the design still validates');
+
+    // ...and a name another view already answers to is not taken, by id or by the variant it makes.
+    const clash = renameViewWithLabel(start, 'view2', 'main');
+    equal(viewsOf(clash.document)[1].id, 'view2', 'an id in use cannot be taken');
+    equal(viewsOf(clash.document)[1].label, 'main', 'but the tab still says what was typed');
+    const variant = renameViewWithLabel(start, 'view2', 'Main');
+    equal(viewsOf(variant.document)[1].id, 'view2', 'nor the id that `main` already turns into View::Main');
+    equal(viewsOf(variant.document)[1].label, 'Main');
+
+    // Typing the id itself is how a caption goes back to it.
+    const plain = renameViewWithLabel(start, 'view2', 'view2');
+    equal(viewsOf(plain.document)[1].label, 'view2', 'the caption follows the id');
+    equal(viewsOf(plain.document)[1].id, 'view2', 'and nothing else moves');
+});
+
+test('a widget added while a view is open lands on that view', () => {
+    // Reported 2026-11-22: dropping a control on a second view put it on the main view, because the canvas
+    // drop never named the tab it was showing.
+    const state = initialState(twoViewDocument());
+    const placed = addWidget(state, 'label', 10, 100, 'settings');
+    const added = placed.document.widgets[placed.document.widgets.length - 1];
+    equal(added.view, 'settings', 'the control belongs to the view that was open');
+    equal(widgetsInView(placed.document, 'settings').length, 2, 'so that view holds it');
+
+    // The first view's id is redundant, exactly as `assignView` treats it.
+    const first = addWidget(state, 'label', 10, 100, 'main');
+    equal(first.document.widgets[first.document.widgets.length - 1].view, undefined, 'no view field on the first view');
+    // An id the design does not have is not a view, so the widget falls back to the first one.
+    const nowhere = addWidget(state, 'label', 10, 100, 'nowhere');
+    equal(
+        nowhere.document.widgets[nowhere.document.widgets.length - 1].view,
+        undefined,
+        'and an unknown id is ignored',
+    );
+    // A widget that names nothing is still on the first view, which is what the tab shows.
+    equal(widgetViewId(placed.document, added), 'settings');
+    equal(widgetViewId(first.document, first.document.widgets[first.document.widgets.length - 1]), 'main');
+});
+
+test('renaming a view retargets the navigate clicks that point at it', () => {
+    const doc = twoViewDocument();
+    doc.widgets[1].events = ['navigate'];
+    doc.widgets[1].props.navigate_to = 'main';
+
+    const renamed = renameView(initialState(doc), 'main', 'home');
+    equal(renamed.document.widgets[1].props.navigate_to, 'home', 'the click follows the view it goes to');
+    equal(validateDocument(renamed.document).length, 0, 'so the design stays valid');
+    contains(emitUiRs(renamed.document), 'self.show_view(View::Home);', 'and the generated switch agrees');
+    equal(renamed.document.widgets[0].view, undefined, 'a widget of the renamed first view stays implicit');
+});
+
+test('the navigate destination is a property of every widget that can raise the event', () => {
+    // The Navigate row is offered on whichever event the widget reports, so a keypad borrows `submitted` and a
+    // dropdown `valueChanged`. The validator used to call the destination an unknown property on both and refuse
+    // the save -- and a refused save writes no markup, so the glass could not change view.
+    const doc = twoViewDocument();
+    const pad = {
+        ...widget('pad', 'keypad', { x: 0, y: 120, width: 160, height: 60 }),
+        events: ['navigate'],
+        props: { ...defaultProps('keypad'), navigate_to: 'main' },
+    };
+    const pick = {
+        ...widget('pick', 'dropdown', { x: 0, y: 190, width: 120, height: 24 }),
+        events: ['navigate'],
+        props: { ...defaultProps('dropdown'), navigate_to: 'main' },
+    };
+    doc.widgets.push(pad, pick);
+
+    equal(unknownProps(pad), [], 'a keypad knows the property the panel writes');
+    equal(unknownProps(pick), [], 'and so does a dropdown');
+    equal(validateDocument(doc).length, 0, 'so both validate');
+    ok(renderDesign(doc).kdl !== undefined, 'and a save produces markup');
 });
 
 test('the canvas and the pointer see one view at a time', () => {

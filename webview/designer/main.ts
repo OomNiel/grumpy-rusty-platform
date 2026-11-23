@@ -12,7 +12,7 @@
  * whatever the user is typing in.
  */
 
-import { widgetSpec } from '../../src/designer/catalog';
+import { type DesignerEvent, widgetSpec } from '../../src/designer/catalog';
 import { startViewId } from '../../src/designer/model';
 import { registerDesignFont } from './glyphs';
 import { rasteriseFont } from './rasterise';
@@ -22,6 +22,7 @@ import { clearIconCache } from './icons';
 import type { DesignerImageAsset } from '../../src/designer/imageAssets';
 import {
     type ContextMenuItem,
+    type DesignerEventSelection,
     fontMenu,
     hideContextMenu,
     renderProperties,
@@ -34,7 +35,6 @@ import {
     addFontDeclaration,
     addView,
     addWidget,
-    assignView,
     declareFontFromPath,
     canRedo,
     canUndo,
@@ -46,10 +46,9 @@ import {
     redo,
     removeView,
     removeWidget,
-    renameView,
+    renameViewWithLabel,
     setRotation,
     setStartView,
-    setViewLabel,
     undo,
     viewsOf,
     widgetById,
@@ -96,6 +95,13 @@ const POST_DELAY_MS = 120;
 
 let state: DesignerState;
 let selectedId: string | undefined;
+/**
+ * The event picked in the Events list of the selected widget.
+ *
+ * UI state, like `selectedId`: it is never saved, and it exists so a middle-click on the canvas opens the
+ * handler of the event the user is working on rather than whichever event the widget was given first.
+ */
+let selectedEvent: DesignerEventSelection | undefined;
 let canvasWidth = 0;
 let canvasHeight = 0;
 /** Whether the board has a touch controller at all: without one, the setting is not a choice. */
@@ -180,8 +186,17 @@ const view = new CanvasView(canvasElement, {
     },
     onRevealHandler(id) {
         // A middle-click asks for the widget's own code. Opening the file is the extension's to do -- the panel
-        // has no filesystem -- so it travels as a message like every other action.
-        host.postMessage({ type: 'action', action: 'revealHandler', widgetId: id });
+        // has no filesystem -- so it travels as a message like every other action. The event named is the one
+        // selected in the Events list, and only when its handler is actually ticked; otherwise the extension
+        // opens the widget's first event, which is what a middle-click always did.
+        const widget = state.document.widgets.find((candidate) => candidate.id === id);
+        const event =
+            selectedEvent !== undefined &&
+                selectedEvent.widgetId === id &&
+                widget?.events.includes(selectedEvent.event) === true
+                ? selectedEvent.event
+                : undefined;
+        host.postMessage({ type: 'action', action: 'revealHandler', widgetId: id, event });
     },
 });
 
@@ -198,7 +213,18 @@ const panels = {
     },
     onSelect(id: string | undefined) {
         selectedId = id;
+        // The events of another widget are another list, so a selection made on one widget does not carry to
+        // the next.
+        if (selectedEvent !== undefined && selectedEvent.widgetId !== id) {
+            selectedEvent = undefined;
+        }
         view.select(id);
+        refreshProperties();
+    },
+    onSelectEvent(widgetId: string, event: DesignerEvent) {
+        selectedEvent = { widgetId, event };
+        // Nothing is posted: which event is being worked on is not part of the design. The redraw is what puts
+        // the mark on the row.
         refreshProperties();
     },
     onBrowseAsset(
@@ -502,12 +528,17 @@ function drop(tag: string): void {
     if (touchBoard && !touchEnabled && dropped !== undefined && dropped.events.length > 0) {
         setTouch(true, `${dropped.label} needs touch, so it is now on. Rebuild to use it.`);
     }
-    const next = addWidget(state, tag, Math.round(canvasWidth / 2 - 24), Math.round(canvasHeight / 2 - 12));
+    const next = addWidget(
+        state,
+        tag,
+        Math.round(canvasWidth / 2 - 24),
+        Math.round(canvasHeight / 2 - 12),
+        currentView(),
+    );
     state = next;
     const added = next.document.widgets[next.document.widgets.length - 1];
     if (added !== undefined) {
-        // A widget dropped while a view is being edited belongs to that view: `addWidget` puts it on the first.
-        state = assignView(state, added.id, currentView());
+        // A widget dropped while a view is being edited belongs to that view, which the drop names.
         selectedId = added.id;
         view.select(added.id);
     }
@@ -569,6 +600,7 @@ function refreshViewTabs(): void {
             (start === entry.id && views.length > 1 ? ' (the board starts here)' : '') +
             ' -- right-click to rename, copy or delete it';
         tab.addEventListener('click', () => switchView(entry.id));
+        tab.addEventListener('dblclick', () => renameViewTab(entry.id));
         tab.addEventListener('contextmenu', (event) => {
             event.preventDefault();
             // The menu is an overlay over the whole shell, so it is positioned against it -- the body stands in
@@ -687,21 +719,25 @@ function addEmptyView(): void {
 }
 
 /**
- * Renames a view in place: its tab becomes a field.
+ * Renames a view in place: its tab becomes a field holding the caption.
  *
- * The *id* is what is edited, because that is what the generated `View::` variant is made from; a view whose
- * caption was its id follows it, so the tab does not keep the old name.
+ * The caption is what the tab shows, so the caption is what is edited -- a duplicated view's caption is
+ * "Main copy", and typing something else has to change the tab even though the id never said that. The id,
+ * which names the generated `View::` variant, follows when the typed name can be one; free text renames the
+ * tab alone (see `renameViewWithLabel`).
  */
 function renameViewTab(viewId: string): void {
     const views = viewsOf(state.document);
     const index = views.findIndex((entry) => entry.id === viewId);
-    const tab: unknown = viewTabs.children[index];
-    if (index === -1 || !(tab instanceof HTMLButtonElement)) {
+    const tab = viewTabs.children[index];
+    const entry = views[index];
+    if (index === -1 || tab === undefined || entry === undefined) {
         return;
     }
+    const caption = entry.label === '' ? entry.id : entry.label;
     const input = document.createElement('input');
     input.className = 'view-tab-input';
-    input.value = viewId;
+    input.value = caption;
     tab.replaceChildren(input);
     input.focus();
     input.select();
@@ -712,13 +748,12 @@ function renameViewTab(viewId: string): void {
         }
         done = true;
         const next = input.value.trim();
-        const label = views.find((entry) => entry.id === viewId)?.label;
-        if (next !== '' && next !== viewId) {
-            const renamed = renameView(state, viewId, next);
+        if (next !== '' && next !== caption) {
+            const renamed = renameViewWithLabel(state, viewId, next);
             if (renamed !== state) {
-                // A caption that was the id was a placeholder; follow the new name rather than keep the old.
-                state = label === viewId ? setViewLabel(renamed, next, next) : renamed;
-                activeViewTab = next;
+                state = renamed;
+                // A rename keeps the tab where it was, so the view at the same index is the one under the field.
+                activeViewTab = viewsOf(state.document)[index]?.id ?? viewId;
                 view.setActiveView(currentView());
                 view.setState(state);
                 flushPost();
@@ -739,7 +774,7 @@ function renameViewTab(viewId: string): void {
 }
 
 function refreshProperties(): void {
-    renderProperties(properties, state, selectedId, panels, hardware);
+    renderProperties(properties, state, selectedId, panels, hardware, selectedEvent);
     // The tabs are rebuilt with the panel because every path that can change the design -- a drop, a property,
     // an undo -- comes through here, and adding or deleting a view is one of those edits.
     refreshViewTabs();

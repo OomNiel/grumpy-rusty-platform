@@ -1443,19 +1443,25 @@ test('a triangle\'s six points are one group of optional properties', () => {
         equal(property.max, 1000, `${property.name} stops at the box's far edge`);
     }
     equal(new Set(points.map((property) => property.group)).size, 1, 'and they all share the one heading');
-    // Nothing else in the catalogue is optional apart from one superseded field and the navigate target: a
-    // shape's points are the case this exists for, the checkbox's old `box_size` joined them because the crate
-    // defaults it and every widget dropped now leaves it out, and `navigate_to` is only named by a widget that
-    // raises `navigate`. Named rather than counted, so adding an optional property has to be a deliberate act
-    // instead of something that slips in.
+    // Nothing else in the catalogue is optional apart from one superseded field, the navigate target and the
+    // clock's date block: a shape's points are the case this exists for, the checkbox's old `box_size` joined
+    // them because the crate defaults it and every widget dropped now leaves it out, `navigate_to` is only
+    // named by a widget that raises `navigate`, and the date fields are defaulted by the crate's parser so a
+    // design written before the date block existed must stay valid. Named rather than counted, so adding an
+    // optional property has to be a deliberate act instead of something that slips in.
+    const CLOCK_DATE_NAMES = [
+        'date_box_border', 'date_box_border_width', 'date_box_fill', 'date_box_opacity', 'date_box_radius',
+        'date_color', 'date_font', 'date_offset', 'day', 'day_size', 'month', 'month_size',
+        'show_date', 'show_month', 'show_weekday', 'weekday_size', 'year',
+    ];
     const optional = KDL_WIDGETS.flatMap((entry) => entry.props)
         .filter((property) => property.optional === true)
         .map((property) => property.name)
         .sort();
     equal(
         optional.join(','),
-        ['box_size', 'navigate_to', 'navigate_to', 'navigate_to', ...TRIANGLE_POINT_NAMES].sort().join(','),
-        'the points, the superseded box size and the navigate target are the only optional properties',
+        ['box_size', 'navigate_to', 'navigate_to', 'navigate_to', ...TRIANGLE_POINT_NAMES, ...CLOCK_DATE_NAMES].sort().join(','),
+        'the points, the superseded box size, the navigate target and the clock date fields are the only optional properties',
     );
 });
 
@@ -1766,6 +1772,19 @@ test('a clock says the time it shows, and the colours of its hands and ticks', (
     contains(problems[0], 'Number size', 'the size past its maximum is refused by its label');
 });
 
+test('a date line\'s size may be a fraction, and the markup carries it', () => {
+    // Asked 2026-11-23: *"Is it possible to scale the date element text size by fractions of a number
+    // e.g: 1.5 instead of 2?"* The catalogue offers 0.1 steps and the crate resamples the glyph pixels,
+    // so the markup must write the fraction rather than round it away.
+    const clock = widget('clk', 'clock', { x: 0, y: 0, width: 96, height: 96 });
+    clock.props.day_size = 1.5;
+    clock.props.weekday_size = 1.25;
+    const kdl = emitKdl(document(0, [clock]));
+    contains(kdl, 'day_size=1.5', 'the fraction reaches the markup');
+    contains(kdl, 'weekday_size=1.25', 'and so does a finer one');
+    equal(validateDocument(document(0, [clock])).length, 0, 'a fractional size is a valid design');
+});
+
 test('a clock\'s Run checkbox is the designer\'s own, and never reaches the markup', () => {
     // Asked 2026-10-17: *"Add code behind to attach the clock widget to a 'movement' engine driven by a 1
     // sec timer. The code behind must sync the three clock hands. The engine can be attached to the widget
@@ -1809,7 +1828,7 @@ test('a clock on a view that is not showing is not ticked', () => {
     );
     contains(
         ui,
-        'if self.view == View::V1 {\n                let _ = self.gui.borrow_mut().set_clock_time(self.widgets.clk, hour, minute, second);\n            }',
+        'if self.view == View::V1 {\n                        let _ = self.gui.borrow_mut().set_clock_datetime(self.widgets.clk, year, month, day, hour, minute, second);\n                    }',
         'and so does the wall clock it is handed',
     );
 });
@@ -1828,7 +1847,8 @@ test('a clock whose Run is off generates none of that', () => {
         notOk(ui.includes(absent), `a design with no movement must not mention ${absent}`);
     }
     // The wall clock survives: `main.rs` hands the time over whatever the design shows, and the app
-    // may drive its own clock from it.
+    // may drive its own clock from it. Both the dated setter and the legacy time-only one exist.
+    contains(ui, 'pub fn set_wall_datetime(&mut self, year: u16, month: u8, day: u8, hour: u8, minute: u8, second: u8)');
     contains(ui, 'pub fn set_wall_clock(&mut self, hour: u8, minute: u8, second: u8)');
 });
 
@@ -1868,11 +1888,13 @@ test('a running clock follows the wall clock when the board has been told the ti
     // steps the design's own time when nothing has been handed over.
     const clock = widget('clk', 'clock', { x: 0, y: 0, width: 96, height: 96 });
     const ui = emitUiRs(document(0, [clock]));
-    contains(ui, 'wall_base: Option<(Instant, u32)>', 'the anchor is a field of the design');
-    contains(ui, 'pub fn set_wall_clock(&mut self, hour: u8, minute: u8, second: u8)', 'and is set by the app');
-    contains(ui, 'pub fn wall_clock(&self) -> Option<(u8, u8, u8)>', 'read back as a time');
+    contains(ui, 'wall_base: Option<(Instant, Option<i64>, u32)>', 'the anchor is a field of the design');
+    contains(ui, 'pub fn set_wall_datetime(&mut self, year: u16, month: u8, day: u8, hour: u8, minute: u8, second: u8)', 'and is set by the app');
+    contains(ui, 'pub fn set_wall_clock(&mut self, hour: u8, minute: u8, second: u8)', 'while an older firmware still calls the time-only one');
+    contains(ui, 'pub fn wall_clock(&self) -> Option<(Option<i64>, u8, u8, u8)>', 'read back as a day and a time');
     contains(ui, 'let shown = self.wall_clock();', 'the movement asks it first');
-    contains(ui, 'self.gui.borrow_mut().set_clock_time(self.widgets.clk, hour, minute, second)', 'and sets the hands');
+    contains(ui, 'self.gui.borrow_mut().set_clock_datetime(self.widgets.clk, year, month, day, hour, minute, second)', 'and sets the hands and the date');
+    contains(ui, 'self.gui.borrow_mut().set_clock_time(self.widgets.clk, hour, minute, second)', 'or, on a time-only hand-over, the hands alone');
     // The fallback is still there, for a board with no RTC and for the first frame of any board.
     contains(ui, 'let _ = self.gui.borrow_mut().advance_clock(self.widgets.clk);', 'the timer steps in without one');
     notOk(ui.includes('minute = minute + 1'), 'the carries stay the crate\'s');

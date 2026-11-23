@@ -400,13 +400,13 @@ pub fn generate_rust_code(screen: &ScreenDef) -> String {
                     idx,
                     mode,
                     shift,
-                    rgb565_or(text_color, "Rgb565::WHITE"),
+                    rgb565_or(text_color, "Rgb565::new(31, 63, 31)"),
                     rgb565_or(key_color, "Rgb565::new(6, 12, 16)"),
-                    rgb565_or(legend_color, "Rgb565::WHITE"),
+                    rgb565_or(legend_color, "Rgb565::new(31, 63, 31)"),
                     rgb565_or(pressed_key_color, "Rgb565::new(12, 24, 31)"),
                     rgb565_or(accent_color, "Rgb565::new(2, 16, 24)"),
                     rgb565_or(entry_face, "Rgb565::new(1, 2, 4)"),
-                    rgb565_or(entry_border, "Rgb565::CSS_GRAY"),
+                    rgb565_or(entry_border, "Rgb565::new(16, 32, 16)"),
                     st
                 );
             }
@@ -414,6 +414,9 @@ pub fn generate_rust_code(screen: &ScreenDef) -> String {
                 hour,
                 minute,
                 second,
+                year,
+                month,
+                day,
                 hour_color,
                 minute_color,
                 second_color,
@@ -423,6 +426,20 @@ pub fn generate_rust_code(screen: &ScreenDef) -> String {
                 label_scale,
                 label_inset,
                 show_labels,
+                date_font,
+                date_color,
+                weekday_scale,
+                month_scale,
+                day_scale,
+                date_offset,
+                show_weekday,
+                show_month,
+                show_date,
+                date_box_fill,
+                date_box_border,
+                date_box_border_width,
+                date_box_radius,
+                date_box_opacity,
                 style,
                 ..
             } => {
@@ -431,17 +448,40 @@ pub fn generate_rust_code(screen: &ScreenDef) -> String {
                 // own, so a design that names none of them draws exactly what a hand-written
                 // `add_clock` would.
                 let st = style_expr(style.as_deref(), "Style::panel()");
-                let hour_c = rgb565_or(hour_color, "Rgb565::WHITE");
-                let minute_c = rgb565_or(minute_color, "Rgb565::WHITE");
-                let second_c = rgb565_or(second_color, "Rgb565::CSS_RED");
-                let hour_tick = rgb565_or(hour_tick_color, "Rgb565::CSS_GRAY");
+                let hour_c = rgb565_or(hour_color, "Rgb565::new(31, 63, 31)");
+                let minute_c = rgb565_or(minute_color, "Rgb565::new(31, 63, 31)");
+                let second_c = rgb565_or(second_color, "Rgb565::new(31, 0, 0)");
+                let hour_tick = rgb565_or(hour_tick_color, "Rgb565::new(16, 32, 16)");
                 let minute_tick = rgb565_or(minute_tick_color, "Rgb565::new(10, 20, 10)");
-                let label = rgb565_or(label_color, "Rgb565::WHITE");
+                let label = rgb565_or(label_color, "Rgb565::new(31, 63, 31)");
+                let date_c = rgb565_or(date_color, "Rgb565::new(31, 63, 31)");
+                let box_fill = rgb565_or(date_box_fill, "Rgb565::new(0, 0, 0)");
+                let box_border = rgb565_or(date_box_border, "Rgb565::new(31, 63, 31)");
+                // The one shared date face. A name the screen declares is a generated bitmap; the
+                // crate's own faces are named directly, exactly as the appearance panel writes them.
+                let date_face = match date_font.as_deref() {
+                    Some(name) if screen.fonts.iter().any(|font| font.name == name) => {
+                        format!("Some(FontId::Bitmap(&{}))", font_const_name(name))
+                    }
+                    Some(name) if name.starts_with("Vector(") => format!("Some(FontId::{})", name),
+                    Some(
+                        name @ ("Tiny3x5" | "Medium4x7" | "Scaled6x10" | "Medium5x7" | "Mono6x10"
+                        | "Mono8x16"),
+                    ) => format!("Some(FontId::{})", name),
+                    _ => "None".to_string(),
+                };
+                let opacity = (u16::from(*date_box_opacity) * 255 / 100) as u8;
+                let weekday_scale_literal = float_literal(*weekday_scale);
+                let month_scale_literal = float_literal(*month_scale);
+                let day_scale_literal = float_literal(*day_scale);
                 let _ = writeln!(
                     &mut out,
-                    "        let {} = gui.add_clock_styled(cells[{}], ClockWidget {{ hour: {}, minute: {}, second: {}, hour_color: {}, minute_color: {}, second_color: {}, hour_tick_color: {}, minute_tick_color: {}, label_color: {}, label_scale: {}, label_inset: {:.1}, show_labels: {} }}, {})?;",
-                    var_name, idx, hour, minute, second, hour_c, minute_c, second_c, hour_tick,
-                    minute_tick, label, label_scale, label_inset, show_labels, st
+                    "        let {} = gui.add_clock_styled(cells[{}], ClockWidget {{ hour: {}, minute: {}, second: {}, year: {}, month: {}, day: {}, hour_color: {}, minute_color: {}, second_color: {}, hour_tick_color: {}, minute_tick_color: {}, label_color: {}, label_scale: {}, label_inset: {:.1}, show_labels: {}, date_font: {}, date_color: {}, weekday_scale: {}, month_scale: {}, day_scale: {}, date_offset: {}, show_weekday: {}, show_month: {}, show_date: {}, date_box_fill: {}, date_box_border: {}, date_box_border_width: {}, date_box_radius: {}, date_box_opacity: {} }}, {})?;",
+                    var_name, idx, hour, minute, second, year, month, day, hour_c, minute_c, second_c,
+                    hour_tick, minute_tick, label, label_scale, label_inset, show_labels, date_face,
+                    date_c, weekday_scale_literal, month_scale_literal, day_scale_literal, date_offset,
+                    show_weekday, show_month, show_date, box_fill, box_border, date_box_border_width,
+                    date_box_radius, opacity, st
                 );
             }
             WidgetDef::Dropdown {
@@ -1890,6 +1930,20 @@ fn rgb565_or(token: &Option<String>, default: &str) -> String {
     match token {
         Some(value) => rgb565_expr(value),
         None => default.to_string(),
+    }
+}
+
+/// A Rust `f32` literal for `value`: `2.0`, not `2`, because the field it initialises is an `f32`.
+///
+/// `Display` for `f32` drops the fractional part of a whole number, and `ClockWidget { day_scale: 2 }`
+/// then fails to compile against a field that is `f32` -- found by building a generated project with
+/// the date block in it (2026-11-23).
+fn float_literal(value: f32) -> String {
+    let text = format!("{value}");
+    if text.contains('.') {
+        text
+    } else {
+        format!("{text}.0")
     }
 }
 

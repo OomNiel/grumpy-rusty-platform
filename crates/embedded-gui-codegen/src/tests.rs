@@ -1069,7 +1069,7 @@ screen id="ClockFace" width=200 height=200 {
     );
     // A colour the design does not name keeps the widget's own.
     assert!(
-        rust_code.contains("minute_color: Rgb565::WHITE"),
+        rust_code.contains("minute_color: Rgb565::new(31, 63, 31)"),
         "an unnamed hand keeps the default:\n{rust_code}"
     );
 
@@ -1087,6 +1087,75 @@ screen id="ClockFace" width=200 height=200 {
     assert!(kdl.contains("hour=7"), "with its time:\n{kdl}");
     assert!(kdl.contains("label_scale=2"), "and its label size:\n{kdl}");
     assert!(kdl.contains("label_inset=0.7"), "and its inset:\n{kdl}");
+}
+
+/// A clock's date block reaches the builder and writes itself back: the date, the shared face and
+/// colour, the three sizes, the switches and the day box's own four settings.
+#[test]
+fn a_clock_carries_its_date_block_to_the_builder_and_back() {
+    let markup = r##"screen id="ClockFace" width=200 height=200 {
+    grid cols="200px" rows="200px" gap=0 padding=0 {
+        clock id="Clk" col=0 row=0 year=2026 month=11 day=23 date_font="Mono6x10" date_color="#00ff00" weekday_scale=1.5 month_scale=1 day_scale=2.5 date_offset=-7 show_weekday=true show_month=false show_date=true date_box_fill="#0000ff" date_box_border="#ff0000" date_box_border_width=3 date_box_radius=6 date_box_opacity=40
+    }
+}"##;
+    let rust_code = compile_kdl_to_rust(markup).unwrap();
+    assert!(
+        rust_code.contains("year: 2026, month: 11, day: 23"),
+        "the date reaches the widget:\n{rust_code}"
+    );
+    assert!(
+        rust_code.contains("date_font: Some(FontId::Mono6x10)"),
+        "the shared date face:\n{rust_code}"
+    );
+    assert!(
+        rust_code.contains("date_color: Rgb565::new(0, 63, 0)"),
+        "the shared date colour:\n{rust_code}"
+    );
+    assert!(
+        rust_code.contains("weekday_scale: 1.5") && rust_code.contains("day_scale: 2.5"),
+        "the two sizes that differ, fractions and all:\n{rust_code}"
+    );
+    assert!(
+        rust_code.contains("date_offset: -7"),
+        "the block's own nudge:\n{rust_code}"
+    );
+    assert!(
+        rust_code.contains("show_month: false") && rust_code.contains("show_date: true"),
+        "a switched-off line:\n{rust_code}"
+    );
+    assert!(
+        rust_code.contains("date_box_fill: Rgb565::new(0, 0, 31)"),
+        "the box's fill:\n{rust_code}"
+    );
+    assert!(
+        rust_code.contains("date_box_border: Rgb565::new(31, 0, 0)")
+            && rust_code.contains("date_box_border_width: 3")
+            && rust_code.contains("date_box_radius: 6"),
+        "its border and corners:\n{rust_code}"
+    );
+    assert!(
+        rust_code.contains("date_box_opacity: 102"),
+        "40% of 255, as the widget stores it:\n{rust_code}"
+    );
+
+    let screen = parse_kdl_screen(markup).unwrap();
+    let kdl = serialize_kdl_screen(&screen);
+    for expected in [
+        "year=2026",
+        "month=11",
+        "day=23",
+        "date_font=\"Mono6x10\"",
+        "date_color=\"#00ff00\"",
+        "weekday_scale=1.5",
+        "day_scale=2.5",
+        "date_offset=-7",
+        "show_month=false",
+        "date_box_border_width=3",
+        "date_box_radius=6",
+        "date_box_opacity=40",
+    ] {
+        assert!(kdl.contains(expected), "missing {expected}:\n{kdl}");
+    }
 }
 
 /// A design that says nothing about the inset gets the shipping look: half a character.

@@ -396,8 +396,8 @@ test('the hardware file the generator writes reads back unchanged', () => {
 test('a design with a clock and a radio starts from the build time and is corrected over Wi-Fi', () => {
     const files = project('picow', 'designer');
     const main = files.get('src/main.rs');
-    contains(main, 'let (hour, minute, second) = boot_time();');
-    contains(main, 'state.design.set_wall_clock(hour, minute, second);');
+    contains(main, 'let (year, month, day, hour, minute, second) = boot_datetime();');
+    contains(main, 'state.design.set_wall_datetime(year, month, day, hour, minute, second);');
     contains(main, 'net::SYNCED_TIME.try_take()');
     contains(main, '#[cfg(feature = "time-wifi")]');
     // The task is spawned only with the feature, because the radio can only be moved once per boot.

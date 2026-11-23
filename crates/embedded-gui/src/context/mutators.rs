@@ -681,7 +681,23 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
         }
     }
 
-    /// Sets the time a clock face shows, clamping each field and repainting only the hands.
+    /// The date and time a clock face shows, `(year, month, day, hour, minute, second)`.
+    #[cfg(feature = "rich-widgets")]
+    pub fn clock_datetime(&self, id: WidgetId) -> Option<(u16, u8, u8, u8, u8, u8)> {
+        match self.node(id)?.kind {
+            WidgetKind::Clock(clock) => Some((
+                clock.year,
+                clock.month,
+                clock.day,
+                clock.hour,
+                clock.minute,
+                clock.second,
+            )),
+            _ => None,
+        }
+    }
+
+    /// Sets the time a clock face shows, clamping each field and repainting only what changed.
     ///
     /// Not the clock's cell: a face of sixty ticks and twelve numerals is most of the work of
     /// drawing it, and none of it changes when a second passes. The damage is the union of the
@@ -697,20 +713,63 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
         minute: u8,
         second: u8,
     ) -> Result<(), GuiError> {
+        let (year, month, day) = match self.node(id).map(|node| &node.kind) {
+            Some(WidgetKind::Clock(clock)) => (clock.year, clock.month, clock.day),
+            _ => return Err(GuiError::NotFound),
+        };
+        self.set_clock_datetime(id, year, month, day, hour, minute, second)
+    }
+
+    /// Sets the date a clock face shows, keeping the time it already had.
+    #[cfg(feature = "rich-widgets")]
+    pub fn set_clock_date(
+        &mut self,
+        id: WidgetId,
+        year: u16,
+        month: u8,
+        day: u8,
+    ) -> Result<(), GuiError> {
+        let (hour, minute, second) = self.clock_time(id).ok_or(GuiError::NotFound)?;
+        self.set_clock_datetime(id, year, month, day, hour, minute, second)
+    }
+
+    /// Sets the date and time a clock face shows, clamping each field and repainting what moved.
+    ///
+    /// A time change repaints the hands only. A **date** change repaints the date block -- the three
+    /// date lines and the day box -- because those are the pixels that are different, and nothing of
+    /// the dial's rim is touched by either.
+    #[cfg(feature = "rich-widgets")]
+    pub fn set_clock_datetime(
+        &mut self,
+        id: WidgetId,
+        year: u16,
+        month: u8,
+        day: u8,
+        hour: u8,
+        minute: u8,
+        second: u8,
+    ) -> Result<(), GuiError> {
         let rect = self.absolute_rect(id).ok_or(GuiError::NotFound)?;
         let node = self.node_mut(id).ok_or(GuiError::NotFound)?;
         // The geometry is the renderer's, and the block's measured before the time moves.
         let style = node.style.resolve(crate::style::VisualState::Normal);
         match node.kind {
             WidgetKind::Clock(ref mut clock) => {
-                let next = clock.with_time(hour, minute, second);
+                let next = clock.with_datetime(year, month, day, hour, minute, second);
                 if next != *clock {
                     // Only the hands that moved: the hour hand once a minute, the minute hand twice,
                     // the second hand every second. See `ClockWidget::hand_damage_rect`.
-                    let moved = clock.hand_damage_rect(&next, rect, style);
+                    let hands = clock.hand_damage_rect(&next, rect, style);
+                    let date = if (clock.year, clock.month, clock.day)
+                        != (next.year, next.month, next.day)
+                    {
+                        next.date_rect(rect, style)
+                    } else {
+                        None
+                    };
                     *clock = next;
-                    if let Some(moved) = moved {
-                        self.dirty.add(moved)?;
+                    for region in [hands, date].into_iter().flatten() {
+                        self.dirty.add(region)?;
                     }
                 }
                 Ok(())
@@ -815,15 +874,18 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
         }
     }
 
-    /// Moves a clock on by one second, carrying into the minutes and hours and wrapping at midnight.
+    /// Moves a clock on by one second, carrying into the minutes, hours and calendar.
     ///
     /// This is what an attached movement calls: the widget is the movement's memory, so an app that
-    /// missed a frame can call it once per elapsed second and the time stays right.
+    /// missed a frame can call it once per elapsed second and the time stays right. Midnight rolls the
+    /// date with the hands, so a design with a date block does not sit on the day it was flashed.
     #[cfg(feature = "rich-widgets")]
     pub fn advance_clock(&mut self, id: WidgetId) -> Result<(), GuiError> {
-        let (hour, minute, second) = self.clock_time(id).ok_or(GuiError::NotFound)?;
-        let (hour, minute, second) = ClockWidget::next_second(hour, minute, second);
-        self.set_clock_time(id, hour, minute, second)
+        let (year, month, day, hour, minute, second) =
+            self.clock_datetime(id).ok_or(GuiError::NotFound)?;
+        let (year, month, day, hour, minute, second) =
+            ClockWidget::next_datetime(year, month, day, hour, minute, second);
+        self.set_clock_datetime(id, year, month, day, hour, minute, second)
     }
 
     #[cfg(feature = "rich-widgets")]

@@ -63,6 +63,7 @@ import { collectImageAssets, imageSourcesOf, type DesignerImageAsset } from './i
 import { buildCppImages } from './lvglImages';
 import { parseBdfFont, type DesignFontPixels } from './bitmapFont';
 import { bdfFromRaster, fontIdFromFile, isBitmapFontFile, type RasterisedFont } from './fontImport';
+import type { DesignerEvent } from './catalog';
 import { emitUiRs, handlerName, syncHandlerStubs, designHasClock, ESP_LOG_MACRO, RP_LOG_MACRO } from './generate';
 import {
     documentFontSizes,
@@ -438,7 +439,7 @@ class DesignerPanel {
         }
         if (message.type === 'action') {
             if (message.action === 'revealHandler') {
-                await this.revealHandler(message.widgetId);
+                await this.revealHandler(message.widgetId, message.event);
             } else {
                 await this.act(message.action);
             }
@@ -1547,18 +1548,20 @@ class DesignerPanel {
     /**
      * Opens the code behind one widget's event, with the cursor on the handler.
      *
-     * The panel asks for this when a widget is middle-clicked. A handler is a function in the project's own
-     * `src/ui_handlers.rs` -- the one generated file the designer only ever appends to -- so "the code behind
-     * this widget" means opening that file at `on_<widget>_<event>`. The first event is the one a widget was
-     * given first, which is the order the handler stubs were appended in.
+     * The panel asks for this when a widget is middle-clicked, naming the event selected in its Events list --
+     * that is the handler the user is working on. With no selection (or one whose handler was never ticked) the
+     * widget's first event is used, which is the order the stubs were appended in. A handler is a function in
+     * the project's own `src/ui_handlers.rs` -- the one generated file the designer only ever appends to -- so
+     * "the code behind this widget" means opening that file at `on_<widget>_<event>`.
      */
-    private async revealHandler(widgetId: string): Promise<void> {
+    private async revealHandler(widgetId: string, event?: DesignerEvent): Promise<void> {
         const widget = this.document.widgets.find((candidate) => candidate.id === widgetId);
-        const event = widget?.events[0];
-        if (widget === undefined || event === undefined) {
+        // Only a ticked event has a handler in the file, so an unticked selection falls back to the first one.
+        const chosen = event !== undefined && widget?.events.includes(event) ? event : widget?.events[0];
+        if (widget === undefined || chosen === undefined) {
             return;
         }
-        const name = handlerName(widget.id, event);
+        const name = handlerName(widget.id, chosen);
         const uri = vscode.Uri.joinPath(this.folder, DESIGNER_HANDLERS_PATH);
         let text: string;
         try {

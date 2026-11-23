@@ -1467,14 +1467,24 @@ pub fn parse_clock_datetime(line: &[u8]) -> Option<(u16, u8, u8, u8, u8, u8)> {
 /// whole number of days, which makes the time of day a plain remainder.
 const CLOCK_RTC_BASE_SECONDS: u64 = 946_684_800;
 
-/// The time of day the RTC holds, or None when it has never been set.
-pub fn rtc_time_of_day(rtc: &Rtc<'_>) -> Option<(u8, u8, u8)> {
+/// The local date and time of day the RTC holds, or None when it has never been set.
+pub fn rtc_datetime(rtc: &Rtc<'_>) -> Option<(u16, u8, u8, u8, u8, u8)> {
     let seconds = rtc.current_time_us() / 1_000_000;
     if seconds < CLOCK_RTC_BASE_SECONDS {
         return None;
     }
-    let day = (seconds - CLOCK_RTC_BASE_SECONDS) % 86_400;
-    Some(((day / 3600) as u8, ((day / 60) % 60) as u8, (day % 60) as u8))
+    let since_base = (seconds - CLOCK_RTC_BASE_SECONDS) as i64;
+    let days = DAYS_1970_TO_2000 + since_base / 86_400;
+    let (year, month, day) = civil_from_days(days);
+    let day_seconds = since_base % 86_400;
+    Some((
+        year,
+        month,
+        day,
+        (day_seconds / 3600) as u8,
+        ((day_seconds / 60) % 60) as u8,
+        (day_seconds % 60) as u8,
+    ))
 }
 
 /// Days from 1970-01-01 to 2000-01-01. The RTC's base and the civil calendar's 1970 epoch are both whole
@@ -1512,7 +1522,7 @@ pub fn days_from_civil(year: i64, month: u8, day: u8) -> i64 {
 
 /// The calendar date and the time of day the network gave, written into the RTC together so the whole
 /// wall-clock -- not just the hands -- survives a reset. The counter is advanced to the local civil
-/// timestamp, which is exactly what rtc_time_of_day reads back as the time of day.
+/// timestamp, which is exactly what rtc_datetime reads back as the date and time of day.
 pub fn set_rtc_datetime(rtc: &Rtc<'_>, year: u16, month: u8, day: u8, hour: u8, minute: u8, second: u8) {
     let days = days_from_civil(year as i64, month, day) - DAYS_1970_TO_2000;
     let now = hour.min(23) as u64 * 3600 + minute.min(59) as u64 * 60 + second.min(59) as u64;
@@ -1521,10 +1531,9 @@ pub fn set_rtc_datetime(rtc: &Rtc<'_>, year: u16, month: u8, day: u8, hour: u8, 
 }
 
 /// Writes the time of day into the RTC, base included. esp-hal keeps the offset in the RTC domain, so
-/// this survives a reset -- which is exactly why the mark above works. A host's TIME line is a hand-over
-/// of the time only: it carries no date, so the date the RTC already holds is kept, and a board that
-/// learned a calendar day from the network is not dragged back to the 2000 base when a host hands the
-/// hands over.
+/// this survives a reset -- which is exactly why the mark above works. The bare \`TIME HH:MM:SS\` line
+/// carries no date, so the date the RTC already holds is kept, and a board that learned a calendar day
+/// from the network or from the dated line is not dragged back to the 2000 base.
 pub fn set_rtc_time_of_day(rtc: &Rtc<'_>, hour: u8, minute: u8, second: u8) {
     let seconds = rtc.current_time_us() / 1_000_000;
     let day = (seconds.saturating_sub(CLOCK_RTC_BASE_SECONDS) / 86_400) * 86_400;
@@ -1557,24 +1566,27 @@ function espClockSetupDecls(board: EspBoardProfile): string {
     let mut console_line = [0u8; 32];
     let mut console_len: usize = 0;
     // The chip's RTC: the one thing on the board that still knows the time after a reset. It is
-    // asked before the design exists, so a board that was only reset starts with the right hands.
+    // asked before the design exists, so a board that was only reset starts with the right date and hands.
     let rtc = Rtc::new(peripherals.RTC_TIMER);
-    let rtc_time = rtc_time_of_day(&rtc);
-    match rtc_time {
-        Some((hour, minute, second)) => log::info!(
-            "clock: the RTC kept {:02}:{:02}:{:02} across the reset",
+    let rtc_datetime = rtc_datetime(&rtc);
+    match rtc_datetime {
+        Some((year, month, day, hour, minute, second)) => log::info!(
+            "clock: the RTC kept {:04}-{:02}-{:02} {:02}:{:02}:{:02} across the reset",
+            year,
+            month,
+            day,
             hour,
             minute,
             second
         ),
         None => log::info!("clock: the RTC is not set; a host can hand the time over"),
     }
-    let mut needs_time = rtc_time.is_none();
+    let mut needs_time = rtc_datetime.is_none();
     let mut host_seen = false;
     let mut last_time_ask: Option<Instant> = None;
-    // What the design is showing: the RTC's time, or whatever the host last said. The design itself
-    // is built on the first calibrated frame, so the value is kept here until there is one to tell.
-    let mut wall_clock: Option<(u8, u8, u8)> = rtc_time;
+    // What the design is showing: the RTC's date and time, or whatever the host last said. The design
+    // itself is built on the first calibrated frame, so the value is kept here until there is one to tell.
+    let mut wall_clock: Option<(u16, u8, u8, u8, u8, u8)> = rtc_datetime;
     let mut wall_clock_applied = false;
     if ui::HAS_CLOCK && needs_time {
         spawner.spawn(
@@ -1609,7 +1621,7 @@ function espClockLineHandler(indent: string): string {
         `${indent}if let Some((year, month, day, hour, minute, second)) =`,
         `${inner}parse_clock_datetime(&console_line[..filled])`,
         `${indent}{`,
-        `${inner}wall_clock = Some((hour, minute, second));`,
+        `${inner}wall_clock = Some((year, month, day, hour, minute, second));`,
         `${inner}wall_clock_applied = false;`,
         `${inner}set_rtc_datetime(&rtc, year, month, day, hour, minute, second);`,
         `${inner}needs_time = false;`,
@@ -1625,9 +1637,11 @@ function espClockLineHandler(indent: string): string {
         `${indent}} else if let Some((hour, minute, second)) =`,
         `${inner}parse_clock_time(&console_line[..filled])`,
         `${indent}{`,
-        `${inner}wall_clock = Some((hour, minute, second));`,
-        `${inner}wall_clock_applied = false;`,
         `${inner}set_rtc_time_of_day(&rtc, hour, minute, second);`,
+        // A bare TIME line keeps whatever calendar day the RTC already held, so the wall clock is
+        // read back from it rather than guessed.
+        `${inner}wall_clock = rtc_datetime(&rtc);`,
+        `${inner}wall_clock_applied = false;`,
         `${inner}needs_time = false;`,
         `${inner}log::info!(`,
         `${inner}    "clock: the console says {:02}:{:02}:{:02}",`,
@@ -1710,7 +1724,7 @@ ${espClockLineHandler('                        ')}
         // is taken and dropped, so the two never fight over the clock.
         if let Some((year, month, day, hour, minute, second)) = net::SYNCED_TIME.try_take() {
             if needs_time {
-                wall_clock = Some((hour, minute, second));
+                wall_clock = Some((year, month, day, hour, minute, second));
                 wall_clock_applied = false;
                 set_rtc_datetime(&rtc, year, month, day, hour, minute, second);
                 needs_time = false;
@@ -1728,8 +1742,10 @@ ${espClockLineHandler('                        ')}
         // The design exists only from the first frame, and the time can arrive before it: the value
         // is remembered until there is a design to tell.
         if !wall_clock_applied {
-            if let (Some(design), Some((hour, minute, second))) = (${screenAccess}, wall_clock) {
-                design.set_wall_clock(hour, minute, second);
+            if let (Some(design), Some((year, month, day, hour, minute, second))) =
+                (${screenAccess}, wall_clock)
+            {
+                design.set_wall_datetime(year, month, day, hour, minute, second);
                 wall_clock_applied = true;
             }
         }
@@ -1892,7 +1908,7 @@ function espStateFields(
         // no design to tell the time to.
         if (touch !== undefined) {
             fields.push(
-                { name: 'wall_clock', type: 'Option<(u8, u8, u8)>', doc: 'The local time the toolchain sent, and whether the design has' },
+                { name: 'wall_clock', type: 'Option<(u16, u8, u8, u8, u8, u8)>', doc: 'The local date and time the toolchain sent, and whether the design has' },
                 { name: 'wall_clock_applied', type: 'bool', doc: 'been told yet: the design only exists after the first frame.' },
             );
         } else {
@@ -1913,7 +1929,7 @@ function espStateFields(
                 consoleField,
                 { name: 'console_line', type: '[u8; 32]', doc: 'One line of it, in the making.' },
                 { name: 'console_len', type: 'usize', doc: 'How much of that line is filled.' },
-                { name: 'wall_clock', type: 'Option<(u8, u8, u8)>', doc: 'The local time the host sent, and whether the design has' },
+                { name: 'wall_clock', type: 'Option<(u16, u8, u8, u8, u8, u8)>', doc: 'The local date and time the host sent, and whether the design has' },
                 { name: 'wall_clock_applied', type: 'bool', doc: 'been told yet.' },
             );
         }

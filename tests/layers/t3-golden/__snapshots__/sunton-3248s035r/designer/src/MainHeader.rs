@@ -356,14 +356,24 @@ pub fn parse_clock_datetime(line: &[u8]) -> Option<(u16, u8, u8, u8, u8, u8)> {
 /// whole number of days, which makes the time of day a plain remainder.
 const CLOCK_RTC_BASE_SECONDS: u64 = 946_684_800;
 
-/// The time of day the RTC holds, or None when it has never been set.
-pub fn rtc_time_of_day(rtc: &Rtc<'_>) -> Option<(u8, u8, u8)> {
+/// The local date and time of day the RTC holds, or None when it has never been set.
+pub fn rtc_datetime(rtc: &Rtc<'_>) -> Option<(u16, u8, u8, u8, u8, u8)> {
     let seconds = rtc.current_time_us() / 1_000_000;
     if seconds < CLOCK_RTC_BASE_SECONDS {
         return None;
     }
-    let day = (seconds - CLOCK_RTC_BASE_SECONDS) % 86_400;
-    Some(((day / 3600) as u8, ((day / 60) % 60) as u8, (day % 60) as u8))
+    let since_base = (seconds - CLOCK_RTC_BASE_SECONDS) as i64;
+    let days = DAYS_1970_TO_2000 + since_base / 86_400;
+    let (year, month, day) = civil_from_days(days);
+    let day_seconds = since_base % 86_400;
+    Some((
+        year,
+        month,
+        day,
+        (day_seconds / 3600) as u8,
+        ((day_seconds / 60) % 60) as u8,
+        (day_seconds % 60) as u8,
+    ))
 }
 
 /// Days from 1970-01-01 to 2000-01-01. The RTC's base and the civil calendar's 1970 epoch are both whole
@@ -401,7 +411,7 @@ pub fn days_from_civil(year: i64, month: u8, day: u8) -> i64 {
 
 /// The calendar date and the time of day the network gave, written into the RTC together so the whole
 /// wall-clock -- not just the hands -- survives a reset. The counter is advanced to the local civil
-/// timestamp, which is exactly what rtc_time_of_day reads back as the time of day.
+/// timestamp, which is exactly what rtc_datetime reads back as the date and time of day.
 pub fn set_rtc_datetime(rtc: &Rtc<'_>, year: u16, month: u8, day: u8, hour: u8, minute: u8, second: u8) {
     let days = days_from_civil(year as i64, month, day) - DAYS_1970_TO_2000;
     let now = hour.min(23) as u64 * 3600 + minute.min(59) as u64 * 60 + second.min(59) as u64;
@@ -410,10 +420,9 @@ pub fn set_rtc_datetime(rtc: &Rtc<'_>, year: u16, month: u8, day: u8, hour: u8, 
 }
 
 /// Writes the time of day into the RTC, base included. esp-hal keeps the offset in the RTC domain, so
-/// this survives a reset -- which is exactly why the mark above works. A host's TIME line is a hand-over
-/// of the time only: it carries no date, so the date the RTC already holds is kept, and a board that
-/// learned a calendar day from the network is not dragged back to the 2000 base when a host hands the
-/// hands over.
+/// this survives a reset -- which is exactly why the mark above works. The bare `TIME HH:MM:SS` line
+/// carries no date, so the date the RTC already holds is kept, and a board that learned a calendar day
+/// from the network or from the dated line is not dragged back to the 2000 base.
 pub fn set_rtc_time_of_day(rtc: &Rtc<'_>, hour: u8, minute: u8, second: u8) {
     let seconds = rtc.current_time_us() / 1_000_000;
     let day = (seconds.saturating_sub(CLOCK_RTC_BASE_SECONDS) / 86_400) * 86_400;

@@ -57,8 +57,8 @@ pub struct State {
     /// How much of that line is filled.
     console_len: usize,
 
-    /// The local time the host sent, and whether the design has
-    wall_clock: Option<(u8, u8, u8)>,
+    /// The local date and time the host sent, and whether the design has
+    wall_clock: Option<(u16, u8, u8, u8, u8, u8)>,
 
     /// been told yet.
     wall_clock_applied: bool,
@@ -218,24 +218,27 @@ pub async fn setup(spawner: Spawner) -> State {
     let console_line = [0u8; 32];
     let console_len: usize = 0;
     // The chip's RTC: the one thing on the board that still knows the time after a reset. It is
-    // asked before the design exists, so a board that was only reset starts with the right hands.
+    // asked before the design exists, so a board that was only reset starts with the right date and hands.
     let rtc = Rtc::new(peripherals.RTC_TIMER);
-    let rtc_time = rtc_time_of_day(&rtc);
-    match rtc_time {
-        Some((hour, minute, second)) => log::info!(
-            "clock: the RTC kept {:02}:{:02}:{:02} across the reset",
+    let rtc_datetime = rtc_datetime(&rtc);
+    match rtc_datetime {
+        Some((year, month, day, hour, minute, second)) => log::info!(
+            "clock: the RTC kept {:04}-{:02}-{:02} {:02}:{:02}:{:02} across the reset",
+            year,
+            month,
+            day,
             hour,
             minute,
             second
         ),
         None => log::info!("clock: the RTC is not set; a host can hand the time over"),
     }
-    let needs_time = rtc_time.is_none();
+    let needs_time = rtc_datetime.is_none();
     let host_seen = false;
     let last_time_ask: Option<Instant> = None;
-    // What the design is showing: the RTC's time, or whatever the host last said. The design itself
-    // is built on the first calibrated frame, so the value is kept here until there is one to tell.
-    let wall_clock: Option<(u8, u8, u8)> = rtc_time;
+    // What the design is showing: the RTC's date and time, or whatever the host last said. The design
+    // itself is built on the first calibrated frame, so the value is kept here until there is one to tell.
+    let wall_clock: Option<(u16, u8, u8, u8, u8, u8)> = rtc_datetime;
     let wall_clock_applied = false;
     if ui::HAS_CLOCK && needs_time {
         spawner.spawn(
@@ -291,7 +294,7 @@ async fn main(spawner: Spawner) -> ! {
                             if let Some((year, month, day, hour, minute, second)) =
                                 parse_clock_datetime(&state.console_line[..filled])
                             {
-                                state.wall_clock = Some((hour, minute, second));
+                                state.wall_clock = Some((year, month, day, hour, minute, second));
                                 state.wall_clock_applied = false;
                                 set_rtc_datetime(&state.rtc, year, month, day, hour, minute, second);
                                 state.needs_time = false;
@@ -307,9 +310,9 @@ async fn main(spawner: Spawner) -> ! {
                             } else if let Some((hour, minute, second)) =
                                 parse_clock_time(&state.console_line[..filled])
                             {
-                                state.wall_clock = Some((hour, minute, second));
-                                state.wall_clock_applied = false;
                                 set_rtc_time_of_day(&state.rtc, hour, minute, second);
+                                state.wall_clock = rtc_datetime(&state.rtc);
+                                state.wall_clock_applied = false;
                                 state.needs_time = false;
                                 log::info!(
                                     "clock: the console says {:02}:{:02}:{:02}",
@@ -337,7 +340,7 @@ async fn main(spawner: Spawner) -> ! {
         // is taken and dropped, so the two never fight over the clock.
         if let Some((year, month, day, hour, minute, second)) = net::SYNCED_TIME.try_take() {
             if state.needs_time {
-                state.wall_clock = Some((hour, minute, second));
+                state.wall_clock = Some((year, month, day, hour, minute, second));
                 state.wall_clock_applied = false;
                 set_rtc_datetime(&state.rtc, year, month, day, hour, minute, second);
                 state.needs_time = false;
@@ -355,8 +358,10 @@ async fn main(spawner: Spawner) -> ! {
         // The design exists only from the first frame, and the time can arrive before it: the value
         // is remembered until there is a design to tell.
         if !state.wall_clock_applied {
-            if let (Some(design), Some((hour, minute, second))) = (Some(&mut state.screen), state.wall_clock) {
-                design.set_wall_clock(hour, minute, second);
+            if let (Some(design), Some((year, month, day, hour, minute, second))) =
+                (Some(&mut state.screen), state.wall_clock)
+            {
+                design.set_wall_datetime(year, month, day, hour, minute, second);
                 state.wall_clock_applied = true;
             }
         }

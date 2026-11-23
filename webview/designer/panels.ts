@@ -16,6 +16,7 @@
 
 import {
     CATEGORY_LABELS,
+    type DesignerEvent,
     type KdlProperty,
     type KdlWidgetSpec,
     DESIGNER_EVENTS,
@@ -70,9 +71,29 @@ import {
     viewsOf,
 } from '../../src/designer/state';
 
+/**
+ * The event the panel has selected on a widget.
+ *
+ * UI state, not document state: which event the user is working on is not part of the design, so it is never
+ * saved. It is what a middle-click on the canvas opens -- the handler for *this* event rather than whichever
+ * one happened to be ticked first.
+ */
+export interface DesignerEventSelection {
+    widgetId: string;
+    event: DesignerEvent;
+}
+
 export interface PanelCallbacks {
     onEdit(state: DesignerState): void;
     onSelect(id: string | undefined): void;
+    /**
+     * An event row in the Events list was clicked.
+     *
+     * Nothing about the design changes: the row is remembered so a middle-click on the canvas can open *its*
+     * handler. A widget that raises several events is exactly where "the code behind this widget" is
+     * ambiguous, and this is the answer.
+     */
+    onSelectEvent(widgetId: string, event: DesignerEvent): void;
     /**
      * Asks the extension to choose a file.
      *
@@ -302,6 +323,7 @@ export function renderProperties(
     selectedId: string | undefined,
     callbacks: PanelCallbacks,
     hardware?: DesignerHardware,
+    selection?: DesignerEventSelection,
 ): void {
     root.replaceChildren();
 
@@ -342,7 +364,7 @@ export function renderProperties(
         if (spec.actions !== undefined && spec.actions.length > 0) {
             root.append(actionForm(spec, callbacks));
         }
-        root.append(eventForm(state, widget, callbacks, spec));
+        root.append(eventForm(state, widget, callbacks, spec, selection));
         if (spec.children !== undefined) {
             root.append(childrenForm(state, widget, callbacks));
         }
@@ -495,7 +517,9 @@ function propertyForm(
                 : property.kind === 'font'
                     ? () =>
                         callbacks.onBrowseAsset('font', (path, font) =>
-                            callbacks.onEdit(declareFontFromPath(state, widget.id, path, font)),
+                            callbacks.onEdit(
+                                declareFontFromPath(state, widget.id, path, font, property.name),
+                            ),
                         )
                     : undefined,
             callbacks.onFontMenu,
@@ -664,6 +688,7 @@ function eventForm(
     widget: DesignerWidget,
     callbacks: PanelCallbacks,
     spec: KdlWidgetSpec,
+    selection?: DesignerEventSelection,
 ): HTMLElement {
     const node = section('Events');
     if (spec.events.length === 0) {
@@ -720,7 +745,23 @@ function eventForm(
         input.type = 'checkbox';
         input.checked = widget.events.includes(event);
         input.addEventListener('change', () => callbacks.onEdit(toggleEvent(state, widget.id, event)));
-        const row = field(handlerName(widget.id, event), input);
+        // A `<div>` rather than `field()`'s `<label>`: a label would toggle the tick when its text is clicked,
+        // and picking the event a middle-click opens is not the same gesture as turning its handler on.
+        const row = element('div', 'field event-row');
+        row.append(element('span', 'field-label', handlerName(widget.id, event)));
+        row.append(input);
+        if (selection !== undefined && selection.widgetId === widget.id && selection.event === event) {
+            row.classList.add('field-selected');
+        }
+        row.title = 'Click to select this event: a middle-click on the widget opens its code';
+        row.addEventListener('click', (click) => {
+            // The tick keeps its own gesture: selecting the row must not swallow the click that turns the
+            // handler on, which would also rebuild this panel before the change event fired.
+            if (click.target === input) {
+                return;
+            }
+            callbacks.onSelectEvent(widget.id, event);
+        });
         node.append(row);
     }
     return node;

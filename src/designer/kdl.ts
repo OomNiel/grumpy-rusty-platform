@@ -133,8 +133,9 @@ function widgetLine(
             continue;
         }
         // A font that travelled in the style expression has no attribute of its own: a built-in never had
-        // one, and a declared one took that route above.
-        if (property.kind === 'font' && values.font !== undefined) {
+        // one, and a declared one took that route above. Only the widget's own `font` does that; a second
+        // font property (the clock's `date_font`) is an ordinary attribute.
+        if (property.name === 'font' && property.kind === 'font' && values.font !== undefined) {
             continue;
         }
         if (property.kind === 'style' || property.viaStyle !== undefined) {

@@ -19,6 +19,7 @@ import {
     DEFAULT_TABLE_HEADERS,
     DEFAULT_TABLE_ROWS,
     DEFAULT_TEXT_LINES,
+    EVENT_SPECS,
     TEXT_LINES_MAX,
     KDL_WIDGETS,
     type ChildGrammar,
@@ -643,7 +644,19 @@ export function unknownProps(widget: DesignerWidget): string[] {
     if (spec === undefined) {
         return [];
     }
-    return Object.keys(widget.props).filter((key) => !spec.props.some((property) => property.name === key));
+    const known = new Set(spec.props.map((property) => property.name));
+    // A designer-only destination belongs to the action that writes it, not to the widget's own property list:
+    // `navigate` rides on whichever event the widget reports (a click, a change, a submit), so a keypad or a
+    // dropdown carries one exactly where a button does. Reported 2026-11-22: the panel offered the Navigate row
+    // on a keypad, and the save then refused the property the row had just written -- so the switch never
+    // reached the markup and the glass could not change view.
+    for (const event of Object.keys(EVENT_SPECS) as DesignerEvent[]) {
+        const action = EVENT_SPECS[event].action;
+        if (action !== undefined && widgetRaises(widget.tag, event)) {
+            known.add(action.targetProperty);
+        }
+    }
+    return Object.keys(widget.props).filter((key) => !known.has(key));
 }
 
 export interface CleanedDesign {
@@ -896,6 +909,18 @@ export function validateDocument(document: DesignerDocument): string[] {
                         `${where}: the crate reads a font through a style or a label's font attribute, and a ` +
                         `${spec.label.toLowerCase()} has neither`,
                     );
+                }
+            }
+            // A second font field -- the clock's date face -- is an attribute of its own, resolved by that
+            // widget's emitter rather than by the style. A name nobody declared would fall back in silence,
+            // which is exactly the typo this catches.
+            for (const property of spec.props) {
+                if (property.kind !== 'font' || property.name === 'font') {
+                    continue;
+                }
+                const font = widget.props[property.name];
+                if (typeof font === 'string' && font !== '' && !isBuiltInFont(font) && !fontIds.has(font)) {
+                    problems.push(`${where}: no font named "${font}" is declared on the screen`);
                 }
             }
             problems.push(...childrenProblems(widget, spec.children, spec.label));

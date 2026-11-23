@@ -634,6 +634,83 @@ test('a middle-click asks for the widget\'s handler, and only when it has one', 
     equal(messages.length, 0, 'a widget that raises no event has no handler to ask for');
 });
 
+// 2026-11-22: the middle-click opens the handler of the event selected in the Events list, not whichever event
+// the widget was given first. A widget with two ticked events is exactly where that matters.
+test('a middle-click opens the handler of the event selected in the Events list', () => {
+    const { root, messages, window } = dom.install();
+    delete require.cache[require.resolve(BUNDLE)];
+    require(BUNDLE);
+
+    const document = starterDocument({
+        boardId: 'sunton-3248s035r',
+        panelWidth: 320,
+        panelHeight: 480,
+        rotation: 3,
+    });
+    const button = document.widgets.find((widget) => widget.id === 'go');
+    button.events = ['clicked', 'pressed'];
+    window.emit('message', {
+        data: {
+            type: 'init',
+            document,
+            canvas: { width: 480, height: 320 },
+            paths: { document: 'designer/panel.ui.json', kdl: 'src/ui.kdl' },
+            touchBoard: true,
+            touchEnabled: true,
+        },
+    });
+
+    const all = () => root.descendants();
+    const canvasElement = all().find((element) => element.tagName === 'CANVAS');
+    // Select the button, which is what puts its events in the panel.
+    canvasElement.emit('pointerdown', { clientX: button.x + 5, clientY: button.y + 5, pointerId: 1, button: 0 });
+    canvasElement.emit('pointerup', { clientX: button.x + 5, clientY: button.y + 5, pointerId: 1, button: 0 });
+
+    const row = (name) =>
+        all().find(
+            (element) =>
+                element.classList.contains('event-row') &&
+                element.descendants().some((child) => child.textContent === name),
+        );
+    ok(row('on_go_clicked') !== undefined, 'the ticked events are listed');
+    ok(row('on_go_pressed') !== undefined, 'both of them');
+
+    messages.length = 0;
+    row('on_go_pressed').emit('click');
+    equal(messages.length, 0, 'picking an event writes nothing to the project');
+    ok(row('on_go_pressed').classList.contains('field-selected'), 'the picked row shows it is the one a middle-click opens');
+
+    messages.length = 0;
+    canvasElement.emit('auxclick', {
+        clientX: button.x + 5,
+        clientY: button.y + 5,
+        button: 1,
+        preventDefault() { },
+    });
+    const asked = messages.filter((message) => message.type === 'action' && message.action === 'revealHandler');
+    equal(asked.length, 1, 'the middle-click asks for the handler');
+    equal(asked[0].widgetId, 'go', 'of the widget under the pointer');
+    equal(asked[0].event, 'pressed', 'and of the event that was selected, not the first one');
+
+    // An event that is not ticked has no handler in the file, so a selection of it sends no event and the
+    // extension falls back to the first one -- the rule the old middle-click always had.
+    const box = row('on_go_pressed').descendants().find((element) => element.type === 'checkbox');
+    ok(box !== undefined, 'the row carries its tick');
+    box.checked = false;
+    box.emit('change');
+    row('on_go_pressed').emit('click');
+    messages.length = 0;
+    canvasElement.emit('auxclick', {
+        clientX: button.x + 5,
+        clientY: button.y + 5,
+        button: 1,
+        preventDefault() { },
+    });
+    const unticked = messages.filter((message) => message.type === 'action' && message.action === 'revealHandler');
+    equal(unticked.length, 1, 'the middle-click still asks');
+    equal(unticked[0].event, undefined, 'without naming an event that has no handler');
+});
+
 // ---------------------------------------------------------------------------
 // The WYSIWYG preview: the crate's paint, not the generic rounded rectangle.
 //
@@ -1253,6 +1330,144 @@ test('the start view, the copy and the overlay are all reachable from the tab st
     ok(
         all().find((element) => element.classList.contains('view-tab-overlay')).classList.contains('view-tab-active'),
         'and it shows it is on',
+    );
+});
+
+test('renaming a view at the top of the designer changes the label the tab shows', () => {
+    // Reported 2026-11-22: "Renaming the screen views at the top of the designer does not change the label of
+    // the view." The field edited the view's id while the tab drew its caption, so a duplicated view -- whose
+    // caption is "Main copy" -- never changed on screen.
+    const { root, messages, window } = dom.install();
+    delete require.cache[require.resolve(BUNDLE)];
+    require(BUNDLE);
+
+    const design = starterDocument({
+        boardId: 'sunton-3248s035r',
+        panelWidth: 320,
+        panelHeight: 480,
+        rotation: 3,
+    });
+    design.views = [
+        { id: 'main', label: 'Main' },
+        { id: 'view2', label: 'Main copy' },
+    ];
+
+    window.emit('message', {
+        data: {
+            type: 'init',
+            document: design,
+            canvas: { width: 480, height: 320 },
+            paths: { document: 'designer/panel.ui.json', kdl: 'src/ui.kdl' },
+            touchBoard: true,
+            touchEnabled: true,
+        },
+    });
+
+    const all = () => root.descendants();
+    const tabs = () =>
+        all().filter(
+            (element) =>
+                element.classList.contains('view-tab') &&
+                !element.classList.contains('view-tab-add') &&
+                !element.classList.contains('view-tab-overlay'),
+        );
+    equal(tabs().map((tab) => tab.textContent), ['Main', 'Main copy'], 'the strip starts on the design’s captions');
+
+    messages.length = 0;
+    tabs()[1].emit('contextmenu', { clientX: 10, clientY: 10, preventDefault() { } });
+    const rename = all().find((element) => element.textContent === 'Rename view...' && element.tagName === 'BUTTON');
+    ok(rename !== undefined, 'the view menu offers a rename');
+    rename.emit('click');
+
+    const field = all().find((element) => element.classList.contains('view-tab-input'));
+    ok(field !== undefined, 'the tab becomes a field');
+    equal(field.value, 'Main copy', 'holding the caption the tab showed, not the id underneath it');
+
+    field.value = 'Screen2';
+    field.emit('keydown', { key: 'Enter' });
+
+    const posted = messages.filter((message) => message.type === 'changed').pop();
+    ok(posted !== undefined, 'the rename is posted to the extension');
+    equal(posted.document.views[1].label, 'Screen2', 'the caption is what was typed');
+    equal(posted.document.views[1].id, 'Screen2', 'and the view takes the name for its View variant');
+    equal(tabs().map((tab) => tab.textContent), ['Main', 'Screen2'], 'the strip shows the new caption');
+});
+
+test('a control dragged onto the canvas lands on the view the tab strip is showing', () => {
+    // Reported 2026-11-22: "Dropping new controls on additional screen views except the main view always drops
+    // the new control on the main view." The canvas drop never named the view being edited, so `addWidget` fell
+    // back to the first one; the Toolbox-click path had worked around it, the drag path had not.
+    const { root, messages, window } = dom.install();
+    delete require.cache[require.resolve(BUNDLE)];
+    require(BUNDLE);
+
+    const design = starterDocument({
+        boardId: 'sunton-3248s035r',
+        panelWidth: 320,
+        panelHeight: 480,
+        rotation: 3,
+    });
+    design.views = [
+        { id: 'main', label: 'Main' },
+        { id: 'view2', label: 'Second' },
+    ];
+
+    window.emit('message', {
+        data: {
+            type: 'init',
+            document: design,
+            canvas: { width: 480, height: 320 },
+            paths: { document: 'designer/panel.ui.json', kdl: 'src/ui.kdl' },
+            touchBoard: true,
+            touchEnabled: true,
+        },
+    });
+
+    const all = () => root.descendants();
+    const tabs = () =>
+        all().filter(
+            (element) =>
+                element.classList.contains('view-tab') &&
+                !element.classList.contains('view-tab-add') &&
+                !element.classList.contains('view-tab-overlay'),
+        );
+    // Edit the second view, then drag a control onto the canvas.
+    tabs()[1].emit('click');
+    const canvas = all().find((element) => element.tagName === 'CANVAS');
+    messages.length = 0;
+    canvas.emit('drop', {
+        clientX: 120,
+        clientY: 90,
+        dataTransfer: { getData: (kind) => (kind === 'text/rusty-designer-widget' ? 'label' : '') },
+        preventDefault() { },
+    });
+
+    const posted = messages.filter((message) => message.type === 'changed').pop();
+    ok(posted !== undefined, 'the drop posts a change');
+    const added = posted.document.widgets[posted.document.widgets.length - 1];
+    equal(added.tag, 'label', 'the control that was dragged');
+    equal(added.view, 'view2', 'belongs to the view the canvas was showing');
+    equal(
+        posted.document.widgets.filter((widget) => widget.view === 'view2').length,
+        1,
+        'and it is the only widget on that view',
+    );
+
+    // Back on the first view, a drop names no view at all -- the first view is what a missing `view` means.
+    tabs()[0].emit('click');
+    messages.length = 0;
+    canvas.emit('drop', {
+        clientX: 60,
+        clientY: 60,
+        dataTransfer: { getData: (kind) => (kind === 'text/rusty-designer-widget' ? 'label' : '') },
+        preventDefault() { },
+    });
+    const again = messages.filter((message) => message.type === 'changed').pop();
+    ok(again !== undefined, 'a drop on the first view posts too');
+    equal(
+        again.document.widgets[again.document.widgets.length - 1].view,
+        undefined,
+        'and it stays implicit, as every widget of the first view does',
     );
 });
 

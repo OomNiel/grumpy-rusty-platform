@@ -15,6 +15,7 @@ import type { RasterisedFont } from './fontImport';
 import type { DesignerImageAsset } from './imageAssets';
 import type { DesignerDocument } from './model';
 import type { PanelWiring, WiringProblem } from '../boards/panels';
+import type { DesignerEvent } from './catalog';
 
 /** Everything the panel needs to draw itself, sent once when it is ready and again on every change. */
 export interface DesignerInit {
@@ -361,8 +362,10 @@ export type DesignerAction =
      * A middle-click on a widget that has code behind it.
      *
      * The panel knows which widget was clicked and the extension knows where the handlers are written, so the
-     * message carries the id and the extension does the opening.
+     * message carries the id and the extension does the opening. `event` is the one selected in the Events
+     * list -- the handler the user is working on; without it the extension opens the widget's first event,
+     * which is what a middle-click has always done.
      */
-    | { type: 'action'; action: 'revealHandler'; widgetId: string };
+    | { type: 'action'; action: 'revealHandler'; widgetId: string; event?: DesignerEvent };
 
 export type DesignerInbound = DesignerToHost | DesignerAction;

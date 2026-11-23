@@ -25,6 +25,15 @@ import type { FontSupport } from './fonts';
 import type { DesignerActionId } from './protocol';
 
 /**
+ * The date a freshly dropped Clock starts from: the day the designer was opened.
+ *
+ * The face is a design-time snapshot, exactly like `hour`, `minute` and `second` -- the board's RTC or
+ * the host takes over at run time. Reading the machine's own date here means a new clock looks like
+ * today's page rather than 1 January 2000, and it costs one `Date` built when the module loads.
+ */
+const TODAY = new Date();
+
+/**
  * The kinds a property can take, which is what decides the editor the property panel shows.
  *
  * `font` is its own kind rather than a `text` or an `asset` field because a widget does not name a font
@@ -883,9 +892,10 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         label: 'Clock',
         category: 'value',
         note:
-            'A clock face drawn the way the gauge draws its dial: hour ticks, minute ticks, the hour numerals, and ' +
-            'three hands. The widget holds a time, not a running clock -- the application sets Hour, Minute and ' +
-            'Second as it ticks, so a design can show any time it likes.',
+            'A clock face drawn the way the gauge draws its dial: hour ticks, minute ticks, the hour numerals, ' +
+            'three hands, and a date block under the pivot (weekday, month and year, and the day in its own ' +
+            'box). The widget holds a date and a time, not a running clock -- the application sets them as it ' +
+            'ticks, and the board\'s RTC is what the generated code reads at run time.',
         defaultSize: { width: 96, height: 96 },
         props: [
             { name: 'hour', kind: 'int', label: 'Hour', defaultValue: 10, min: 0, max: 23 },
@@ -907,6 +917,56 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
             // A float property, so the panel steps it by 0.1; 0.5 is the shipping look.
             { name: 'label_inset', kind: 'float', label: 'Number inset', defaultValue: 0.5, min: 0, max: 2 },
             { name: 'show_labels', kind: 'bool', label: 'Hour numbers', defaultValue: true },
+            // The date block, under the pivot and above the six. One shared face and one colour, three
+            // relative sizes and a switch per line; the day number lives in its own rounded box.
+            {
+                name: 'year',
+                kind: 'int',
+                label: 'Year',
+                group: 'Date',
+                defaultValue: TODAY.getFullYear(),
+                min: 2000,
+                max: 9999,
+                optional: true,
+            },
+            // The date props are all optional: the crate's parser defaults every one of them, and a
+            // design drawn before the date block existed simply does not name them. They are written
+            // as soon as the panel gives them a value.
+            { name: 'month', kind: 'int', label: 'Month', group: 'Date', defaultValue: TODAY.getMonth() + 1, min: 1, max: 12, optional: true },
+            { name: 'day', kind: 'int', label: 'Day', group: 'Date', defaultValue: TODAY.getDate(), min: 1, max: 31, optional: true },
+            { name: 'date_font', kind: 'font', label: 'Date font', group: 'Date', defaultValue: '', optional: true },
+            { name: 'date_color', kind: 'color', label: 'Date colour', group: 'Date', defaultValue: '#ffffff', optional: true },
+            { name: 'weekday_size', kind: 'float', label: 'Weekday size', group: 'Date', defaultValue: 1, min: 1, max: 4, optional: true },
+            { name: 'month_size', kind: 'float', label: 'Month size', group: 'Date', defaultValue: 1, min: 1, max: 4, optional: true },
+            { name: 'day_size', kind: 'float', label: 'Day size', group: 'Date', defaultValue: 1, min: 1, max: 4, optional: true },
+            // The block's own counterpart to `label_inset`: whole pixels, positive up.
+            { name: 'date_offset', kind: 'int', label: 'Date offset (up)', group: 'Date', defaultValue: 0, min: -200, max: 200, optional: true },
+            { name: 'show_weekday', kind: 'bool', label: 'Weekday', group: 'Date', defaultValue: true, optional: true },
+            { name: 'show_month', kind: 'bool', label: 'Month and year', group: 'Date', defaultValue: true, optional: true },
+            { name: 'show_date', kind: 'bool', label: 'Day box', group: 'Date', defaultValue: true, optional: true },
+            { name: 'date_box_fill', kind: 'color', label: 'Box fill', group: 'Date box', defaultValue: '#000000', optional: true },
+            { name: 'date_box_border', kind: 'color', label: 'Box border', group: 'Date box', defaultValue: '#ffffff', optional: true },
+            {
+                name: 'date_box_border_width',
+                kind: 'int',
+                label: 'Border thickness',
+                group: 'Date box',
+                defaultValue: 1,
+                min: 0,
+                max: 8,
+                optional: true,
+            },
+            { name: 'date_box_radius', kind: 'int', label: 'Corner radius', group: 'Date box', defaultValue: 4, min: 0, max: 32, optional: true },
+            {
+                name: 'date_box_opacity',
+                kind: 'int',
+                label: 'Fill opacity %',
+                group: 'Date box',
+                defaultValue: 100,
+                min: 0,
+                max: 100,
+                optional: true,
+            },
             // The code-behind: the generated `ui.rs` attaches a one-second movement to the widget and
             // pushes the time into it, so the hands move on their own. Nothing in the markup changes --
             // the crate draws whatever time the design says until an app tells it another.
@@ -1550,6 +1610,26 @@ const PROPERTY_HELP: Record<string, string> = {
         'How far the hour numbers sit inside the tick ring, in character widths of the number face: 0 is ' +
         'where they used to sit, 0.5 is half a character further in',
     movement: 'Whether the generated code-behind runs the clock: attached, its hands move once a second',
+    // The date block: a snapshot for the canvas, which the board's RTC replaces at run time.
+    year: 'The year the date block shows, until the board\'s RTC or the host hands it another',
+    month: 'The month the date block shows, 1 to 12',
+    day: 'The day of the month the date block shows',
+    date_font: 'The face all three date lines share. The clock\'s own font is the default',
+    date_color: 'The colour all three date lines are drawn in',
+    weekday_size: 'How many times the weekday\'s own pixels are drawn: 1 is the font\'s size, 1.5 is half again',
+    month_size: 'How many times the month and year\'s own pixels are drawn: 1 is the font\'s size, 1.5 is half again',
+    day_size: 'How many times the day number\'s own pixels are drawn: 1 is the font\'s size, 1.5 is half again',
+    date_offset:
+        'Moves the whole date block up (positive) or down (negative) by pixels, like Number inset ' +
+        'moves the hour numbers',
+    show_weekday: 'Whether the weekday line is drawn between the month and the day',
+    show_month: 'Whether the month and year line is drawn above the day box',
+    show_date: 'Whether the rounded day box and the day number inside it are drawn',
+    date_box_fill: 'Colour inside the day box. Its opacity is a separate setting',
+    date_box_border: 'Colour of the day box\'s outline',
+    date_box_border_width: 'How thick the day box\'s outline is, in pixels: zero leaves it borderless',
+    date_box_radius: 'How rounded the day box\'s corners are, in pixels',
+    date_box_opacity: 'How solid the day box\'s fill is: 0 is transparent, 100 is opaque',
 
     head: 'Which value is the newest one; the older ones wrap around behind it',
     values: 'The numbers to draw, separated by commas',

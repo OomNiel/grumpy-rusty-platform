@@ -1,4 +1,10 @@
-//! A clock face: hour and minute ticks, hour numerals, and three hands.
+//! A clock face: hour and minute ticks, hour numerals, three hands, and a date block.
+//!
+//! The date block sits under the pivot and above the six: the weekday, the month and year, and the
+//! day number in a rounded box. All three lines share one face and one colour and have a relative size
+//! each, magnified the same way the hour numerals are -- one block per glyph pixel, no fitting. The
+//! date is part of the widget's own state, exactly like the time, because a clock on a board with an
+//! RTC must roll it at midnight without the application drawing anything.
 //!
 //! Drawn the way [`ScaleWidget`](super::scale::ScaleWidget) draws its radial mode -- the same
 //! centre, radius and angle convention -- because a clock *is* a radial scale whose needle the
@@ -23,7 +29,7 @@ use crate::{
     font::{packed_font, Font as _, FontId},
     geometry::Rect,
     render::{Compositor, RenderCtx, StrokeCap, StrokeStyle},
-    style::{Style, VisualState, WidgetStyle},
+    style::{Border, Style, VisualState, WidgetStyle},
 };
 
 /// Where twelve o'clock is, in the crate's angle convention (degrees, `y` down).
@@ -34,6 +40,31 @@ const HOUR_STEP: f32 = 30.0;
 
 /// One minute of the minute or second hand's travel, in degrees.
 const MINUTE_STEP: f32 = 6.0;
+
+/// The calendar names the date block draws, in the order of their index.
+const WEEKDAY_NAMES: [&str; 7] = [
+    "SUNDAY",
+    "MONDAY",
+    "TUESDAY",
+    "WEDNESDAY",
+    "THURSDAY",
+    "FRIDAY",
+    "SATURDAY",
+];
+const MONTH_NAMES: [&str; 12] = [
+    "JANUARY",
+    "FEBRUARY",
+    "MARCH",
+    "APRIL",
+    "MAY",
+    "JUNE",
+    "JULY",
+    "AUGUST",
+    "SEPTEMBER",
+    "OCTOBER",
+    "NOVEMBER",
+    "DECEMBER",
+];
 
 /// A clock face showing `hour:minute:second`.
 ///
@@ -49,6 +80,12 @@ pub struct ClockWidget {
     pub minute: u8,
     /// 0-59.
     pub second: u8,
+    /// The calendar year the date block shows, four digits.
+    pub year: u16,
+    /// 1-12.
+    pub month: u8,
+    /// 1-31, clamped to the month's own length when it is set.
+    pub day: u8,
     pub hour_color: Rgb565,
     pub minute_color: Rgb565,
     pub second_color: Rgb565,
@@ -68,6 +105,35 @@ pub struct ClockWidget {
     /// where they sat before 2026-10-21.
     pub label_inset: f32,
     pub show_labels: bool,
+    /// The shared face of the three date lines. `None` uses the widget's own style font.
+    pub date_font: Option<FontId>,
+    /// The colour all three date lines are drawn in.
+    pub date_color: Rgb565,
+    /// How many times the weekday's own glyph pixels are drawn: `1` is the font's size and `1.5` is
+    /// half again as large.
+    pub weekday_scale: f32,
+    /// How many times the month and year's own glyph pixels are drawn.
+    pub month_scale: f32,
+    /// How many times the day number's own glyph pixels are drawn.
+    pub day_scale: f32,
+    /// Moves the whole date block up (positive) or down (negative), in pixels.
+    ///
+    /// This is the date block's own counterpart to [`Self::label_inset`]: a design nudges the three
+    /// lines without changing their size, and a negative value pushes them towards, or past, the six.
+    pub date_offset: i16,
+    pub show_weekday: bool,
+    pub show_month: bool,
+    /// Whether the rounded day box (and the day number inside it) is drawn.
+    pub show_date: bool,
+    /// The box's fill; `date_box_opacity` is how solid it is (0 is transparent).
+    pub date_box_fill: Rgb565,
+    pub date_box_border: Rgb565,
+    /// 0-8 pixels, drawn inside the box's edge.
+    pub date_box_border_width: u8,
+    /// The box's corner radius in pixels, scaled with the block.
+    pub date_box_radius: u8,
+    /// 0-255; 0 leaves the box's interior transparent, 255 is a solid fill.
+    pub date_box_opacity: u8,
 }
 
 impl ClockWidget {
@@ -81,6 +147,11 @@ impl ClockWidget {
             hour,
             minute,
             second,
+            // The same neutral day the chip RTCs count from, so a face with no date set says 2000
+            // rather than pretending to know today.
+            year: 2000,
+            month: 1,
+            day: 1,
             hour_color: Rgb565::WHITE,
             minute_color: Rgb565::WHITE,
             second_color: Rgb565::CSS_RED,
@@ -90,6 +161,20 @@ impl ClockWidget {
             label_scale: 1,
             label_inset: 0.5,
             show_labels: true,
+            date_font: None,
+            date_color: Rgb565::WHITE,
+            weekday_scale: 1.0,
+            month_scale: 1.0,
+            day_scale: 1.0,
+            date_offset: 0,
+            show_weekday: true,
+            show_month: true,
+            show_date: true,
+            date_box_fill: Rgb565::BLACK,
+            date_box_border: Rgb565::WHITE,
+            date_box_border_width: 1,
+            date_box_radius: 4,
+            date_box_opacity: 255,
         }
     }
 
@@ -101,6 +186,57 @@ impl ClockWidget {
             second: second.min(59),
             ..*self
         }
+    }
+
+    /// The same face showing another date, with each field clamped to its range.
+    pub fn with_date(&self, year: u16, month: u8, day: u8) -> Self {
+        let month = month.clamp(1, 12);
+        Self {
+            year: year.clamp(2000, 9999),
+            month,
+            day: day.clamp(1, days_in_month(year, month)),
+            ..*self
+        }
+    }
+
+    /// The same face showing another date and time, with each field clamped to its range.
+    pub fn with_datetime(
+        &self,
+        year: u16,
+        month: u8,
+        day: u8,
+        hour: u8,
+        minute: u8,
+        second: u8,
+    ) -> Self {
+        self.with_date(year, month, day)
+            .with_time(hour, minute, second)
+    }
+
+    /// The weekday the face's date falls on: `0` is Sunday, `6` is Saturday.
+    pub fn weekday(&self) -> u8 {
+        weekday(self.year, self.month, self.day)
+    }
+
+    /// One second later, carrying into the minutes, the hours and the calendar.
+    ///
+    /// The date is part of the time now, so midnight rolls the day, the month and the year with it --
+    /// a running clock with a date block must not sit on 31 December for ever.
+    pub fn next_datetime(
+        year: u16,
+        month: u8,
+        day: u8,
+        hour: u8,
+        minute: u8,
+        second: u8,
+    ) -> (u16, u8, u8, u8, u8, u8) {
+        let (hour, minute, second) = Self::next_second(hour, minute, second);
+        let (year, month, day) = if hour == 0 && minute == 0 && second == 0 {
+            next_day(year, month, day)
+        } else {
+            (year, month, day)
+        };
+        (year, month, day, hour, minute, second)
     }
 
     /// The time one second later, carrying into the minutes and the hours and wrapping at midnight.
@@ -179,6 +315,10 @@ impl ClockWidget {
             self.draw_labels(ctx, cx, cy, radius, resolved)?;
         }
         self.draw_hands(ctx, cx, cy, radius)?;
+        // The date block is drawn last: it overdraws the hands, which is what the design asked for.
+        if let Some(block) = self.date_block(rect, resolved) {
+            block.render(ctx, self, resolved)?;
+        }
         Ok(())
     }
 
@@ -293,6 +433,155 @@ impl ClockWidget {
             )?;
         }
         Ok(())
+    }
+
+    /// The face the date block wears: the design's own date font, or the widget's style font.
+    fn date_face(&self, style: Style) -> FontId {
+        self.date_font.unwrap_or(style.font)
+    }
+
+    /// The pixels the date block covers, if anything of it is shown.
+    ///
+    /// This is what a date change has to repaint. The block is drawn after the hands, so it owns the
+    /// pixels it covers; a new day only needs its own three lines and the box -- not the face.
+    pub fn date_rect(&self, rect: Rect, style: Style) -> Option<Rect> {
+        let block = self.date_block(rect, style)?;
+        let mut region: Option<Rect> = None;
+        let mut include = |part: Rect| {
+            let part = part.intersection(rect);
+            if part.is_empty() {
+                return;
+            }
+            region = Some(match region {
+                None => part,
+                Some(so_far) => so_far.union(part),
+            });
+        };
+        if let Some(line) = &block.weekday {
+            include(line.rect(block.cx, block.weekday_top));
+        }
+        if let Some(line) = &block.month {
+            include(line.rect(block.cx, block.month_top));
+        }
+        if block.day.is_some() {
+            include(block.box_rect);
+        }
+        region
+    }
+
+    /// The three date lines and the day box, laid out inside the face.
+    ///
+    /// The block is anchored to the bottom of the dial: the day box sits directly above the six o'clock
+    /// numeral (or above the six o'clock tick when the numerals are off), the weekday above it, and the
+    /// month and year above those. The gaps are half the height of the line above them, every line is
+    /// centred on the hands' pivot, and `date_offset` moves the whole stack up or down by pixels.
+    fn date_block(&self, rect: Rect, style: Style) -> Option<DateBlock> {
+        if !self.show_weekday && !self.show_month && !self.show_date {
+            return None;
+        }
+        let inner = Block::styled(style).inner(rect);
+        let cx = inner.x + (inner.w as i32 / 2);
+        let cy = inner.y + (inner.h as i32 / 2);
+        let radius = (inner.w.min(inner.h) / 2).saturating_sub(4);
+        if radius < 24 {
+            return None;
+        }
+        let font = self.date_face(style);
+        // What the six o'clock numeral occupies decides where the block begins. With the numerals off the
+        // six o'clock tick's inner end is the same landmark.
+        let labels = self.show_labels && radius > 24;
+        let bottom = if labels {
+            let scale = self.label_scale.max(1) as u32;
+            let advance = style.font.advance() as f32 * scale as f32;
+            let inward = (advance * self.label_inset).max(0.0).round() as u32;
+            let inset = radius.saturating_sub(16 + inward) as i32;
+            let numeral = label_ink_box(style.font, 1, scale).1;
+            cy + inset - numeral / 2 - 2
+        } else {
+            cy + radius as i32 - 8 - 2
+        };
+        if bottom <= cy + 2 {
+            return None;
+        }
+
+        let weekday_text = weekday_name(self.weekday());
+        let mut month_text: String<16> = String::new();
+        let _ = write!(&mut month_text, "{} {}", month_name(self.month), self.year);
+        let mut day_text: String<16> = String::new();
+        let _ = write!(&mut day_text, "{}", self.day);
+        // The design's own sizes, each glyph pixel magnified by the number given -- the same rule the
+        // hour numerals follow. Deliberately no fit to the control: a size of two is twice the font
+        // whatever the cell measures, which is what makes the date text predictable. A fractional size
+        // resamples the glyph bitmap: `1.5` covers alternate glyph pixels with one and two rows of the
+        // panel, so the line is half again as large rather than rounded to the next whole step.
+        let weekday_scale = self.weekday_scale.max(1.0);
+        let month_scale = self.month_scale.max(1.0);
+        let day_scale = self.day_scale.max(1.0);
+
+        let weekday = self
+            .show_weekday
+            .then(|| DateLine::new(font, weekday_text, weekday_scale));
+        let month = self
+            .show_month
+            .then(|| DateLine::new(font, &month_text, month_scale));
+        let day = self
+            .show_date
+            .then(|| DateLine::new(font, &day_text, day_scale));
+
+        // From the bottom up: box, then the weekday above it, then the month and year above that.
+        let day_line = day.as_ref();
+        // One glyph pixel of air between the ink and the border's inner edge, plus the border itself:
+        // without it a scaled-up digit paints over the frame.
+        let border_px = (f32::from(self.date_box_border_width) * day_scale).round() as i32;
+        let pad = if self.show_date {
+            (border_px + glyph_pixel(font, day_scale)).max(2)
+        } else {
+            0
+        };
+        let box_h = day_line.map_or(0, |line| line.height) + 2 * pad;
+        let box_w = if self.show_date {
+            // Two digits' worth: a clock turning over from the 9th to the 10th must not grow it.
+            measure_ink(font, "88", day_scale).0 + 2 * pad
+        } else {
+            0
+        };
+        // Positive moves the block up, negative down; the whole stack moves together.
+        let shift = i32::from(self.date_offset);
+        let box_rect = Rect::new(
+            cx - box_w / 2,
+            bottom - box_h - shift,
+            box_w.max(1) as u32,
+            box_h.max(1) as u32,
+        );
+        let mut cursor = box_rect.y;
+        let weekday_top = match &weekday {
+            Some(line) => {
+                let top = cursor - line.height / 2 - line.height;
+                cursor = top;
+                top
+            }
+            None => cursor,
+        };
+        let month_top = match &month {
+            Some(line) => cursor - line.height / 2 - line.height,
+            None => cursor,
+        };
+        let box_radius = ((f32::from(self.date_box_radius) * day_scale).round() as u32)
+            .min(box_rect.w.min(box_rect.h) / 2) as u8;
+        Some(DateBlock {
+            weekday,
+            weekday_top,
+            month,
+            month_top,
+            day,
+            box_rect,
+            box_radius,
+            // A border is a design pixel at scale one, and grows with the number it surrounds.
+            border_width: (f32::from(self.date_box_border_width) * day_scale)
+                .round()
+                .clamp(0.0, 255.0) as u8,
+            cx,
+        })
     }
 
     /// The pixels this face's hands cover, at the size and style it is drawn with.
@@ -417,6 +706,295 @@ impl ClockWidget {
         }
         ctx.fill_circle(cx, cy, 3, self.hour_color)
     }
+}
+
+/// One measured line of the date block: its text, its face, the scale it is drawn at, and its ink.
+struct DateLine {
+    text: String<16>,
+    font: FontId,
+    /// The design's own size: `1.0` is the face's pixels, `1.5` half again as large.
+    scale: f32,
+    /// The ink's size in pixels.
+    width: i32,
+    height: i32,
+    /// The ink's origin inside the first glyph's cell, in pixels at scale one.
+    ink_x: i32,
+    ink_y: i32,
+}
+
+impl DateLine {
+    fn new(font: FontId, text: &str, scale: f32) -> Self {
+        let scale = scale.max(1.0);
+        let (width, height, ink_x, ink_y) = measure_ink(font, text, scale);
+        let mut line: String<16> = String::new();
+        let _ = line.push_str(text);
+        Self {
+            text: line,
+            font,
+            scale,
+            width,
+            height,
+            ink_x,
+            ink_y,
+        }
+    }
+
+    /// The box this line's ink occupies when its left edge is centred on `cx` and its ink above `top`.
+    fn rect(&self, cx: i32, top: i32) -> Rect {
+        Rect::new(
+            cx - self.width / 2,
+            top,
+            self.width.max(1) as u32,
+            self.height.max(1) as u32,
+        )
+    }
+}
+
+/// The date block as it is laid out on one face: three measured lines and the day box.
+struct DateBlock {
+    weekday: Option<DateLine>,
+    weekday_top: i32,
+    month: Option<DateLine>,
+    month_top: i32,
+    day: Option<DateLine>,
+    box_rect: Rect,
+    box_radius: u8,
+    border_width: u8,
+    /// The pivot's x, which every line is centred on.
+    cx: i32,
+}
+
+impl DateBlock {
+    fn render<D, C>(
+        &self,
+        ctx: &mut RenderCtx<'_, D, C>,
+        clock: &ClockWidget,
+        _style: Style,
+    ) -> Result<(), D::Error>
+    where
+        D: embedded_graphics_core::draw_target::DrawTarget<Color = Rgb565>,
+        C: Compositor<D>,
+    {
+        if let Some(day) = &self.day {
+            if clock.date_box_opacity > 0 {
+                ctx.fill_rounded_rect_alpha(
+                    self.box_rect,
+                    self.box_radius,
+                    clock.date_box_fill,
+                    clock.date_box_opacity,
+                )?;
+            }
+            if self.border_width > 0 {
+                ctx.stroke_rounded_rect(
+                    self.box_rect,
+                    self.box_radius,
+                    Border {
+                        color: clock.date_box_border,
+                        width: self.border_width,
+                    },
+                )?;
+            }
+            // The day is centred in its box, ink and all.
+            let top = self.box_rect.y + (self.box_rect.h as i32 - day.height) / 2;
+            draw_ink_line(
+                ctx,
+                day,
+                clock.date_color,
+                self.box_rect.x + self.box_rect.w as i32 / 2,
+                top,
+            )?;
+        }
+        if let Some(month) = &self.month {
+            draw_ink_line(ctx, month, clock.date_color, self.cx, self.month_top)?;
+        }
+        if let Some(weekday) = &self.weekday {
+            draw_ink_line(ctx, weekday, clock.date_color, self.cx, self.weekday_top)?;
+        }
+        Ok(())
+    }
+}
+
+/// How many pixels one glyph pixel of `font` covers at `scale`, rounded to whole pixels.
+fn glyph_pixel(font: FontId, scale: f32) -> i32 {
+    (label_block(font, 1) as f32 * scale.max(1.0))
+        .round()
+        .max(1.0) as i32
+}
+
+/// How many pixels the ink of `text` occupies at `scale`, and where it starts in its cell.
+///
+/// `label_ink_box` measures a digit's cell, which is right for the numerals and wrong for a word:
+/// `MONDAY` has a different ink from `18`. This walks the real glyph pixels of the face, so a line
+/// is centred on what it paints rather than on an advance that includes the gaps between letters.
+/// The scale may be fractional: both edges are rounded once, so a line at `1.5` is exactly as wide
+/// as the pixels it paints.
+fn measure_ink(font: FontId, text: &str, scale: f32) -> (i32, i32, i32, i32) {
+    let scale = scale.max(1.0);
+    let block = label_block(font, 1);
+    let advance = font.advance() as i32;
+    let mut min_x = i32::MAX;
+    let mut min_y = i32::MAX;
+    let mut max_x = i32::MIN;
+    let mut max_y = i32::MIN;
+    let mut pen = 0i32;
+    for ch in text.chars() {
+        crate::font::for_each_glyph_pixel(font, ch, &mut |dx, dy| {
+            let x = pen + dx * block;
+            let y = dy * block;
+            min_x = min_x.min(x);
+            max_x = max_x.max(x + block);
+            min_y = min_y.min(y);
+            max_y = max_y.max(y + block);
+        });
+        pen += advance;
+    }
+    if min_x >= max_x {
+        // Nothing painted -- a space alone: give it the width it occupies and no height.
+        let width = (advance * text.chars().count() as i32) as f32 * scale;
+        return (width.round() as i32, 0, 0, 0);
+    }
+    (
+        ((max_x - min_x) as f32 * scale).round() as i32,
+        ((max_y - min_y) as f32 * scale).round() as i32,
+        min_x,
+        min_y,
+    )
+}
+
+/// Draws one measured line with its ink's left edge on `centre_x` and its top ink row at `ink_top`.
+fn draw_ink_line<D, C>(
+    ctx: &mut RenderCtx<'_, D, C>,
+    line: &DateLine,
+    colour: Rgb565,
+    centre_x: i32,
+    ink_top: i32,
+) -> Result<(), D::Error>
+where
+    D: embedded_graphics_core::draw_target::DrawTarget<Color = Rgb565>,
+    C: Compositor<D>,
+{
+    let block = label_block(line.font, 1);
+    let advance = line.font.advance() as i32;
+    let scale = line.scale.max(1.0);
+    let left = centre_x - line.width / 2;
+    let mut pen = 0i32;
+    for ch in line.text.chars() {
+        let mut pixels: heapless::Vec<(i32, i32), 256> = heapless::Vec::new();
+        crate::font::for_each_glyph_pixel(line.font, ch, &mut |dx, dy| {
+            let _ = pixels.push((dx, dy));
+        });
+        for (dx, dy) in pixels {
+            // One glyph pixel spans `block` pixels of the face; both edges are scaled and rounded
+            // separately, so a fractional scale tiles the glyph exactly with no seams and no overlap.
+            let x0 = pen + dx * block - line.ink_x;
+            let y0 = dy * block - line.ink_y;
+            let x1 = x0 + block;
+            let y1 = y0 + block;
+            let px0 = left + (x0 as f32 * scale).round() as i32;
+            let py0 = ink_top + (y0 as f32 * scale).round() as i32;
+            let px1 = left + (x1 as f32 * scale).round() as i32;
+            let py1 = ink_top + (y1 as f32 * scale).round() as i32;
+            ctx.fill_rect(
+                Rect::new(
+                    px0,
+                    py0,
+                    (px1 - px0).max(1) as u32,
+                    (py1 - py0).max(1) as u32,
+                ),
+                colour,
+            )?;
+        }
+        pen += advance;
+    }
+    Ok(())
+}
+
+/// The weekday's full name, as the date block prints it.
+fn weekday_name(weekday: u8) -> &'static str {
+    WEEKDAY_NAMES[(weekday as usize).min(6)]
+}
+
+/// The month's full name, as the date block prints it.
+fn month_name(month: u8) -> &'static str {
+    MONTH_NAMES[(month.clamp(1, 12) - 1) as usize]
+}
+
+/// Whether `year` is a leap year in the Gregorian calendar.
+pub fn is_leap_year(year: u16) -> bool {
+    year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
+}
+
+/// The number of days in `month` of `year`; `0` for a month outside 1..=12.
+pub fn days_in_month(year: u16, month: u8) -> u8 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if is_leap_year(year) => 29,
+        2 => 28,
+        _ => 0,
+    }
+}
+
+/// The day after `(year, month, day)`, carrying into the month and the year.
+fn next_day(year: u16, month: u8, day: u8) -> (u16, u8, u8) {
+    let month = month.clamp(1, 12);
+    let day = day.max(1);
+    if day < days_in_month(year, month) {
+        (year, month, day + 1)
+    } else if month < 12 {
+        (year, month + 1, 1)
+    } else if year < 9999 {
+        (year + 1, 1, 1)
+    } else {
+        // The end of the four-digit calendar: a clock may not roll into a year it cannot print.
+        (9999, 12, 31)
+    }
+}
+
+/// Days since 1970-01-01 for a civil date (Howard Hinnant's `days_from_civil`).
+///
+/// Integer arithmetic only, `no_std`, and `div_euclid` keeps dates before the epoch correct too.
+pub fn days_from_civil(year: i64, month: u8, day: u8) -> i64 {
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let month = if month > 2 {
+        i64::from(month) - 3
+    } else {
+        i64::from(month) + 9
+    };
+    let doy = (153 * month + 2) / 5 + i64::from(day) - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// The civil date `days` days after 1970-01-01 (Howard Hinnant's `civil_from_days`).
+pub fn civil_from_days(days: i64) -> (u16, u8, u8) {
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 157_908) / 365;
+    let mut year = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let month_day = (5 * doy + 2) / 153;
+    let day = (doy - (153 * month_day + 2) / 5 + 1) as u8;
+    let month = if month_day < 10 {
+        month_day + 3
+    } else {
+        month_day - 9
+    } as u8;
+    if month <= 2 {
+        year += 1;
+    }
+    (year as u16, month, day)
+}
+
+/// The weekday of a civil date: `0` is Sunday, `6` is Saturday.
+///
+/// 1970-01-01 was a Thursday, which is why the day count is offset by four.
+pub fn weekday(year: u16, month: u8, day: u8) -> u8 {
+    let days = days_from_civil(year as i64, month.clamp(1, 12), day.max(1));
+    ((days + 4).rem_euclid(7)) as u8
 }
 
 /// The size of the box a numeral's **ink** occupies, in pixels.
@@ -674,13 +1252,17 @@ mod tests {
         let mut ctx: GuiContext<32, 16, 16> = GuiContext::new(Rect::new(0, 0, 160, 160));
         let mut clock = ClockWidget::new(10, 10, 30);
         // Only the numerals are white, so a white pixel is a numeral pixel: the hands, both tick
-        // lengths and the pivot are black.
+        // lengths and the pivot are black. The date block is off: it sits under the six and is
+        // measured by its own test.
         clock.hour_color = Rgb565::BLACK;
         clock.minute_color = Rgb565::BLACK;
         clock.second_color = Rgb565::BLACK;
         clock.hour_tick_color = Rgb565::BLACK;
         clock.minute_tick_color = Rgb565::BLACK;
         clock.label_color = Rgb565::WHITE;
+        clock.show_weekday = false;
+        clock.show_month = false;
+        clock.show_date = false;
         ctx.add_clock_styled(Rect::new(0, 0, 160, 160), clock, crate::style::Style::new())
             .unwrap();
         let mut buffer = TestBuffer::new(160, 160);
@@ -966,5 +1548,212 @@ mod tests {
             .unwrap();
         assert_eq!(ctx.clock_time(label), None);
         assert!(ctx.advance_clock(label).is_err());
+    }
+
+    /// The date is part of the time now, so midnight rolls the calendar -- including February in a
+    /// leap year and the century rule.
+    #[test]
+    fn a_second_rolls_the_calendar_at_midnight() {
+        assert_eq!(
+            ClockWidget::next_datetime(2026, 11, 23, 23, 59, 59),
+            (2026, 11, 24, 0, 0, 0)
+        );
+        assert_eq!(
+            ClockWidget::next_datetime(2026, 11, 30, 23, 59, 59),
+            (2026, 12, 1, 0, 0, 0)
+        );
+        assert_eq!(
+            ClockWidget::next_datetime(2026, 12, 31, 23, 59, 59),
+            (2027, 1, 1, 0, 0, 0)
+        );
+        assert_eq!(
+            ClockWidget::next_datetime(2024, 2, 28, 23, 59, 59),
+            (2024, 2, 29, 0, 0, 0),
+            "2024 is a leap year"
+        );
+        assert_eq!(
+            ClockWidget::next_datetime(2024, 2, 29, 23, 59, 59),
+            (2024, 3, 1, 0, 0, 0)
+        );
+        assert_eq!(
+            ClockWidget::next_datetime(2100, 2, 28, 23, 59, 59),
+            (2100, 3, 1, 0, 0, 0),
+            "2100 is not a leap year"
+        );
+        // A day past the month is a design mistake, clamped rather than drawn.
+        let clamped = ClockWidget::new(0, 0, 0).with_date(2026, 2, 31);
+        assert_eq!((clamped.year, clamped.month, clamped.day), (2026, 2, 28));
+        let leap = ClockWidget::new(0, 0, 0).with_date(2024, 2, 31);
+        assert_eq!((leap.year, leap.month, leap.day), (2024, 2, 29));
+        // The weekday follows the date: 2026-11-23 is a Monday.
+        assert_eq!(weekday(2026, 11, 23), 1);
+        assert_eq!(weekday(2000, 1, 1), 6, "the RTC's base is a Saturday");
+    }
+
+    /// The block sits where the design asked: above the six, the weekday above it, and the month and
+    /// year above that -- all on the pivot's own vertical line, and the text keeps the design's size
+    /// whatever the control measures, exactly like the hour numerals.
+    #[test]
+    fn the_date_block_is_anchored_above_the_six_at_a_fixed_size() {
+        let style = crate::style::Style::new();
+        let clock = ClockWidget::new(10, 10, 30).with_date(2026, 11, 23);
+        let small = clock.date_block(Rect::new(0, 0, 96, 96), style).unwrap();
+        let large = clock.date_block(Rect::new(0, 0, 192, 192), style).unwrap();
+        let small_weekday = small.weekday.as_ref().unwrap();
+        let large_weekday = large.weekday.as_ref().unwrap();
+        assert_eq!(
+            small_weekday.height, large_weekday.height,
+            "the date text does not grow with the control: {} at 96, {} at 192",
+            small_weekday.height, large_weekday.height
+        );
+        for (name, side, block) in [("small", 96, &small), ("large", 192, &large)] {
+            let cy = side / 2;
+            // The box is above the six o'clock numeral, and below the pivot.
+            assert!(
+                block.box_rect.y > cy && block.box_rect.bottom() < side,
+                "{name}: the day box is between the pivot and the rim: {:?}",
+                block.box_rect
+            );
+            // The three lines are stacked upward from the box, in the requested order.
+            if let (Some(month), Some(weekday)) = (&block.month, &block.weekday) {
+                assert!(
+                    month.height > 0 && weekday.height > 0 && block.month_top < block.weekday_top,
+                    "{name}: the month and year are above the weekday"
+                );
+            }
+            // Centred on the pivot, which is the x every line shares.
+            assert_eq!(block.cx, side / 2);
+            assert_eq!(
+                block.box_rect.x + block.box_rect.w as i32 / 2,
+                block.cx,
+                "{name}: the box is centred on the pivot"
+            );
+            // The day's ink stays clear of the frame: on every side there is the border plus at
+            // least one glyph pixel of air.
+            let day = block.day.as_ref().unwrap();
+            let border = i32::from(block.border_width);
+            let air = glyph_pixel(day.font, day.scale);
+            assert!(
+                block.box_rect.w as i32 >= day.width + 2 * (border + air),
+                "{name}: the box leaves room for the border and air: {:?}",
+                block.box_rect
+            );
+            assert!(
+                block.box_rect.h as i32 >= day.height + 2 * (border + air),
+                "{name}: and vertically: {:?}",
+                block.box_rect
+            );
+        }
+
+        // The offset moves the whole stack up for a positive value, down for a negative one.
+        let offset = |pixels: i16| {
+            let mut shifted = clock;
+            shifted.date_offset = pixels;
+            shifted
+                .date_block(Rect::new(0, 0, 192, 192), style)
+                .unwrap()
+        };
+        let plain = offset(0);
+        let up = offset(6);
+        let down = offset(-4);
+        assert_eq!(up.box_rect.y, plain.box_rect.y - 6);
+        assert_eq!(up.month_top, plain.month_top - 6);
+        assert_eq!(up.weekday_top, plain.weekday_top - 6);
+        assert_eq!(down.box_rect.y, plain.box_rect.y + 4);
+    }
+
+    /// A date line can be sized by a fraction, which is what the designer's size fields offer: `1.5`
+    /// is half again the face's own pixels rather than a jump to the next whole step.
+    #[test]
+    fn a_date_line_can_be_sized_by_a_fraction() {
+        let style = crate::style::Style::new();
+        let heights = [1.0f32, 1.5, 2.0].map(|scale| {
+            let mut clock = ClockWidget::new(10, 10, 30).with_date(2026, 11, 23);
+            clock.day_scale = scale;
+            let block = clock.date_block(Rect::new(0, 0, 192, 192), style).unwrap();
+            block.day.as_ref().unwrap().height
+        });
+        assert!(
+            heights[0] < heights[1] && heights[1] < heights[2],
+            "a fractional size sits between the two whole ones: {heights:?}"
+        );
+        assert_eq!(
+            heights[1],
+            (heights[0] as f32 * 1.5).round() as i32,
+            "and is exactly one and a half times the size it was: {heights:?}"
+        );
+    }
+
+    /// A date change repaints the block and nothing of the dial's rim; a time change on the same day
+    /// still repaints only the hands.
+    #[test]
+    fn a_date_change_damages_only_the_date_block() {
+        use crate::context::GuiContext;
+        use crate::test_buffer::TestBuffer;
+
+        let rect = Rect::new(10, 20, 160, 160);
+        let mut ctx: GuiContext<32, 16, 16> = GuiContext::new(Rect::new(0, 0, 320, 240));
+        let id = ctx
+            .add_clock_styled(
+                rect,
+                ClockWidget::new(10, 10, 30).with_date(2026, 11, 23),
+                crate::style::Style::new(),
+            )
+            .unwrap();
+        let mut buffer = TestBuffer::new(320, 240);
+        ctx.render(&mut buffer).unwrap();
+        ctx.clear_dirty();
+
+        ctx.set_clock_date(id, 2026, 11, 24).unwrap();
+        assert_eq!(ctx.clock_datetime(id), Some((2026, 11, 24, 10, 10, 30)));
+        let damaged = ctx.dirty_regions();
+        assert!(!damaged.is_empty(), "a new day has pixels to repaint");
+        for region in damaged {
+            assert!(
+                !region.contains(90, 30),
+                "the rim was not part of the date's damage: {region:?}"
+            );
+            assert!(
+                region.y > 40,
+                "and only the block below the top of the face: {region:?}"
+            );
+        }
+    }
+
+    /// The three date lines are on the glass, in the shared date colour.
+    #[test]
+    fn the_date_block_paints_its_three_lines_and_the_day_box() {
+        use crate::context::GuiContext;
+        use crate::test_buffer::TestBuffer;
+
+        let rect = Rect::new(0, 0, 200, 200);
+        let mut ctx: GuiContext<32, 16, 16> = GuiContext::new(Rect::new(0, 0, 200, 200));
+        let mut clock = ClockWidget::new(10, 10, 30).with_date(2026, 11, 23);
+        clock.hour_color = Rgb565::BLACK;
+        clock.minute_color = Rgb565::BLACK;
+        clock.second_color = Rgb565::BLACK;
+        clock.hour_tick_color = Rgb565::BLACK;
+        clock.minute_tick_color = Rgb565::BLACK;
+        clock.label_color = Rgb565::BLACK;
+        clock.date_color = Rgb565::WHITE;
+        clock.date_box_fill = Rgb565::new(1, 2, 4);
+        clock.date_box_border = Rgb565::WHITE;
+        ctx.add_clock_styled(rect, clock, crate::style::Style::label())
+            .unwrap();
+        let mut buffer = TestBuffer::new(200, 200);
+        ctx.render(&mut buffer).unwrap();
+
+        // The box's fill is a colour nothing else on the face uses; some of it must be visible.
+        let filled = (0..200i32)
+            .flat_map(|y| (0..200i32).map(move |x| (x, y)))
+            .filter(|(x, y)| buffer.pixel_at(*x, *y) == Some(Rgb565::new(1, 2, 4)))
+            .count();
+        assert!(filled > 0, "the day box is filled");
+        // White ink below the pivot: the date lines and the border, none of which the numerals use.
+        let ink = (100..200i32)
+            .flat_map(|y| (0..200i32).map(move |x| (x, y)))
+            .filter(|(x, y)| buffer.pixel_at(*x, *y) == Some(Rgb565::WHITE))
+            .count();
+        assert!(ink > 0, "the date text and the box's border are painted");
     }
 }

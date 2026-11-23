@@ -1058,8 +1058,9 @@ test('a Designer project keeps the time in the RTC and asks a host when it has n
 
     const cyd = sourceOf(filesOf('sunton-3248s035r'));
     contains(cyd, 'Rtc::new(peripherals.RTC_TIMER)', 'the chip RTC is opened before the design exists');
-    contains(cyd, 'fn rtc_time_of_day', 'and read at boot');
-    contains(cyd, 'fn set_rtc_time_of_day', 'and written when a host answers');
+    contains(cyd, 'fn rtc_datetime', 'and read at boot, date included');
+    contains(cyd, 'fn set_rtc_time_of_day', 'and its time written when a host answers');
+    contains(cyd, 'let wall_clock: Option<(u16, u8, u8, u8, u8, u8)> = rtc_datetime;', 'the design starts from the kept date');
     contains(cyd, 'if ui::HAS_CLOCK && state.needs_time {', 'the CYD asks even with no evidence of a host');
     contains(cyd, 'esp_println::println!("TIME?")', 'the CYD asks with a plain line, not a log line');
     contains(cyd, 'Some(uart.with_rx(peripherals.GPIO3))', 'its console is UART0, on the CH340 side of the socket');

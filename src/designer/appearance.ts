@@ -173,8 +173,12 @@ export function styleValuesOf(
         // A **built-in** font is a style expression and nothing else: the markup has no `font` attribute for
         // the crate's own faces, so `style.font` is the only way to reach one. A *declared* font (a BDF the
         // screen names) does have an attribute, and the generic emitter writes that one instead.
+        //
+        // Only the widget's own `font` travels that way. A second font property -- the clock's `date_font` --
+        // is an ordinary attribute the codegen resolves on its own; putting it in `style.font` would replace
+        // the face of every numeral as well.
         if (field === undefined) {
-            if (property.kind === 'font' && typeof value === 'string' && isBuiltInFont(value)) {
+            if (property.name === 'font' && property.kind === 'font' && typeof value === 'string' && isBuiltInFont(value)) {
                 values.font = value;
             }
             continue;

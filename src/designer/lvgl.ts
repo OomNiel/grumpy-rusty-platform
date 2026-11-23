@@ -15,7 +15,7 @@
 
 import { EVENT_SPECS, type DesignerEvent } from './catalog';
 import type { DesignerDocument, DesignerWidget, DesignerView } from './model';
-import { designFontOf, fontSymbol, lvglFontFor, nearestFontSize } from './lvglFonts';
+import { DEFAULT_FONT_SIZE, designFontOf, fontSymbol, lvglFontFor, nearestFontSize } from './lvglFonts';
 import { pixelLines, type CppImageSlots } from './lvglImages';
 import { flattenPath } from './lvglShapes';
 import { designViews, rustFieldName } from './model';
@@ -262,16 +262,166 @@ function clockGeometry(widget: DesignerWidget): ClockGeometry {
     };
 }
 
+/** One line of the C++ date block: its text, the Montserrat size, and where its centre sits. */
+interface CppDateLine {
+    text: string;
+    size: number;
+    /** Centre, in the clock container's own coordinates. */
+    cx: number;
+    cy: number;
+}
+
+/** The C++ date block: three optional lines and the day box. */
+interface CppClockDate {
+    weekday?: CppDateLine;
+    month?: CppDateLine;
+    day?: CppDateLine;
+    box: { x: number; y: number; w: number; h: number; radius: number; borderWidth: number };
+    fill: string;
+    border: string;
+    opacity: number;
+}
+
+/** The full names the C++ block prints, in the same order as the crate's tables. */
+const CPP_WEEKDAYS = ['SUNDAY', 'MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY'] as const;
+const CPP_MONTHS = [
+    'JANUARY', 'FEBRUARY', 'MARCH', 'APRIL', 'MAY', 'JUNE',
+    'JULY', 'AUGUST', 'SEPTEMBER', 'OCTOBER', 'NOVEMBER', 'DECEMBER',
+] as const;
+
+/** Days since 1970-01-01, mirroring the crate's `days_from_civil`. */
+function daysSinceEpoch(year: number, month: number, day: number): number {
+    const y = month <= 2 ? year - 1 : year;
+    const era = Math.floor(y / 400);
+    const yoe = y - era * 400;
+    const shifted = month > 2 ? month - 3 : month + 9;
+    const doy = Math.floor((153 * shifted + 2) / 5) + day - 1;
+    return era * 146097 + yoe * 365 + Math.floor(yoe / 4) - Math.floor(yoe / 100) + doy - 719468;
+}
+
+/**
+ * The date block as LVGL draws it: three labels and a rounded box, sized and placed like the crate's.
+ *
+ * LVGL has no bitmap glyph metrics to measure an ink box from, so the line heights and widths are the
+ * Montserrat approximation the rest of the C++ emitter already lives with -- roughly 1.2 em tall and
+ * 0.6 em per upper-case character. The *rule* is the crate's: the stack is bottom-anchored above the
+ * six, each line is magnified by the design's own size (the hour numerals' rule, no fitting), and
+ * `date_offset` nudges the whole stack by pixels. The order is the crate's too: the day in its box at
+ * the bottom, the weekday above it, and the month and year on top.
+ */
+function clockDateLayout(widget: DesignerWidget, document: DesignerDocument): CppClockDate | undefined {
+    const showWeekday = widget.props.show_weekday === undefined || boolProp(widget, 'show_weekday');
+    const showMonth = widget.props.show_month === undefined || boolProp(widget, 'show_month');
+    const showDate = widget.props.show_date === undefined || boolProp(widget, 'show_date');
+    if (!showWeekday && !showMonth && !showDate) {
+        return undefined;
+    }
+    const width = Math.round(widget.width);
+    const height = Math.round(widget.height);
+    const cx = Math.round(width / 2);
+    const cy = Math.round(height / 2);
+    const radius = Math.max(12, Math.round(Math.min(width, height) / 2) - 4);
+    const declared = document.fonts.map((font) => font.id);
+    const named = typeof widget.props.date_font === 'string' && widget.props.date_font !== ''
+        ? widget.props.date_font
+        : designFontOf(widget.props);
+    const baseSize = lvglFontFor(named, declared).size;
+    const numeralFont = designFontOf(widget.props);
+    const numeralScale = Math.max(1, Math.round(numberProp(widget, 'label_scale', 1)));
+    const numeralSize = numeralFont === undefined
+        ? DEFAULT_FONT_SIZE
+        : nearestFontSize(lvglFontFor(numeralFont, declared).size * numeralScale);
+    // The six o'clock numeral's own line box, approximated; without numerals the long tick is the
+    // landmark. Two pixels of air above it, then the stack grows upward.
+    const numbered = (widget.props.show_labels === undefined || boolProp(widget, 'show_labels')) && radius > 24;
+    const bottom = numbered
+        ? cy + Math.round(radius * 0.7) - Math.round(numeralSize * 0.42) - 2
+        : cy + radius - 8 - 2;
+    if (bottom <= cy + 2) {
+        return undefined;
+    }
+    const year = Math.min(Math.max(Math.round(numberProp(widget, 'year', 2000)), 2000), 9999);
+    const month = Math.min(Math.max(Math.round(numberProp(widget, 'month', 1)), 1), 12);
+    const day = Math.min(Math.max(Math.round(numberProp(widget, 'day', 1)), 1), 31);
+    const weekdayText = CPP_WEEKDAYS[((daysSinceEpoch(year, month, day) + 4) % 7 + 7) % 7] ?? CPP_WEEKDAYS[0];
+    const monthText = `${CPP_MONTHS[month - 1] ?? CPP_MONTHS[0]} ${year}`;
+    const dayText = String(day);
+    const weight = (name: string): number =>
+        Math.min(Math.max(numberProp(widget, name, 1), 1), 4);
+    const heights = (size: number): number => Math.max(1, Math.round(size * 1.2));
+    const widths = (text: string, size: number): number => Math.max(1, Math.round(text.length * size * 0.6));
+    const weekdayWeight = weight('weekday_size');
+    const monthWeight = weight('month_size');
+    const dayWeight = weight('day_size');
+    // The design's own sizes, each glyph pixel magnified by the number given -- the hour numerals'
+    // rule, deliberately without any fit to the control. LVGL fonts come in whole sizes, so a
+    // fractional weight lands on the nearest size the emitter can actually select.
+    const weekdaySize = nearestFontSize(baseSize * weekdayWeight);
+    const monthSize = nearestFontSize(baseSize * monthWeight);
+    const daySize = nearestFontSize(baseSize * dayWeight);
+    const weekdayLineHeight = heights(weekdaySize);
+    const monthLineHeight = heights(monthSize);
+    const dayLineHeight = heights(daySize);
+    const borderWidth = Math.round(
+        Math.max(0, numberProp(widget, 'date_box_border_width', 1)) * dayWeight,
+    );
+    // The border plus a little air: without it a scaled-up digit paints over the frame.
+    const boxPad = showDate ? Math.max(3, borderWidth + Math.round(daySize * 0.25)) : 0;
+    const boxWidth = showDate ? widths('88', daySize) + 2 * boxPad : 0;
+    const boxHeight = showDate ? dayLineHeight + 2 * boxPad : 0;
+    const boxX = cx - Math.trunc(boxWidth / 2);
+    // Positive moves the block up, negative down; the whole stack moves together.
+    const shift = Math.round(numberProp(widget, 'date_offset', 0));
+    const boxY = bottom - boxHeight - shift;
+    let cursor = boxY;
+    let weekdayCentre = cursor;
+    if (showWeekday) {
+        weekdayCentre = cursor - Math.trunc(weekdayLineHeight / 2) - Math.trunc(weekdayLineHeight / 2);
+        cursor = cursor - Math.trunc(weekdayLineHeight / 2) - weekdayLineHeight;
+    }
+    let monthCentre = cursor;
+    if (showMonth) {
+        monthCentre = cursor - Math.trunc(monthLineHeight / 2) - Math.trunc(monthLineHeight / 2);
+    }
+    return {
+        weekday: showWeekday
+            ? { text: weekdayText, size: weekdaySize, cx, cy: weekdayCentre }
+            : undefined,
+        month: showMonth ? { text: monthText, size: monthSize, cx, cy: monthCentre } : undefined,
+        day: showDate
+            ? { text: dayText, size: daySize, cx: boxX + Math.trunc(boxWidth / 2), cy: boxY + Math.trunc(boxHeight / 2) }
+            : undefined,
+        box: {
+            x: boxX,
+            y: boxY,
+            w: Math.max(1, boxWidth),
+            h: Math.max(1, boxHeight),
+            radius: Math.round(Math.min(
+                Math.round(Math.max(0, numberProp(widget, 'date_box_radius', 4)) * dayWeight),
+                Math.trunc(Math.min(boxWidth, boxHeight) / 2),
+            )),
+            borderWidth,
+        },
+        fill: colourLiteral(widget.props.date_box_fill) ?? 'lv_color_hex(0x000000)',
+        border: colourLiteral(widget.props.date_box_border) ?? 'lv_color_hex(0xFFFFFF)',
+        opacity: Math.round(Math.min(Math.max(numberProp(widget, 'date_box_opacity', 100), 0), 100) * 255 / 100),
+    };
+}
+
 /** The runtime half: one struct per clock, and the three calls that drive it. Emitted once per design. */
 const CLOCK_HELPERS = `// ---- the clock face ----------------------------------------------------------
 //
 // Ticks and numerals are static geometry, so they are literals below. The hands are the only moving parts.
 
-/** One face's state: its three lines, the points they are drawn from, and the time they show. */
+/** One face's state: its three lines, the points they are drawn from, and the date and time they show. */
 struct ui_clock {
     lv_obj_t *hourHand;
     lv_obj_t *minuteHand;
     lv_obj_t *secondHand;
+    lv_obj_t *weekdayLabel;
+    lv_obj_t *monthLabel;
+    lv_obj_t *dayBox;
+    lv_obj_t *dayLabel;
     lv_point_precise_t hourPoints[2];
     lv_point_precise_t minutePoints[2];
     lv_point_precise_t secondPoints[2];
@@ -283,7 +433,17 @@ struct ui_clock {
     int hour;
     int minute;
     int second;
+    int year;
+    int month;
+    int day;
     uint32_t lastMs;
+    // The host hand-over: the line being read, and how long since the board last asked.
+    char hostLine[40];
+    size_t hostLength;
+    uint32_t hostAskedMs;
+    bool hostAsked;
+    bool hostSet;
+    bool seeded;
 };
 
 /** Hand angles: 60 unit vectors, one per six degrees, so no trigonometry is linked in. */
@@ -312,25 +472,191 @@ static void ui_clock_hands(ui_clock *clock) {
     ui_clock_place(clock->secondHand, clock->secondPoints, clock->cx, clock->cy, clock->secondLength, clock->second % 60);
 }
 
+/** The calendar names the date block prints, in the crate's own order. */
+static const char *ui_clock_weekday_names[7] = {
+    "SUNDAY", "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY"
+};
+static const char *ui_clock_month_names[12] = {
+    "JANUARY", "FEBRUARY", "MARCH", "APRIL", "MAY", "JUNE",
+    "JULY", "AUGUST", "SEPTEMBER", "OCTOBER", "NOVEMBER", "DECEMBER"
+};
+
+static bool ui_clock_leap_year(int year) {
+    return year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+}
+
+static int ui_clock_days_in_month(int year, int month) {
+    static const int days[12] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    if (month < 1 || month > 12) {
+        return 31;
+    }
+    return month == 2 && ui_clock_leap_year(year) ? 29 : days[month - 1];
+}
+
+/** Days since 1970-01-01 (Howard Hinnant's days_from_civil), so the weekday needs no table of years. */
+static long ui_clock_days_from_civil(int year, int month, int day) {
+    const int y = month <= 2 ? year - 1 : year;
+    const long era = (y >= 0 ? y : y - 399) / 400;
+    const int yoe = static_cast<int>(y - era * 400);
+    const int shifted = month > 2 ? month - 3 : month + 9;
+    const int doy = (153 * shifted + 2) / 5 + day - 1;
+    const int doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + doe - 719468;
+}
+
+/** 0 is Sunday, as the crate's \`weekday\` answers. */
+static int ui_clock_weekday(const ui_clock *clock) {
+    const long days = ui_clock_days_from_civil(clock->year, clock->month, clock->day);
+    return static_cast<int>(((days + 4) % 7 + 7) % 7);
+}
+
+/** Rewrites the three date labels; the box itself never changes size, only what it holds. */
+static void ui_clock_date_labels(ui_clock *clock) {
+    if (clock->weekdayLabel != nullptr) {
+        lv_label_set_text(clock->weekdayLabel, ui_clock_weekday_names[ui_clock_weekday(clock)]);
+    }
+    if (clock->monthLabel != nullptr) {
+        char text[24];
+        snprintf(text, sizeof(text), "%s %d", ui_clock_month_names[clock->month - 1], clock->year);
+        lv_label_set_text(clock->monthLabel, text);
+    }
+    if (clock->dayLabel != nullptr) {
+        char text[8];
+        snprintf(text, sizeof(text), "%d", clock->day);
+        lv_label_set_text(clock->dayLabel, text);
+    }
+}
+
+/** Sets the whole date and time, clamping each field the way the crate does. */
+static void ui_clock_set_datetime(ui_clock *clock, int year, int month, int day, int hour, int minute, int second) {
+    clock->year = year < 2000 ? 2000 : (year > 9999 ? 9999 : year);
+    clock->month = month < 1 ? 1 : (month > 12 ? 12 : month);
+    const int last = ui_clock_days_in_month(clock->year, clock->month);
+    clock->day = day < 1 ? 1 : (day > last ? last : day);
+    clock->hour = ((hour % 24) + 24) % 24;
+    clock->minute = ((minute % 60) + 60) % 60;
+    clock->second = ((second % 60) + 60) % 60;
+    clock->lastMs = millis();
+    ui_clock_hands(clock);
+    ui_clock_date_labels(clock);
+}
+
+/** One second on, rolling the minute, the hour and the calendar together. */
+static void ui_clock_advance(ui_clock *clock) {
+    clock->second += 1;
+    if (clock->second >= 60) {
+        clock->second = 0;
+        clock->minute += 1;
+        if (clock->minute >= 60) {
+            clock->minute = 0;
+            clock->hour += 1;
+            if (clock->hour >= 24) {
+                clock->hour = 0;
+                clock->day += 1;
+                if (clock->day > ui_clock_days_in_month(clock->year, clock->month)) {
+                    clock->day = 1;
+                    clock->month += 1;
+                    if (clock->month > 12) {
+                        clock->month = 1;
+                        clock->year += 1;
+                    }
+                }
+                ui_clock_date_labels(clock);
+            }
+        }
+    }
+    ui_clock_hands(clock);
+}
+
 /**
- * A second at a time, from millis(): what a board with no RTC can honestly do.
+ * The date and time this sketch was compiled: the firmware RTC's starting point.
  *
- * The design's hour/minute/second are the starting point, so a face that shows 10:10 begins there and runs.
+ * A board with no chip RTC and no network still has to start somewhere, and the compiler's own
+ * clock is the closest thing a sketch can read without a toolchain flag. __DATE__ is "Nov 23 2026"
+ * and __TIME__ is "14:05:32".
+ */
+static void ui_clock_seed_build(ui_clock *clock) {
+    if (clock->seeded) {
+        return;
+    }
+    clock->seeded = true;
+    static const char months[] = "JanFebMarAprMayJunJulAugSepOctNovDec";
+    char monthName[4] = {0, 0, 0, 0};
+    int day = 0;
+    int year = 0;
+    int hour = 0;
+    int minute = 0;
+    int second = 0;
+    if (sscanf(__DATE__, "%3s %d %d", monthName, &day, &year) == 3
+        && sscanf(__TIME__, "%d:%d:%d", &hour, &minute, &second) == 3) {
+        const char *found = strstr(months, monthName);
+        const int month = found == nullptr ? 1 : static_cast<int>(found - months) / 3 + 1;
+        ui_clock_set_datetime(clock, year, month, day, hour, minute, second);
+    }
+}
+
+/**
+ * A host's hand-over: TIME YYYY-MM-DD HH:MM:SS, the same line a Rust project takes.
+ *
+ * The board asks with TIME? once a second until one arrives. The extension's "Answer Time
+ * Requests" action is what answers it; a host that never appears costs one short write a second.
+ */
+static void ui_clock_host_tick(ui_clock *clock) {
+    const uint32_t now = millis();
+    if (!clock->hostAsked) {
+        clock->hostAsked = true;
+        clock->hostAskedMs = now;
+        Serial.println("TIME?");
+    }
+    while (Serial.available() > 0) {
+        const int byte = Serial.read();
+        if (byte < 0) {
+            break;
+        }
+        if (byte == '\\n' || byte == '\\r') {
+            clock->hostLine[clock->hostLength] = '\\0';
+            if (clock->hostLength > 0) {
+                int year = 0;
+                int month = 0;
+                int day = 0;
+                int hour = 0;
+                int minute = 0;
+                int second = 0;
+                if (sscanf(clock->hostLine, "TIME %d-%d-%d %d:%d:%d",
+                           &year, &month, &day, &hour, &minute, &second) == 6) {
+                    ui_clock_set_datetime(clock, year, month, day, hour, minute, second);
+                    clock->hostSet = true;
+                    Serial.printf("clock: the host says %04d-%02d-%02d %02d:%02d:%02d\\n",
+                                  year, month, day, hour, minute, second);
+                }
+            }
+            clock->hostLength = 0;
+            continue;
+        }
+        if (clock->hostLength + 1 < sizeof(clock->hostLine)) {
+            clock->hostLine[clock->hostLength] = static_cast<char>(byte);
+            clock->hostLength += 1;
+        }
+    }
+    if (!clock->hostSet && static_cast<uint32_t>(now - clock->hostAskedMs) >= 1000u) {
+        clock->hostAskedMs = now;
+        Serial.println("TIME?");
+    }
+}
+
+/**
+ * A second at a time, seeded from the build's own date and corrected by a host when there is one.
+ *
+ * The design's date and time are the starting point, so a face that shows 10:10 on 23 November 2026
+ * begins there and runs until something better arrives.
  */
 static void ui_clock_tick(ui_clock *clock) {
+    ui_clock_seed_build(clock);
+    ui_clock_host_tick(clock);
     const uint32_t now = millis();
     while (static_cast<uint32_t>(now - clock->lastMs) >= 1000u) {
         clock->lastMs += 1000u;
-        clock->second += 1;
-        if (clock->second >= 60) {
-            clock->second = 0;
-            clock->minute += 1;
-            if (clock->minute >= 60) {
-                clock->minute = 0;
-                clock->hour = (clock->hour + 1) % 24;
-            }
-        }
-        ui_clock_hands(clock);
+        ui_clock_advance(clock);
     }
 }
 
@@ -351,6 +677,11 @@ function clockBlock(widget: DesignerWidget, document: DesignerDocument): string 
     const majorColour = colourLiteral(widget.props.hour_tick_color) ?? 'lv_color_hex(0x808080)';
     const minorColour = colourLiteral(widget.props.minute_tick_color) ?? 'lv_color_hex(0x525252)';
     const labelColour = colourLiteral(widget.props.label_color) ?? 'lv_color_hex(0xFFFFFF)';
+    const dateColour = colourLiteral(widget.props.date_color) ?? 'lv_color_hex(0xFFFFFF)';
+    const date = clockDateLayout(widget, document);
+    const designYear = Math.min(Math.max(Math.round(numberProp(widget, 'year', 2000)), 2000), 9999);
+    const designMonth = Math.min(Math.max(Math.round(numberProp(widget, 'month', 1)), 1), 12);
+    const designDay = Math.min(Math.max(Math.round(numberProp(widget, 'day', 1)), 1), 31);
     void movement;
     const lines = [
         `static ui_clock clock_${id};`,
@@ -364,6 +695,13 @@ function clockBlock(widget: DesignerWidget, document: DesignerDocument): string 
         `    clock_${id}.hour = ${hour};`,
         `    clock_${id}.minute = ${minute};`,
         `    clock_${id}.second = ${second};`,
+        `    clock_${id}.year = ${designYear};`,
+        `    clock_${id}.month = ${designMonth};`,
+        `    clock_${id}.day = ${designDay};`,
+        `    clock_${id}.hostLength = 0;`,
+        `    clock_${id}.hostAsked = false;`,
+        `    clock_${id}.hostSet = false;`,
+        `    clock_${id}.seeded = false;`,
         `    clock_${id}.lastMs = millis();`,
     ];
     // A tick is a small filled rectangle, rotated about the face's centre -- not an `lv_line`.
@@ -432,8 +770,65 @@ function clockBlock(widget: DesignerWidget, document: DesignerDocument): string 
         `    lv_obj_set_style_line_color(clock_${id}.secondHand, ${secondColour}, 0);`,
         `    lv_obj_set_style_line_width(clock_${id}.secondHand, 2, 0);`,
         `    ui_clock_hands(&clock_${id});`,
-        `}`,
     );
+    // The date block comes last so it paints over the hands, exactly as the crate orders it.
+    if (date === undefined) {
+        lines.push(
+            `    clock_${id}.weekdayLabel = nullptr;`,
+            `    clock_${id}.monthLabel = nullptr;`,
+            `    clock_${id}.dayBox = nullptr;`,
+            `    clock_${id}.dayLabel = nullptr;`,
+        );
+    } else {
+        if (date.weekday === undefined) {
+            lines.push(`    clock_${id}.weekdayLabel = nullptr;`);
+        } else {
+            lines.push(
+                `    clock_${id}.weekdayLabel = lv_label_create(parent);`,
+                `    lv_label_set_text(clock_${id}.weekdayLabel, ${cString(date.weekday.text)});`,
+                `    lv_obj_set_style_text_color(clock_${id}.weekdayLabel, ${dateColour}, 0);`,
+                `    lv_obj_set_style_text_font(clock_${id}.weekdayLabel, ${fontSymbol(date.weekday.size)}, 0);`,
+                `    lv_obj_align(clock_${id}.weekdayLabel, LV_ALIGN_CENTER, 0, ${date.weekday.cy - geometry.cy});`,
+            );
+        }
+        if (date.month === undefined) {
+            lines.push(`    clock_${id}.monthLabel = nullptr;`);
+        } else {
+            lines.push(
+                `    clock_${id}.monthLabel = lv_label_create(parent);`,
+                `    lv_label_set_text(clock_${id}.monthLabel, ${cString(date.month.text)});`,
+                `    lv_obj_set_style_text_color(clock_${id}.monthLabel, ${dateColour}, 0);`,
+                `    lv_obj_set_style_text_font(clock_${id}.monthLabel, ${fontSymbol(date.month.size)}, 0);`,
+                `    lv_obj_align(clock_${id}.monthLabel, LV_ALIGN_CENTER, 0, ${date.month.cy - geometry.cy});`,
+            );
+        }
+        if (date.day === undefined) {
+            lines.push(
+                `    clock_${id}.dayBox = nullptr;`,
+                `    clock_${id}.dayLabel = nullptr;`,
+            );
+        } else {
+            lines.push(
+                `    clock_${id}.dayBox = lv_obj_create(parent);`,
+                `    lv_obj_set_pos(clock_${id}.dayBox, ${date.box.x}, ${date.box.y});`,
+                `    lv_obj_set_size(clock_${id}.dayBox, ${date.box.w}, ${date.box.h});`,
+                `    lv_obj_set_style_radius(clock_${id}.dayBox, ${date.box.radius}, 0);`,
+                `    lv_obj_set_style_border_color(clock_${id}.dayBox, ${date.border}, 0);`,
+                `    lv_obj_set_style_border_width(clock_${id}.dayBox, ${date.box.borderWidth}, 0);`,
+                `    lv_obj_set_style_bg_color(clock_${id}.dayBox, ${date.fill}, 0);`,
+                `    lv_obj_set_style_bg_opa(clock_${id}.dayBox, ${date.opacity}, 0);`,
+                `    lv_obj_set_style_pad_all(clock_${id}.dayBox, 0, 0);`,
+                `    ui_set_scrollable(clock_${id}.dayBox, false);`,
+                `    clock_${id}.dayLabel = lv_label_create(clock_${id}.dayBox);`,
+                `    lv_label_set_text(clock_${id}.dayLabel, ${cString(date.day.text)});`,
+                `    lv_obj_set_style_text_color(clock_${id}.dayLabel, ${dateColour}, 0);`,
+                `    lv_obj_set_style_text_font(clock_${id}.dayLabel, ${fontSymbol(date.day.size)}, 0);`,
+                `    lv_obj_center(clock_${id}.dayLabel);`,
+            );
+        }
+        lines.push(`    ui_clock_date_labels(&clock_${id});`);
+    }
+    lines.push('}');
     return lines.join('\n');
 }
 
@@ -1158,11 +1553,19 @@ export function documentFontSizes(document: DesignerDocument): number[] {
     for (const widget of document.widgets) {
         const named = designFontOf(widget.props);
         if (widget.tag === 'clock') {
-            if (named === undefined) {
-                continue;
+            if (named !== undefined) {
+                const scale = Math.max(1, Math.round(numberProp(widget, 'label_scale', 1)));
+                sizes.push(lvglFontFor(named, declared).size * scale);
             }
-            const scale = Math.max(1, Math.round(numberProp(widget, 'label_scale', 1)));
-            sizes.push(lvglFontFor(named, declared).size * scale);
+            // The date block's three lines, at the sizes the layout will actually name.
+            const date = clockDateLayout(widget, document);
+            if (date !== undefined) {
+                for (const line of [date.weekday, date.month, date.day]) {
+                    if (line !== undefined) {
+                        sizes.push(line.size);
+                    }
+                }
+            }
             continue;
         }
         if (named === undefined || !TEXT_TAGS.has(widget.tag)) {
@@ -1325,10 +1728,18 @@ ${clocks
             .map(
                 (clock) =>
                     `void ui_clock_${cppId(clock.id)}_set_time(int hour, int minute, int second) {\n` +
-                    `    clock_${cppId(clock.id)}.hour = ((hour % 24) + 24) % 24;\n` +
-                    `    clock_${cppId(clock.id)}.minute = ((minute % 60) + 60) % 60;\n` +
-                    `    clock_${cppId(clock.id)}.second = ((second % 60) + 60) % 60;\n` +
-                    `    ui_clock_hands(&clock_${cppId(clock.id)});\n` +
+                    `    ui_clock_set_datetime(&clock_${cppId(clock.id)}, clock_${cppId(clock.id)}.year,\n` +
+                    `                          clock_${cppId(clock.id)}.month, clock_${cppId(clock.id)}.day,\n` +
+                    `                          hour, minute, second);\n` +
+                    `}\n` +
+                    `void ui_clock_${cppId(clock.id)}_set_date(int year, int month, int day) {\n` +
+                    `    ui_clock_set_datetime(&clock_${cppId(clock.id)}, year, month, day,\n` +
+                    `                          clock_${cppId(clock.id)}.hour, clock_${cppId(clock.id)}.minute,\n` +
+                    `                          clock_${cppId(clock.id)}.second);\n` +
+                    `}\n` +
+                    `void ui_clock_${cppId(clock.id)}_set_datetime(int year, int month, int day,\n` +
+                    `                                            int hour, int minute, int second) {\n` +
+                    `    ui_clock_set_datetime(&clock_${cppId(clock.id)}, year, month, day, hour, minute, second);\n` +
                     `}\n`,
             )
             .join('\n')}${clocks.length === 0 ? '' : '\n'}void ui_init() {
@@ -1379,9 +1790,14 @@ ${document === undefined
                 .filter((widget) => widget.tag === 'clock')
                 .map(
                     (clock) =>
-                        `\n/** Sets the time one clock face shows. A running clock advances from millis() by itself; */\n` +
-                        `/** this is how an app that knows the real time (NTP, an RTC) hands it over. */\n` +
-                        `void ui_clock_${cppId(clock.id)}_set_time(int hour, int minute, int second);`,
+                        `\n/** Sets the time one clock face shows, keeping the date it already had. A running */\n` +
+                        `/** clock advances from millis() by itself; this is how an app that knows the real time */\n` +
+                        `/** hands it over. */\n` +
+                        `void ui_clock_${cppId(clock.id)}_set_time(int hour, int minute, int second);\n` +
+                        `/** Sets the date one clock face shows, keeping the time it already had. */\n` +
+                        `void ui_clock_${cppId(clock.id)}_set_date(int year, int month, int day);\n` +
+                        `/** Sets the date and the time together -- an RTC or a network answer. */\n` +
+                        `void ui_clock_${cppId(clock.id)}_set_datetime(int year, int month, int day, int hour, int minute, int second);`,
                 )
                 .join('')}`;
 }

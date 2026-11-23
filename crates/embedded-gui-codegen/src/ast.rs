@@ -186,12 +186,16 @@ pub enum WidgetDef {
         entry_border: Option<String>,
         style: Option<String>,
     },
-    /// A clock face: hour and minute ticks, hour numerals and three hands.
+    /// A clock face: hour and minute ticks, hour numerals, three hands, and a date block.
     Clock {
         id: Option<String>,
         hour: u8,
         minute: u8,
         second: u8,
+        /// The date the face starts from, until an RTC or an app hands it another.
+        year: u16,
+        month: u8,
+        day: u8,
         /// `#rrggbb`, or `None` for the widget's own colour.
         hour_color: Option<String>,
         minute_color: Option<String>,
@@ -204,6 +208,23 @@ pub enum WidgetDef {
         /// How far the numerals sit inside the tick ring, in character widths (tenths are meaningful).
         label_inset: f32,
         show_labels: bool,
+        /// The shared date font: a declared font name or a built-in `FontId` name.
+        date_font: Option<String>,
+        date_color: Option<String>,
+        weekday_scale: f32,
+        month_scale: f32,
+        day_scale: f32,
+        /// Moves the whole date block up (positive) or down (negative), in pixels.
+        date_offset: i16,
+        show_weekday: bool,
+        show_month: bool,
+        show_date: bool,
+        date_box_fill: Option<String>,
+        date_box_border: Option<String>,
+        date_box_border_width: u8,
+        date_box_radius: u8,
+        /// 0-100: `100` is an opaque fill, `0` leaves the box transparent.
+        date_box_opacity: u8,
         style: Option<String>,
     },
     Slider {

@@ -65,9 +65,17 @@ pub async fn setup(spawner: Spawner) -> State {
     // A design with a clock starts from the time the board was built: better than 00:00:00, and what a
     // board with no radio and no PC on the cable will show until the app sets it.
     if ui::HAS_CLOCK {
-        let (hour, minute, second) = boot_time();
-        design.set_wall_clock(hour, minute, second);
-        info!("clock: starting from the build time {:02}:{:02}:{:02}", hour, minute, second);
+        let (year, month, day, hour, minute, second) = boot_datetime();
+        design.set_wall_datetime(year, month, day, hour, minute, second);
+        info!(
+            "clock: starting from the build time {:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second
+        );
     }
 
     info!(

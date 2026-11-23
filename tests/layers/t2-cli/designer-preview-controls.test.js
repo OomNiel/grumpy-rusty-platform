@@ -739,6 +739,9 @@ test('a clock draws hour and minute ticks, three hands in their own colours, and
                     minute_tick_color: '#00ffff',
                     label_color: '#ffffff',
                     label_scale: 1,
+                    show_weekday: false,
+                    show_month: false,
+                    show_date: false,
                     ...props,
                 }),
             ),
@@ -828,6 +831,9 @@ test('a clock leaves the numbers out when asked, and draws nothing in a box too 
         hour_color: '#00ff00',
         minute_color: '#0000ff',
         second_color: '#ff0000',
+        show_weekday: false,
+        show_month: false,
+        show_date: false,
     };
     const withNumbers = fillsWithColour(boot(documentWith(widgetOf('clock', props))).calls, css565('#ffffff'));
     ok(withNumbers.length > 0);
@@ -865,6 +871,9 @@ test('every hour number is centred on its own tick, not hung off one corner', ()
                 label_color: '#ffffff',
                 label_scale: 1,
                 font: 'Tiny3x5',
+                show_weekday: false,
+                show_month: false,
+                show_date: false,
             }),
         ),
     );
@@ -972,6 +981,9 @@ test('a clock draws its numbers in the block size the face really uses', () => {
                         minute_color: '#0000ff',
                         second_color: '#ff0000',
                         font,
+                        show_weekday: false,
+                        show_month: false,
+                        show_date: false,
                     }),
                 ),
             ).calls,
@@ -983,6 +995,175 @@ test('a clock draws its numbers in the block size the face really uses', () => {
     const scaled = numeralsOf('Scaled6x10');
     ok(scaled.length > 0);
     ok(scaled.every((call) => call.args[2] === 2 && call.args[3] === 2), 'two-by-two blocks in Scaled6x10');
+});
+
+test('a clock draws its date block: the weekday, the month and year, and the day in its box', () => {
+    // Asked for 2026-11-23: the weekday under the pivot, the month and year beneath it, and the day
+    // number in a rounded box above the six. The canvas has to paint the block the crate paints --
+    // the board's own date, not a placeholder -- so the ink and the box are looked for in their own
+    // colours rather than inferred from "something changed".
+    const props = {
+        hour: 10,
+        minute: 10,
+        second: 0,
+        hour_color: '#000000',
+        minute_color: '#000000',
+        second_color: '#000000',
+        hour_tick_color: '#000000',
+        minute_tick_color: '#000000',
+        label_color: '#000000',
+        font: 'Tiny3x5',
+        year: 2026,
+        month: 11,
+        day: 23,
+        date_color: '#ff00ff',
+        date_box_fill: '#0000ff',
+        date_box_border: '#00ff00',
+        date_box_border_width: 2,
+        date_box_radius: 4,
+        date_box_opacity: 100,
+        show_weekday: true,
+        show_month: true,
+        show_date: true,
+    };
+    const { calls } = boot(documentWith(widgetOf('clock', props)));
+    const ink = fillsWithColour(calls, css565('#ff00ff'));
+    ok(ink.length > 0, 'the three date lines are painted in the date colour');
+    // The pivot is the widget's centre: 40 + 96 / 2 across, 60 + 96 / 2 down. The block is anchored
+    // beneath it; at the design's fixed size it may just reach over the pivot on a 96-pixel face.
+    const cy = 60 + 96 / 2;
+    ok(ink.every((call) => call.args[1] >= cy - 10), 'the date ink sits around and below the pivot');
+    ok(fillsWithColour(calls, css565('#0000ff')).length > 0, 'the day box is filled');
+    ok(fillsWithColour(calls, css565('#00ff00')).length > 0, 'and outlined in the border colour');
+
+    // The block's own nudge: six pixels up moves every date pixel six rows up.
+    const shifted = fillsWithColour(
+        boot(documentWith(widgetOf('clock', { ...props, date_offset: 6 }))).calls,
+        css565('#ff00ff'),
+    );
+    const top = (pixels) => Math.min(...pixels.map((call) => call.args[1]));
+    equal(top(shifted), top(ink) - 6, 'a positive offset lifts the whole block');
+    const lowered = fillsWithColour(
+        boot(documentWith(widgetOf('clock', { ...props, date_offset: -4 }))).calls,
+        css565('#ff00ff'),
+    );
+    equal(top(lowered), top(ink) + 4, 'a negative one lowers it');
+
+    // Each switch turns its own element off; all three off leaves no date ink at all.
+    const off = boot(
+        documentWith(
+            widgetOf('clock', {
+                ...props,
+                show_weekday: false,
+                show_month: false,
+                show_date: false,
+            }),
+        ),
+    ).calls;
+    equal(fillsWithColour(off, css565('#ff00ff')).length, 0, 'no date ink with every line switched off');
+    equal(fillsWithColour(off, css565('#0000ff')).length, 0, 'and no day box');
+});
+
+test('a date line can be sized by a fraction, not only by whole steps', () => {
+    // Asked 2026-11-23: *"Is it possible to scale the date element text size by fractions of a number
+    // e.g: 1.5 instead of 2?"* The canvas has to resample the glyph pixels exactly as the crate does,
+    // or the design's 1.5 would look like 2 on the glass and like something else on the canvas.
+    const props = {
+        hour: 10,
+        minute: 10,
+        second: 0,
+        hour_color: '#000000',
+        minute_color: '#000000',
+        second_color: '#000000',
+        hour_tick_color: '#000000',
+        minute_tick_color: '#000000',
+        label_color: '#000000',
+        font: 'Tiny3x5',
+        year: 2026,
+        month: 11,
+        day: 23,
+        date_color: '#ff00ff',
+        date_box_opacity: 0,
+        date_box_border_width: 0,
+        show_weekday: false,
+        show_month: false,
+        show_date: true,
+    };
+    const inkHeight = (day_size) => {
+        const calls = boot(documentWith(widgetOf('clock', { ...props, day_size }))).calls;
+        const ink = fillsWithColour(calls, css565('#ff00ff'));
+        ok(ink.length > 0, `the day is painted at ${day_size}`);
+        const top = Math.min(...ink.map((call) => call.args[1]));
+        const bottom = Math.max(...ink.map((call) => call.args[1] + call.args[3]));
+        return bottom - top;
+    };
+    const one = inkHeight(1);
+    const half = inkHeight(1.5);
+    const two = inkHeight(2);
+    ok(one < half && half < two, `a fraction sits between the whole sizes: ${one}, ${half}, ${two}`);
+    equal(half, Math.round(one * 1.5), 'and is one and a half times the face, not the next whole step');
+});
+
+test('the date block puts the month and year on top and the weekday in the middle', () => {
+    // Asked 2026-11-23: *"Swop the date element order: Month/Year on top and Day of the week in the
+    // middle."* The three lines share one colour, so they are told apart by what they paint: the month
+    // and year are the widest line, the weekday narrower, the day number narrowest of all.
+    const props = {
+        hour: 10,
+        minute: 10,
+        second: 0,
+        hour_color: '#000000',
+        minute_color: '#000000',
+        second_color: '#000000',
+        hour_tick_color: '#000000',
+        minute_tick_color: '#000000',
+        label_color: '#000000',
+        font: 'Tiny3x5',
+        year: 2026,
+        month: 11,
+        day: 23,
+        date_color: '#ff00ff',
+        date_box_opacity: 0,
+        date_box_border_width: 0,
+        show_weekday: true,
+        show_month: true,
+        show_date: true,
+    };
+    const ink = fillsWithColour(boot(documentWith(widgetOf('clock', props))).calls, css565('#ff00ff'));
+    ok(ink.length > 0, 'the three lines are painted');
+    // The pixels of each row, so the bands of ink can be found and measured.
+    const rows = new Map();
+    for (const call of ink) {
+        const [x, y, w, h] = [call.args[0], call.args[1], call.args[2], call.args[3]];
+        for (let row = y; row < y + h; row += 1) {
+            const span = rows.get(row) ?? [Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY];
+            span[0] = Math.min(span[0], x);
+            span[1] = Math.max(span[1], x + w);
+            rows.set(row, span);
+        }
+    }
+    const bands = [];
+    for (const row of [...rows.keys()].sort((a, b) => a - b)) {
+        const span = rows.get(row);
+        const last = bands[bands.length - 1];
+        if (last !== undefined && row === last.bottom + 1) {
+            last.bottom = row;
+            last.left = Math.min(last.left, span[0]);
+            last.right = Math.max(last.right, span[1]);
+        } else {
+            bands.push({ top: row, bottom: row, left: span[0], right: span[1] });
+        }
+    }
+    equal(bands.length, 3, 'three lines, three bands of ink');
+    ok(
+        bands[0].top < bands[1].top && bands[1].top < bands[2].top,
+        'the lines are stacked from the top down',
+    );
+    const width = (band) => band.right - band.left;
+    ok(
+        width(bands[0]) > width(bands[1]) && width(bands[1]) > width(bands[2]),
+        `the month and year are on top and the weekday in the middle: ${bands.map(width).join(', ')}`,
+    );
 });
 
 test('the keypad is drawn: an entry box, keys in the design colours, and the mode it was set to', () => {

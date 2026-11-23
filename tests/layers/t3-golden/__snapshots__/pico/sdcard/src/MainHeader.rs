@@ -63,12 +63,42 @@ const fn parse_i64(text: &str) -> Option<i64> {
     Some(if negative { -value } else { value })
 }
 
-/// The wall clock the firmware starts from: the build's own time, in local time.
+/// The civil date `days` days after 1970-01-01 (Howard Hinnant's civil_from_days).
+///
+/// Integer arithmetic only, no std and no timezone database, because a date block on a Pico has
+/// nothing else to read the calendar from.
 #[allow(dead_code)]
-pub fn boot_time() -> (u8, u8, u8) {
+pub fn civil_from_days(days: i64) -> (u16, u8, u8) {
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 157_908) / 365;
+    let mut year = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let month_day = (5 * doy + 2) / 153;
+    let day = (doy - (153 * month_day + 2) / 5 + 1) as u8;
+    let month = if month_day < 10 { month_day + 3 } else { month_day - 9 } as u8;
+    if month <= 2 {
+        year += 1;
+    }
+    (year as u16, month, day)
+}
+
+/// The wall clock the firmware starts from: the build's own date and time, in local time.
+///
+/// This is the firmware's RTC seed on a board with no chip RTC: the extension writes the build's
+/// Unix timestamp into `.cargo/config.toml` before every build, and a W board's SNTP answer
+/// replaces it once the network answers.
+#[allow(dead_code)]
+pub fn boot_datetime() -> (u16, u8, u8, u8, u8, u8) {
     let seconds = BUILD_EPOCH + UTC_OFFSET_MINUTES * 60;
+    let days = seconds.div_euclid(86_400);
     let of_day = seconds.rem_euclid(86_400);
+    let (year, month, day) = civil_from_days(days);
     (
+        year,
+        month,
+        day,
         (of_day / 3_600) as u8,
         ((of_day % 3_600) / 60) as u8,
         (of_day % 60) as u8,

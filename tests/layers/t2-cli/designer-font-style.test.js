@@ -65,7 +65,15 @@ function paintClock(font) {
             y: 8,
             width: 200,
             height: 200,
-            props: { ...defaultProps('clock'), font: 'face' },
+            // The date block is off: this test measures the numerals' ink against the face's own
+            // glyphs, and a date drawn in the same colour would dominate the count.
+            props: {
+                ...defaultProps('clock'),
+                font: 'face',
+                show_weekday: false,
+                show_month: false,
+                show_date: false,
+            },
             events: [],
             children: [],
         },

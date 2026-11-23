@@ -125,7 +125,7 @@ class Element {
     /** Fires the handlers this element registered, which is how a test drives a click or a drag. */
     emit(type, event = {}) {
         for (const handler of this.listeners.get(type) ?? []) {
-            handler({ preventDefault() {}, stopPropagation() {}, ...event });
+            handler({ preventDefault() { }, stopPropagation() { }, ...event });
         }
     }
 
@@ -149,8 +149,12 @@ class Element {
         return this.context;
     }
 
-    setPointerCapture() {}
-    releasePointerCapture() {}
+    setPointerCapture() { }
+    releasePointerCapture() { }
+
+    /** Focus and selection are where a real input would keep a caret; the stub has no caret to keep. */
+    focus() { }
+    select() { }
 
     /** Only the one selector the panel uses: a class lookup among direct children. */
     querySelector(selector) {
@@ -200,7 +204,7 @@ class Document {
 
     emit(type, event = {}) {
         for (const handler of this.listeners.get(type) ?? []) {
-            handler({ preventDefault() {}, ...event });
+            handler({ preventDefault() { }, ...event });
         }
     }
 }
@@ -231,7 +235,7 @@ function install() {
         clearTimeout: global.clearTimeout,
         emit(type, event = {}) {
             for (const handler of windowListeners.get(type) ?? []) {
-                handler({ preventDefault() {}, ...event });
+                handler({ preventDefault() { }, ...event });
             }
         },
     };
@@ -243,7 +247,7 @@ function install() {
             messages.push(message);
         },
         getState: () => undefined,
-        setState: () => {},
+        setState: () => { },
     });
 
     return { document, root, messages, window };

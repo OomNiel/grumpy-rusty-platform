@@ -572,11 +572,43 @@ pub fn parse_widget(node: &KdlNode) -> Result<(GridPlacementDef, WidgetDef), Cod
                 .unwrap_or(0.5)
                 .clamp(0.0, 2.0) as f32;
             let show_labels = get_bool_prop(node, "show_labels").unwrap_or(true);
+            let year = get_i64_prop(node, "year").unwrap_or(2000).clamp(2000, 9999) as u16;
+            let month = get_i64_prop(node, "month").unwrap_or(1).clamp(1, 12) as u8;
+            // A date that says 31 February is a design mistake, not something the renderer should
+            // have to guard against on every paint: clamp it to the month it names.
+            let max_day = match month {
+                1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+                4 | 6 | 9 | 11 => 30,
+                2 if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) => 29,
+                2 => 28,
+                _ => 31,
+            };
+            let day = get_i64_prop(node, "day").unwrap_or(1).clamp(1, max_day) as u8;
+            // A date line's size may be a fraction (`1.5` is the designer's own 0.1 step): the crate
+            // resamples the glyph pixels, so a design is not limited to whole multiplications.
+            let weekday_scale = get_f64_prop(node, "weekday_scale")
+                .unwrap_or(1.0)
+                .clamp(1.0, 4.0) as f32;
+            let month_scale = get_f64_prop(node, "month_scale")
+                .unwrap_or(1.0)
+                .clamp(1.0, 4.0) as f32;
+            let day_scale = get_f64_prop(node, "day_scale")
+                .unwrap_or(1.0)
+                .clamp(1.0, 4.0) as f32;
+            let date_offset = get_i64_prop(node, "date_offset")
+                .unwrap_or(0)
+                .clamp(-200, 200) as i16;
+            let date_box_opacity = get_i64_prop(node, "date_box_opacity")
+                .unwrap_or(100)
+                .clamp(0, 100) as u8;
             WidgetDef::Clock {
                 id,
                 hour,
                 minute,
                 second,
+                year,
+                month,
+                day,
                 hour_color: get_string_prop(node, "hour_color").map(str::to_string),
                 minute_color: get_string_prop(node, "minute_color").map(str::to_string),
                 second_color: get_string_prop(node, "second_color").map(str::to_string),
@@ -586,6 +618,24 @@ pub fn parse_widget(node: &KdlNode) -> Result<(GridPlacementDef, WidgetDef), Cod
                 label_scale,
                 label_inset,
                 show_labels,
+                date_font: get_string_prop(node, "date_font").map(str::to_string),
+                date_color: get_string_prop(node, "date_color").map(str::to_string),
+                weekday_scale,
+                month_scale,
+                day_scale,
+                date_offset,
+                show_weekday: get_bool_prop(node, "show_weekday").unwrap_or(true),
+                show_month: get_bool_prop(node, "show_month").unwrap_or(true),
+                show_date: get_bool_prop(node, "show_date").unwrap_or(true),
+                date_box_fill: get_string_prop(node, "date_box_fill").map(str::to_string),
+                date_box_border: get_string_prop(node, "date_box_border").map(str::to_string),
+                date_box_border_width: get_i64_prop(node, "date_box_border_width")
+                    .unwrap_or(1)
+                    .clamp(0, 8) as u8,
+                date_box_radius: get_i64_prop(node, "date_box_radius")
+                    .unwrap_or(4)
+                    .clamp(0, 32) as u8,
+                date_box_opacity,
                 style,
             }
         }

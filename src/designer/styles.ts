@@ -381,6 +381,14 @@ body {
 /* A checkbox is a box, not a field: it keeps its own size rather than stretching across the row. */
 .field > input[type="checkbox"] { flex: 0 0 auto; width: auto; }
 
+/* The Events list: a row can be picked to say which handler a middle-click on the widget opens. Picking is
+   not ticking, so the row is a div and only the box turns a handler on. */
+.event-row { cursor: pointer; border-radius: 2px; }
+.event-row.field-selected {
+    background: var(--vscode-list-activeSelectionBackground, #094771);
+    color: var(--vscode-list-activeSelectionForeground, #ffffff);
+}
+
 .field-input { flex: 1 1 0; width: 100%; min-width: 0; }
 
 /* A GPIO box and the module pin it comes out on, sharing one row. The box is narrow because a GPIO is one or

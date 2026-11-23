@@ -195,6 +195,18 @@ test('every widget that offers a Font writes it into the markup', () => {
     }
 });
 
+test('a clock writes its date face as its own attribute, not as the style font', () => {
+    // The numerals read `style.font`; the date block has a second, shared face of its own. Putting the
+    // date face in the style expression would repaint every numeral in it as well.
+    const builtin = emitKdl(documentWithOne('clock', { font: 'Scaled6x10', date_font: 'Mono8x16' }));
+    contains(builtin, 'style.font = FontId::Scaled6x10;', 'the numerals keep the style font');
+    contains(builtin, 'date_font="Mono8x16"', 'the date face travels as its own attribute');
+
+    const declared = documentWithOne('clock', { date_font: 'face' });
+    declared.fonts = [{ id: 'face', src: 'assets/face.bdf', chars: '' }];
+    contains(emitKdl(declared), 'date_font="face"', 'a declared date face is named the same way');
+});
+
 test('the three pickers keep their panel when a font is chosen', () => {
     // The regression this file was written for: choosing a font emitted `Style::label()`, so the widget
     // lost its background, border, shadow and rounding on the glass while the canvas drew the panel.

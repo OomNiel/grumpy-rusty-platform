@@ -248,10 +248,57 @@ test('the face starts at the time the design shows, and an app can hand over the
     const source = emitUiCpp(clockDesign());
     contains(source, 'clock_clock.hour = 10;', 'the designed hour');
     contains(source, 'clock_clock.minute = 10;', 'and minute');
-    contains(source, 'void ui_clock_clock_set_time(int hour, int minute, int second) {', 'the setter exists');
-    contains(source, 'clock_clock.hour = ((hour % 24) + 24) % 24;', 'and folds a value into range');
-    contains(emitUiCppHeader(clockDesign()), 'void ui_clock_clock_set_time(int hour, int minute, int second);', 'declared for the app');
+    contains(source, 'clock_clock.year = ', 'and a date to start from');
+    contains(source, 'void ui_clock_clock_set_time(int hour, int minute, int second) {', 'the time setter exists');
+    contains(source, 'void ui_clock_clock_set_date(int year, int month, int day) {', 'and the date setter');
+    contains(source, 'void ui_clock_clock_set_datetime(int year, int month, int day,', 'and the two together');
+    contains(source, 'ui_clock_set_datetime(&clock_clock, clock_clock.year,', 'the time setter keeps the date it had');
+    contains(source, 'clock->hour = ((hour % 24) + 24) % 24;', 'and a value is folded into range');
+    const header = emitUiCppHeader(clockDesign());
+    contains(header, 'void ui_clock_clock_set_time(int hour, int minute, int second);', 'declared for the app');
+    contains(header, 'void ui_clock_clock_set_date(int year, int month, int day);', 'the date too');
+    contains(header, 'void ui_clock_clock_set_datetime(int year, int month, int day, int hour, int minute, int second);', 'and both');
     equal(emitUiCppHeader(design()).includes('set_time'), false, 'a design with no clock declares none');
+});
+
+test('the date block follows its offset, and the day box keeps its border clear of the number', () => {
+    const weekdayY = (source) => {
+        const found = /lv_obj_align\(clock_clock\.weekdayLabel, LV_ALIGN_CENTER, 0, (-?\d+)\)/.exec(source);
+        ok(found !== null, 'the weekday label is aligned');
+        return Number(found[1]);
+    };
+    const monthY = (source) => {
+        const found = /lv_obj_align\(clock_clock\.monthLabel, LV_ALIGN_CENTER, 0, (-?\d+)\)/.exec(source);
+        ok(found !== null, 'the month label is aligned');
+        return Number(found[1]);
+    };
+    const plain = emitUiCpp(clockDesign({ date_font: 'Mono6x10', weekday_size: 2 }));
+    const shifted = emitUiCpp(clockDesign({ date_font: 'Mono6x10', weekday_size: 2, date_offset: 6 }));
+    equal(weekdayY(shifted), weekdayY(plain) - 6, 'a positive offset lifts the whole block');
+    // Asked 2026-11-23: *"Swop the date element order: Month/Year on top and Day of the week in the
+    // middle."* LVGL's centre alignment measures downward, so the month must be the more negative one.
+    ok(monthY(plain) < weekdayY(plain), 'the month and year sit above the weekday');
+
+    // The number must not paint over the frame: the box is the label's line height plus the border
+    // and a few pixels of air on each side.
+    const box = /lv_obj_set_size\(clock_clock\.dayBox, (\d+), (\d+)\)/.exec(plain);
+    ok(box !== null, 'the box is sized');
+    ok(Number(box[1]) >= 24 && Number(box[2]) >= 24, `the box leaves room for the border and air: ${box[0]}`);
+});
+
+test('a fractional date size lands on the nearest face LVGL can switch on', () => {
+    // Asked 2026-11-23 for sizing the date text by fractions. Montserrat comes in whole sizes, so a
+    // weight of 1.5 has to move the chosen face between the whole steps rather than being rounded
+    // back to 1 or up to 2.
+    const weekdayFace = (source) => {
+        const found = /lv_obj_set_style_text_font\(clock_clock\.weekdayLabel, &lv_font_montserrat_(\d+), 0\)/.exec(source);
+        ok(found !== null, 'the weekday label has a face');
+        return Number(found[1]);
+    };
+    const one = weekdayFace(emitUiCpp(clockDesign({ date_font: 'Mono6x10', weekday_size: 1 })));
+    const half = weekdayFace(emitUiCpp(clockDesign({ date_font: 'Mono6x10', weekday_size: 1.5 })));
+    const two = weekdayFace(emitUiCpp(clockDesign({ date_font: 'Mono6x10', weekday_size: 2 })));
+    ok(one < half && half < two, `a fraction is neither whole step: ${one}, ${half}, ${two}`);
 });
 
 test('a clock with no numerals draws no labels', () => {
@@ -321,9 +368,10 @@ test('documentFontSizes is what lv_conf.h has to compile in', () => {
     const document = design();
     document.widgets[0].props.font = 'Mono8x16';
     equal(documentFontSizes(document).join(' '), '20', 'one label');
-    // The clock multiplies: Mono6x10 is 14 and label_scale 2 asks for 28.
-    equal(documentFontSizes(clockDesign()).join(' '), '28', 'the clock numerals');
-    equal(documentFontSizes(clockDesign({ movement: false })).join(' '), '28', 'moving or not');
+    // The clock multiplies: Mono6x10 is 14 and label_scale 2 asks for 28. The date block shares the
+    // clock's face, and its three lines are the design's own sizes -- 14 each -- with no fit.
+    equal(documentFontSizes(clockDesign()).join(' '), '28 14 14 14', 'the clock numerals and its date');
+    equal(documentFontSizes(clockDesign({ movement: false })).join(' '), '28 14 14 14', 'moving or not');
     const numerals = emitUiCpp(clockDesign());
     contains(numerals, 'lv_obj_set_style_text_font(numeral_clock_1, &lv_font_montserrat_28, 0);', 'and that is what ui.cpp names');
 });
