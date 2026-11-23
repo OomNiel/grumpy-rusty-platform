@@ -242,9 +242,11 @@ The Keypad widget types into its own entry box and hands the finished line to th
 ### 10.3 Views (tabs)
 - A tab strip above the canvas holds one tab per view. Add with `+`.
 - Right-click a tab to **rename**, **duplicate**, **delete**, or **make it the start view** (tab carries a dot; your order is preserved).
+- **Renaming** edits the tab's caption, and the tab label changes at once. The generated `View::` name follows the caption whenever it can take it (a caption with spaces keeps its old id), and every `navigate` destination that pointed at the old name is retargeted.
+- A control dropped while a tab is open belongs to **that** view, not to the main view.
 - **All views** draws the other views as dashed outlines, so a widget dropped on the wrong view can be found without switching tabs.
 - Every widget is compiled into the same markup; the generated `ui.rs` hides views that are not on show, so switching costs a few flag writes rather than a rebuild.
-- `navigate` switches view with no code: on a click (button), on a choice (dropdown), on Enter (keypad). `design.show_view(View::X)` drives it from app code (timer/sensor).
+- `navigate` switches view with no code: on a click (button), on a choice (dropdown), on Enter (keypad). The destination is a design property on every widget that can raise the event. `design.show_view(View::X)` drives it from app code (timer/sensor).
 - Only the active view is driven: a clock on another view is not ticked.
 
 ### 10.4 Code behind — event handlers
@@ -256,8 +258,8 @@ A widget can declare **events** (clicked, pressed, valueChanged, submitted, scro
 - For `navigate`, no stub is created: the switch is written into `Designer::pump` so views change with no Rust code.
 
 **Jumping to the code behind:**
-- **Middle-click** a widget on the canvas. The panel sends a `revealHandler` action; the extension opens `src/ui_handlers.rs` and places the caret on `fn on_<widget>_<firstEvent>`.
-- The first event in the widget's event list is the one used (the order stubs were appended).
+- **Middle-click** a widget on the canvas. The panel sends a `revealHandler` action; the extension opens `src/ui_handlers.rs` and places the caret on the handler's `fn`.
+- Click a row in the **Events** list first to choose which handler a middle-click opens — selecting a row does not tick it. Without a selection (or when the selected event is not ticked) the widget's first event is used.
 
 **Handler signature:** depends on the event. Most carry the widget id; `submitted` hands you `&str` (the submitted line); `scroll` carries `delta: i32`; `textInput` carries `ch: char`. The dispatch arm is generated for you; implement the body.
 
@@ -294,17 +296,27 @@ No Pico has an RTC on the chip: `pico` and `pico2` start their clock from **the 
 
 A design with a clock starts a serial time listener automatically (host PC time), closes it for Flash/Monitor, and restarts after flash. The hour-number distance inside the tick ring is *Number inset* (character widths, 0.1 steps).
 
+**The date block.** A clock draws the calendar under its pivot, in this order from the top:
+
+1. **Month and year** — e.g. `NOVEMBER 2026`.
+2. **Day of the week** — e.g. `MONDAY`.
+3. **The day number** in a rounded box, e.g. `23`.
+
+All three lines share one **Date font** (the clock's own font by default) and one **Date colour**, and each has its own **size** in 0.1 steps: `1` is the face's own size, `1.5` is half again (the glyph pixels are resampled, so it is not rounded to the next whole step), and `2` is twice. *Date offset (up)* moves the whole block by pixels, positive up, like *Number inset* moves the hour numbers. A switch hides each line; the **Date box** group sets the day number's fill, border colour and thickness, corner radius and fill opacity.
+
+The Year, Month and Day are a design-time snapshot (a new clock starts from today's date). At run time the board's RTC takes over: an ESP keeps the calendar across a reset, a Pico starts from the time it was flashed (`pico`/`pico2`) or from Wi-Fi SNTP (`picow`/`pico2w`), and the host's dated `TIME` line corrects it when a PC is on the cable. Midnight rolls the day, month and year.
+
 Backlight: dimmable 0–100% via PWM on BL pin, compile-time `BACKLIGHT_BRIGHTNESS` in `.cargo/esp-config.toml`. Offered only for panels with a BL pin; inverted for active-low. Projects not mentioning it are fully on.
 
 ---
 
 ## 11. Clock & Time Sync
 
-A design's clock follows the host PC's time, set/served over the serial port (board asks `TIME?` when RTC never set), kept in the chip's RTC. Boards without a PC fall back to Wi-Fi SNTP via generated `src/net.rs`.
+A design's clock follows the host PC's time, set/served over the serial port (board asks `TIME?` when the RTC was never set), kept in the chip's RTC. The RTC holds the **calendar as well as the time**, so a clock's date block survives a reset and rolls at midnight. Boards without a PC fall back to Wi-Fi SNTP via generated `src/net.rs`.
 
-Host writes dated line `TIME YYYY-MM-DD HH:MM:SS` then bare `TIME HH:MM:SS`, so the calendar day survives power cycles without network.
+Host writes the dated line `TIME YYYY-MM-DD HH:MM:SS` and then a bare `TIME HH:MM:SS`, so the calendar day is handed over too and survives power cycles without a network. A bare line keeps whatever date the RTC already had.
 
-New ESP projects bake in the host's UTC offset. Hour-number distance inside the tick ring is a design property (*Number inset*, in character widths, stepped by 0.1).
+New ESP projects bake in the host's UTC offset. A Pico seeds its date and time from the build (`RUSTY_EPOCH` in `.cargo/config.toml`, refreshed before every build). Hour-number distance inside the tick ring is a design property (*Number inset*, in character widths, stepped by 0.1).
 
 ---
 

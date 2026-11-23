@@ -8872,3 +8872,94 @@ Verified: `cargo test --lib` **328**, codegen **34**, `rusty-gui-widgets` `sd_im
 build clean, `designer.test.js` **130**, `designer-webview` **33** (new zoom and rounded-image tests),
 `designer-preview-controls` **30**, `designer-widget-fonts` **7**, `npm run compile` clean.
 0.19.2 is tagged and released with its `.vsix`, and the repository is public from this release.
+
+### 184. View names, dropped controls, and the handler a middle-click opens (2026-11-22)
+
+Three complaints from one bench session, all in the webview's view handling.
+
+**Renaming a view edited the id, not the tab.** *"Renaming the screen views at the top of the designer
+does not change the label of the tab."* The tab strip showed `entry.label` (falling back to `entry.id`), but
+the rename field edited the id alone. Renaming now edits the **caption**, which is what the tab, the View
+picker and the Events destination list show; the id — the generated `View::` variant — follows the caption
+whenever it can take it (`renameViewIn`), so `Settings` leaves one name in the design. A caption with
+spaces keeps the old id. Collisions are checked against both the id and the variant name: `settings` and
+`Settings` are the same `View::Settings`, so the second is refused. Every `navigate_to` that pointed at
+the old id is retargeted in the same edit, which is one `Ctrl+Z`.
+
+**A control dropped while another view was open landed on the main view.** `addWidget` never named the
+tab the canvas was showing, and a widget with no `view` belongs to the first view. The drop now passes
+the open view; the first view's id is left off exactly as `assignView` leaves it off, so a single-view
+design keeps the file it always had.
+
+**The Navigate row was offered on a keypad and then refused on save.** `navigate_to` is a
+*designer-only* property: it belongs to the action that writes it, not to the widget's own list. The
+panel offered it for every widget with a `navigate` event, but the save-side unknown-property check
+knew the field only where the catalogue declared it — so the property the row had just written was
+dropped, the switch never reached the markup, and the glass could not change view. `dropUnknownProps`
+now adds each event's `targetProperty` for any widget that raises that event (`widgetRaises`).
+
+**Middle-click opens the selected handler.** The Events list rows are `<div>`s, not `field()`'s
+`<label>`, because a label toggles its input: picking the event a middle-click should open is not the
+same gesture as ticking its handler. The selection is UI state (`selectedEvent`) and never saved;
+`revealHandler` takes the optional event and falls back to the widget's first one when the selection
+is absent or unticked.
+
+Verified: `designer-views.test.js` **21**, `designer-webview.test.js` **36** (new rename, drop and
+middle-click tests), `designer.test.js` **130**, `npm run compile` clean.
+
+### 185. The Clock's date block, fractional sizes and the order ask (0.19.7–0.19.12, 2026-11-23)
+
+Asked in three steps: *"Add the Day of the week centred beneath the pivot point of the hands… the Month
+and Year centred below… a rectangle with rounded corners with the current date centred inside… read from
+the RTC clock… date text size must scale correctly when the control size is adjusted"*, then *"The text
+resizing is not working correctly… the date number box frame is too small… add a feature to move the
+elements up/down by pixels"*, then *"scale the date element text size by fractions… 1.5 instead of 2"*,
+and finally *"Swop the date element order: Month/Year on top and Day of the week in the middle."*
+
+**The block.** `ClockWidget` gained `year`, `month`, `day`, a shared `date_font`/`date_color`, three sizes,
+`date_offset`, a switch per line and the day box's fill/border/thickness/radius/opacity. The stack is
+anchored above the six-o'clock numeral (or the six o'clock tick when the numerals are off), every line is
+centred on the pivot, and `date_offset` shifts the whole stack by pixels — the block's counterpart to
+`label_inset`. Final order, top to bottom: **month and year, weekday, day box**. The day box is sized for
+two digits (`88`) so 9 → 10 does not grow it, and its padding is the border plus one glyph pixel, or a
+scaled-up digit paints over the frame. A date change damages only the block; a time change still damages
+only the hands.
+
+**The date comes from the board.** The widget holds a date; the generated `ui.rs` hands over
+`set_wall_datetime(year, month, day, h, m, s)` from the RTC, the build time or SNTP. The ESP firmware's
+RTC timestamp is now decoded into a calendar (`rtc_datetime`, `civil_from_days`) instead of being reduced
+to `% 86_400`, the Pico's `boot_datetime()` seeds the date from `BUILD_EPOCH`, and `net::SYNCED_TIME`
+carries six fields. `advance_clock`/`set_clock_time` move a whole date, so midnight rolls the day, month
+and year. The legacy `set_wall_clock(h, m, s)` stays (with `#[allow(dead_code)]`) so an older project's
+`main.rs` still compiles against the new `ui.rs`; it keeps the date the design named.
+
+**The sizing trap.** The first implementation *fit* the text to the control, which is exactly what the
+user did not want: it shrank on a small cell. The rule is the hour numerals' rule — the design names a
+relative magnification, and the control's size changes nothing. Sizes are now `f32`: a scale of `1.5`
+resamples the glyph bitmap (each glyph pixel's edges are scaled and rounded separately), so it is half
+again rather than the next whole step. The same change fixed a latent double-scaling in `draw_ink_line`
+and `measure_ink`, which multiplied the pen advance by the scale *and* by the block, doubling letter
+spacing at every size above 1.
+
+**The trap that stopped a save.** The new date properties were validated as required, so a
+`panel.ui.json` written without `year` produced *"17 problems: 'clock': Year is missing"*. `renderDesign`
+writes the document but **not** the markup when validation fails by design, so the board kept compiling
+the old `ui.kdl` (no date fields, crate defaults) while the canvas showed the new one — which is what
+"the compiled version does not reflect the Designer settings" and "the date elements are wrong" looked
+like. The date fields are `optional: true`, matching the parser's defaults, and the user's project was
+regenerated. **Lesson: a catalogue property the crate defaults must be optional, or validation refuses
+every older design and quietly freezes the markup.**
+
+**The generation traps.** `ClockWidget { weekday_scale: 1 }` against an `f32` field is `E0308 expected
+f32, found integer`: the emitter must write `1.0` (`float_literal`). And the change lives in the vendored
+crates, so a project keeps the old scaling until its `codegen/` copies are refreshed — the marker
+(`codegen/.rusty-platform-crates`) is what prompts it.
+
+The C++ side (`lvgl.ts`) draws the same block with `lv_label`s and a rounded `lv_obj`; LVGL has no bitmap
+metrics, so it approximates line boxes from the Montserrat face and a fractional weight lands on the
+nearest whole font size. The canvas (`preview.ts`) mirrors the Rust measurement and the resampling
+exactly, pixel for pixel.
+
+Verified: `embedded-gui` **343**, `embedded-gui-codegen` **35**, t1-logic **1233**, t2-cli **96**,
+t3-golden **7**; `Rust_WSWG_pico2w_Test1` builds with 0 warnings and 0 errors, including a scratch
+build at `day_size=1.5 weekday_size=1.25`. 0.19.12 is packaged from this tree.

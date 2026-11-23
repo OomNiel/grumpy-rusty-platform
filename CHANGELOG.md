@@ -11,6 +11,59 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.19.12] - 2026-11-23
+
+The Clock gains a **date block** under its pivot, and the board's clock now carries the calendar, not
+just the time of day. This entry covers the packages built on the bench between 0.19.4 and 0.19.12;
+only 0.19.12 is tagged.
+
+### Added
+
+- **The Clock's date block.** Below the hands and above the six-o'clock numeral, the face draws the
+  **month and year on top, the weekday in the middle, and the day number in a rounded box** at the
+  bottom. One shared date font and colour, a relative size per line in **0.1 steps** (`1.5` is half
+  again the face, resampled rather than rounded to a whole step), *Date offset (up)* in pixels, a
+  switch per line, and the box's fill, border colour and thickness, corner radius and fill opacity
+  are design properties. Every date property is optional, so a design drawn before the block existed
+  still validates and still compiles.
+- **The clock is given the date, and keeps it.** `ClockWidget` holds `year`, `month`, `day` beside the
+  time, and the generated code hands over `set_wall_datetime(..)`. The ESP firmware's RTC timestamp
+  is decoded into a calendar date as well as a time of day (so the dated host line and SNTP keep a
+  real day), the Pico seeds the date from the build time (`boot_datetime()`), and midnight rolls the
+  day, month and year on the glass. A project whose `src/main.rs` still calls the old
+  `set_wall_clock(h, m, s)` compiles against the new `ui.rs` and keeps the date its design named.
+- **The selected event is what a middle-click opens.** Clicking a row in the Events list selects it
+  without ticking it; a middle-click on the widget then opens *that* handler, falling back to the
+  widget's first event when nothing is selected or the handler is not ticked.
+- **The date block in C++/LVGL.** The C++ emitter draws the same three lines and box, with LVGL's
+  nearest whole Montserrat size standing in for a fractional weight.
+
+### Changed
+
+- The date block reads, top to bottom, **month and year**, **weekday**, **day box** (asked
+  2026-11-23). The canvas, the Rust runtime and the C++ emitter all use that order.
+- The date text follows the hour numerals' rule — a relative magnification, never a fit to the
+  control — now with fractions between the whole steps.
+
+### Fixed
+
+- **A design with a Clock could not be saved.** The new date properties were validated as required, so
+  a `panel.ui.json` written without `year` reported "17 problems: 'clock': Year is missing", the markup
+  was refused, and the board kept compiling the old design while the canvas showed the new one. The
+  date fields are optional and default in the crate's parser.
+- **The Navigate row was offered on a keypad and then refused on save.** `navigate_to` is recognised on
+  every widget that raises `navigate` (button click, dropdown change, keypad submit), so the
+  destination reaches the markup.
+- **Renaming a view edited the id, not the tab.** A view is renamed by its caption now: the tab label
+  follows at once, the generated `View::` id follows the caption when it can, and every `navigate`
+  destination that pointed at the old name is retargeted.
+- **A control dropped while a second view was open landed on the main view.** The drop now names the
+  view the tab strip is showing.
+- **The clock's date font replaced the numerals' face.** `date_font` is an ordinary attribute again
+  instead of `style.font`, and an undeclared font name is reported rather than silently falling back.
+- **Generated code with a date block did not compile:** a whole-number size was written as `1` into an
+  `f32` field (`expected f32, found integer`). The emitter writes `1.0`.
+
 ## [0.19.3] - 2026-11-14
 
 The Designer offers **Touch** again on the **ESP32-035 LCD Panel**. Its project was being read out of
