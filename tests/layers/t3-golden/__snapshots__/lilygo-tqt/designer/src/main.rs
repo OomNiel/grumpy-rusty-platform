@@ -298,6 +298,7 @@ async fn main(spawner: Spawner) -> ! {
                                 state.wall_clock_applied = false;
                                 set_rtc_datetime(&state.rtc, year, month, day, hour, minute, second);
                                 state.needs_time = false;
+                                crate::net::stop_time();
                                 log::info!(
                                     "clock: the console says {:04}-{:02}-{:02} {:02}:{:02}:{:02}",
                                     year,
@@ -314,6 +315,7 @@ async fn main(spawner: Spawner) -> ! {
                                 state.wall_clock = rtc_datetime(&state.rtc);
                                 state.wall_clock_applied = false;
                                 state.needs_time = false;
+                                crate::net::stop_time();
                                 log::info!(
                                     "clock: the console says {:02}:{:02}:{:02}",
                                     hour,

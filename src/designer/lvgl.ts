@@ -1207,21 +1207,113 @@ function widgetLines(
             );
             break;
         case 'status_bar': {
-            // The crate's bar is the time on the right and a rule along the bottom; both are ordinary objects here.
+            // The crate's bar is a label on the left, a clock and a battery gauge that each sit
+            // centred or against the right edge, two right-aligned features stacked, and one font
+            // scale over all three. Each feature is an ordinary LVGL object here.
             lines.push(`    lv_obj_t *${variable} = lv_obj_create(${parent});`, ...geometry);
             lines.push(`    lv_obj_set_style_border_width(${variable}, 0, 0);`);
             lines.push(`    lv_obj_set_style_pad_all(${variable}, 0, 0);`);
             lines.push(`    ui_set_scrollable(${variable}, false);`);
-            lines.push(`    lv_obj_t *${variable}_time = lv_label_create(${variable});`);
-            lines.push(`    lv_label_set_text(${variable}_time, ${cString(textOf(widget, 'time', '12:00'))});`);
-            lines.push(`    lv_obj_align(${variable}_time, LV_ALIGN_RIGHT_MID, -4, 0);`);
-            {
-                const font = fontLine(widget, `${variable}_time`, document);
-                if (font !== undefined) {
-                    lines.push(font);
+            const scale = Math.max(1, numberProp(widget, 'font_scale', 1));
+            const baseSize = lvglFontFor(designFontOf(widget.props), document.fonts.map((font) => font.id)).size;
+            const barFont = fontSymbol(nearestFontSize(baseSize * scale));
+            const barFallback = accentOrText(widget);
+            const labelColour = colourLiteral(widget.props.label_color) ?? barFallback;
+            const clockColour = colourLiteral(widget.props.clock_color) ?? barFallback;
+            const batteryColour = colourLiteral(widget.props.battery_color) ?? barFallback;
+            const inset = Math.max(Math.round(6 * scale), 2);
+            const gap = Math.max(Math.round(4 * scale), 2);
+            const barWidth = Math.round(widget.width);
+            const barHeight = Math.round(widget.height);
+            const label = textOf(widget, 'label');
+            const time = textOf(widget, 'time', '12:00');
+            const showClock = widget.props.show_clock !== false;
+            const clockRight = showClock && textOf(widget, 'clock_align') === 'right';
+            const showBattery = widget.props.show_battery !== false;
+            const batteryRight = showBattery && textOf(widget, 'battery_align') !== 'center';
+            const advance = Math.max(1, Math.round((baseSize * scale * 3) / 5));
+            const clockWidth = Array.from(time).length * advance;
+            const shellWidth = Math.max(Math.round(16 * scale), 6);
+            const shellHeight = Math.max(Math.round(8 * scale), 3);
+            const shellTop = Math.trunc((barHeight - shellHeight) / 2);
+            if (label.length > 0) {
+                lines.push(`    lv_obj_t *${variable}_label = lv_label_create(${variable});`);
+                lines.push(`    lv_label_set_text(${variable}_label, ${cString(label)});`);
+                lines.push(`    lv_obj_set_style_text_color(${variable}_label, ${labelColour}, 0);`);
+                lines.push(`    lv_obj_set_style_text_font(${variable}_label, ${barFont}, 0);`);
+                lines.push(`    lv_obj_align(${variable}_label, LV_ALIGN_LEFT_MID, ${inset}, 0);`);
+            }
+            const drawClock = (x: number): void => {
+                lines.push(`    lv_obj_t *${variable}_time = lv_label_create(${variable});`);
+                lines.push(`    lv_label_set_text(${variable}_time, ${cString(time)});`);
+                lines.push(`    lv_obj_set_style_text_color(${variable}_time, ${clockColour}, 0);`);
+                lines.push(`    lv_obj_set_style_text_font(${variable}_time, ${barFont}, 0);`);
+                lines.push(`    lv_obj_align(${variable}_time, LV_ALIGN_LEFT_MID, ${x}, 0);`);
+            };
+            const drawGauge = (x: number): void => {
+                const gaugeInset = Math.max(Math.round(2 * scale), 1);
+                const fillWidth = Math.max(1, Math.trunc((85 * (shellWidth - 2 * gaugeInset)) / 100));
+                lines.push(`    lv_obj_t *${variable}_battery = lv_obj_create(${variable});`);
+                lines.push(
+                    `    lv_obj_set_pos(${variable}_battery, ${x}, ${shellTop});`,
+                    `    lv_obj_set_size(${variable}_battery, ${shellWidth}, ${shellHeight});`,
+                );
+                lines.push(`    lv_obj_set_style_bg_opa(${variable}_battery, LV_OPA_TRANSP, 0);`);
+                lines.push(`    lv_obj_set_style_border_width(${variable}_battery, 1, 0);`);
+                lines.push(`    lv_obj_set_style_border_color(${variable}_battery, ${batteryColour}, 0);`);
+                lines.push(`    lv_obj_set_style_radius(${variable}_battery, 1, 0);`);
+                lines.push(`    lv_obj_set_style_pad_all(${variable}_battery, 0, 0);`);
+                lines.push(`    ui_set_scrollable(${variable}_battery, false);`);
+                lines.push(`    lv_obj_t *${variable}_terminal = lv_obj_create(${variable});`);
+                lines.push(
+                    `    lv_obj_set_pos(${variable}_terminal, ${x + shellWidth}, ${shellTop + Math.trunc((shellHeight - Math.max(Math.round(4 * scale), 1)) / 2)});`,
+                    `    lv_obj_set_size(${variable}_terminal, ${Math.max(Math.round(2 * scale), 1)}, ${Math.max(Math.round(4 * scale), 1)});`,
+                );
+                lines.push(`    lv_obj_set_style_border_width(${variable}_terminal, 0, 0);`);
+                lines.push(`    lv_obj_set_style_radius(${variable}_terminal, 0, 0);`);
+                lines.push(`    lv_obj_set_style_bg_color(${variable}_terminal, ${batteryColour}, 0);`);
+                lines.push(`    lv_obj_set_style_pad_all(${variable}_terminal, 0, 0);`);
+                lines.push(`    ui_set_scrollable(${variable}_terminal, false);`);
+                lines.push(`    lv_obj_t *${variable}_fill = lv_obj_create(${variable}_battery);`);
+                lines.push(
+                    `    lv_obj_set_pos(${variable}_fill, ${gaugeInset}, ${gaugeInset});`,
+                    `    lv_obj_set_size(${variable}_fill, ${fillWidth}, ${Math.max(shellHeight - 2 * gaugeInset, 1)});`,
+                );
+                lines.push(`    lv_obj_set_style_border_width(${variable}_fill, 0, 0);`);
+                lines.push(`    lv_obj_set_style_radius(${variable}_fill, 0, 0);`);
+                lines.push(`    lv_obj_set_style_bg_color(${variable}_fill, ${batteryColour}, 0);`);
+                lines.push(`    lv_obj_set_style_pad_all(${variable}_fill, 0, 0);`);
+                lines.push(`    ui_set_scrollable(${variable}_fill, false);`);
+            };
+            const rightCount = Number(clockRight) + Number(batteryRight);
+            if (rightCount > 0) {
+                const total =
+                    (clockRight ? clockWidth : 0) + (batteryRight ? shellWidth : 0) + gap * (rightCount - 1);
+                let cursor = barWidth - inset - total;
+                if (clockRight) {
+                    drawClock(cursor);
+                    cursor += clockWidth + gap;
+                }
+                if (batteryRight) {
+                    drawGauge(cursor);
                 }
             }
-            lines.push(`    static lv_point_precise_t ${variable}_rule[] = {{0, 0}, {${Math.round(widget.width)}, 0}};`);
+            const clockCentre = showClock && !clockRight;
+            const batteryCentre = showBattery && !batteryRight;
+            const centreCount = Number(clockCentre) + Number(batteryCentre);
+            if (centreCount > 0) {
+                const total =
+                    (clockCentre ? clockWidth : 0) + (batteryCentre ? shellWidth : 0) + gap * (centreCount - 1);
+                let cursor = Math.trunc((barWidth - total) / 2);
+                if (clockCentre) {
+                    drawClock(cursor);
+                    cursor += clockWidth + gap;
+                }
+                if (batteryCentre) {
+                    drawGauge(cursor);
+                }
+            }
+            lines.push(`    static lv_point_precise_t ${variable}_rule[] = {{0, 0}, {${barWidth}, 0}};`);
             lines.push(`    lv_obj_t *${variable}_line = lv_line_create(${variable});`);
             lines.push(`    lv_line_set_points(${variable}_line, ${variable}_rule, 2);`);
             lines.push(`    lv_obj_align(${variable}_line, LV_ALIGN_BOTTOM_LEFT, 0, 0);`);
@@ -1566,6 +1658,12 @@ export function documentFontSizes(document: DesignerDocument): number[] {
                     }
                 }
             }
+            continue;
+        }
+        // The status bar scales its whole font, so the size it names is not the face's own.
+        if (widget.tag === 'status_bar') {
+            const scale = Math.max(1, numberProp(widget, 'font_scale', 1));
+            sizes.push(nearestFontSize(lvglFontFor(named, declared).size * scale));
             continue;
         }
         if (named === undefined || !TEXT_TAGS.has(widget.tag)) {

@@ -141,7 +141,7 @@ function widgetLine(
         if (property.kind === 'style' || property.viaStyle !== undefined) {
             continue;
         }
-        parts.push(`${property.name}=${literal(value as string | number | boolean)}`);
+        parts.push(`${property.attribute ?? property.name}=${literal(value as string | number | boolean)}`);
     }
     if (appearance !== undefined) {
         parts.push(`style=${literal(appearance)}`);

@@ -307,6 +307,80 @@ test('a clock with no numerals draws no labels', () => {
     equal((source.match(/lv_obj_t \*tick_clock_/g) ?? []).length, 60, 'and the ticks are still there');
 });
 
+function barDesign(overrides = {}) {
+    const document = createDocument({ boardId: 'pico2w', panelWidth: 240, panelHeight: 320, rotation: 0, screenId: 'RustyPanel' });
+    document.widgets = [
+        {
+            id: 'bar',
+            tag: 'status_bar',
+            x: 0,
+            y: 0,
+            width: 240,
+            height: 24,
+            props: {
+                label: 'BATT',
+                time: '10:10',
+                show_clock: true,
+                clock_align: 'right',
+                show_battery: true,
+                battery_align: 'right',
+                font_scale: 1.5,
+                label_color: '#ff0000',
+                clock_color: '#00ff00',
+                battery_color: '#0000ff',
+                ...overrides,
+            },
+            events: [],
+        },
+    ];
+    return document;
+}
+
+/** The x a feature's label was aligned to, read back out of the emitted call. */
+function barAlignX(source, name) {
+    const match = new RegExp(`lv_obj_align\\(${name}, LV_ALIGN_LEFT_MID, (-?\\d+), 0\\);`).exec(source);
+    return match === null ? undefined : Number(match[1]);
+}
+
+test('a status bar draws its label, clock and battery as three separate features', () => {
+    const source = emitUiCpp(barDesign());
+    contains(source, 'lv_obj_t *w_bar_label = lv_label_create(w_bar);', 'the label');
+    contains(source, 'lv_label_set_text(w_bar_label, "BATT");', 'with its text');
+    contains(source, 'lv_obj_set_style_text_color(w_bar_label, lv_color_hex(0xff0000), 0);', 'in its own colour');
+    contains(source, 'lv_obj_t *w_bar_time = lv_label_create(w_bar);', 'the clock');
+    contains(source, 'lv_obj_set_style_text_color(w_bar_time, lv_color_hex(0x00ff00), 0);', 'in its own colour');
+    contains(source, 'lv_label_set_text(w_bar_time, "10:10");', 'and its time');
+    contains(source, 'lv_obj_t *w_bar_battery = lv_obj_create(w_bar);', 'the gauge');
+    contains(source, 'lv_obj_set_style_border_color(w_bar_battery, lv_color_hex(0x0000ff), 0);', 'in its own colour');
+    contains(source, 'lv_obj_t *w_bar_fill = lv_obj_create(w_bar_battery);', 'with a fill');
+});
+
+test('hiding a feature leaves it out, and both hidden leaves the strip empty', () => {
+    const noClock = emitUiCpp(barDesign({ show_clock: false }));
+    notContains(noClock, 'w_bar_time', 'no clock object at all');
+    const noBattery = emitUiCpp(barDesign({ show_battery: false }));
+    notContains(noBattery, 'w_bar_battery', 'no gauge object at all');
+    const bare = emitUiCpp(barDesign({ show_clock: false, show_battery: false, label: '' }));
+    notContains(bare, 'w_bar_label', 'and no label when it is empty');
+});
+
+test('right-aligned features stack to the right of centred ones', () => {
+    const right = emitUiCpp(barDesign({ clock_align: 'right', battery_align: 'right' }));
+    const centred = emitUiCpp(barDesign({ clock_align: 'center', battery_align: 'center' }));
+    const rightX = barAlignX(right, 'w_bar_time');
+    const centreX = barAlignX(centred, 'w_bar_time');
+    ok(rightX !== undefined && centreX !== undefined, 'both emit a clock position');
+    ok(rightX > centreX, `a right-aligned clock sits further right (${rightX} > ${centreX})`);
+    ok(rightX > 120, `and in the right half of a 240-pixel bar (${rightX})`);
+});
+
+test('the font scale is a compiled Montserrat size, not a whole-font toggle', () => {
+    const source = emitUiCpp(barDesign());
+    contains(source, fontSymbol(nearestFontSize(DEFAULT_FONT_SIZE * 1.5)), 'the scaled face');
+    ok(documentFontSizes(barDesign()).includes(nearestFontSize(DEFAULT_FONT_SIZE * 1.5)), 'and the build switches it on');
+    notContains(emitUiCpp(barDesign({ font_scale: 1 })), fontSymbol(nearestFontSize(DEFAULT_FONT_SIZE * 1.5)), 'a scale of one asks for the base face');
+});
+
 test('nothing is padded: a design\'s coordinates are absolute', () => {
     // LVGL's default theme pads a container, so a view the design sizes to the whole panel had its contents
     // pushed in and its last few pixels left showing the background -- a bar on the right and bottom, and a face
@@ -496,4 +570,80 @@ test('a clock wears the design\'s background, frame and corners', () => {
     // With no background in the design the container stays transparent, as a clock on a coloured view should.
     const plain = emitUiCpp(clockDesign({ bg: '' }));
     contains(plain, 'lv_obj_set_style_bg_opa(w_clock, LV_OPA_TRANSP, 0);', 'no colour means no fill');
+});
+
+test('every board and both languages scale the clock date text', () => {
+    // Asked 2026-11-25: *"Run through all board and language options … to check the date text scaling for
+    // the Clock widget."* The Rust markup must name the attributes the crate parser reads, and the C++
+    // labels must name scaled faces that `lv_conf.h` actually switches on -- on every board, and for every
+    // panel revision a board offers.
+    const { BOARDS } = compiled('boards/catalog');
+    const { defaultWiring } = compiled('boards/panels');
+    const { emitKdl } = compiled('designer/kdl');
+    const { generateProjectFiles } = compiled('generate/files');
+    const { generateArduinoProjectFiles, lvConfHeader } = compiled('generate/arduino');
+
+    // Medium5x7 maps to Montserrat 12, so 1.5 → 18, 2 → 24, 2.4 → 28: every step is inside the emitter's
+    // 36-point flash cap and can be told apart. A bigger base font is capped (see `MAX_FONT_SIZE`).
+    const dateFont = 'Medium5x7';
+    const weights = { weekday_size: 1.5, month_size: 2, day_size: 2.4 };
+    const panelAnswers = (board) => {
+        const panel = board.options?.find((option) => option.id === 'panel');
+        return panel === undefined ? [{}] : panel.choices.map((choice) => ({ [panel.id]: choice.id }));
+    };
+    const fontOf = (source, label) => {
+        const found = new RegExp(
+            `lv_obj_set_style_text_font\\(clock_clock\\.${label}, &lv_font_montserrat_(\\d+), 0\\)`,
+        ).exec(source);
+        return found === null ? undefined : Number(found[1]);
+    };
+
+    for (const board of BOARDS) {
+        const wiring = board.family === 'RP2040' || board.family === 'RP2350'
+            ? defaultWiring(board, 'ili9341')
+            : undefined;
+        for (const choices of panelAnswers(board)) {
+            const where = `${board.id}${Object.values(choices).length > 0 ? `:${Object.values(choices)[0]}` : ''}`;
+            const document = createDocument({
+                boardId: board.id,
+                panelWidth: 320,
+                panelHeight: 480,
+                rotation: 0,
+                screenId: 'RustyPanel',
+            });
+            document.widgets.push({
+                id: 'clock', tag: 'clock', x: 0, y: 0, width: 260, height: 260,
+                props: { ...defaultProps('clock'), date_font: dateFont, ...weights },
+                events: [],
+            });
+
+            // Rust: the markup the crate's parser reads.
+            const kdl = emitKdl(document);
+            for (const text of ['weekday_scale=1.5', 'month_scale=2', 'day_scale=2.4']) {
+                contains(kdl, text, `${where}: the Rust markup carries ${text}`);
+            }
+            ok(Number.isInteger(generateProjectFiles({
+                board, projectName: `probe-${board.id}`, template: 'designer', wiring, choices,
+            }).length), `${where}: a Rust designer project generates`);
+
+            // C++: three distinct faces, each switched on in lv_conf.h.
+            const source = emitUiCpp(document);
+            const sizes = ['weekdayLabel', 'monthLabel', 'dayLabel'].map((label) => fontOf(source, label));
+            ok(
+                sizes.every((size) => size !== undefined),
+                `${where}: all three date labels name a face (${sizes.join(', ')})`,
+            );
+            ok(
+                sizes[0] < sizes[1] && sizes[1] < sizes[2],
+                `${where}: the faces scale with the design (${sizes.join(' < ')})`,
+            );
+            const conf = lvConfHeader(documentFontSizes(document));
+            for (const size of sizes) {
+                contains(conf, `#define LV_FONT_MONTSERRAT_${size} 1`, `${where}: Montserrat ${size} is enabled`);
+            }
+            ok(Number.isInteger(generateArduinoProjectFiles({
+                board, projectName: `probe-${board.id}`, template: 'designer', wiring, choices,
+            }).length), `${where}: a C++ designer project generates`);
+        }
+    }
 });

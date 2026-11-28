@@ -834,8 +834,46 @@ pub fn parse_widget(node: &KdlNode) -> Result<(GridPlacementDef, WidgetDef), Cod
             }
         }
         "status_bar" => {
+            let label = get_string_prop(node, "label").unwrap_or("").to_string();
             let time = get_string_prop(node, "time").unwrap_or("12:00").to_string();
-            WidgetDef::StatusBar { id, time, style }
+            let show_clock = get_bool_prop(node, "show_clock").unwrap_or(true);
+            let clock_align = get_string_prop(node, "clock_align")
+                .unwrap_or("center")
+                .to_ascii_lowercase();
+            let clock_align = if clock_align == "right" { "right" } else { "center" };
+            let show_battery = get_bool_prop(node, "show_battery").unwrap_or(true);
+            let battery_align = get_string_prop(node, "battery_align")
+                .unwrap_or("right")
+                .to_ascii_lowercase();
+            let battery_align = if battery_align == "center" { "center" } else { "right" };
+            let font_scale = get_f64_prop(node, "font_scale")
+                .unwrap_or(1.0)
+                .clamp(1.0, 4.0) as f32;
+            let label_color = get_string_prop(node, "label_color").map(str::to_string);
+            let clock_color = get_string_prop(node, "clock_color").map(str::to_string);
+            let battery_color = get_string_prop(node, "battery_color").map(str::to_string);
+            let battery_pin = get_i64_prop(node, "battery_pin")
+                .filter(|pin| (0..=48).contains(pin))
+                .map(|pin| pin as u8);
+            let battery_scale = get_f64_prop(node, "battery_scale")
+                .unwrap_or(2.0)
+                .clamp(0.1, 100.0) as f32;
+            WidgetDef::StatusBar {
+                id,
+                label,
+                time,
+                show_clock,
+                clock_align: clock_align.to_string(),
+                show_battery,
+                battery_align: battery_align.to_string(),
+                font_scale,
+                label_color,
+                clock_color,
+                battery_color,
+                battery_pin,
+                battery_scale,
+                style,
+            }
         }
         "time_picker" => {
             let hour = get_i64_prop(node, "hour").unwrap_or(12).clamp(0, 23) as u8;

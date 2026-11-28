@@ -22,7 +22,7 @@ use super::*;
 impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
     GuiContext<'a, NODES, EVENTS, DIRTY>
 {
-    pub fn get_widget_property(&self, id: WidgetId, key: PropertyKey) -> Option<PropertyValue<'a>> {
+    pub fn get_widget_property(&self, id: WidgetId, key: PropertyKey) -> Option<PropertyValue<'_>> {
         let node = self.node(id)?;
         node.get_property(key)
     }
@@ -759,7 +759,10 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
                 if next != *clock {
                     // Only the hands that moved: the hour hand once a minute, the minute hand twice,
                     // the second hand every second. See `ClockWidget::hand_damage_rect`.
-                    let hands = clock.hand_damage_rect(&next, rect, style);
+                    let hands = clock.hand_damage_regions(&next, rect, style);
+                    // The whole hand box, used only when the pieces do not all fit or the face is too
+                    // small to have any: a coarse repaint is always better than a stale pixel.
+                    let whole = clock.hand_damage_rect(&next, rect, style);
                     let date = if (clock.year, clock.month, clock.day)
                         != (next.year, next.month, next.day)
                     {
@@ -768,9 +771,118 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
                         None
                     };
                     *clock = next;
-                    for region in [hands, date].into_iter().flatten() {
-                        self.dirty.add(region)?;
+                    // Pieces stay separate: `add` merges intersecting rects, which would grow the thin
+                    // sweep back into the hand's bounding box -- and that box is what dragged the date
+                    // block into every second's repaint.
+                    let mut complete = true;
+                    for piece in hands.iter().copied() {
+                        if self.dirty.add_disjoint(piece).is_err() {
+                            complete = false;
+                            break;
+                        }
                     }
+                    if !complete || hands.is_empty() {
+                        if let Some(whole) = whole {
+                            let _ = self.dirty.add(whole);
+                        }
+                    }
+                    if let Some(date) = date {
+                        self.dirty.add(date)?;
+                    }
+                }
+                Ok(())
+            }
+            _ => Err(GuiError::NotFound),
+        }
+    }
+
+    /// Sets a status bar's clock to `HH:MM`, repainting only when the shown minute changes.
+    ///
+    /// The generated Designer module calls this from the same wall clock the `Clock` widget follows,
+    /// so a bar and a clock face on one screen can never disagree. A bar with the clock switched off
+    /// is left alone; an unchanged minute is not damage, because the bar is mostly static pixels and
+    /// repainting it every second would make it shimmer.
+    #[cfg(feature = "rich-widgets")]
+    pub fn set_status_bar_time(
+        &mut self,
+        id: WidgetId,
+        hour: u8,
+        minute: u8,
+    ) -> Result<(), GuiError> {
+        let rect = self.absolute_rect(id).ok_or(GuiError::NotFound)?;
+        let node = self.node_mut(id).ok_or(GuiError::NotFound)?;
+        match node.kind {
+            WidgetKind::StatusBar { ref mut config } => {
+                let mut next = config.time;
+                next.set_time(hour, minute);
+                if next != config.time {
+                    config.time = next;
+                    self.dirty.add(rect)?;
+                }
+                Ok(())
+            }
+            _ => Err(GuiError::NotFound),
+        }
+    }
+
+    /// Sets a status bar's free-text label, repainting only when the text changes.
+    ///
+    /// This is the text on the bar's left edge: the design names one, and an app that knows something the
+    /// design cannot -- the network it joined, the mode it is in -- replaces it. The label is copied into the
+    /// bar's own field, so a line built at run time costs nothing on the heap; it is ASCII and truncated to
+    /// the field's 24 bytes, which is what the bar can draw. The clock is a separate text on the same bar
+    /// (`set_status_bar_time`), so changing the label never touches it.
+    #[cfg(feature = "rich-widgets")]
+    pub fn set_status_bar_label(&mut self, id: WidgetId, label: &str) -> Result<(), GuiError> {
+        let rect = self.absolute_rect(id).ok_or(GuiError::NotFound)?;
+        let node = self.node_mut(id).ok_or(GuiError::NotFound)?;
+        match node.kind {
+            WidgetKind::StatusBar { ref mut config } => {
+                let mut next = config.label;
+                next.set(label);
+                if next != config.label {
+                    config.label = next;
+                    self.dirty.add(rect)?;
+                }
+                Ok(())
+            }
+            _ => Err(GuiError::NotFound),
+        }
+    }
+
+    /// The label a status bar is showing, for an app that appends to it or puts it back.
+    ///
+    /// `None` when the id is not a status bar at all, which keeps "no such widget" distinguishable from a
+    /// bar whose label happens to be empty.
+    #[cfg(feature = "rich-widgets")]
+    pub fn status_bar_label(&self, id: WidgetId) -> Option<&str> {
+        match self.node(id)?.kind {
+            WidgetKind::StatusBar { ref config } => Some(config.label.as_str()),
+            _ => None,
+        }
+    }
+
+    /// Sets a status bar's battery level and charging state, repainting only when either changes.
+    ///
+    /// `percent` is clamped to 100, which is what the gauge can draw. The generated Designer module
+    /// calls this from the ADC reading the design named, so the bar follows the battery rather than
+    /// the 85 % it was built with.
+    #[cfg(feature = "rich-widgets")]
+    pub fn set_status_bar_battery(
+        &mut self,
+        id: WidgetId,
+        percent: u8,
+        charging: bool,
+    ) -> Result<(), GuiError> {
+        let percent = percent.min(100);
+        let rect = self.absolute_rect(id).ok_or(GuiError::NotFound)?;
+        let node = self.node_mut(id).ok_or(GuiError::NotFound)?;
+        match node.kind {
+            WidgetKind::StatusBar { ref mut config } => {
+                if config.battery_percent != percent || config.battery_charging != charging {
+                    config.battery_percent = percent;
+                    config.battery_charging = charging;
+                    self.dirty.add(rect)?;
                 }
                 Ok(())
             }

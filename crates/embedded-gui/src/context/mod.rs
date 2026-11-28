@@ -121,6 +121,41 @@ mod tests {
     }
 
     #[test]
+    fn test_render_dirty_buffered_with_background_matches_a_whole_render() {
+        use embedded_graphics_core::pixelcolor::{Rgb565, RgbColor};
+        let viewport = Rect::new(0, 0, 120, 80);
+        let mut ctx: GuiContext<32, 16, 16> = GuiContext::new(viewport);
+        ctx.add_themed_button(Rect::new(10, 10, 80, 30), "Buffered")
+            .unwrap();
+
+        // Whole render, then the same frame through the buffered dirty path, each onto a black panel.
+        let mut whole = crate::test_buffer::TestBuffer::new(120, 80);
+        whole.clear_color(Rgb565::BLACK);
+        ctx.render(&mut whole).unwrap();
+
+        let mut partial = crate::test_buffer::TestBuffer::new(120, 80);
+        partial.clear_color(Rgb565::BLACK);
+        ctx.clear_dirty();
+        ctx.dirty.add(Rect::new(10, 10, 80, 30)).unwrap();
+        let mut scratch = [Rgb565::BLACK; 64];
+        ctx.render_dirty_buffered_with(&mut partial, &mut scratch, Rgb565::BLACK)
+            .unwrap();
+
+        let mut different = 0usize;
+        for y in 0..80i32 {
+            for x in 0..120i32 {
+                if partial.pixel_at(x, y) != whole.pixel_at(x, y) {
+                    different += 1;
+                }
+            }
+        }
+        assert_eq!(
+            different, 0,
+            "a buffered partial repaint must paint exactly what a whole one does"
+        );
+    }
+
+    #[test]
     fn test_spatial_focus_navigation_2d() {
         use crate::input::NavDirection;
         let viewport = Rect::new(0, 0, 320, 240);

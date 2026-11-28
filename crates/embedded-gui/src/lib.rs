@@ -229,7 +229,8 @@ pub use widgets::{
     NotificationError, NotificationPriority, NotificationSheetWidget, NumberPickerWidget,
     PeekBannerWidget, PickerError, ProgressBarWidget, RepeaterWidget, RichTextError,
     RichTextNodeWidget, RollerSelection, ScaleMode, ScaleWidget, SelectionWidget, SparklineWidget,
-    SpinboxWidget, StatusBarError, StatusBarMode, StatusBarWidget, TableWidget, TextSpan,
+    SpinboxWidget, StatusBarAlign, StatusBarConfig, StatusBarError, StatusBarText, StatusBarWidget,
+    TableWidget, TextSpan,
     TimeFormat, TimePickerField, TimePickerWidget, TimelineNodeState, TimelineNodeWidget,
 };
 pub use widgets::{
@@ -275,6 +276,7 @@ pub mod prelude {
         PathVerb, PeekRevealSpec, PixelRead, PlaybackMode, PointerButton, PointerState,
         PowerConfig, PowerEvent, PowerManager, PowerState, PresentRegion, PressTiming,
         ClockWidget, ProgressBarWidget, PropertySignal, Rect, ReelFrame, ReelPlayer, Render, RenderBackendCaps,
+        BatteryState, StatusBarAlign, StatusBarConfig, StatusBarError, StatusBarText, StatusBarWidget,
         RenderCtx, RenderQuality, RepeatMode, RepeaterWidget, Rgba8888, RollerSelection, ScaleMode,
         ScaleWidget, ScanlineTarget, Screen, ScreenCommand, ScreenId, ScreenLifecycleEvent,
         ScreenStack, ScreenStackError, ScreenTransition, ScreenTransitionEffect,

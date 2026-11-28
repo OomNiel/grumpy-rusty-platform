@@ -509,6 +509,7 @@ function propertyForm(
             (next) => callbacks.onEdit(setProperty(state, widget.id, property.name, next)),
             state.document.fonts ?? [],
             spec.fontSupport,
+            state.document.boardId,
             property.kind === 'asset'
                 ? () =>
                     callbacks.onBrowseAsset(assetKindFor(widget.tag), (path) =>
@@ -548,6 +549,7 @@ function propertyControl(
     onChange: (value: string | number | boolean) => void,
     fonts: readonly DesignerFont[],
     support: FontSupport | undefined,
+    boardId: string,
     onBrowse: (() => void) | undefined,
     onFontMenu: (fontId: string, x: number, y: number) => void,
 ): HTMLElement {
@@ -644,12 +646,40 @@ function propertyControl(
         }
         case 'enum': {
             const select = element('select', 'field-input');
-            for (const option of property.options ?? []) {
-                const choice = element('option', undefined, option);
-                choice.value = option;
-                select.append(choice);
+            const boardChoices = property.boardOptions?.(boardId);
+            if (boardChoices !== undefined) {
+                // A pin list is a board fact, not a fixed vocabulary: keep the "not chosen" entry at the
+                // top so a design that predates the setting is visibly unset instead of silently on pin 0.
+                const none = element('option', undefined, '(not set)');
+                none.value = '';
+                select.append(none);
+                for (const choice of boardChoices) {
+                    const label = choice.usedBy === undefined
+                        ? choice.label
+                        : `${choice.label} - used by ${choice.usedBy}`;
+                    const option = element('option', undefined, label);
+                    option.value = choice.value;
+                    // A pin the board already uses is shown so the list is the board's real ADC set, but
+                    // choosing a live one would take it from the panel/touch/sensor that owns it. The LDR
+                    // is marked but selectable: it is parked on this board.
+                    option.disabled = choice.disabled === true;
+                    select.append(option);
+                }
+                const current = String(value ?? '');
+                if (current !== '' && !select.querySelector(`option[value="${current}"]`)) {
+                    const orphan = element('option', undefined, `GPIO${current} (not on this board)`);
+                    orphan.value = current;
+                    select.append(orphan);
+                }
+                select.value = current;
+            } else {
+                for (const option of property.options ?? []) {
+                    const choice = element('option', undefined, option);
+                    choice.value = option;
+                    select.append(choice);
+                }
+                select.value = String(value ?? property.defaultValue);
             }
-            select.value = String(value ?? property.defaultValue);
             select.addEventListener('change', () => onChange(select.value));
             return select;
         }

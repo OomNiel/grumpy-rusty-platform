@@ -8963,3 +8963,168 @@ exactly, pixel for pixel.
 Verified: `embedded-gui` **343**, `embedded-gui-codegen` **35**, t1-logic **1233**, t2-cli **96**,
 t3-golden **7**; `Rust_WSWG_pico2w_Test1` builds with 0 warnings and 0 errors, including a scratch
 build at `day_size=1.5 weekday_size=1.25`. 0.19.12 is packaged from this tree.
+
+### 186. A button's label fell back to the built-in face when the button had focus (0.19.20, 2026-11-28)
+
+**Asked for, verbatim:** *"For the Button widgit, when the button has focus the text label of the button reverts to
+its default font. The button must keep the font and text size assigned to it in the designer."*
+
+**One builder call.** The designer writes a button's appearance as `WidgetStyle::button().with_normal(<Style>)`
+(`src/designer/appearance.ts`), because the emitter chains the button's colour and corner attributes onto that
+value. `WidgetStyle::with_normal` replaces the **normal** state and nothing else (`style.rs:499`): `focused`,
+`pressed` and `disabled` stay the ones `WidgetStyle::button()` derived from `Style::button()`, whose face is
+`Medium4x7`. A design's font therefore reached the glass only while the button was untouched — and `add_button`
+gives the focus to the first focusable widget (`context/input.rs:782`), so the label was drawn in the built-in
+face from the first frame until the focus moved away. Measured on the host: a `Scaled6x10` label drew 10 ink rows
+x 80 pixels unfocused and 5 x 20 focused, which is the `Medium4x7` face.
+
+**What changed.** The font now rides on the `WidgetStyle` itself — `.with_font(FontId::Scaled6x10)`, or
+`FontId::Bitmap(&__FONT_X)` for a declared face — which writes all four states (`style.rs:584`), and `fontValue()`
+is the one place the `FontId` expression is built. Nothing extra is emitted when the design names no font, so an
+old markup file is byte-identical. The `normal` block keeps its own `style.font` assignment; `with_font` sets the
+same value again for the other three states, which is deliberate: `with_normal` is what the block already owns.
+
+**Not the C++ side.** `lvgl.ts` puts the face on the button's label child
+(`lv_obj_set_style_text_font(w_..., w_..._label, ..., 0)`), which focus does not touch, so a sketch already kept
+it.
+
+**The label's colour had the same hole, one layer along.** Re-rendering the project that reported this
+(`ESP32-035-WeatherClock`, whose three buttons name `Medium5x7` and a cyan label) showed the focused label in
+`Medium4x7` *and* white: `.with_text(c)` also writes the normal state only, and the designer offered no
+per-state label colour to override it. Asked which way to close it, the answer was **per-state fields, not
+silent persistence** — so `CLICKABLE_COLOURS` gained `pressed_text`, `disabled_text` and `focused_text`, which
+the parser has read (and the emitter chains as `.with_pressed_text()`/`.with_disabled_text()`/
+`.with_focused_text()`) since before this fix. Their defaults are what the crate draws when the attribute is
+absent — white for pressed and focused, and `#604890` for disabled, which is `Rgb565::new(12, 18, 18)` reduced
+to 5/6/5 — so a design that never touches them renders exactly what it did. A design that set nothing new keeps
+its colour until it names one; `text_color` still carries the label at rest.
+
+**And they are `optional`, which caught me once.** Written as ordinary properties, `emitKdl` refused the
+reporting project on the next save — *"button": Pressed label colour is missing* — because a design written
+before the fields existed names none of them. That is §185's trap verbatim: a catalogue property the crate
+defaults must be optional, or every older design stops writing its markup and the board silently keeps an old
+`ui.kdl`. The three now say `optional: true`, and the name-by-name list in `designer.test` records them as the
+deliberate act that test exists to force.
+
+**The harness's own blind spot.** `tests/tools/designer-sim.js` refuses the checked-in fixture before it renders
+anything — *"stb": "text_color" is not a property of a status bar* — so t4-e2e cannot be the proof here. That
+refusal is not this change's: `text_color` for a status bar is not in `catalog.ts` at all. The render was done in
+a scratch host crate instead, compiling the designer's own emitted markup through `include_gui!`, against the
+project's own `codegen/` copies (0.19.19).
+
+Verified: t1-logic `designer-widget-fonts` (two new tests: the font on every state, and none when no font is
+named) and `designer.test` (the three label-colour attributes reach the markup), `embedded-gui-codegen` **36**,
+the hermetic run **1353 passed, 0 skipped**, `tsc` clean, the 21 starter-design snapshots regenerated, and the
+scratch host render of the reporting project: before, focused was `Medium4x7` (5 ink rows, 63 px wide) in white
+where unfocused was `Medium5x7` (7 rows, 77 wide); after, both states are `Medium5x7` (7 rows, 77 wide) and a
+`focused_text="..."`/`disabled_text="..."` set on the button is what the focused and disabled labels paint.
+0.19.20 is packaged from this tree.
+
+### 187. The battery gauge read 0% on a cell that was nearly half full (0.19.21, 2026-11-28)
+
+**Asked for, verbatim:** *"Use the values in the following table to calculate the battery indicator in the
+status bar widgit"* — twenty-four measured points, 2.75 V = 0% to 4.20 V = 100%.
+
+**What was there.** `battery_percent(raw)` in the generated `ui.rs` turned the divider's voltage into a
+percentage with one line: `((mv - 3300) / 900) * 100`, clamped. A Li-ion cell spends most of its life between
+3.6 V and 3.9 V, where that line is at 33-66% while the real charge is 37-70% — and below 3.3 V it read a flat
+**0% on a cell that still had 10% in it**. Measured on the reporting project's own design (`Medium5x7` status
+bar, `battery_pin=35`, `battery_scale=2`): the old line reads 0% at 3.20 V, 22% at 3.50 V, 44% at 3.70 V, 66%
+at 3.90 V; the table reads 10%, 28%, 47%, 70%.
+
+**What changed.** The table is data in `src/designer/generate.ts` (`BATTERY_CURVE`) so the tests can pin it and
+the emitter writes it from one home: `ui.rs` gains a `const BATTERY_CURVE: [(u16, u8); 24]`, and
+`battery_percent` reads it through a private `battery_percent_at(mv)`. Between two points the charge is
+interpolated in **integer** millivolts (`lo + (above * span_percent + span_mv / 2) / span_mv`, rounded to the
+nearest whole percent) because `f32::round` is not in `core`; outside them it clamps, so a cell below 2.75 V
+reads 0% rather than wrapping past zero through the `as u8`. The ADC contract is untouched: `raw` on the
+0-4095/3.3 V assumption, times `BATTERY_SCALE`, exactly as before — only the curve changed.
+
+**A helper under an allowed function still counts as used.** The new private const and helper are reachable
+only from `battery_percent`, which carries `#[allow(dead_code)]` for the designs that never call it. Checked
+that a project with no battery call still builds with `-D warnings`, because a generated project claiming
+"0 warnings" is a promise the previous entries make.
+
+**Verified** on the host, compiling the designer's own emitted section through a scratch crate: every one of
+the 24 points maps to its own percentage, 2.749 V and 2.000 V clamp to 0, 4.201 V and 5.000 V clamp to 100,
+the midpoints round to 1/3/22/73/99%, the result is monotonic across 2700-4250 mV sampled every millivolt, and
+the raw path gives 47% for 3.70 V, 4% for 3.00 V, 0% for 2.75 V and 100% for 4.20 V. The reporting project's
+`src/ui.rs` was regenerated (the diff is that section and nothing else) and builds for `xtensa-esp32-none-elf`.
+t1-logic's new test pins the table's shape and its presence in the emitted file, the hermetic run is
+**1354 passed**, `tsc` clean, the seven `ui.rs` snapshots regenerated. `tests/sim/src/ui.rs` was left alone:
+it is generated by `designer-sim.js`, has been stale since long before this change (251 lines), and only the
+t4 layer compiles it — regenerating it here would have folded unrelated drift into this diff.
+0.19.21 is packaged from this tree.
+
+### 188. A status bar's label, settable from code — and the hand patch it replaces (0.19.22, 2026-11-28)
+
+**Asked for, verbatim:** *"Add an API feature to enable the user to set the label in the status bar widgit from
+code."*
+
+**What was in the way.** `PropertyKey::Text` on a status bar is the **clock** (`widgets/mod.rs:1099`, `:1222`), so
+`set_text` on a bar moved the time, and the label — the free text on the left edge — had no setter at all. The
+only way to reach it was through the whole `StatusBarConfig`, which a generated project never touches.
+
+**The half-finished attempt this replaces.** The reporting project had hand-edited its **generated**
+`src/ui.rs` to add `WidgetHandle::set_status_bar_label`, with `unsafe { &*(text as *const str) }` to satisfy a
+`&'a str` it assumed the crate wanted — and hand-edited its **vendored** `codegen/embedded-gui` to match. Two
+generated copies of the same API, both of which the next Designer save and the next vendored-crate refresh
+would have thrown away. The `unsafe` was only there because a `&'a str` on a `GuiContext<'static, …>` demands
+`'static` (the `RefCell` makes the parameter invariant, E0521): the crate now takes a plain `&str` and **copies**
+it into `StatusBarText`, so nothing outlives the call and no cast is needed.
+
+**What changed.** `GuiContext::set_status_bar_label(id, &str)` beside `set_status_bar_battery`, dirtying the bar's
+rect only when the text differs, and `GuiContext::status_bar_label(id) -> Option<&str>` for a read-back (`None`
+means "not a bar", not "a bar with no label"). `StatusBarWidget` gained `set_label`/`label` for symmetry with its
+`set_time`. The generated handle carries `set_status_bar_label(&self, label: &str)` on the **generic**
+`WidgetHandle` rather than a second handle type: a design written before this keeps compiling against the same
+accessor (`design.status_bar()`), which a dedicated `StatusBarHandle` would have broken. The trade-off is the
+same one `set_battery` already makes — the method exists on every handle and the crate refuses any widget that is
+not a bar.
+
+**Verified** on the project itself, unchanged: its own `main.rs` already called
+`design.status_bar().set_status_bar_label(text)` with a line it builds with `write!`, and now compiles as
+written (that is the strongest check available — the call predates this API). `src/ui.rs` and the vendored crate
+were regenerated/refreshed from this tree and `cargo build` is clean for `xtensa-esp32-none-elf`. Runtime test
+`the_context_sets_the_label_without_touching_the_clock` covers: the label replaces, the clock (`PropertyKey::Text`)
+keeps its value, the change is damage, the same label again is not, a 26-character line truncates to 24, and a
+label widget answers `NotFound`/`None`. embedded-gui **344**, embedded-gui-codegen **36**, hermetic **1355
+passed**, `tsc` clean, the seven `ui.rs` snapshots regenerated.
+
+**A snapshot caveat worth stating.** Regenerating t3-golden folded in generator drift that was already
+uncommitted in the tree when this work started (`DAMAGE_SCRATCH`, `EVENTS`/`DIRTY = 16`,
+`render_dirty_buffered_with`), because a snapshot is one file and cannot carry half a generator. The snapshots
+now match the generator as it stands; the drift is not this entry's work and was not reviewed here.
+0.19.22 is packaged from this tree.
+
+### 189. rust-analyzer failed on a `build.rs` check that only a link needs (0.19.23, 2026-11-28)
+
+**Reported verbatim:** the Problems/terminal showing
+`thread 'main' panicked at build.rs:36:9: Xtensa linker xtensa-esp32-elf-gcc was not found on PATH.`
+
+**Why it happened.** The generated `build.rs` panicked unless the espup GCC was on `PATH`, with the message
+that tells you to `source $HOME/export-esp.sh`. That is right for a **build** — Xtensa cannot be linked by
+LLVM's linker. But rust-analyzer runs `cargo check`, which never links, and it runs in a process that has not
+sourced that file (only an integrated terminal does, and the extension injects the env itself for the
+build/flash commands). So the build script failed for a toolchain the check would never use, and the failure
+took the whole project down: every file showed this panic instead of its own type errors.
+
+Reproduced exactly, on the reporting project, with the IDE's own environment:
+`env PATH=/usr/local/bin:/usr/bin:/bin cargo check` → the same panic; with the fix → `Finished`, and the two
+`cargo:warning` lines above it.
+
+**What changed.** `espBuildRs()` in `src/generate/esp.ts` now prints the instruction as
+`cargo:warning=...` instead of `panic!`, and the doc comment says why. Nothing else: a real build still fails,
+one step later and with the linker's own `error: linker ... not found`, and our two lines are printed directly
+above it (checked). That keeps the friendly message where it is useful and stops it from blocking the IDE.
+
+**Existing projects keep the old build.rs**, because the extension only rewrites `ui.rs` and `ui.kdl` on save.
+The reporting project's `build.rs` was replaced from the emitter by hand; any other project made before this
+needs the same (delete it and let the launch-config check restore it, or copy the new one) — a regeneration of
+`build.rs` for existing projects is not something this release adds.
+
+Verified: `cargo check` with a stripped PATH passes on the reporting project (46.7 s cold, 0.3 s warm, two
+warnings, no errors); `cargo build --release` with the same stripped PATH fails only at the link, with the
+warnings above it; `cargo build --release` with `export-esp.sh` sourced is unchanged and clean; the hermetic
+suite is **1355 passed**, `tsc` clean, the 19 ESP `build.rs` snapshots regenerated.
+0.19.23 is packaged from this tree.

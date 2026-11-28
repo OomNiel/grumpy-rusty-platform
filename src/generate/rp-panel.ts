@@ -269,6 +269,22 @@ pub struct Rest {${restFields}
         dma_ch0: p.DMA_CH0,
     }`;
 
+    // The chip is a separate part with its own enable pin. A design that never asks for the time must
+    // drive that pin low: leaving it as an input is a floating enable, not a switched-off radio.
+    const wirelessOff =
+        cyw43 === undefined
+            ? ''
+            : `
+/// Holds the wireless chip's power switch low, for a design that does not use it.
+///
+/// The pin comes back in \`Rest\` rather than being left in \`Peripherals\`: the network task is what
+/// normally drives it. This is the other owner -- the setup path when no task is started -- so the chip
+/// is held off instead of floating.
+pub fn wireless_off(rest: Rest) {
+    let _pwr = Output::new(rest.pin${cyw43.pwrPin.slice(4)}, Level::Low);
+}
+`;
+
     // The rotation is a compile-time setting (`.cargo/config.toml`), so changing it is a rebuild and never
     // a rewrite of this file -- the same rule the ESP side follows with `LCD_ROTATION`.
     const orientation = [
@@ -548,7 +564,7 @@ ${touchSetup}${backlightSetup}${cardSetup}
         },
         ${restBuild},
     )
-}${touch ? touchImplementation() : ''}${touch ? touchCalibration(flashLayout(board)) : ''}`;
+}${wirelessOff}${touch ? touchImplementation() : ''}${touch ? touchCalibration(flashLayout(board)) : ''}`;
 }
 
 /**

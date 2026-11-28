@@ -85,19 +85,25 @@ test('Windows keeps its port open and answers every request', () => {
     notContains(command, '`n', 'no PowerShell backtick escapes: this line travels through a JavaScript template');
 });
 
-test('the automatic start and the flash agree on the terminal that holds the port', () => {
+test('the flash, and only the flash, starts the listener that holds the port', () => {
     // The listener runs in a terminal named exactly this. The flash closes that terminal before it
     // opens the port, so the two names have to stay the same string -- a source-level check, because
     // the vscode imports in both files keep them out of any test that could run them.
+    //
+    // It is started by the flash's re-arm, never by opening or saving the panel: the listener owns the
+    // serial port, and opening a design must not take the port away from Monitor (user's rule,
+    // 2026-11-26). The pane's Answer Time Requests button is the other way to start it.
     const fs = require('fs');
     const path = require('path');
     const { repoRoot } = require('../../lib/harness');
     const editor = fs.readFileSync(path.join(repoRoot(), 'src', 'designer', 'editor.ts'), 'utf8');
     const commands = fs.readFileSync(path.join(repoRoot(), 'src', 'commands', 'projectCommands.ts'), 'utf8');
     contains(editor, "runInTerminal('Rusty: clock'", 'the designer starts the listener under the name');
-    contains(editor, 'autoServeClock()', 'automatically, once the panel is open');
+    notContains(editor, 'autoServeClock', 'nothing starts it on open or save');
+    contains(editor, 'startClockListener()', 'the flash re-arm starts it');
     contains(editor, "closeTerminal('Rusty: clock')", 'and closing the panel releases the port');
     contains(commands, "closeTerminal('Rusty: clock')", 'while a flash and Monitor close that same terminal');
+    contains(commands, 'rearmClockListener()', 'and the listener returns when the flash command ends');
 });
 
 test('build and flash kill the terminals the IDE has open before they start', () => {

@@ -294,6 +294,22 @@ export function hasAppearance(style: ResolvedStyle): boolean {
 }
 
 /**
+ * The `FontId` a resolved appearance's font names, or `undefined` when the design names none.
+ *
+ * A built-in is a `FontId` variant; a declared font is a `BitmapFont` static the asset pipeline emits from its
+ * BDF -- the same shape the codegen writes for a label's `font=` attribute. That is what makes a system face
+ * reachable on widgets that read only a style: the clock's numerals, a button's label.
+ */
+function fontValue(style: ResolvedStyle): string | undefined {
+    if (style.font === undefined) {
+        return undefined;
+    }
+    return style.declaredFont === true
+        ? `FontId::Bitmap(&${fontConstName(style.font)})`
+        : `FontId::${style.font}`;
+}
+
+/**
  * The assignments a resolved appearance becomes, in a fixed order so a design always emits the same text --
  * which is what makes the markup diffable and the tests readable.
  */
@@ -301,15 +317,9 @@ function assignments(style: ResolvedStyle): string[] {
     const fills: string[] = [];
     const literal = (colour: string): string => rgb565Expression(colour) ?? 'Rgb565::new(0, 0, 0)';
 
-    if (style.font !== undefined) {
-        // A built-in is a `FontId` variant; a declared font is a `BitmapFont` static the asset pipeline emits
-        // from its BDF -- the same shape the codegen writes for a label's `font=` attribute. That is what makes
-        // a system face reachable on widgets that read only a style: the clock's numerals, a button's label.
-        fills.push(
-            style.declaredFont === true
-                ? `style.font = FontId::Bitmap(&${fontConstName(style.font)});`
-                : `style.font = FontId::${style.font};`,
-        );
+    const font = fontValue(style);
+    if (font !== undefined) {
+        fills.push(`style.font = ${font};`);
     }
     if (style.background !== undefined) {
         fills.push(`style.background = Some(${literal(style.background)});`);
@@ -347,7 +357,11 @@ function assignments(style: ResolvedStyle): string[] {
  *
  * A **button** is the exception, and it is the same one the font picker has to work around: the button's emitter
  * chains its colour and corner builders onto whatever the expression returns, so a button's appearance has to be
- * a `WidgetStyle` and not a `Style`. The named base rides in the normal state.
+ * a `WidgetStyle` and not a `Style`. The named base rides in the normal state, and the font is written onto the
+ * `WidgetStyle` itself: `with_normal` replaces the normal state alone, so a face set inside it would be replaced
+ * by the button's built-in one the moment the button had focus, was pressed or was disabled -- and `add_button`
+ * gives the first focusable widget the focus, so a design could show it before ever being touched. `with_font`
+ * writes all four states; it is a no-op on the normal state, which the block already carries the same font in.
  *
  * A malformed colour yields `undefined` -- no expression at all rather than a partly applied one. Validation
  * refuses such a design first (see `propertyProblem`), so reaching here with one is a caller's bug, and a
@@ -381,7 +395,9 @@ export function appearanceExpression(options: {
     const normal = fills.length === 0 ? base : `{ let mut style = ${base}; ${fills.join(' ')} style }`;
 
     if (options.tag === 'button') {
-        return `WidgetStyle::button().with_normal(${normal})`;
+        const styled = `WidgetStyle::button().with_normal(${normal})`;
+        const font = fontValue(resolved);
+        return font === undefined ? styled : `${styled}.with_font(${font})`;
     }
     return normal;
 }

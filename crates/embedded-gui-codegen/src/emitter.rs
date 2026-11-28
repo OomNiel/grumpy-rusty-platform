@@ -719,12 +719,55 @@ pub fn generate_rust_code(screen: &ScreenDef) -> String {
                     var_name, idx, series, head, min, max, st
                 );
             }
-            WidgetDef::StatusBar { time, style, .. } => {
+            WidgetDef::StatusBar {
+                label,
+                time,
+                show_clock,
+                clock_align,
+                show_battery,
+                battery_align,
+                font_scale,
+                label_color,
+                clock_color,
+                battery_color,
+                battery_pin,
+                battery_scale,
+                style,
+                ..
+            } => {
                 let st = style_expr(style.as_deref(), "Style::panel()");
+                let align = |value: &str| {
+                    if value == "center" {
+                        "StatusBarAlign::Center"
+                    } else {
+                        "StatusBarAlign::Right"
+                    }
+                };
                 let _ = writeln!(
                     &mut out,
-                    "        let {} = gui.add_status_bar(cells[{}], \"{}\", {})?;",
-                    var_name, idx, time, st
+                    "        let {} = gui.add_status_bar_configured(cells[{}], StatusBarConfig {{ \
+                     label: StatusBarText::from_str(\"{}\"), time: StatusBarText::from_str(\"{}\"), \
+                     show_clock: {}, clock_align: {}, show_battery: {}, battery_align: {}, \
+                     font_scale: {:.2}, label_color: {}, clock_color: {}, battery_color: {}, \
+                     battery_pin: {}, battery_scale: {:.2}, battery_percent: 85, battery_charging: false }}, {})?;",
+                    var_name,
+                    idx,
+                    label,
+                    time,
+                    show_clock,
+                    align(clock_align),
+                    show_battery,
+                    align(battery_align),
+                    font_scale,
+                    opt_rgb565(label_color),
+                    opt_rgb565(clock_color),
+                    opt_rgb565(battery_color),
+                    match battery_pin {
+                        Some(pin) => format!("Some({pin})"),
+                        None => "None".to_string(),
+                    },
+                    battery_scale,
+                    st
                 );
             }
             WidgetDef::TimePicker {

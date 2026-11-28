@@ -750,7 +750,22 @@ pub fn serialize_kdl_screen(screen: &ScreenDef) -> String {
                     id_attr, values_attr, head, min, max, style_attr, span_attrs, p.col, p.row
                 );
             }
-            WidgetDef::StatusBar { id, time, style } => {
+            WidgetDef::StatusBar {
+                id,
+                label,
+                time,
+                show_clock,
+                clock_align,
+                show_battery,
+                battery_align,
+                font_scale,
+                label_color,
+                clock_color,
+                battery_color,
+                battery_pin,
+                battery_scale,
+                style,
+            } => {
                 let id_attr = id
                     .as_ref()
                     .map(|s| format!(" id=\"{}\"", s))
@@ -759,10 +774,43 @@ pub fn serialize_kdl_screen(screen: &ScreenDef) -> String {
                     .as_ref()
                     .map(|s| format!(" style=\"{}\"", s))
                     .unwrap_or_default();
+                let colour_attr = |name: &str, value: &Option<String>| match value {
+                    Some(value) => format!(" {name}=\"{value}\""),
+                    None => String::new(),
+                };
+                let mut options = String::new();
+                if !show_clock {
+                    options.push_str(" show_clock=false");
+                }
+                if clock_align == "right" {
+                    options.push_str(" clock_align=\"right\"");
+                }
+                if !show_battery {
+                    options.push_str(" show_battery=false");
+                }
+                if battery_align == "center" {
+                    options.push_str(" battery_align=\"center\"");
+                }
+                if (font_scale - 1.0).abs() > f32::EPSILON {
+                    let _ = write!(options, " font_scale={font_scale}");
+                }
+                let _ = write!(
+                    options,
+                    "{}{}{}",
+                    colour_attr("label_color", label_color),
+                    colour_attr("clock_color", clock_color),
+                    colour_attr("battery_color", battery_color),
+                );
+                if let Some(pin) = battery_pin {
+                    let _ = write!(options, " battery_pin={pin}");
+                }
+                if (battery_scale - 2.0).abs() > f32::EPSILON {
+                    let _ = write!(options, " battery_scale={battery_scale}");
+                }
                 let _ = writeln!(
                     &mut out,
-                    "        status_bar{} time=\"{}\"{}{} col={} row={}",
-                    id_attr, time, style_attr, span_attrs, p.col, p.row
+                    "        status_bar{} label=\"{}\" time=\"{}\"{}{}{} col={} row={}",
+                    id_attr, label, time, options, style_attr, span_attrs, p.col, p.row
                 );
             }
             WidgetDef::TimePicker {

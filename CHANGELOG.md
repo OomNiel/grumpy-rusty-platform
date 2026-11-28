@@ -11,6 +11,96 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 _Nothing yet._
 
+## [0.19.23] - 2026-11-28
+
+### Fixed
+
+- **rust-analyzer no longer dies on a project it could check.** A generated ESP project's `build.rs`
+  *panicked* when `xtensa-esp32-elf-gcc` was not on `PATH` — and rust-analyzer runs `cargo check`, which
+  never links and therefore never needs the linker, in a process that has not sourced `export-esp.sh`. So
+  every file in an opened project showed the panic instead of its own errors. The check now prints the
+  same instructions as a `cargo:warning` and lets the check through; a real build still fails, one step
+  later, with `error: linker ... not found` directly under those two lines.
+
+## [0.19.22] - 2026-11-28
+
+### Added
+
+- **A status bar's label can be set from your code.** `design.status_bar().set_status_bar_label("WiFi")`
+  replaces the free text on the bar's left edge, which is what a bar needs to show something the design
+  cannot know -- the network it joined, the mode it is in, a voltage. The crate gains
+  `GuiContext::set_status_bar_label` and `GuiContext::status_bar_label`; the line is copied into the bar's
+  own field, so a `&str` built at run time needs no lifetime and no `unsafe`. ASCII, truncated to the 24
+  bytes the bar holds. The clock and the gauge are untouched, and setting the same label again is not a
+  repaint.
+
+### Fixed
+
+- **A status bar's label is not its clock.** `PropertyKey::Text` on a bar still means the clock, so the two
+  texts no longer have to share one setter.
+
+## [0.19.21] - 2026-11-28
+
+### Changed
+
+- **The status bar's battery gauge reads a measured discharge curve, not a straight line.** A generated
+  project's `battery_percent` now interpolates a 24-point table of cell voltage against charge
+  (2.75 V = 0%, 4.20 V = 100%), so the flat middle of a Li-ion discharge curve is where it belongs
+  instead of being averaged away. The old line ran from 3.3 V, so it read **0% on a cell at 3.2 V** and
+  lagged by up to five points above 3.9 V; the curve reads 10% and 70% there. Outside the table it
+  clamps, and the ADC sample, `BATTERY_PIN` and `BATTERY_SCALE` are unchanged.
+
+## [0.19.20] - 2026-11-28
+
+### Added
+
+- **A button can give its label a colour per state.** *Pressed label colour*, *Disabled label colour*
+  and *Focused label colour* join the button's other colours, so a label no longer has to go white the
+  moment the button is touched. The three are optional, and a design that names none of them draws
+  exactly what it did before (white on press and focus, the crate's dim face when disabled).
+
+### Fixed
+
+- **A button's label kept the designer's font through focus, press and disabled.** The design's face
+  rode inside the normal state of the button's `WidgetStyle` (`with_normal`), so `focused`/`pressed`/
+  `disabled` fell back to the crate's own `Medium4x7` -- and `add_button` focuses the first focusable
+  widget, so a button with a font was drawn in the default face from the first frame until the focus
+  moved. `.with_font(...)` now carries the face to all four states (reported with
+  `ESP32-035-WeatherClock`, whose `Medium5x7` labels shrank on focus).
+
+## [0.19.19] - 2026-11-27
+
+Covers the packages built on the bench between 0.19.12 and 0.19.20 (0.19.13-0.19.19); only **0.19.23** is
+tagged, and it ships everything below.
+
+### Added
+
+- **The status bar is a design of its own.** One strip with three independent features — a free-text
+  **label**, a **clock** and a **battery gauge** — each shown or hidden and each placeable in the centre or at
+  the right (two right-aligned features stack along the right edge, clock first and gauge last; two centred
+  ones share the middle). One **Font scale** magnifies all three and each has its own colour. The battery
+  input is a pin from the **board's own ADC list** (a pin the board already uses says what for) with a
+  divider factor, at compile time through `BATTERY_PIN`/`BATTERY_SCALE` in the generated `ui.rs`.
+  `StatusBarConfig`/`StatusBarText` replace the old wearable-strip struct — the text is a 24-byte ASCII field
+  that stays `Copy` — and `GuiContext` gained `set_status_bar_time` and `set_status_bar_battery` so the
+  generated module can follow the wall clock and the ADC. The C++ emitter draws the same bar in LVGL.
+- **The battery list in the Designer is the board's.** A new board ADC table names every pin the chosen chip
+  offers, what channel it is on and what the board already uses it for.
+
+### Changed
+
+- **A clock repaints only the pieces that moved.** `Rect`'s damage tracker gained `add_disjoint`, so two hand
+  sweeps stay two pieces instead of merging into their bounding box, and the clock reports its own
+  `hand_damage_regions`; the date block is no longer dragged into every second's repaint (bench,
+  2026-11-25). The generated `ui.rs` composes a partial repaint in a scratch buffer (`DAMAGE_SCRATCH`),
+  cleared to the panel's background and written in bands, so a damaged region is never blanked on the glass
+  before its contents are drawn — which is what made the date text blink as a hand crossed it.
+- **`EVENTS`/`DIRTY` are 16** in a generated project: a moving hand is four narrow pieces, two hands can move
+  in one frame, and a midnight also repaints the date block.
+- **The clock listener and a Monitor share the serial port.** The listener that gives a cold-booted board its
+  time is closed for a flash and restarted after it, and opening a design no longer takes the port away from
+  Monitor (2026-11-26).
+
 ## [0.19.12] - 2026-11-23
 
 The Clock gains a **date block** under its pivot, and the board's clock now carries the calendar, not

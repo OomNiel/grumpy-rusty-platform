@@ -856,7 +856,7 @@ export function validateDocument(document: DesignerDocument): string[] {
                     }
                     continue;
                 }
-                const complaint = propertyProblem(property, value);
+                const complaint = propertyProblem(property, value, document.boardId);
                 if (complaint !== undefined) {
                     problems.push(`${where}: ${property.label} ${complaint}`);
                 } else if (property.required === true && value === '') {
@@ -1055,8 +1055,16 @@ function childrenProblems(
 
 /** One property's value checked against what its editor can produce. */
 function propertyProblem(
-    property: { kind: string; name: string; options?: readonly string[]; min?: number; max?: number },
+    property: {
+        kind: string;
+        name: string;
+        options?: readonly string[];
+        boardOptions?: (boardId: string) => readonly { value: string }[];
+        min?: number;
+        max?: number;
+    },
     value: string | number | boolean,
+    boardId: string,
 ): string | undefined {
     switch (property.kind) {
         case 'text':
@@ -1079,10 +1087,16 @@ function propertyProblem(
             return typeof value === 'number' && Number.isFinite(value)
                 ? undefined
                 : `must be a number, got ${value}`;
-        case 'enum':
-            return property.options?.includes(String(value))
+        case 'enum': {
+            // A board-supplied list (the status bar's battery pin) is the one to check against; its value may
+            // be empty, which means "not chosen" and is valid for an optional property.
+            const choices = property.boardOptions === undefined
+                ? property.options
+                : ['', ...property.boardOptions(boardId).map((choice) => choice.value)];
+            return choices?.includes(String(value))
                 ? undefined
-                : `must be one of ${property.options?.join(', ')}, got ${value}`;
+                : `must be one of ${choices?.join(', ')}, got ${value}`;
+        }
         case 'color':
             // An empty string means "not set", which is how an optional tint stays absent from the markup.
             if (value === '') {

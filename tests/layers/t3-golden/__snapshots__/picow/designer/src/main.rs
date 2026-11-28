@@ -45,12 +45,22 @@ pub async fn setup(spawner: Spawner) -> State {
     // borrow would keep the radio's pins out of reach for the life of the program.
     let (mut hardware, rest) = panel::init(p);
 
-    // The radio is brought up in a task of its own, so a network that never answers delays the clock and
-    // nothing else. It owns the wireless chip's pins from here on.
+    // The radio is needed only by a design that shows the time. With no clock the chip is left off: its
+    // power switch is driven low rather than floating, and no network task exists to own its pins.
     #[cfg(feature = "time-wifi")]
-    spawner.spawn(unwrap!(net::time_task(rest)));
+    if ui::HAS_CLOCK {
+        // The radio is brought up in a task of its own, so a network that never answers delays the clock and
+        // nothing else. It owns the wireless chip's pins from here on.
+        spawner.spawn(unwrap!(net::time_task(rest)));
+    } else {
+        let _ = spawner;
+        panel::wireless_off(rest);
+    }
     #[cfg(not(feature = "time-wifi"))]
-    let _ = (spawner, rest);
+    {
+        let _ = spawner;
+        panel::wireless_off(rest);
+    }
 
     // The panel keeps whatever the previous frame left in it until something clears it, so the first
     // clear is part of bringing it up.

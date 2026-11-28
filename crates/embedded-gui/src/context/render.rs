@@ -138,6 +138,27 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
     where
         D: embedded_graphics_core::draw_target::DrawTarget<Color = Rgb565>,
     {
+        self.render_dirty_buffered_with(
+            target,
+            scratch_buffer,
+            self.theme.panel.background.unwrap_or(Rgb565::new(0, 0, 0)),
+        )
+    }
+
+    /// [`Self::render_dirty_buffered`] with the colour the damaged area is cleared to given by the caller.
+    ///
+    /// A design is cleared to its own background before the first frame, and that need not be the
+    /// theme's panel surface: the generated module passes its `SCREEN_BACKGROUND` here so a partial
+    /// repaint composites exactly the pixels a whole one would.
+    pub fn render_dirty_buffered_with<D>(
+        &self,
+        target: &mut D,
+        scratch_buffer: &mut [Rgb565],
+        background: Rgb565,
+    ) -> Result<(), D::Error>
+    where
+        D: embedded_graphics_core::draw_target::DrawTarget<Color = Rgb565>,
+    {
         let slice = self.dirty.as_slice();
         if slice.is_empty() || scratch_buffer.is_empty() {
             return Ok(());
@@ -152,8 +173,7 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
                 // Entire dirty rect fits in the scratch buffer
                 let mut fb =
                     crate::framebuffer::FramebufferSlice::new(scratch_buffer, dirty.w, dirty.h);
-                let bg = self.theme.panel.background.unwrap_or(Rgb565::new(0, 0, 0));
-                fb.clear_color(bg);
+                fb.clear_color(background);
                 let mut ctx = RenderCtx::new(&mut fb, Rect::new(0, 0, dirty.w, dirty.h));
                 ctx.set_quality(self.render_quality);
                 let _ = self.render_into(&mut ctx, -dirty.x, -dirty.y, 255);
@@ -173,8 +193,7 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
                     let band_pixels = (dirty.w * h) as usize;
                     let mut fb =
                         crate::framebuffer::FramebufferSlice::new(scratch_buffer, dirty.w, h);
-                    let bg = self.theme.panel.background.unwrap_or(Rgb565::new(0, 0, 0));
-                    fb.clear_color(bg);
+                    fb.clear_color(background);
                     let mut ctx = RenderCtx::new(&mut fb, Rect::new(0, 0, dirty.w, h));
                     ctx.set_quality(self.render_quality);
                     let _ = self.render_into(&mut ctx, -dirty.x, -y, 255);
@@ -199,8 +218,7 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
                         let chunk_pixels = w as usize;
                         let mut fb =
                             crate::framebuffer::FramebufferSlice::new(scratch_buffer, w, 1);
-                        let bg = self.theme.panel.background.unwrap_or(Rgb565::new(0, 0, 0));
-                        fb.clear_color(bg);
+                        fb.clear_color(background);
                         let mut ctx = RenderCtx::new(&mut fb, Rect::new(0, 0, w, 1));
                         ctx.set_quality(self.render_quality);
                         let _ = self.render_into(&mut ctx, -x, -y, 255);

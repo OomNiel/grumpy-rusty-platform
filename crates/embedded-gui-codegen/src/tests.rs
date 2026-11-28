@@ -329,7 +329,7 @@ fn a_styled_sd_image_passes_its_style_to_the_card_widget() {
 fn test_custom_button_styling_declarative_and_named_colors() {
     let kdl = r##"screen id="HackswellScreen" width=320 height=240 {
     grid cols="1fr" rows="1fr" {
-        button id="Opt1" text="Hackswell" bg="#0A1A06" pressed_bg="#19170B" disabled_bg="forestgreen" disabled_text="crimson" col=0 row=0
+        button id="Opt1" text="Hackswell" bg="#0A1A06" pressed_bg="#19170B" pressed_text="#0A1A06" disabled_bg="forestgreen" disabled_text="crimson" focused_text="#19170B" col=0 row=0
     }
 }"##;
     let _screen = parse_kdl_screen(kdl).unwrap();
@@ -338,8 +338,12 @@ fn test_custom_button_styling_declarative_and_named_colors() {
     assert!(rust_code.contains("WidgetStyle::button()"));
     assert!(rust_code.contains(".with_bg(Rgb565::new(1, 6, 0))"));
     assert!(rust_code.contains(".with_pressed_bg(Rgb565::new(3, 5, 1))"));
+    // The label's own colour per state, which is what keeps a design's face when the button is touched:
+    // `with_text` writes the normal state only.
+    assert!(rust_code.contains(".with_pressed_text(Rgb565::new(1, 6, 0))"));
     assert!(rust_code.contains(".with_disabled_bg(Rgb565::new(4, 34, 4))")); // forestgreen
     assert!(rust_code.contains(".with_disabled_text(Rgb565::new(27, 5, 7))")); // crimson
+    assert!(rust_code.contains(".with_focused_text(Rgb565::new(3, 5, 1))"));
 }
 
 #[test]
@@ -700,8 +704,15 @@ screen id="Refused" width=320 height=240 {
         "plotter: its space-separated series and head reach add_plotter: {generated}"
     );
     assert!(
-        generated.contains("gui.add_status_bar(cells[6], \"07:45\", Style::panel())"),
-        "status_bar takes a parsed style: {generated}"
+        generated.contains("gui.add_status_bar_configured(cells[6], StatusBarConfig {")
+            && generated.contains("time: StatusBarText::from_str(\"07:45\")")
+            && generated.contains("show_clock: true")
+            && generated.contains("clock_align: StatusBarAlign::Center")
+            && generated.contains("show_battery: true")
+            && generated.contains("battery_align: StatusBarAlign::Right")
+            && generated.contains("font_scale: 1.00")
+            && generated.contains("Style::panel())"),
+        "status_bar takes a configured call and a parsed style: {generated}"
     );
     assert!(
         generated.contains("gui.add_time_picker(cells[7], 7, 45, false, true, Style::panel())"),
@@ -787,8 +798,11 @@ screen id="Defaults" width=320 height=240 {
         "plotter with no values is an empty series with head 0: {generated}"
     );
     assert!(
-        generated.contains("gui.add_status_bar(cells[5], \"12:00\", Style::panel())"),
-        "status_bar default style is panel: {generated}"
+        generated.contains("gui.add_status_bar_configured(cells[5], StatusBarConfig {")
+            && generated.contains("label: StatusBarText::from_str(\"\")")
+            && generated.contains("time: StatusBarText::from_str(\"12:00\")")
+            && generated.contains("Style::panel())"),
+        "status_bar defaults and style are unchanged: {generated}"
     );
     assert!(
         generated.contains("gui.add_time_picker(cells[6], 12, 0, true, false, Style::panel())"),
@@ -1235,4 +1249,40 @@ fn test_text_lines_serializes_back_to_children() {
     // And what came back parses to the same screen, children and all.
     let reparsed = parse_kdl_screen(&text).unwrap();
     assert_eq!(reparsed, screen);
+}
+
+#[test]
+fn status_bar_carries_its_own_layout_and_colours() {
+    let kdl = r##"screen id="Bar" width=320 height=240 {
+    column gap=0 padding=0 {
+        status_bar id="Bar" label="SYSTEM" time="23:59" show_clock=true clock_align="right" \
+                    show_battery=false battery_align="center" font_scale=1.5 \
+                    label_color="#ff0000" clock_color="green" battery_color="#00ff00" \
+                    battery_pin=34 battery_scale=2.5
+    }
+}
+"##;
+    let screen = parse_kdl_screen(kdl).unwrap();
+    let generated = compile_kdl_to_rust(kdl).unwrap();
+    for fragment in [
+        "label: StatusBarText::from_str(\"SYSTEM\")",
+        "time: StatusBarText::from_str(\"23:59\")",
+        "show_clock: true",
+        "clock_align: StatusBarAlign::Right",
+        "show_battery: false",
+        "battery_align: StatusBarAlign::Center",
+        "font_scale: 1.50",
+        "label_color: Some(Rgb565::new(31, 0, 0))",
+        "clock_color: Some(Rgb565::new(0, 63, 0))",
+        "battery_color: Some(Rgb565::new(0, 63, 0))",
+        "battery_pin: Some(34)",
+        "battery_scale: 2.50",
+    ] {
+        assert!(
+            generated.contains(fragment),
+            "{fragment} must reach the runtime: {generated}"
+        );
+    }
+    let reparsed = parse_kdl_screen(&serialize_kdl_screen(&screen)).unwrap();
+    assert_eq!(reparsed, screen, "the status bar attributes must survive a save");
 }

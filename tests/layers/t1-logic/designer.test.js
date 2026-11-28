@@ -41,7 +41,7 @@ const {
     trianglePoints,
 } = compiled('designer/model');
 const { emitKdl, layoutDocument } = compiled('designer/kdl');
-const { emitUiRs, emitHandlersRs, designHasClock } = compiled('designer/generate');
+const { emitUiRs, emitHandlersRs, designHasClock, BATTERY_CURVE } = compiled('designer/generate');
 const { fontConstName } = compiled('designer/model');
 const {
     rgb565Expression,
@@ -227,6 +227,20 @@ test('the defaults are the parser\'s own unwrap_or values, including the surpris
     // the arc completely at the default radius -- the design would look like it had no arc at all.
     equal(props('arc').frame_inset, 14, 'and its frame leaves room for the arc');
     equal(props('status_bar').time, '12:00', 'status_bar time is text, not a number');
+    equal(props('status_bar').battery_pin, '', 'battery pin starts unset rather than on a guessed GPIO');
+    equal(props('status_bar').battery_scale, 2, 'and the divider starts at the x2 the board needs');
+    const statusBar = widgetSpec('status_bar');
+    notOk(
+        statusBar.props.some((property) => property.name === 'text_color'),
+        'the superseded Text colour box is gone: the three features have colours of their own',
+    );
+    const batteryPin = statusBar.props.find((property) => property.name === 'battery_pin');
+    equal(batteryPin.kind, 'enum', 'the pin is chosen from a list');
+    equal(typeof batteryPin.boardOptions, 'function', 'a list the board supplies');
+    ok(
+        batteryPin.boardOptions('sunton-3248s035r').some((choice) => choice.value === '34'),
+        'and the ESP32-035 list includes the pin the notes traced',
+    );
     equal(props('scale').minor_ticks, 2, 'scale minor ticks');
     equal(props('scale').mode, 'radial', 'scale mode');
     equal(props('carousel').pulse, 255, 'carousel pulse is a number');
@@ -1254,6 +1268,45 @@ test('a button gets a WidgetStyle, because the emitter chains its colours onto t
     equal(validateDocument(doc).length, 0, 'which is a valid button');
 });
 
+test('a button can give its label a colour per state, and every one reaches the markup', () => {
+    // Reported 2026-11-28: a button's label went white (and back to the built-in face) the moment the button
+    // had focus. The parser has read `pressed_text`/`disabled_text`/`focused_text` all along and the emitter
+    // chains `.with_*_text(...)` onto the WidgetStyle for each, so the one thing missing was a field to set
+    // them from -- which is what these three are. The colour at rest stays `text_color`.
+    const doc = document(0, [
+        widget('go', 'button', { x: 0, y: 0, width: 100, height: 32 }, {
+            props: {
+                ...defaultProps('button'),
+                text: 'Go',
+                text_color: '#00ff00',
+                pressed_text: '#ff0000',
+                disabled_text: '#333333',
+                focused_text: '#0000ff',
+            },
+        }),
+    ]);
+    const kdl = emitKdl(doc);
+    contains(kdl, 'text_color="#00ff00"', 'the label at rest');
+    contains(kdl, 'pressed_text="#ff0000"', 'the label under a finger');
+    contains(kdl, 'disabled_text="#333333"', 'the label when it cannot be used');
+    contains(kdl, 'focused_text="#0000ff"', 'the label while it has focus');
+    equal(validateDocument(doc).length, 0, 'all four are ordinary button properties');
+
+    // A design written before the three existed names none of them, and has to keep validating: the crate's
+    // own state colours then stand, which is exactly what it drew before the fields existed. A required
+    // property here would refuse every older design and freeze its markup (the trap of §185).
+    const props = { ...doc.widgets[0].props };
+    delete props.pressed_text;
+    delete props.disabled_text;
+    delete props.focused_text;
+    const older = { ...doc, widgets: [{ ...doc.widgets[0], props }] };
+    equal(validateDocument(older).length, 0, 'an older design is still valid without them');
+    const olderKdl = emitKdl(older);
+    notContains(olderKdl, 'pressed_text=', 'and its markup names none of them');
+    notContains(olderKdl, 'disabled_text=', 'so the crate keeps the state colours it drew before');
+    notContains(olderKdl, 'focused_text=', 'including the one at focus');
+});
+
 test('a font is only offered where the crate reads one', () => {
     // Two routes reach a widget: the `font` attribute, which the parser reads for labels and carousels only,
     // and a `style` expression, which every widget whose renderer draws its text in `style.font` can take.
@@ -1443,16 +1496,24 @@ test('a triangle\'s six points are one group of optional properties', () => {
         equal(property.max, 1000, `${property.name} stops at the box's far edge`);
     }
     equal(new Set(points.map((property) => property.group)).size, 1, 'and they all share the one heading');
-    // Nothing else in the catalogue is optional apart from one superseded field, the navigate target and the
-    // clock's date block: a shape's points are the case this exists for, the checkbox's old `box_size` joined
-    // them because the crate defaults it and every widget dropped now leaves it out, `navigate_to` is only
-    // named by a widget that raises `navigate`, and the date fields are defaulted by the crate's parser so a
-    // design written before the date block existed must stay valid. Named rather than counted, so adding an
-    // optional property has to be a deliberate act instead of something that slips in.
+    // Nothing else in the catalogue is optional apart from one superseded field, the navigate target, the
+    // clock's date block and a button's label colour per state: a shape's points are the case this exists for,
+    // the checkbox's old `box_size` joined them because the crate defaults it and every widget dropped now
+    // leaves it out, `navigate_to` is only named by a widget that raises `navigate`, the date fields are
+    // defaulted by the crate's parser so a design written before the date block existed must stay valid, and
+    // the label colours are the same story one state at a time -- a button that names none of them draws the
+    // crate's own white (pressed, focused) and dim (disabled) faces, which is what every older design does.
+    // Named rather than counted, so adding an optional property has to be a deliberate act instead of
+    // something that slips in.
+    const BUTTON_LABEL_NAMES = ['disabled_text', 'focused_text', 'pressed_text'];
     const CLOCK_DATE_NAMES = [
         'date_box_border', 'date_box_border_width', 'date_box_fill', 'date_box_opacity', 'date_box_radius',
         'date_color', 'date_font', 'date_offset', 'day', 'day_size', 'month', 'month_size',
         'show_date', 'show_month', 'show_weekday', 'weekday_size', 'year',
+    ];
+    const STATUS_BAR_NAMES = [
+        'label', 'show_clock', 'clock_align', 'show_battery', 'battery_align', 'font_scale',
+        'label_color', 'clock_color', 'battery_color', 'battery_pin', 'battery_scale',
     ];
     const optional = KDL_WIDGETS.flatMap((entry) => entry.props)
         .filter((property) => property.optional === true)
@@ -1460,8 +1521,19 @@ test('a triangle\'s six points are one group of optional properties', () => {
         .sort();
     equal(
         optional.join(','),
-        ['box_size', 'navigate_to', 'navigate_to', 'navigate_to', ...TRIANGLE_POINT_NAMES, ...CLOCK_DATE_NAMES].sort().join(','),
-        'the points, the superseded box size, the navigate target and the clock date fields are the only optional properties',
+        [
+            'box_size',
+            'navigate_to',
+            'navigate_to',
+            'navigate_to',
+            ...TRIANGLE_POINT_NAMES,
+            ...CLOCK_DATE_NAMES,
+            ...STATUS_BAR_NAMES,
+            ...BUTTON_LABEL_NAMES,
+        ]
+            .sort()
+            .join(','),
+        'the points, the superseded box size, the navigate target, the clock date fields, the status bar features and a button\'s per-state label colours are the only optional properties',
     );
 });
 
@@ -1776,12 +1848,18 @@ test('a date line\'s size may be a fraction, and the markup carries it', () => {
     // Asked 2026-11-23: *"Is it possible to scale the date element text size by fractions of a number
     // e.g: 1.5 instead of 2?"* The catalogue offers 0.1 steps and the crate resamples the glyph pixels,
     // so the markup must write the fraction rather than round it away.
+    //
+    // The attribute is `_scale`, not the design field's `_size`: reported 2026-11-25 as "the text scales
+    // correctly in the Designer but does not scale on the glass", because the parser met
+    // `weekday_size=1.5` -- an attribute it does not know -- and kept its own 1.
     const clock = widget('clk', 'clock', { x: 0, y: 0, width: 96, height: 96 });
     clock.props.day_size = 1.5;
     clock.props.weekday_size = 1.25;
     const kdl = emitKdl(document(0, [clock]));
-    contains(kdl, 'day_size=1.5', 'the fraction reaches the markup');
-    contains(kdl, 'weekday_size=1.25', 'and so does a finer one');
+    contains(kdl, 'day_scale=1.5', 'the fraction reaches the markup under the parser\'s own name');
+    contains(kdl, 'weekday_scale=1.25', 'and so does a finer one');
+    notOk(kdl.includes('day_size='), 'the design field\'s name is not written as an attribute');
+    notOk(kdl.includes('weekday_size='), 'nor is the weekday\'s');
     equal(validateDocument(document(0, [clock])).length, 0, 'a fractional size is a valid design');
 });
 
@@ -1852,11 +1930,12 @@ test('a clock whose Run is off generates none of that', () => {
     contains(ui, 'pub fn set_wall_clock(&mut self, hour: u8, minute: u8, second: u8)');
 });
 
-test('a partial repaint clears the damage first, so a moving hand leaves no trace', () => {
+test('a partial repaint is composed off-screen, so a moving hand leaves no trace or blink', () => {
     // Reported 2026-10-17: "the clock hand's previous positions are not erased as the new
-    // positions are drawn". The design paints no screen background of its own -- the clock's face
-    // is transparent -- and only the damaged regions are repainted, so the previous hands survived
-    // unless the damage was cleared to the colour the panel started as.
+    // positions are drawn". The design paints no screen background of its own, so the damaged
+    // regions have to start from the colour the panel started as. Reported 2026-11-25: clearing
+    // them on the glass and drawing them again made the date text blink as a hand crossed it, so
+    // the region is now composed in a scratch buffer and flushed once.
     const clock = widget('clk', 'clock', { x: 0, y: 0, width: 96, height: 96 });
     const ui = emitUiRs(document(0, [clock]));
     contains(
@@ -1864,21 +1943,26 @@ test('a partial repaint clears the damage first, so a moving hand leaves no trac
         'pub const SCREEN_BACKGROUND: Rgb565 = Rgb565::new(0, 0, 0);',
         'the colour the sketch clears the panel to',
     );
+    contains(ui, 'pub const DAMAGE_SCRATCH: usize =', 'the scratch buffer the damage is composed in');
+    contains(ui, 'damage_scratch: [Rgb565; DAMAGE_SCRATCH],', 'kept by the design, not allocated');
     contains(
         ui,
-        '.paint_damage(target, SCREEN_BACKGROUND)',
-        'the damaged regions are cleared to it before they are repainted',
+        'gui.render_dirty_buffered_with(',
+        'the damaged regions are composed in the scratch buffer',
     );
-    // Only on the damaged path: a whole repaint covers what it clears, so a clear there would be
-    // a frame of work for nothing.
+    contains(ui, 'SCREEN_BACKGROUND,', 'which starts from the same colour as the panel');
+    // Only on the damaged path: a whole repaint covers what it clears, so a scratch pass there
+    // would be a frame of work for nothing.
     const repaintAt = ui.indexOf('pub fn repaint<D>');
     const renderAt = ui.indexOf('pub fn render<D>');
     ok(repaintAt !== -1 && renderAt > repaintAt, 'repaint comes before render');
     notOk(
-        ui.slice(repaintAt, renderAt).includes('paint_damage'),
-        'the whole-screen path does not clear anything',
+        ui.slice(repaintAt, renderAt).includes('render_dirty_buffered'),
+        'the whole-screen path does not buffer anything',
     );
-    contains(ui.slice(renderAt, renderAt + 2000), 'paint_damage', 'render clears what it damages');
+    const partial = ui.slice(renderAt, renderAt + 2000);
+    contains(partial, 'render_dirty_buffered_with', 'render buffers what it damages');
+    notOk(partial.includes('paint_damage'), 'and never blanks the panel first');
 });
 
 test('a running clock follows the wall clock when the board has been told the time', () => {
@@ -1927,4 +2011,95 @@ test('the design says whether it draws a clock, so the firmware can decide wheth
     const stopped = widget('stopped', 'clock', { x: 0, y: 0, width: 96, height: 96 });
     stopped.props.movement = false;
     equal(designHasClock(document(0, [stopped])), true, 'a stopped clock still shows a time');
+});
+
+test('a status bar names the battery input the firmware reads, and the handle can set its level', () => {
+    const bar = widget('st', 'status_bar', { x: 0, y: 0, width: 240, height: 24 });
+    bar.props.battery_pin = '34';
+    bar.props.battery_scale = 2.5;
+    const ui = emitUiRs(document(0, [bar]));
+    contains(ui, 'pub const BATTERY_PIN: Option<u8> = Some(34);', 'the pin the design chose');
+    contains(ui, 'pub const BATTERY_SCALE: f32 = 2.50;', 'and the divider factor');
+    contains(ui, 'pub fn set_battery(&self, percent: u8, charging: bool)', 'the gauge has a setter');
+    contains(ui, 'set_status_bar_battery(self.id, percent, charging)', 'which reaches the runtime');
+    const unset = widget('st', 'status_bar', { x: 0, y: 0, width: 240, height: 24 });
+    contains(
+        emitUiRs(document(0, [unset])),
+        'pub const BATTERY_PIN: Option<u8> = None;',
+        'an unset pin is None, not a guessed GPIO',
+    );
+});
+
+test('the gauge reads a measured discharge curve, not a straight line from empty to full', () => {
+    // Asked for 2026-11-28, with the table this cell was measured on: a linear 3.3-4.2 V guess reads a
+    // comfortably full gauge on a cell that is most of the way down, because the middle of a Li-ion
+    // discharge curve is nearly flat. The curve lives in `generate.ts` as data, and this pins both it and
+    // the emitted copy -- a table edited in one place and not the other would be invisible on the glass.
+    const mv = BATTERY_CURVE.map(([millivolts]) => millivolts);
+    const percent = BATTERY_CURVE.map(([, charge]) => charge);
+    equal(BATTERY_CURVE.length, 24, 'the measured points, all of them');
+    equal(mv[0], 2750, 'empty is 2.75 V');
+    equal(percent[0], 0, 'and reads 0%');
+    equal(mv[mv.length - 1], 4200, 'full is 4.20 V');
+    equal(percent[percent.length - 1], 100, 'and reads 100%');
+    for (let i = 1; i < BATTERY_CURVE.length; i += 1) {
+        ok(mv[i] > mv[i - 1], `point ${i} is above the one before it (${mv[i]} > ${mv[i - 1]})`);
+        ok(percent[i] > percent[i - 1], `and holds more charge (${percent[i]}% > ${percent[i - 1]}%)`);
+    }
+
+    const bar = widget('st', 'status_bar', { x: 0, y: 0, width: 240, height: 24 });
+    bar.props.battery_pin = '35';
+    bar.props.battery_scale = 2;
+    const ui = emitUiRs(document(0, [bar]));
+    contains(ui, 'const BATTERY_CURVE: [(u16, u8); 24] = [', 'the table reaches the generated file');
+    for (const [millivolts, charge] of BATTERY_CURVE) {
+        contains(ui, `(${millivolts}, ${charge})`, `${millivolts} mV is ${charge}%`);
+    }
+    contains(ui, 'BATTERY_CURVE.windows(2)', 'and the gauge interpolates between its points');
+    contains(ui, 'battery_percent_at((pin_mv * BATTERY_SCALE) as i32)', 'from the pin voltage the divider gives');
+    notContains(ui, '900.0', 'the old empty-to-full straight line is gone');
+    notContains(ui, 'clamp(0.0, 100.0)', 'and so is the clamp that only existed to hold it in range');
+});
+
+test('a design with a status bar can set its label from code', () => {
+    // Asked for 2026-11-28: "enable the user to set the label in the status bar widget from code". The bar's
+    // three texts cannot share one `set_text` -- and on this widget `PropertyKey::Text` is the *clock* -- so
+    // the label has a setter of its own, exposed on the handle the design names the bar by.
+    const bar = widget('status_bar', 'status_bar', { x: 0, y: 0, width: 240, height: 24 });
+    const ui = emitUiRs(document(0, [bar]));
+    contains(ui, 'pub fn set_status_bar_label(&self, label: &str)', 'the handle carries the label setter');
+    contains(ui, '.set_status_bar_label(self.id, label)', 'which reaches the crate\'s own setter');
+    contains(
+        ui,
+        'pub fn status_bar(&self) -> WidgetHandle<\'_>',
+        'and the design names the bar, so design.status_bar().set_status_bar_label("WiFi") is what the app writes',
+    );
+    // A plain `&str`, copied by the crate: no lifetime for the app to fight, and no unsafe cast in the
+    // generated file -- which is what a hand-written version of this method needed.
+    contains(ui, 'pub fn set_status_bar_label(&self, label: &str) {', 'a borrowed line, not a static one');
+    notContains(ui, 'unsafe', 'and nothing unsafe in a generated file');
+    // The handle is the generic one, which is what keeps a project written before this compiling: its
+    // design.status_bar().set_battery(..) call is the same handle, not a second type.
+    notContains(ui, 'StatusBarHandle', 'no second handle type, so an older main.rs still compiles');
+});
+
+test('a status bar clock is fed the wall clock, without needing a Clock widget', () => {
+    // Requested 2026-11-26: the bar takes its time from whatever already sets the RTC, so a design
+    // with a bar and no face still counts as wanting the time and still gets it second by second.
+    const bar = widget('st', 'status_bar', { x: 0, y: 0, width: 240, height: 24 });
+    equal(designHasClock(document(0, [bar])), true, 'a bar with a clock asks for the time');
+    const ui = emitUiRs(document(0, [bar]));
+    contains(
+        ui,
+        'self.gui.borrow_mut().set_status_bar_time(self.widgets.st, hour, minute)',
+        'the wall clock reaches the bar',
+    );
+    contains(ui, 'self.clock_due()', 'and the bar alone starts the once-a-second movement');
+    const hidden = widget('st', 'status_bar', { x: 0, y: 0, width: 240, height: 24 });
+    hidden.props.show_clock = false;
+    equal(designHasClock(document(0, [hidden])), false, 'a bar with its clock hidden does not');
+    notOk(
+        emitUiRs(document(0, [hidden])).includes('set_status_bar_time'),
+        'and nothing feeds it',
+    );
 });

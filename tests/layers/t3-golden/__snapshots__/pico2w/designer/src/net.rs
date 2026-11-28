@@ -10,9 +10,11 @@
 // project that takes its time from a battery-backed module later pays for none of this.
 #![allow(dead_code)]
 
+use core::cell::RefCell;
 use cyw43::aligned_bytes;
 use cyw43_pio::{RM2_CLOCK_DIVIDER, PioSpi};
 use defmt::{info, warn};
+use embedded_hal::digital::{ErrorType, OutputPin};
 use embassy_net::dns::DnsQueryType;
 use embassy_net::udp::{PacketMetadata, UdpSocket};
 use embassy_net::{Config as NetConfig, Stack, StackResources};
@@ -22,6 +24,7 @@ use embassy_rp::peripherals::{DMA_CH0, PIO0};
 use embassy_rp::pio::{InterruptHandler, Pio};
 use embassy_rp::{bind_interrupts, dma};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{with_timeout, Duration, Timer};
 use static_cell::StaticCell;
@@ -38,6 +41,80 @@ bind_interrupts!(struct Irqs {
 /// The calendar is part of it because a Clock widget draws the date: seconds alone would make a
 /// date block sit on the build day until the next flash.
 pub static SYNCED_TIME: Signal<CriticalSectionRawMutex, (u16, u8, u8, u8, u8, u8)> = Signal::new();
+
+/// The CYW43's power switch, shared so the task can release it after the time is in.
+///
+/// The driver only drives this pin while it resets the chip, so once cyw43::new has returned the task
+/// can take it away and hold it low without the runner touching it again.
+struct WirelessPower {
+    pin: Mutex<CriticalSectionRawMutex, RefCell<Option<Output<'static>>>>,
+}
+
+impl WirelessPower {
+    fn new(pin: Output<'static>) -> Self {
+        Self {
+            pin: Mutex::new(RefCell::new(Some(pin))),
+        }
+    }
+
+    fn drive(&self, high: bool) {
+        self.pin.lock(|cell| {
+            let mut cell = cell.borrow_mut();
+            match cell.as_mut() {
+                Some(pin) if high => pin.set_high(),
+                Some(pin) => pin.set_low(),
+                // After off() the switch has been taken away; nothing is driving the chip any more.
+                None => {}
+            }
+        })
+    }
+
+    /// Takes the switch away and drives it low. The radio is off from here on.
+    fn off(&self) {
+        let pin = self.pin.lock(|cell| cell.borrow_mut().take());
+        if let Some(mut pin) = pin {
+            let _ = pin.set_low();
+        }
+    }
+}
+
+impl ErrorType for WirelessPower {
+    type Error = core::convert::Infallible;
+}
+
+impl OutputPin for WirelessPower {
+    fn set_low(&mut self) -> Result<(), Self::Error> {
+        self.drive(false);
+        Ok(())
+    }
+
+    fn set_high(&mut self) -> Result<(), Self::Error> {
+        self.drive(true);
+        Ok(())
+    }
+}
+
+/// The handle the driver gets; it points at the static that can also switch the chip off.
+#[derive(Clone, Copy)]
+struct PowerHandle(&'static WirelessPower);
+
+impl ErrorType for PowerHandle {
+    type Error = core::convert::Infallible;
+}
+
+impl OutputPin for PowerHandle {
+    fn set_low(&mut self) -> Result<(), Self::Error> {
+        self.0.drive(false);
+        Ok(())
+    }
+
+    fn set_high(&mut self) -> Result<(), Self::Error> {
+        self.0.drive(true);
+        Ok(())
+    }
+}
+
+static POWER: StaticCell<WirelessPower> = StaticCell::new();
 
 /// The network the build was given. The same contract as the Wi-Fi template: read at compile time, never
 /// in the source tree, and filled in by the credential prompt before a build.
@@ -60,7 +137,7 @@ static STACK_RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
 /// Runs the firmware half of the CYW43 driver. Spawned by the task below, and it owns the runner for good.
 #[embassy_executor::task]
 async fn cyw43_task(
-    runner: cyw43::Runner<'static, cyw43::SpiBus<Output<'static>, PioSpi<'static, PIO0, 0>>>,
+    runner: cyw43::Runner<'static, cyw43::SpiBus<PowerHandle, PioSpi<'static, PIO0, 0>>>,
 ) -> ! {
     runner.run().await
 }
@@ -83,7 +160,8 @@ pub async fn time_task(rest: Rest) {
 
     // The chip's four pins came back from panel::init for exactly this. Its power switch starts low (the
     // chip is held off until the driver is ready) and the chip select high, as the vendor examples do.
-    let pwr = Output::new(rest.pin23, Level::Low);
+    // The switch lives in a static so it can be taken away after the time arrives.
+    let power = POWER.init(WirelessPower::new(Output::new(rest.pin23, Level::Low)));
     let cs = Output::new(rest.pin25, Level::High);
     let mut pio = Pio::new(rest.pio0, Irqs);
     let spi = PioSpi::new(
@@ -99,7 +177,7 @@ pub async fn time_task(rest: Rest) {
 
     static STATE: StaticCell<cyw43::State> = StaticCell::new();
     let state = STATE.init(cyw43::State::new());
-    let (net_device, mut control, runner) = cyw43::new(state, pwr, spi, fw, nvram).await;
+    let (net_device, mut control, runner) = cyw43::new(state, PowerHandle(power), spi, fw, nvram).await;
     // Both tasks are spawned from inside a task: for_current_executor is unsafe because it reads the
     // executor out of the current waker, and being inside a task is the condition it asks for.
     let spawner = unsafe { embassy_executor::Spawner::for_current_executor().await };
@@ -139,6 +217,7 @@ pub async fn time_task(rest: Rest) {
     }
     if !joined {
         warn!("clock: no network; the design keeps the build time");
+        idle(&mut control, power).await;
         return;
     }
 
@@ -149,6 +228,7 @@ pub async fn time_task(rest: Rest) {
         .is_err()
     {
         warn!("clock: no address from DHCP; the design keeps the build time");
+        idle(&mut control, power).await;
         return;
     }
 
@@ -159,11 +239,30 @@ pub async fn time_task(rest: Rest) {
                 year, month, day, hour, minute, second, attempt
             );
             SYNCED_TIME.signal((year, month, day, hour, minute, second));
+            // The time is in the RTC now, so the radio has done its job. Leave the network and put
+            // the chip into its lowest power mode; the runner task owns its power pin, so this is
+            // the strongest shutdown available from here.
+            idle(&mut control, power).await;
             return;
         }
         Timer::after(Duration::from_secs(2)).await;
     }
     warn!("clock: the time server did not answer; the design keeps the build time");
+    idle(&mut control, power).await;
+}
+
+/// Leaves the network and puts the chip into its lowest power mode.
+///
+/// Called on every exit from time_task, including the failures: a board that could not reach the
+/// network should not keep a radio associated (or scanning) for the rest of its life.
+async fn idle(control: &mut cyw43::Control<'_>, power: &WirelessPower) {
+    control.leave().await;
+    control
+        .set_power_management(cyw43::PowerManagementMode::SuperSave)
+        .await;
+    // The driver is done with the switch after its reset, so this is the chip's own enable pin:
+    // driving it low switches the radio off rather than leaving it in a low-power mode.
+    power.off();
 }
 
 /// Asks the time server for the date and time, in local time.

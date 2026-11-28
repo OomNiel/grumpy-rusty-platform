@@ -579,12 +579,59 @@ test('a rounded border is drawn as a ring, not as a block in each corner', () =>
 });
 
 test('the status bar is previewed and shows its time', () => {
-    const at = (time) => boot(documentWith(widgetOf('status_bar', { time, text_color: '#12ab34' })));
+    // The old Text colour is gone: the clock has a colour of its own now.
+    const at = (time) => boot(documentWith(widgetOf('status_bar', { time, clock_color: '#12ab34' })));
     const eleven = at('11:11');
     notOk(fillTextArgs(eleven.calls).includes('11:11'), 'the time is glyph pixels, not the fallback fillText');
     const elevenPixels = pixelSet(eleven.calls, css565('#12ab34'));
-    ok(elevenPixels.size > 0, 'the clock is painted in the design text colour');
+    ok(elevenPixels.size > 0, 'the clock is painted in its own colour');
     notOk(sameSet(elevenPixels, pixelSet(at('00:00').calls, css565('#12ab34'))), 'a different time paints different digits');
+});
+
+test('the status bar hides, colours and positions each feature on its own', () => {
+    const red = css565('#ff0000');
+    const green = css565('#00ff00');
+    const blue = css565('#0000ff');
+    const calls = (overrides) =>
+        boot(
+            documentWith(
+                widgetOf('status_bar', {
+                    label: 'BATT',
+                    label_color: '#ff0000',
+                    clock_color: '#00ff00',
+                    battery_color: '#0000ff',
+                    ...overrides,
+                }),
+            ),
+        ).calls;
+    const all = calls({});
+    ok(pixelSet(all, red).size > 0, 'the label is painted in its own colour');
+    ok(pixelSet(all, green).size > 0, 'the clock is painted in its own colour');
+    ok(pixelSet(all, blue).size > 0, 'the gauge is painted in its own colour');
+    equal(pixelSet(calls({ show_clock: false }), green).size, 0, 'hiding the clock paints no clock digits');
+    equal(pixelSet(calls({ show_battery: false }), blue).size, 0, 'hiding the gauge paints no gauge');
+    equal(pixelSet(calls({ label: '' }), red).size, 0, 'an empty label paints nothing');
+});
+
+test('a right-aligned clock sits right of a centred one, and both grow with the scale', () => {
+    const green = css565('#00ff00');
+    const clock = (overrides) =>
+        boot(documentWith(widgetOf('status_bar', { time: '10:10', clock_color: '#00ff00', ...overrides })));
+    const maxX = (calls) =>
+        Math.max(...[...pixelSet(calls, green)].map((point) => Number(point.split(',')[0])));
+    const right = maxX(clock({ clock_align: 'right' }).calls);
+    const centre = maxX(clock({ clock_align: 'center' }).calls);
+    ok(right > centre, `a right-aligned clock sits further right (${right} > ${centre})`);
+    // The glyphs themselves are the same bitmap at every scale, so the magnification is what the
+    // canvas is told to apply rather than something the recorded pixel set can count.
+    const scaled = clock({ font_scale: 2 }).calls.some(
+        (call) => call.method === 'scale' && call.args[0] === 2 && call.args[1] === 2,
+    );
+    ok(scaled, 'a scale of two magnifies the face');
+    const plain = clock({ font_scale: 1 }).calls.some(
+        (call) => call.method === 'scale' && call.args[0] === 2 && call.args[1] === 2,
+    );
+    notOk(plain, 'and a scale of one leaves it alone');
 });
 
 test('the time picker is previewed and shows its hour, minute and 12/24-hour form', () => {

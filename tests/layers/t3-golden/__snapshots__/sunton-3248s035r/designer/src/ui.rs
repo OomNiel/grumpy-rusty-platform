@@ -27,9 +27,70 @@ pub use design::RustyPanelWidgets;
 pub const NODES: usize = design::RustyPanelApp::NODE_COUNT + 8;
 /// Whether the design draws a clock -- what decides whether the firmware keeps a time at all.
 pub const HAS_CLOCK: bool = false;
+/// The ADC input the status bar's battery gauge reads, when the design named one.
+#[allow(dead_code)]
+pub const BATTERY_PIN: Option<u8> = None;
+/// What multiplies the pin's voltage to give the battery's: 2 for a divider that halves it.
+#[allow(dead_code)]
+pub const BATTERY_SCALE: f32 = 2.00;
+
+/// The cell this gauge was calibrated on, as (voltage in millivolts, charge in percent), ascending.
+///
+/// A single Li-ion cell: 2.75 V is empty and 4.20 V is full, and between the measured points the gauge
+/// interpolates rather than assuming a straight line from empty to full -- the middle of a Li-ion discharge
+/// curve is nearly flat, so a straight line reads half full on a cell that is almost flat.
+const BATTERY_CURVE: [(u16, u8); 24] = [
+    (2750, 0), (2900, 2), (3000, 4), (3100, 7), (3200, 10), (3300, 14),
+    (3350, 17), (3400, 20), (3450, 24), (3500, 28), (3550, 32), (3600, 37),
+    (3650, 42), (3700, 47), (3750, 52), (3800, 58), (3850, 64), (3900, 70),
+    (3950, 76), (4000, 82), (4050, 87), (4100, 92), (4150, 97), (4200, 100),
+];
+
+/// A raw ADC sample as a battery percentage.
+///
+/// The sample is the pin's voltage on the ADC's 0-4095 scale, and BATTERY_SCALE turns it into the battery's
+/// voltage (2 for a divider that halves it). The percentage is read off BATTERY_CURVE, interpolated between
+/// the two measured points either side of it and clamped at the ends, so a cell below 2.75 V reads 0% rather
+/// than a negative number. A different chemistry needs this curve changed rather than the gauge.
+#[allow(dead_code)]
+pub fn battery_percent(raw: u16) -> u8 {
+    let pin_mv = f32::from(raw) * 3300.0 / 4095.0;
+    battery_percent_at((pin_mv * BATTERY_SCALE) as i32)
+}
+
+/// BATTERY_CURVE's answer for a cell voltage in millivolts: linear between the measured points, clamped to
+/// the first and last of them.
+fn battery_percent_at(battery_mv: i32) -> u8 {
+    if battery_mv <= i32::from(BATTERY_CURVE[0].0) {
+        return BATTERY_CURVE[0].1;
+    }
+    for pair in BATTERY_CURVE.windows(2) {
+        let (lo_mv, lo_percent) = pair[0];
+        let (hi_mv, hi_percent) = pair[1];
+        if battery_mv > i32::from(hi_mv) {
+            continue;
+        }
+        let span_mv = i32::from(hi_mv) - i32::from(lo_mv);
+        let span_percent = i32::from(hi_percent) - i32::from(lo_percent);
+        let above = battery_mv - i32::from(lo_mv);
+        // Half a step rounds up, in whole percent: the gauge has no digits to spend on a fraction.
+        return (i32::from(lo_percent) + (above * span_percent + span_mv / 2) / span_mv) as u8;
+    }
+    BATTERY_CURVE[BATTERY_CURVE.len() - 1].1
+}
 /// Queued events and damage rectangles: what a finger produces between two frames.
+///
+/// Sixteen, not eight: a moving hand is damaged as four narrow pieces (hand_damage_regions), and the
+/// second and minute hands can move in the same frame -- plus the date block on a midnight.
 pub const EVENTS: usize = 16;
-pub const DIRTY: usize = 8;
+pub const DIRTY: usize = 16;
+
+/// The pixels a partial repaint is composed in before it is flushed, in one band or several.
+///
+/// The damaged regions are rendered here (cleared to SCREEN_BACKGROUND first) and then written
+/// contiguously, so the panel never shows the cleared region before its contents. That is what stops a
+/// moving clock hand from making the date text blink as it crosses.
+pub const DAMAGE_SCRATCH: usize = 1280;
 
 /// What the panel is cleared to before the design is first painted.
 ///
@@ -111,6 +172,32 @@ impl WidgetHandle<'_> {
     pub fn set_background(&self, colour: Option<Rgb565>) {
         let _ = self.design.gui.borrow_mut().set_widget_background(self.id, colour);
     }
+
+    /// The level the battery gauge shows, 0-100, and whether it is charging.
+    ///
+    /// A status bar is the widget this is meant for; the crate refuses any other. Feed it from the ADC
+    /// reading at BATTERY_PIN, or from any source the app already has.
+    pub fn set_battery(&self, percent: u8, charging: bool) {
+        let _ = self
+            .design
+            .gui
+            .borrow_mut()
+            .set_status_bar_battery(self.id, percent, charging);
+    }
+
+    /// The free-text label on a status bar's left edge, replaced at run time.
+    ///
+    /// A status bar is the widget this is meant for; the crate refuses any other. The design's own label is
+    /// what the bar shows until this is called, and the clock beside it is untouched: design.status_bar().set_status_bar_label("WiFi")
+    /// works whether or not the bar draws a time. A line built at run time costs nothing on the heap and needs
+    /// no lifetime: the crate copies it into the bar's own field. It is ASCII, truncated to what the field holds.
+    pub fn set_status_bar_label(&self, label: &str) {
+        let _ = self
+            .design
+            .gui
+            .borrow_mut()
+            .set_status_bar_label(self.id, label);
+    }
 }
 /// The screen, and the pointer state the widgets need to see a press and a release as a pair.
 pub struct Designer {
@@ -125,6 +212,8 @@ pub struct Designer {
     pub widgets: RustyPanelWidgets,
     down: bool,
     painted: bool,
+    /// Where a partial repaint is composed before it is flushed (see DAMAGE_SCRATCH).
+    damage_scratch: [Rgb565; DAMAGE_SCRATCH],
     /// The wall clock the hands and the date block follow once the board has been told the
     /// time: the local seconds of day it was told, the calendar day when the hand-over
     /// carried one, and the instant it was told. `None` until then.
@@ -142,6 +231,7 @@ impl Designer {
             widgets: app.widgets,
             down: false,
             painted: false,
+            damage_scratch: [Rgb565::new(0, 0, 0); DAMAGE_SCRATCH],
             wall_base: None,
         }
     }
@@ -239,12 +329,16 @@ impl Designer {
     {
         let mut gui = self.gui.borrow_mut();
         let result = if self.painted {
-            // A partial repaint paints the damaged regions and nothing else, and the design paints
-            // no screen background of its own -- so the regions are cleared to the colour the panel
-            // started as first. Without this a moving clock drew each new hand and left the old one
-            // on the glass (reported 2026-10-17).
-            gui.paint_damage(target, SCREEN_BACKGROUND)
-                .and_then(|()| gui.render_dirty(target))
+            // A partial repaint is composed in the scratch buffer -- cleared to the colour the panel
+            // started as -- and written once per band. Painting the damaged region on the glass in two
+            // passes (clear, then draw) is what made a clock's date text blink as a hand crossed it
+            // (bench, 2026-11-25); the old hand is still erased because the scratch starts from the
+            // background, but the panel never shows the blank in between.
+            gui.render_dirty_buffered_with(
+                target,
+                &mut self.damage_scratch,
+                SCREEN_BACKGROUND,
+            )
         } else {
             gui.render(target)
         };

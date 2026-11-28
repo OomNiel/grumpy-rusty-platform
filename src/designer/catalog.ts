@@ -20,6 +20,7 @@
  * No `vscode` import and no `fs` import, so the t1 layer can test the catalogue as plain data.
  */
 
+import { adcPinsForBoard, type AdcPinOption } from '../boards/adcPins';
 import { NAMED_STYLES, type StyleField } from './appearance';
 import type { FontSupport } from './fonts';
 import type { DesignerActionId } from './protocol';
@@ -68,6 +69,19 @@ export interface KdlProperty {
     viaStyle?: StyleField;
     /** The KDL attribute name, exactly as the parser reads it. */
     name: string;
+    /**
+     * The markup attribute, when it is not the property's own name.
+     *
+     * The panel calls the clock's date sizes *Weekday size*, *Month size* and *Day size*, and their design
+     * fields are `weekday_size`, `month_size` and `day_size` -- but the crate's parser reads
+     * `weekday_scale`, `month_scale` and `day_scale`, the same `_scale` spelling its hour numerals use. A
+     * property's name is what the design JSON stores, so renaming these would drop the values of every
+     * design already made; this map writes the name the parser knows without touching the stored shape.
+     *
+     * Found on the bench 2026-11-25: the canvas scaled the date text and the glass did not, because the
+     * markup said `weekday_size=1.5` and the parser, meeting an attribute it does not know, kept its own 1.
+     */
+    attribute?: string;
     kind: KdlPropertyKind;
     /** What the property panel calls it. */
     label: string;
@@ -85,6 +99,13 @@ export interface KdlProperty {
     min?: number;
     max?: number;
     options?: readonly string[];
+    /**
+     * Enumerated choices that depend on the project's board, such as a board's ADC pins.
+     *
+     * Kept separate from `options` because the value and the words on screen differ: a pin's value is its
+     * number, while its label also says which ADC channel it is and what the board already uses it for.
+     */
+    boardOptions?: (boardId: string) => readonly AdcPinOption[];
     /** True when the parser errors without it, e.g. an image's `src`. */
     required?: boolean;
     /**
@@ -452,17 +473,49 @@ const APPEARANCE_ACCENT: KdlProperty = {
     viaStyle: 'accent',
 };
 
-/** The colour pairs a clickable widget carries, with the parser's own defaults where it has none. */
+/**
+ * The colour pairs a clickable widget carries, with the parser's own defaults where it has none.
+ *
+ * The label has a colour per state as well as the block: `text_color` is the label at rest, and the three
+ * `*_text` fields are what the parser's `pressed_text`/`disabled_text`/`focused_text` attributes set. Their
+ * defaults are the faces the crate draws when the attribute is absent -- white for pressed and focused, and
+ * the dim `Rgb565::new(12, 18, 18)` the disabled state is built with (`#604890` reduced to 5/6/5) -- so a
+ * design that never touches them renders exactly what it did before they existed.
+ *
+ * The three are **optional** for the same reason: a design written before they existed names none of them,
+ * and a required property would refuse every such design instead of letting the crate's default stand.
+ */
 const CLICKABLE_COLOURS: KdlProperty[] = [
     { name: 'bg', kind: 'color', label: 'Background', defaultValue: '#3a6ea5' },
     { name: 'fg', kind: 'color', label: 'Foreground', defaultValue: '#f0f0f0' },
     { name: 'text_color', kind: 'color', label: 'Label colour', defaultValue: '#ffffff' },
     { name: 'pressed_bg', kind: 'color', label: 'Pressed background', defaultValue: '#2a5a8a' },
     { name: 'pressed_fg', kind: 'color', label: 'Pressed foreground', defaultValue: '#ffffff' },
+    {
+        name: 'pressed_text',
+        kind: 'color',
+        label: 'Pressed label colour',
+        defaultValue: '#ffffff',
+        optional: true,
+    },
     { name: 'disabled_bg', kind: 'color', label: 'Disabled background', defaultValue: '#303030' },
     { name: 'disabled_fg', kind: 'color', label: 'Disabled foreground', defaultValue: '#808080' },
+    {
+        name: 'disabled_text',
+        kind: 'color',
+        label: 'Disabled label colour',
+        defaultValue: '#604890',
+        optional: true,
+    },
     { name: 'focused_bg', kind: 'color', label: 'Focused background', defaultValue: '#4a7eb5' },
     { name: 'focused_fg', kind: 'color', label: 'Focused foreground', defaultValue: '#ffffff' },
+    {
+        name: 'focused_text',
+        kind: 'color',
+        label: 'Focused label colour',
+        defaultValue: '#ffffff',
+        optional: true,
+    },
     { name: 'border_color', kind: 'color', label: 'Border', defaultValue: '#101010' },
     { name: 'corner_radius', kind: 'int', label: 'Corner radius', defaultValue: 4, min: 0, max: 64 },
 ];
@@ -936,9 +989,9 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
             { name: 'day', kind: 'int', label: 'Day', group: 'Date', defaultValue: TODAY.getDate(), min: 1, max: 31, optional: true },
             { name: 'date_font', kind: 'font', label: 'Date font', group: 'Date', defaultValue: '', optional: true },
             { name: 'date_color', kind: 'color', label: 'Date colour', group: 'Date', defaultValue: '#ffffff', optional: true },
-            { name: 'weekday_size', kind: 'float', label: 'Weekday size', group: 'Date', defaultValue: 1, min: 1, max: 4, optional: true },
-            { name: 'month_size', kind: 'float', label: 'Month size', group: 'Date', defaultValue: 1, min: 1, max: 4, optional: true },
-            { name: 'day_size', kind: 'float', label: 'Day size', group: 'Date', defaultValue: 1, min: 1, max: 4, optional: true },
+            { name: 'weekday_size', attribute: 'weekday_scale', kind: 'float', label: 'Weekday size', group: 'Date', defaultValue: 1, min: 1, max: 4, optional: true },
+            { name: 'month_size', attribute: 'month_scale', kind: 'float', label: 'Month size', group: 'Date', defaultValue: 1, min: 1, max: 4, optional: true },
+            { name: 'day_size', attribute: 'day_scale', kind: 'float', label: 'Day size', group: 'Date', defaultValue: 1, min: 1, max: 4, optional: true },
             // The block's own counterpart to `label_inset`: whole pixels, positive up.
             { name: 'date_offset', kind: 'int', label: 'Date offset (up)', group: 'Date', defaultValue: 0, min: -200, max: 200, optional: true },
             { name: 'show_weekday', kind: 'bool', label: 'Weekday', group: 'Date', defaultValue: true, optional: true },
@@ -1113,12 +1166,61 @@ export const KDL_WIDGETS: readonly KdlWidgetSpec[] = [
         aliases: [],
         label: 'Status bar',
         category: 'value',
-        note: 'A strip with the time on it, drawn from its own style.',
+        note:
+            'A strip with an optional label, clock and battery. Each feature can sit in the centre or at ' +
+            'the right, right-aligned features stack, and the whole strip scales from one font size.',
         defaultSize: { width: 240, height: 24 },
         props: [
+            { name: 'label', kind: 'text', label: 'Label', defaultValue: '', optional: true },
             { name: 'time', kind: 'text', label: 'Time', defaultValue: '12:00' },
+            { name: 'show_clock', kind: 'bool', label: 'Show clock', defaultValue: true, optional: true },
+            {
+                name: 'clock_align',
+                kind: 'enum',
+                label: 'Clock position',
+                defaultValue: 'center',
+                options: ['center', 'right'],
+                optional: true,
+            },
+            { name: 'show_battery', kind: 'bool', label: 'Show battery', defaultValue: true, optional: true },
+            {
+                name: 'battery_align',
+                kind: 'enum',
+                label: 'Battery position',
+                defaultValue: 'right',
+                options: ['center', 'right'],
+                optional: true,
+            },
+            {
+                name: 'font_scale',
+                kind: 'float',
+                label: 'Font scale',
+                defaultValue: 1,
+                min: 1,
+                max: 4,
+                optional: true,
+            },
+            { name: 'label_color', kind: 'color', label: 'Label colour', defaultValue: '', optional: true },
+            { name: 'clock_color', kind: 'color', label: 'Clock colour', defaultValue: '', optional: true },
+            { name: 'battery_color', kind: 'color', label: 'Battery colour', defaultValue: '', optional: true },
+            {
+                name: 'battery_pin',
+                kind: 'enum',
+                label: 'Battery pin',
+                defaultValue: '',
+                optional: true,
+                boardOptions: (boardId) => adcPinsForBoard(boardId),
+            },
+            {
+                name: 'battery_scale',
+                kind: 'float',
+                label: 'Battery scale (x)',
+                defaultValue: 2,
+                min: 0.1,
+                max: 100,
+                optional: true,
+            },
             { name: 'font', kind: 'font', label: 'Font', defaultValue: '' },
-            TEXT_COLOUR_PROPERTY,
             ...APPEARANCE_BLOCK,
         ],
         fontSupport: 'style',
@@ -1604,7 +1706,7 @@ const PROPERTY_HELP: Record<string, string> = {
     second_color: 'Colour of the thin hand, which steps once a second',
     hour_tick_color: 'Colour of the twelve long ticks',
     minute_tick_color: 'Colour of the forty-eight short ticks between them',
-    label_color: 'Colour the hour numbers are drawn in',
+    label_color: 'Colour of this feature\'s text; the style\'s text colour when unset',
     label_scale: 'How many pixels each pixel of the hour numbers covers: 1 is the font\'s own size',
     label_inset:
         'How far the hour numbers sit inside the tick ring, in character widths of the number face: 0 is ' +
@@ -1646,6 +1748,7 @@ const PROPERTY_HELP: Record<string, string> = {
     digits: 'How many digits to show, including the sign',
     disabled_bg: 'Background while it cannot be used',
     disabled_fg: 'Foreground while it cannot be used',
+    disabled_text: 'Label colour while it cannot be used',
     end_angle: 'Where the arc stops, in degrees clockwise from the top',
     fade: 'Whether the items fade out towards the edges',
     frame_inset: 'Pixels between the arc\'s frame and the arc itself',
@@ -1654,6 +1757,7 @@ const PROPERTY_HELP: Record<string, string> = {
     fit: 'How the image is fitted into its box',
     focused_bg: 'Background while it has focus',
     focused_fg: 'Foreground while it has focus',
+    focused_text: 'Label colour while it has focus',
     font:
         'A font for the text: one the crate ships, or one this screen declares under Fonts. The two travel ' +
         'by different markup, and only some widgets read either',
@@ -1683,6 +1787,7 @@ const PROPERTY_HELP: Record<string, string> = {
     pitch: 'Tilt up or down, in degrees',
     pressed_bg: 'Background while it is pressed',
     pressed_fg: 'Foreground while it is pressed',
+    pressed_text: 'Label colour while it is pressed',
     pulse: 'Brightness of the highlight, from 0 to 255',
     roll: 'Rotation about the viewing axis, in degrees',
     selected: 'Index of the chosen item, counting from zero',
@@ -1702,6 +1807,25 @@ const PROPERTY_HELP: Record<string, string> = {
     'label.text_color': 'Colour of the words: painted from the widget\'s style, since the markup has no colour attribute for a label',
     threshold: 'Brightness at which a pixel counts as ink, from 0 to 255',
     time: 'The time it shows, as text',
+    show_clock: 'Whether the clock is drawn at all',
+    clock_align: 'Whether the clock sits in the centre or at the right, where right-aligned features stack',
+    show_battery: 'Whether the battery gauge is drawn at all',
+    battery_align: 'Whether the gauge sits in the centre or at the right, where right-aligned features stack',
+    battery_pin:
+        'The ADC input the battery voltage is measured on. The list is the chosen board\'s own ADC pins; a pin ' +
+        'the board already uses names what it is used for',
+    battery_scale:
+        'What to multiply the pin voltage by to get the battery voltage: 2 for a divider that halves it, ' +
+        '1 when the battery is measured directly',
+    font_scale: 'How much to magnify every feature, from 1 to 4 (1.5 is half again)',
+    clock_color: 'Colour of the clock; the style\'s text colour when unset',
+    battery_color: 'Colour of the gauge; red at 15 % or less and green while charging when unset',
+    'status_bar.label':
+        'The text on the left edge. Your code can replace it at run time with ' +
+        'design.status_bar().set_status_bar_label("..."), which is how a bar shows the network it joined',
+    'status_bar.time':
+        'What the clock shows until the firmware hands over the real time, which it does on its own once ' +
+        'the design draws a bar with a clock',
     tint: 'Colour to draw it in',
     title: 'Heading text',
     type: 'Which kind of message it is',

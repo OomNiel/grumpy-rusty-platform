@@ -328,7 +328,18 @@ pub enum WidgetDef {
     },
     StatusBar {
         id: Option<String>,
+        label: String,
         time: String,
+        show_clock: bool,
+        clock_align: String,
+        show_battery: bool,
+        battery_align: String,
+        font_scale: f32,
+        label_color: Option<String>,
+        clock_color: Option<String>,
+        battery_color: Option<String>,
+        battery_pin: Option<u8>,
+        battery_scale: f32,
         style: Option<String>,
     },
     TimePicker {

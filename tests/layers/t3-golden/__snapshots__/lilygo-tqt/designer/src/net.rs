@@ -27,6 +27,17 @@ use esp_radio::wifi::{
 /// The local date and time of day an NTP server gave, waiting for the main loop to put it in the RTC.
 pub static SYNCED_TIME: Signal<CriticalSectionRawMutex, (u16, u8, u8, u8, u8, u8)> = Signal::new();
 
+/// Set when another time source -- the console or the flash hand-over -- has already set the RTC.
+///
+/// The Wi-Fi task checks it between stages: a board whose host answered must not keep its radio on for
+/// the rest of the network's timeouts.
+static STOP_TIME: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
+/// Asks the time task to stop, if it is running. Harmless when it is not.
+pub fn stop_time() {
+    STOP_TIME.signal(());
+}
+
 /// The network the build was given. The same contract as the Wi-Fi template: read at compile time,
 //  never in the source tree.
 const WIFI_SSID: &str = match option_env!("WIFI_SSID") {
@@ -89,6 +100,11 @@ pub async fn time_task(wifi: WIFI<'static>) {
 
     let mut joined = false;
     for attempt in 1..=5u32 {
+        if STOP_TIME.try_take().is_some() {
+            log::warn!("clock: a host set the time; leaving the network alone");
+            idle(&mut controller).await;
+            return;
+        }
         log::info!("clock: joining {} (attempt {})", WIFI_SSID, attempt);
         match controller.connect_async().await {
             Ok(_) => {
@@ -103,6 +119,12 @@ pub async fn time_task(wifi: WIFI<'static>) {
     }
     if !joined {
         log::warn!("clock: no network; the design keeps its own time");
+        idle(&mut controller).await;
+        return;
+    }
+    if STOP_TIME.try_take().is_some() {
+        log::warn!("clock: a host set the time; leaving the network alone");
+        idle(&mut controller).await;
         return;
     }
 
@@ -121,20 +143,47 @@ pub async fn time_task(wifi: WIFI<'static>) {
     spawner.spawn(net_task(runner).expect("the network stack task is spawned exactly once"));
 
     // A router that has the address leased already is quick; one that does not is a board with no
-    // network, and waiting on it for ever is not what a clock should do.
-    if with_timeout(Duration::from_secs(30), stack.wait_config_up())
-        .await
-        .is_err()
-    {
-        log::warn!("clock: no address from DHCP; the design keeps its own time");
+    // network, and waiting on it for ever is not what a clock should do. The wait is cut into one-second
+    // pieces so a host that set the time meanwhile can stop the radio without waiting out the lease.
+    let mut waited_seconds = 0u32;
+    loop {
+        if STOP_TIME.try_take().is_some() {
+            log::warn!("clock: a host set the time; leaving the network alone");
+            idle(&mut controller).await;
+            return;
+        }
+        if with_timeout(Duration::from_secs(1), stack.wait_config_up())
+            .await
+            .is_ok()
+        {
+            break;
+        }
+        waited_seconds += 1;
+        if waited_seconds >= 30 {
+            log::warn!("clock: no address from DHCP; the design keeps its own time");
+            idle(&mut controller).await;
+            return;
+        }
+    }
+    if STOP_TIME.try_take().is_some() {
+        log::warn!("clock: a host set the time; leaving the network alone");
+        idle(&mut controller).await;
         return;
     }
     match stack.config_v4() {
         Some(config) => log::info!("clock: network up at {}", config.address),
-        None => return,
+        None => {
+            idle(&mut controller).await;
+            return;
+        }
     }
 
     for attempt in 1..=3u32 {
+        if STOP_TIME.try_take().is_some() {
+            log::warn!("clock: a host set the time; leaving the network alone");
+            idle(&mut controller).await;
+            return;
+        }
         if let Some((year, month, day, hour, minute, second)) = ntp_time(stack).await {
             log::info!(
                 "clock: the network says {:04}-{:02}-{:02} {:02}:{:02}:{:02} (attempt {})",
@@ -147,12 +196,21 @@ pub async fn time_task(wifi: WIFI<'static>) {
                 attempt
             );
             SYNCED_TIME.signal((year, month, day, hour, minute, second));
+            // The time is in the RTC now: disconnect and let the controller fall out of scope, which
+            // deinitialises the radio. A clock face has no further use for it.
+            idle(&mut controller).await;
             return;
         }
         log::warn!("clock: no answer from the time server (attempt {})", attempt);
         Timer::after(Duration::from_secs(2)).await;
     }
     log::warn!("clock: giving up on the network time; the design keeps its own");
+    idle(&mut controller).await;
+}
+
+/// Disconnects the station; the controller is dropped by the caller and that deinitialises Wi-Fi.
+async fn idle(controller: &mut WifiController<'_>) {
+    let _ = controller.disconnect_async().await;
 }
 
 /// One SNTP request, and the local date and time of day from its answer.

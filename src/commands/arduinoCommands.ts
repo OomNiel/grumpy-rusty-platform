@@ -29,7 +29,8 @@ import {
 } from '../toolchain/arduinoCli';
 import { configuredArduinoCliPath, writeArduinoIntelliSense } from '../toolchain/arduinoIntelliSense';
 import { execFileFn } from '../util/exec';
-import { runInTerminal } from './terminal';
+import { rearmClockListener } from '../designer/editor';
+import { closeTerminal, runInTerminal } from './terminal';
 
 /**
  * Build, Upload and Monitor for an Arduino (C++) project.
@@ -304,11 +305,18 @@ export async function arduinoUpload(
         return;
     }
 
+    // The listener holds the serial port for the life of the Designer, and arduino-cli has to open
+    // the same port to upload. Close it first, then start it again once the upload has ended -- the
+    // board asks for the time on the reboot that follows, which is too late for an open handle.
+    if (closeTerminal('Rusty: clock')) {
+        output.appendLine('clock: closed the time listener so the upload can have the serial port.');
+    }
     const first = await flashOnce(context, project, output);
     if (first.port !== undefined && options.monitor === true) {
         runInTerminal('Rusty: monitor', `${quote(cli)} ${monitorArgs(first.port).join(' ')}`, project.folder);
     }
     if (first.status === 'ok') {
+        rearmClockListener();
         return;
     }
 
@@ -318,11 +326,12 @@ export async function arduinoUpload(
     // and the maximum data size (bench, 2026-11-01: "No drive to deploy." with a probe plugged in).
     const probe = await probeUploadMethod(cli, fqbn);
     if (probe === undefined) {
+        rearmClockListener();
         return;
     }
     const choice = await vscode.window.showWarningMessage(
         'The board did not accept the upload over USB. This core can program it through a debug probe (CMSIS-DAP) ' +
-            'over SWD instead — switch this project to that and flash now?',
+        'over SWD instead — switch this project to that and flash now?',
         { modal: true },
         `Use ${probe}`,
     );
@@ -338,6 +347,7 @@ export async function arduinoUpload(
     if (second.port !== undefined && options.monitor === true) {
         runInTerminal('Rusty: monitor', `${quote(cli)} ${monitorArgs(second.port).join(' ')}`, project.folder);
     }
+    rearmClockListener();
 }
 
 /** One build-and-upload attempt, reporting for itself. */

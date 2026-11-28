@@ -357,7 +357,11 @@ pub trait FluentBuilder {
     where
         Self: Sized,
     {
-        if condition { then(self) } else { self }
+        if condition {
+            then(self)
+        } else {
+            self
+        }
     }
 
     /// Conditionally transform self with `then` if `condition` is true, otherwise with `else_fn`.
@@ -370,7 +374,11 @@ pub trait FluentBuilder {
     where
         Self: Sized,
     {
-        if condition { then(self) } else { else_fn(self) }
+        if condition {
+            then(self)
+        } else {
+            else_fn(self)
+        }
     }
 
     /// Conditionally unwrap and transform self if `option` is `Some(val)`.
@@ -390,7 +398,11 @@ pub trait FluentBuilder {
     where
         Self: Sized,
     {
-        if option.is_none() { then(self) } else { self }
+        if option.is_none() {
+            then(self)
+        } else {
+            self
+        }
     }
 }
 
@@ -435,6 +447,20 @@ impl<const N: usize> DirtyTracker<N> {
             return self.regions.push(merged).map_err(|_| DirtyError::Full);
         }
 
+        self.regions.push(rect).map_err(|_| DirtyError::Full)
+    }
+
+    /// Adds a region **without** merging it into any existing one.
+    ///
+    /// [`Self::add`] merges an intersecting rect into its neighbour, which is what keeps a scattered
+    /// frame's list short -- but it is wrong for pieces of one shape: a clock's swept hand is a handful
+    /// of small rects that share edges, so merging them grows the damage back into the hand's whole
+    /// bounding box, and the date block under it is repainted every second (found on the bench
+    /// 2026-11-25). Pieces added here stay separate; the caller keeps them by construction.
+    pub fn add_disjoint(&mut self, rect: Rect) -> Result<(), DirtyError> {
+        if rect.is_empty() {
+            return Ok(());
+        }
         self.regions.push(rect).map_err(|_| DirtyError::Full)
     }
 
@@ -668,5 +694,25 @@ mod tests {
         dt.mark_all(Rect::new(0, 0, 50, 50)).unwrap();
         assert_eq!(dt.as_slice(), &[Rect::new(0, 0, 50, 50)]);
         assert_eq!(dt.bounding_rect(), Some(Rect::new(0, 0, 50, 50)));
+    }
+
+    #[test]
+    fn test_dirty_tracker_keeps_disjoint_pieces_of_one_shape_apart() {
+        // `add` merges an intersecting rect into its neighbour; a clock's swept hand is a row of
+        // touching pieces, and merging them would grow the damage back to the hand's box.
+        let mut merged: DirtyTracker<4> = DirtyTracker::default();
+        merged.add(Rect::new(0, 0, 10, 10)).unwrap();
+        merged.add(Rect::new(5, 5, 10, 10)).unwrap();
+        assert_eq!(merged.as_slice(), &[Rect::new(0, 0, 15, 15)]);
+
+        let mut separate: DirtyTracker<4> = DirtyTracker::default();
+        separate.add_disjoint(Rect::new(0, 0, 10, 10)).unwrap();
+        separate.add_disjoint(Rect::new(5, 5, 10, 10)).unwrap();
+        assert_eq!(
+            separate.as_slice(),
+            &[Rect::new(0, 0, 10, 10), Rect::new(5, 5, 10, 10)]
+        );
+        separate.add_disjoint(Rect::empty()).unwrap();
+        assert_eq!(separate.as_slice().len(), 2, "an empty piece is nothing");
     }
 }

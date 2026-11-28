@@ -19,14 +19,14 @@ This manual covers every feature of the extension. For the AI assist in depth, s
 9. [Debugging & Monitoring](#9-debugging--monitoring)
 10. [WYSIWYG Designer](#10-wysiwyg-designer)
 11. [Clock & Time Sync](#11-clock--time-sync)
-13. [SD Card (CYD)](#13-sd-card-cyd)
-14. [Wi-Fi Credentials](#14-wi-fi-credentials)
-15. [Toolchain Management](#15-toolchain-management)
-16. [Crates.io Library Manager](#16-cratesio-library-manager)
-17. [AI Assist](#17-ai-assist)
-18. [Packaging & Backup](#18-packaging--backup)
-19. [Settings Reference](#19-settings-reference)
-20. [Troubleshooting](#20-troubleshooting)
+12. [SD Card (CYD)](#12-sd-card-cyd)
+13. [Wi-Fi Credentials](#13-wi-fi-credentials)
+14. [Toolchain Management](#14-toolchain-management)
+15. [Crates.io Library Manager](#15-cratesio-library-manager)
+16. [AI Assist](#16-ai-assist)
+17. [Packaging & Backup](#17-packaging--backup)
+18. [Settings Reference](#18-settings-reference)
+19. [Troubleshooting](#19-troubleshooting)
 
 ---
 
@@ -274,6 +274,22 @@ A widget can declare **events** (clicked, pressed, valueChanged, submitted, scro
 - **Styles:** named styles plus per-widget overrides folded into one `style` expression (text/accent/background/border/corner_radius).
 - **Children:** dropdown/roller/carousel (options), table (headers/rows), icon (parts) carry child grammar edited in the Properties pane.
 
+### 10.5a The status bar
+
+A **Status bar** is one strip with three independent features: a free-text **label** on the left, a **clock**, and a **battery gauge**. Each of the latter two has its own *show* switch and its own place — centre or right; two right-aligned features stack along the right edge (clock first, gauge at the far right) and two centred ones share the middle. One **Font scale** (1–4, `1.5` is half again) magnifies all three, so a bar stays legible on a larger panel without a second design, and each feature has its own colour (*Label colour*, *Clock colour*, *Battery colour* — the gauge goes red at 15 % or less and green while charging when unset).
+
+**The battery input.** *Battery pin* is a list of the chosen board's **own ADC pins**, and a pin the board already uses says what for; *Battery scale* is what multiplies the pin voltage to give the battery voltage (2 for a divider that halves it, 1 when the cell is measured directly). The generated `ui.rs` carries `BATTERY_PIN`, `BATTERY_SCALE` and `battery_percent(raw)`, and the firmware samples the pin once a second and hands the gauge the result. The percentage comes from a **measured single-cell Li-ion curve** (2.75 V = 0 %, 4.20 V = 100 %, 24 points, interpolated between them and clamped outside), not a straight line from empty to full — the middle of the discharge curve is nearly flat, and a straight line read 0 % on a cell that still had 10 % in it.
+
+**Setting it from code.** All three are set at run time from `src/ui_handlers.rs` or your `main.rs`:
+
+```rust
+design.status_bar().set_status_bar_label("WiFi");   // the free text on the left
+design.status_bar().set_battery(percent, charging); // 0-100, and whether it is charging
+design.status_bar().set_time(hour, minute);         // 24-hour, e.g. after your own RTC read
+```
+
+The label is copied into the bar's own 24-byte ASCII field, so a line built while the program runs needs no lifetime and no `unsafe`; it truncates to what fits. Setting the same text again is not a repaint. The clock is a separate text on the same bar, so changing the label never disturbs it — the generated module keeps the clock on the wall clock and the gauge on `BATTERY_PIN`, and your code can override either.
+
 ### 10.6 Touch, SD, backlight
 
 - **Touch:** enabling touch is required for interactive widgets; the designer flips it on when you drop an interactive widget (rebuild needed).
@@ -330,7 +346,9 @@ Designer shows **SD** switch in control bar for Sunton CYD (only board with a ca
 ## 13. Wi-Fi Credentials
 
 - **Set Wi-Fi Credentials…** / **Clear Wi-Fi Credentials**.
-- Used by generated net code. Stored appropriately.
+- The credentials are kept in the editor's keyring, never in a settings file and never in the project tree.
+- They are **read at build time**: the generated code has `option_env!("WIFI_SSID")` and friends, and the extension passes the stored values to the *cargo* process when **it** builds, flashes or debugs. So a build made in a plain terminal, or one whose environment lacks them, ships the placeholders — the log then shows `clock: joining YOUR_WIFI_SSID` and `association failed … NoAccessPointFound`, and the clock keeps printing `TIME?` because no time ever arrives. Build and Flash from the extension (or export `WIFI_SSID` / `WIFI_PASSWORD` yourself) after setting them.
+- A static address is optional (`a.b.c.d/prefix` plus the router); leaving it empty uses DHCP. `TZ_OFFSET_MINUTES` in `.cargo/esp-config.toml` turns the UTC answer into the time on the glass.
 
 ---
 
@@ -435,7 +453,9 @@ Nothing leaves your machine. No API keys.
 - **ESP flash fails**: verify `espflashPath`, serial port, board in bootloader mode.
 - **AI model won't load**: run **Status and Hardware Check**; check host RAM/VRAM; use *Use it anyway* if needed.
 - **Designer pictures missing**: ensure files exist in project; SD images need card enabled.
-- **Clock not syncing**: ensure serial monitor not occupying port; check UTC offset setting.
+- **Clock not syncing**: ensure serial monitor not occupying port; check UTC offset setting; for Wi-Fi designs check the credentials were set *and* that the build came from the extension (see §13 — the SSID is baked in at compile time, and a terminal `cargo build` ships `YOUR_WIFI_SSID`).
+- **rust-analyzer shows a `build.rs` panic about `xtensa-esp32-elf-gcc`**: projects made before 0.19.23 panicked there. Update the project's `build.rs` to the current one (or regenerate the project). From 0.19.23 the missing linker is a `cargo:warning` and checking works without it — `cargo check` never links.
+- **Flash fails with "port busy" / cannot open the serial port**: something else holds it — the Designer's clock listener, a Monitor terminal, or a leaked redirection in an old terminal tab. `lsof /dev/ttyUSB0` names the holder; close that tab or run `exec 3>&-` in it.
 
 ---
 

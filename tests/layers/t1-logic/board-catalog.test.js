@@ -193,3 +193,32 @@ test('allTargets is sorted, unique and covers every board', () => {
 test('the catalog version is a positive integer', () => {
     ok(Number.isInteger(BOARD_CATALOG_VERSION) && BOARD_CATALOG_VERSION > 0);
 });
+
+// ---------------------------------------------------------------------------
+// The status bar's battery pin is chosen from the board's own ADC inputs.
+// ---------------------------------------------------------------------------
+
+const { adcPinsForBoard } = compiled('boards/adcPins');
+
+test('the ESP32-035 offers its ADC1 pins and says what the board already uses them for', () => {
+    const pins = adcPinsForBoard('sunton-3248s035r');
+    equal(pins.map((pin) => pin.value).join(','), '32,33,34,35,36,37,38,39', 'every ADC1 pin');
+    equal(pins.find((pin) => pin.value === '34').usedBy, 'LDR', 'GPIO34 is the board LDR');
+    equal(pins.find((pin) => pin.value === '33').usedBy, 'touch CS', 'GPIO33 is the touch chip select');
+    equal(pins.find((pin) => pin.value === '36').usedBy, 'touch IRQ', 'GPIO36 is the touch interrupt');
+    equal(pins.find((pin) => pin.value === '33').disabled, true, 'a touch pin cannot be chosen');
+    equal(pins.find((pin) => pin.value === '34').disabled, undefined, 'but the parked LDR pin can');
+    equal(pins.find((pin) => pin.value === '32').usedBy, undefined, 'GPIO32 is free');
+    contains(pins.find((pin) => pin.value === '34').label, 'ADC1 channel 6', 'and the channel is named');
+});
+
+test('every board gets its own ADC list, and a board with none gets nothing', () => {
+    const devkit = adcPinsForBoard('esp32-devkitc');
+    equal(devkit.length, 8, 'an ESP32 DevKitC has the same eight ADC1 pins');
+    equal(devkit.find((pin) => pin.value === '34').usedBy, undefined, 'with no on-board sensor');
+    const s3 = adcPinsForBoard('lilygo-tqt');
+    equal(s3.map((pin) => pin.value).join(','), '1,2,3,4,5,6,7,8,9,10', 'an ESP32-S3 has GPIO1-10');
+    const pico = adcPinsForBoard('pico');
+    equal(pico.map((pin) => pin.value).join(','), '26,27,28,29', 'an RP2040 has ADC0-3');
+    equal(adcPinsForBoard('no-such-board').length, 0, 'an unknown board offers no pins');
+});

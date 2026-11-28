@@ -517,3 +517,41 @@ test('the generated defmt level is info, so the libraries do not log every frame
     contains(config, 'DEFMT_LOG = "info"');
     notContains(config, 'DEFMT_LOG = "debug"');
 });
+
+// ---------------------------------------------------------------------------
+// The wireless chip is a separate part with its own power switch. It must be off when the design
+// never asks for the time, and put into its lowest power state after the time arrives.
+// ---------------------------------------------------------------------------
+
+test('a Pico W with no clock leaves the CYW43 off instead of floating its power pin', () => {
+    const files = project('pico2w', 'designer');
+    const main = files.get('src/main.rs');
+    contains(main, 'if ui::HAS_CLOCK {', 'the network task is gated on the design needing a time');
+    contains(main, 'panel::wireless_off(rest)', 'and the other branch switches the chip off');
+    contains(main, '#[cfg(not(feature = "time-wifi"))]', 'the feature-off build takes the same branch');
+    const panel = files.get('src/panel.rs');
+    contains(panel, 'pub fn wireless_off(rest: Rest)', 'the panel owns the power pin');
+    contains(panel, 'let _pwr = Output::new(rest.pin23, Level::Low);', 'and holds it low');
+    // A plain Pico has no wireless chip and must not grow a function that names one.
+    notContains(project('pico', 'designer').get('src/panel.rs'), 'wireless_off', 'no chip, no switch');
+});
+
+test('the Pico W radio leaves the network and powers down after the time is handed over', () => {
+    const net = project('pico2w', 'designer').get('src/net.rs');
+    contains(net, 'async fn idle(control: &mut cyw43::Control', 'one shutdown path');
+    contains(net, 'control.leave().await;', 'leave the network');
+    contains(net, 'PowerManagementMode::SuperSave', 'and put the chip in its lowest power mode');
+    contains(net, 'power.off();', 'then take the enable pin away and drive it low');
+    contains(net, 'static POWER: StaticCell<WirelessPower>', 'the switch is shared with the task');
+    const afterSignal = net.slice(net.indexOf('SYNCED_TIME.signal'), net.indexOf('async fn sntp_time'));
+    contains(afterSignal, 'idle(&mut control, power).await;', 'the success path calls it');
+    contains(net.slice(net.indexOf('if !joined')), 'idle(&mut control, power).await;', 'and so does a failed join');
+});
+
+test('an ESP32 starts its radio only when the clock has no time, and disconnects it after', () => {
+    const files = project('esp32-devkitc', 'designer');
+    const main = files.get('src/main.rs');
+    contains(main, 'if ui::HAS_CLOCK && needs_time {', 'the radio is gated on the clock needing a time');
+    const net = `${files.get('src/net.rs') ?? ''}\n${files.get('src/esp_net.rs') ?? ''}`;
+    contains(net, 'let _ = controller.disconnect_async().await;', 'the station is disconnected after the answer');
+});

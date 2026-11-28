@@ -137,11 +137,12 @@ class DesignerPanel {
     >();
 
     /**
-     * Whether the clock listener has already been started for this panel.
+     * Whether the clock listener has already been started since the last flash.
      *
-     * One attempt per open: a design with a clock starts the listener as soon as it is on screen, and
-     * the button in the pane is the way to try again. Repeated starts would stack commands in the same
-     * terminal, and the listener owns the port while it runs.
+     * It is deliberately not started when the panel opens: the listener owns the serial port, and
+     * opening a design should not take it away from Monitor (user's rule, 2026-11-26). A flash
+     * starts it again, because that is the moment the board is told the time and may ask for it, and
+     * the pane's button starts it on demand.
      */
     private clockServed = false;
 
@@ -389,9 +390,6 @@ class DesignerPanel {
             `[designer] ${folderName}: canvas ${designCanvasSize(document.panelWidth, document.panelHeight, document.rotation).width}x` +
             `${designCanvasSize(document.panelWidth, document.panelHeight, document.rotation).height} at rotation ${document.rotation}`,
         );
-        // Automatic time setup: a design with a clock needs a host listening, and opening the design is
-        // the first moment there is one to ask. It is one attempt, and the pane's button repeats it.
-        current.autoServeClock();
     }
 
     /** The webview document: a shell with the bundle and the styles, and a strict policy. */
@@ -1229,9 +1227,6 @@ class DesignerPanel {
         if (rendered.problems.length === 0) {
             await this.syncModule(document);
         }
-        // A clock dropped into a design that is already open is the other moment the automatic
-        // hand-over becomes relevant; the flag makes this a no-op after the first attempt.
-        this.autoServeClock();
 
         // A declared font's pixels are only resent when the declarations changed: a report follows every
         // edit, and shipping a hundred glyph bitmaps per keystroke would be work done for nothing.
@@ -1484,15 +1479,14 @@ class DesignerPanel {
     }
 
     /**
-     * Starts the clock listener as soon as a design with a clock is opened.
+     * Starts the clock listener for a design that needs a host to answer it.
      *
-     * The board cannot learn the time on its own, so "automatic" means something on this PC has to be
-     * listening when it asks -- and it asks again after every cold boot, because the RTC loses the
-     * time with the power. The listener therefore stays open for the life of the panel; the panel's
-     * dispose, a flash and Monitor each close it to take the port. One attempt per open, and the
-     * pane's button is the way to try again.
+     * Only called from `restartClockListener` (the end of a flash) and never on opening or saving
+     * the panel: the listener owns the serial port, and opening a design must not take the port away
+     * from Monitor. The board asks again after every cold boot, so the listener stays open once it is
+     * started; the panel's dispose, a flash and Monitor each close it to take the port.
      */
-    private autoServeClock(): void {
+    private startClockListener(): void {
         if (this.clockServed || !designHasClock(this.document)) {
             return;
         }
@@ -1525,12 +1519,15 @@ class DesignerPanel {
      * command in its terminal ends.
      */
     restartClockListener(): void {
-        // A listener that is already open is the one we want: two would fight for the port.
-        if (openTerminalNames().includes('Rusty: clock')) {
+        // A listener that is already open is the one we want: two would fight for the port. Monitor
+        // is the other holder, so a flash that leaves a Monitor terminal open does not start a
+        // listener into a port that is already taken.
+        const open = openTerminalNames();
+        if (open.includes('Rusty: clock') || open.includes('Rusty: monitor')) {
             return;
         }
         this.clockServed = false;
-        this.autoServeClock();
+        this.startClockListener();
     }
 
     private async reveal(relative: string): Promise<void> {
@@ -1587,8 +1584,8 @@ class DesignerPanel {
 
     private dispose(): void {
         current = undefined;
-        // The clock listener owns the serial port while the design is open (it is how a cold-booted
-        // board gets its time back), so closing the panel is what hands the port over.
+        // The clock listener owns the serial port while it runs (it is how a cold-booted board gets
+        // its time back), so closing the panel is what hands the port over.
         closeTerminal('Rusty: clock');
         for (const disposable of this.disposables) {
             disposable.dispose();

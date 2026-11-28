@@ -5,8 +5,13 @@
  * says. `TIME?` goes out on the console once a second while the chip's RTC has never been set, and
  * whatever owns the serial port answers with the same `TIME YYYY-MM-DD HH:MM:SS` line a flash
  * writes, followed by the bare `TIME HH:MM:SS`. This is
- * that answer, kept in a terminal for as long as the design is open: a board loses its RTC time when
- * the power goes, so a cold boot asks again, and a listener that had stopped would leave it waiting.
+ * that answer, started when a flash ends and kept in a terminal from then on: a board loses its RTC
+ * time when the power goes, so a cold boot asks again, and a listener that had stopped would leave it
+ * waiting.
+ *
+ * It is deliberately **not** started when the Designer opens or saves: the listener owns the port, and
+ * opening a design must not take it away from Monitor. A flash is the moment the board is told the
+ * time, and the flash's re-arm is what starts the listener; the pane's button starts it on demand.
  *
  * Why a shell line and not a serial library: the extension already writes its one line with `stty`
  * and a redirect (`writeSerialLineCommand`), and a listener changes the shape of that command rather

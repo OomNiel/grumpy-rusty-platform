@@ -1424,10 +1424,11 @@ function panelStyle(widget: DesignerWidget): Style {
  * A button's normal style (spec 5.2, `emitter.rs:204-259`).
  *
  * The base is `WidgetStyle::button()` unless a `style` expression is present (which this project builds as
- * `WidgetStyle::button().with_normal(<Style>)`). The parser's colour and radius attributes are then chained
- * in the emitter's own order; `with_bg` does not clear the gradient, so the visible fill above stays the
- * button gradient, and `with_border_color`/`with_corner_radius` reach all four states. Only the Normal state
- * is drawn here.
+ * `WidgetStyle::button().with_normal(<Style>)`, plus `.with_font(<Font>)` beside it when the design names a face,
+ * because `with_normal` replaces the normal state alone). The parser's colour and radius attributes are then
+ * chained in the emitter's own order; `with_bg` does not clear the gradient, so the visible fill above stays the
+ * button gradient, and `with_border_color`/`with_corner_radius` reach all four states. Only the Normal state is
+ * drawn here.
  */
 function buttonStyle(widget: DesignerWidget): Style {
     const styleName = stringProp(widget.props, 'style');
@@ -3265,56 +3266,179 @@ function previewPath(context: CanvasRenderingContext2D, widget: DesignerWidget, 
 }
 
 /**
- * `StatusBarWidget::render` (`widgets/status_bar.rs:134-240`) with the fields `render_status_bar`
- * (`widgets/mod.rs:1666-1691`) maps a style onto: background from `style.background` when set, foreground
- * from `style.text`, accent from `style.accent`, and the face from `style.font` -- which reaches every glyph
- * the bar draws: the clock, the Bluetooth mark and the battery's charge mark.
+ * `StatusBarWidget::render` (`widgets/status_bar.rs`), field for field with the crate: a label on the
+ * left, a clock and a battery gauge that each sit centred or against the right edge, two
+ * right-aligned features stacked (clock first, battery last), and one scale over every feature.
  *
- * The clock is centred on the *chosen* font's advance and sits on its line height (`status_bar.rs:164-175`),
- * so a bar in a big face draws a big clock in the middle rather than a big clock pushed off to one side.
+ * The catalogue carries the same defaults the crate's `StatusBarConfig` has, so a design that says
+ * nothing draws what the runtime does: an empty label, a centred clock and a right-aligned gauge.
  */
+interface StatusBarLook {
+    readonly label: string;
+    readonly time: string;
+    readonly showClock: boolean;
+    readonly clockCenter: boolean;
+    readonly showBattery: boolean;
+    readonly batteryCenter: boolean;
+    readonly scale: number;
+    readonly labelColour?: Rgb565;
+    readonly clockColour?: Rgb565;
+    readonly batteryColour?: Rgb565;
+}
+
+/** The pixels `text` occupies at `scale`, from the face's own advance (`status_bar::text_width`). */
+function statusBarTextWidth(font: string, text: string, scale: number): number {
+    return Math.round(Array.from(text).length * glyphMetrics(font).advance * scale);
+}
+
+/** One text line with its left edge at `x` and its top at `y`, glyphs magnified by `scale`. */
+function drawScaledBarText(
+    context: CanvasRenderingContext2D,
+    x: number,
+    y: number,
+    text: string,
+    font: string,
+    colour: Rgb565,
+    scale: number,
+): void {
+    if (scale === 1) {
+        drawCrateText(context, x, y, text, font, colour);
+        return;
+    }
+    context.save();
+    context.imageSmoothingEnabled = false;
+    context.translate(x, y);
+    context.scale(scale, scale);
+    drawCrateText(context, 0, 0, text, font, colour);
+    context.restore();
+}
+
+/** Shell, terminal nipple, fill, and the charging mark (`status_bar::draw_battery`). */
+function drawBarBattery(
+    context: CanvasRenderingContext2D,
+    x: number,
+    centreY: number,
+    textTop: number,
+    font: string,
+    scale: number,
+    percent: number,
+    charging: boolean,
+    colour: Rgb565,
+): void {
+    const gap = Math.max(Math.round(4 * scale), 2);
+    let shellX = x;
+    if (charging) {
+        drawScaledBarText(context, x, textTop, '~', font, colour, scale);
+        shellX += statusBarTextWidth(font, '~', scale) + gap;
+    }
+    const width = Math.max(Math.round(16 * scale), 6);
+    const height = Math.max(Math.round(8 * scale), 3);
+    const top = centreY - Math.trunc(height / 2);
+    strokeRounded(context, { x: shellX, y: top, w: width, h: height }, 0, { color: colour, width: 1 }, 255);
+    const terminalW = Math.max(Math.round(2 * scale), 1);
+    const terminalH = Math.max(Math.round(4 * scale), 1);
+    fillSolid(
+        context,
+        { x: shellX + width, y: top + Math.trunc((height - terminalH) / 2), w: terminalW, h: terminalH },
+        0,
+        colour,
+        255,
+    );
+    const inset = Math.max(Math.round(2 * scale), 1);
+    const innerW = Math.max(width - 2 * inset, 0);
+    const innerH = Math.max(height - 2 * inset, 0);
+    const fill = Math.max(1, Math.min(Math.trunc((percent * innerW) / 100), innerW));
+    fillSolid(context, { x: shellX + inset, y: top + inset, w: fill, h: Math.max(innerH, 1) }, 0, colour, 255);
+}
+
 function drawStatusBar(
     context: CanvasRenderingContext2D,
     rect: Rect,
-    time: string,
+    look: StatusBarLook,
     font: string,
     background: Rgb565,
     foreground: Rgb565,
-    accent: Rgb565,
 ): void {
-    // `StatusBarWidget::render` returns on an empty bounds (`status_bar.rs:143`).
     if (rectEmpty(rect)) {
         return;
     }
-    const metrics = glyphMetrics(font);
     fillSolid(context, rect, 0, background, 255);
     fillSolid(context, { x: rect.x, y: rectBottom(rect) - 1, w: rect.w, h: 1 }, 0, rgb(6, 12, 18), 255);
-    const centerY = rect.y + Math.trunc(rect.h / 2);
-    // Clock: centred on the font's own advance (`status_bar.rs:170-183`).
-    const textWidth = time.length * metrics.advance;
-    drawCrateText(
-        context,
-        rect.x + Math.trunc((rect.w - textWidth) / 2),
-        centerY - Math.trunc(metrics.lineHeight / 2),
-        time,
-        font,
-        foreground,
-    );
-    // Bluetooth glyph, left inset six (`status_bar.rs:176-185`).
-    const bx = rect.x + 6;
-    const by = centerY - 4;
-    strokeRounded(context, { x: bx, y: by, w: 6, h: 8 }, 0, { color: accent, width: 1 }, 255);
-    drawCrateText(context, bx + 1, by + 1, 'B', font, accent);
-    // Battery shell, terminal nipple and level (`status_bar.rs:195-230`).
-    const battW = 16;
-    const battH = 8;
-    const battX = rectRight(rect) - 6 - battW;
-    const battY = centerY - 4;
-    strokeRounded(context, { x: battX, y: battY, w: battW, h: battH }, 0, { color: foreground, width: 1 }, 255);
-    fillSolid(context, { x: battX + battW, y: battY + 2, w: 2, h: 4 }, 0, foreground, 255);
-    const maxFill = battW - 4;
-    const fillWidth = Math.max(Math.trunc((85 * maxFill) / 100), 1);
-    fillSolid(context, { x: battX + 2, y: battY + 2, w: fillWidth, h: battH - 4 }, 0, foreground, 255);
+    const centreY = rect.y + Math.trunc(rect.h / 2);
+    const scale = Math.max(look.scale, 1);
+    const lineHeight = Math.round(glyphMetrics(font).lineHeight * scale);
+    const top = centreY - Math.trunc(lineHeight / 2);
+    const inset = Math.max(Math.round(6 * scale), 2);
+    const gap = Math.max(Math.round(4 * scale), 2);
+    const clockText = look.time;
+    const batteryPercent = 85;
+    const charging = false;
+
+    if (look.label.length > 0) {
+        drawScaledBarText(
+            context,
+            rect.x + inset,
+            top,
+            look.label,
+            font,
+            look.labelColour ?? foreground,
+            scale,
+        );
+    }
+
+    const clockOn = look.showClock && clockText.length > 0;
+    const clockWidth = clockOn ? statusBarTextWidth(font, clockText, scale) : 0;
+    const batteryWidth = look.showBattery ? Math.max(Math.round(16 * scale), 6) : 0;
+    const clockRight = clockOn && !look.clockCenter;
+    const batteryRight = look.showBattery && !look.batteryCenter;
+    const rightCount = Number(clockRight) + Number(batteryRight);
+    if (rightCount > 0) {
+        const total = (clockRight ? clockWidth : 0) + (batteryRight ? batteryWidth : 0) + gap * (rightCount - 1);
+        let cursor = rectRight(rect) - inset - total;
+        if (clockRight) {
+            drawScaledBarText(context, cursor, top, clockText, font, look.clockColour ?? foreground, scale);
+            cursor += clockWidth + gap;
+        }
+        if (batteryRight) {
+            drawBarBattery(
+                context,
+                cursor,
+                centreY,
+                top,
+                font,
+                scale,
+                batteryPercent,
+                charging,
+                look.batteryColour ?? foreground,
+            );
+        }
+    }
+
+    const clockCentre = clockOn && look.clockCenter;
+    const batteryCentre = look.showBattery && look.batteryCenter;
+    const centreCount = Number(clockCentre) + Number(batteryCentre);
+    if (centreCount > 0) {
+        const total =
+            (clockCentre ? clockWidth : 0) + (batteryCentre ? batteryWidth : 0) + gap * (centreCount - 1);
+        let cursor = rect.x + Math.trunc((rect.w - total) / 2);
+        if (clockCentre) {
+            drawScaledBarText(context, cursor, top, clockText, font, look.clockColour ?? foreground, scale);
+            cursor += clockWidth + gap;
+        }
+        if (batteryCentre) {
+            drawBarBattery(
+                context,
+                cursor,
+                centreY,
+                top,
+                font,
+                scale,
+                batteryPercent,
+                charging,
+                look.batteryColour ?? foreground,
+            );
+        }
+    }
 }
 
 /**
@@ -3515,11 +3639,21 @@ function previewStatusBar(context: CanvasRenderingContext2D, widget: DesignerWid
     drawStatusBar(
         context,
         rect,
-        stringProp(widget.props, 'time'),
+        {
+            label: stringProp(widget.props, 'label'),
+            time: stringProp(widget.props, 'time'),
+            showClock: boolProp(widget.props, 'show_clock', true),
+            clockCenter: stringProp(widget.props, 'clock_align') !== 'right',
+            showBattery: boolProp(widget.props, 'show_battery', true),
+            batteryCenter: stringProp(widget.props, 'battery_align') === 'center',
+            scale: numberProp(widget.props, 'font_scale', 1),
+            labelColour: colourProp(widget.props, 'label_color'),
+            clockColour: colourProp(widget.props, 'clock_color'),
+            batteryColour: colourProp(widget.props, 'battery_color'),
+        },
         style.font,
         style.background ?? rgb(2, 4, 8),
         style.text,
-        style.accent,
     );
 }
 

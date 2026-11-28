@@ -39,10 +39,13 @@
         "text_color": "#ffffff",
         "pressed_bg": "#2a5a8a",
         "pressed_fg": "#ffffff",
+        "pressed_text": "#ffffff",
         "disabled_bg": "#303030",
         "disabled_fg": "#808080",
+        "disabled_text": "#604890",
         "focused_bg": "#4a7eb5",
         "focused_fg": "#ffffff",
+        "focused_text": "#ffffff",
         "border_color": "#101010",
         "corner_radius": 4,
         "navigate_to": ""

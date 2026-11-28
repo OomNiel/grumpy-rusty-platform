@@ -41,6 +41,19 @@ const HOUR_STEP: f32 = 30.0;
 /// One minute of the minute or second hand's travel, in degrees.
 const MINUTE_STEP: f32 = 6.0;
 
+/// How many pieces a moving hand's sweep is damaged in.
+///
+/// One bounding box per hand is most of the face for a diagonal hand, and dragged the date block into
+/// every second's repaint; four pieces follow the thin sweep closely and still cost only a handful of
+/// damage rectangles (see `hand_damage_regions`).
+pub const HAND_SWEEP_PIECES: usize = 4;
+
+/// The capacity [`ClockWidget::hand_damage_regions`] needs: three hands, four pieces each.
+pub const HAND_DAMAGE_REGIONS: usize = 3 * HAND_SWEEP_PIECES;
+
+/// A turn larger than this is a jump, not a sweep: a time sync or the app setting the clock outright.
+const HAND_SWEEP_LIMIT_DEGREES: f32 = 30.0;
+
 /// The calendar names the date block draws, in the order of their index.
 const WEEKDAY_NAMES: [&str; 7] = [
     "SUNDAY",
@@ -644,18 +657,109 @@ impl ClockWidget {
             .filter(|hands| !hands.is_empty())
     }
 
+    /// The same move, as the narrow pieces a hand actually sweeps.
+    ///
+    /// [`Self::hand_damage_rect`] answers with one bounding box per moved hand, and a diagonal box is
+    /// most of the face: a second hand pointing into the lower half dragged the date block into the
+    /// damage even when the line itself passed beside it, so all three date lines were cleared and
+    /// repainted every second (bench, 2026-11-25). This walks the sweep instead -- a handful of small
+    /// rectangles along the radius, each only as wide as the angle the hand turned -- so the date block
+    /// is touched only where the hand really crosses it.
+    ///
+    /// A jump larger than a few steps is not a sweep but a new position (a time sync, or the app setting
+    /// the clock outright): that answers with the old and the new hand as two whole boxes rather than a
+    /// wedge spanning the dial.
+    pub fn hand_damage_regions(
+        &self,
+        next: &Self,
+        rect: Rect,
+        style: Style,
+    ) -> heapless::Vec<Rect, HAND_DAMAGE_REGIONS> {
+        let mut out: heapless::Vec<Rect, HAND_DAMAGE_REGIONS> = heapless::Vec::new();
+        let Some((cx, cy, radius)) = Self::hand_geometry(rect, style) else {
+            return out;
+        };
+        let here = self.hand_spec();
+        let then = next.hand_spec();
+        for ((angle, fraction, width), (next_angle, _, _)) in here.iter().zip(then.iter()) {
+            if (angle - next_angle).abs() < f32::EPSILON {
+                continue;
+            }
+            let length = radius as f32 * *fraction;
+            let pad = *width as i32 / 2 + 1;
+            // The short way round the dial, in degrees. `rem_euclid` is std-only on floats, and this
+            // crate is no_std: the remainder plus a wrap is the same answer.
+            let mut delta = (next_angle - angle) % 360.0;
+            if delta < 0.0 {
+                delta += 360.0;
+            }
+            let delta = delta.min(360.0 - delta);
+            if delta > HAND_SWEEP_LIMIT_DEGREES {
+                for at in [*angle, *next_angle] {
+                    let radians = at.to_radians();
+                    let tip_x = cx + (length * radians.cos()) as i32;
+                    let tip_y = cy + (length * radians.sin()) as i32;
+                    push_damage(
+                        &mut out,
+                        Rect::new(
+                            cx.min(tip_x) - pad,
+                            cy.min(tip_y) - pad,
+                            (cx.max(tip_x) - cx.min(tip_x) + 2 * pad + 1) as u32,
+                            (cy.max(tip_y) - cy.min(tip_y) + 2 * pad + 1) as u32,
+                        ),
+                        rect,
+                    );
+                }
+                continue;
+            }
+            for piece in 0..HAND_SWEEP_PIECES {
+                let r0 = length * piece as f32 / HAND_SWEEP_PIECES as f32;
+                let r1 = length * (piece + 1) as f32 / HAND_SWEEP_PIECES as f32;
+                let mut min_x = i32::MAX;
+                let mut min_y = i32::MAX;
+                let mut max_x = i32::MIN;
+                let mut max_y = i32::MIN;
+                for at in [*angle, *next_angle] {
+                    let radians = at.to_radians();
+                    for r in [r0, r1] {
+                        let x = cx + (r * radians.cos()) as i32;
+                        let y = cy + (r * radians.sin()) as i32;
+                        min_x = min_x.min(x);
+                        min_y = min_y.min(y);
+                        max_x = max_x.max(x);
+                        max_y = max_y.max(y);
+                    }
+                }
+                push_damage(
+                    &mut out,
+                    Rect::new(
+                        min_x - pad,
+                        min_y - pad,
+                        (max_x - min_x + 2 * pad + 1) as u32,
+                        (max_y - min_y + 2 * pad + 1) as u32,
+                    ),
+                    rect,
+                );
+            }
+        }
+        out
+    }
+
+    /// The face's centre and the radius a hand is drawn at, or `None` for a face too small for hands.
+    fn hand_geometry(rect: Rect, style: Style) -> Option<(i32, i32, u32)> {
+        let inner = Block::styled(style).inner(rect);
+        let cx = inner.x + (inner.w as i32 / 2);
+        let cy = inner.y + (inner.h as i32 / 2);
+        let radius = (inner.w.min(inner.h) / 2).saturating_sub(4);
+        (radius >= 12).then_some((cx, cy, radius))
+    }
+
     /// The box of each hand, paired with its angle, in the order the face draws them.
     ///
     /// `None` for a face too small to draw any: below twelve pixels of radius there is no hand at
     /// all (`render` returns before drawing), so there is no geometry to answer with.
     fn hand_boxes(&self, rect: Rect, style: Style) -> Option<[(f32, Rect); 3]> {
-        let inner = Block::styled(style).inner(rect);
-        let cx = inner.x + (inner.w as i32 / 2);
-        let cy = inner.y + (inner.h as i32 / 2);
-        let radius = (inner.w.min(inner.h) / 2).saturating_sub(4);
-        if radius < 12 {
-            return None;
-        }
+        let (cx, cy, radius) = Self::hand_geometry(rect, style)?;
         let mut boxes: [(f32, Rect); 3] = [(0.0, rect); 3];
         for (slot, (angle, fraction, width)) in self.hand_spec().into_iter().enumerate() {
             let radians = angle.to_radians();
@@ -705,6 +809,14 @@ impl ClockWidget {
             )?;
         }
         ctx.fill_circle(cx, cy, 3, self.hour_color)
+    }
+}
+
+/// Adds one clipped piece of hand damage, dropping what falls outside the face.
+fn push_damage(out: &mut heapless::Vec<Rect, HAND_DAMAGE_REGIONS>, rect: Rect, cell: Rect) {
+    let part = rect.intersection(cell);
+    if !part.is_empty() {
+        let _ = out.push(part);
     }
 }
 
@@ -1210,10 +1322,26 @@ mod tests {
         let mut buffer = TestBuffer::new(160, 160);
         ctx.render(&mut buffer).unwrap();
         ctx.clear_dirty();
-        // 10:15:29 -- a second hand tick with the minute hand still where it was.
-        ctx.set_clock_time(id, 10, 15, 29).unwrap();
+        // 10:15:01 -- a one-second tick with the minute hand still where it was.
+        ctx.set_clock_time(id, 10, 15, 1).unwrap();
         let damaged = ctx.dirty_regions();
-        assert_eq!(damaged.len(), 1, "one region for one second");
+        assert_eq!(
+            damaged.len(),
+            HAND_SWEEP_PIECES,
+            "one second is damaged as the sweep's pieces, not as the hand's box"
+        );
+        let whole = ClockWidget::new(10, 15, 0)
+            .hand_damage_rect(&ClockWidget::new(10, 15, 1), rect, style)
+            .unwrap();
+        for region in damaged {
+            assert!(
+                region.x >= whole.x
+                    && region.y >= whole.y
+                    && region.right() <= whole.right()
+                    && region.bottom() <= whole.bottom(),
+                "a piece stays inside the hand's own box: {region:?} in {whole:?}"
+            );
+        }
     }
 
     #[test]
@@ -1394,32 +1522,42 @@ mod tests {
 
         ctx.advance_clock(id).unwrap();
         let damaged = ctx.dirty_regions();
-        assert_eq!(damaged.len(), 1, "a second damages one region");
-        let damage = damaged[0];
-        assert!(
-            damage.w < rect.w && damage.h < rect.h,
-            "the damage is a part of the clock, not the clock: {damage:?}"
+        assert_eq!(
+            damaged.len(),
+            HAND_SWEEP_PIECES,
+            "a second is damaged as the sweep's pieces"
         );
+        for damage in damaged {
+            assert!(
+                damage.w < rect.w && damage.h < rect.h,
+                "each piece is a part of the clock, not the clock: {damage:?}"
+            );
+        }
 
         // The geometry the renderer uses: the centre of the cell, and a radius trimmed by four.
         let (cx, cy, radius) = (70, 80, 56);
-        // Both second-hand positions have to be inside it, or the old hand would be left behind.
+        // Both second-hand positions have to be inside the damage, or the old hand would be left
+        // behind -- and the rim outside it, because no piece may touch the dial's frame.
+        let mut tips_covered = 0;
         for second in [30.0f32, 31.0] {
             let radians = (TWELVE_OCLOCK + second * MINUTE_STEP).to_radians();
             let length = radius as f32 * 0.88;
             let tip_x = cx + (length * radians.cos()) as i32;
             let tip_y = cy + (length * radians.sin()) as i32;
+            if damaged.iter().any(|damage| damage.contains(tip_x, tip_y)) {
+                tips_covered += 1;
+            }
+        }
+        assert_eq!(
+            tips_covered, 2,
+            "both hand tips are inside the swept pieces"
+        );
+        for damage in damaged {
             assert!(
-                damage.contains(tip_x, tip_y),
-                "the {second} s hand tip ({tip_x}, {tip_y}) is outside the damage {damage:?}"
+                !damage.contains(cx, cy - radius),
+                "the rim was damaged: {damage:?}"
             );
         }
-        // And the rim is untouched: twelve o'clock's tick sits `radius` from the centre, which is
-        // beyond the longest hand the face draws.
-        assert!(
-            !damage.contains(cx, cy - radius),
-            "the rim was damaged: {damage:?}"
-        );
         for (x, y) in [
             (cx, cy - radius),
             (cx + radius, cy),
@@ -1427,7 +1565,7 @@ mod tests {
             (cx - radius, cy),
         ] {
             assert!(
-                !damage.contains(x, y),
+                !damaged.iter().any(|damage| damage.contains(x, y)),
                 "rim pixel ({x}, {y}) damaged by a second"
             );
         }
@@ -1468,8 +1606,8 @@ mod tests {
         ctx.set_clock_time(id, 10, 10, 45).unwrap();
         assert_eq!(
             ctx.dirty_regions().len(),
-            1,
-            "the clock's own cell is damaged"
+            2,
+            "a quarter-turn jump is two whole hands, not a sweep"
         );
 
         ctx.paint_damage(&mut partial, Rgb565::BLACK).unwrap();
@@ -1491,6 +1629,93 @@ mod tests {
         assert_eq!(
             different, 0,
             "{different} pixels differ between a cleared partial repaint and a whole one"
+        );
+    }
+
+    /// A moving hand damages the thin sweep it paints, not the diagonal box around it: the box is what
+    /// dragged the date block into every second's repaint (reported 2026-11-25).
+    #[test]
+    fn a_swept_hand_damages_less_of_the_date_block_than_its_box() {
+        let rect = Rect::new(0, 0, 361, 296);
+        let mut style = crate::style::Style::label();
+        style.font = FontId::Medium5x7;
+        let mut clock = ClockWidget::new(10, 10, 36).with_date(2026, 11, 25);
+        clock.label_scale = 3;
+        clock.label_inset = 0.5;
+        clock.date_font = Some(FontId::Medium5x7);
+        clock.weekday_scale = 1.5;
+        clock.month_scale = 1.5;
+        clock.day_scale = 2.4;
+        clock.date_offset = 16;
+        let date = clock.date_rect(rect, style).unwrap();
+        let next = clock.with_time(10, 10, 37);
+        let pieces = clock.hand_damage_regions(&next, rect, style);
+        let whole = clock.hand_damage_rect(&next, rect, style).unwrap();
+        let area = |region: &Rect| region.w as u64 * region.h as u64;
+        let hit = |region: &Rect| area(&region.intersection(date));
+
+        assert!(
+            pieces.len() > 1,
+            "a sweep is more than one rectangle: {pieces:?}"
+        );
+        let summed: u64 = pieces.iter().map(area).sum();
+        assert!(
+            summed < area(&whole),
+            "the pieces cover less than the hand's box: {summed} vs {}",
+            area(&whole)
+        );
+        let piece_hit: u64 = pieces.iter().map(hit).sum();
+        assert!(
+            piece_hit < hit(&whole),
+            "and less of the date block: {piece_hit} px vs {} px",
+            hit(&whole)
+        );
+    }
+
+    /// The generated module's path: a moving hand's damage composed in a scratch buffer and flushed.
+    /// It has to paint exactly what a whole frame would, or the old hand is left behind or the face
+    /// flickers between the two.
+    #[test]
+    fn a_buffered_partial_repaint_matches_a_whole_one_for_a_moving_hand() {
+        use crate::context::GuiContext;
+        use crate::test_buffer::TestBuffer;
+
+        let mut ctx: GuiContext<32, 16, 16> = GuiContext::new(Rect::new(0, 0, 160, 160));
+        let mut clock = ClockWidget::new(10, 10, 30);
+        clock.show_labels = false;
+        let id = ctx
+            .add_clock_styled(
+                Rect::new(0, 0, 160, 160),
+                clock,
+                crate::style::Style::label(),
+            )
+            .unwrap();
+
+        let mut partial = TestBuffer::new(160, 160);
+        partial.clear_color(Rgb565::BLACK);
+        ctx.render(&mut partial).unwrap();
+        ctx.clear_dirty();
+
+        ctx.set_clock_time(id, 10, 10, 31).unwrap();
+        let mut scratch = [Rgb565::BLACK; 64];
+        ctx.render_dirty_buffered_with(&mut partial, &mut scratch, Rgb565::BLACK)
+            .unwrap();
+
+        let mut whole = TestBuffer::new(160, 160);
+        whole.clear_color(Rgb565::BLACK);
+        ctx.render(&mut whole).unwrap();
+
+        let mut different = 0usize;
+        for y in 0..160i32 {
+            for x in 0..160i32 {
+                if partial.pixel_at(x, y) != whole.pixel_at(x, y) {
+                    different += 1;
+                }
+            }
+        }
+        assert_eq!(
+            different, 0,
+            "{different} pixels differ between a buffered partial repaint and a whole one"
         );
     }
 

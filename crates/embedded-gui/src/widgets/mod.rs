@@ -80,7 +80,9 @@ pub use rich_text_node::{RichTextError, RichTextNodeWidget, TextSpan};
 pub use scale::{ScaleMode, ScaleWidget};
 pub use sparkline::SparklineWidget;
 pub use spinbox::SpinboxWidget;
-pub use status_bar::{BatteryState, StatusBarError, StatusBarMode, StatusBarWidget};
+pub use status_bar::{
+    BatteryState, StatusBarAlign, StatusBarConfig, StatusBarError, StatusBarText, StatusBarWidget,
+};
 pub use table::TableWidget;
 pub use timeline::{PeekBannerWidget, TimelineNodeState, TimelineNodeWidget};
 pub use wearable::{
@@ -712,10 +714,10 @@ pub enum WidgetKind<'a> {
     Spinner {
         phase: f32,
     },
-    /// Wearable system status bar: a centered clock plus battery/Bluetooth/DND icons.
+    /// Wearable system status bar: a label, a clock and a battery gauge.
     #[cfg(feature = "rich-widgets")]
     StatusBar {
-        time: &'a str,
+        config: StatusBarConfig,
     },
     /// 12- or 24-hour time picker with hour/minute/period segments.
     #[cfg(feature = "rich-widgets")]
@@ -1044,7 +1046,7 @@ impl<'a> WidgetNode<'a> {
         !self.hidden() && !self.disabled() && self.flags.contains(WidgetFlags::FOCUSABLE)
     }
 
-    pub fn get_property(&self, key: PropertyKey) -> Option<PropertyValue<'a>> {
+    pub fn get_property(&self, key: PropertyKey) -> Option<PropertyValue<'_>> {
         match (key, &self.kind) {
             (PropertyKey::Value, WidgetKind::ProgressBar { value })
             | (PropertyKey::Progress, WidgetKind::ProgressBar { value }) => {
@@ -1091,7 +1093,17 @@ impl<'a> WidgetNode<'a> {
             #[cfg(feature = "rich-widgets")]
             (PropertyKey::Max, WidgetKind::Scale { max, .. }) => Some(PropertyValue::Float(*max)),
             #[cfg(feature = "rich-widgets")]
-            (PropertyKey::Text, WidgetKind::StatusBar { time }) => Some(PropertyValue::Str(time)),
+            (PropertyKey::Text, WidgetKind::StatusBar { config }) => {
+                Some(PropertyValue::Str(config.time.as_str()))
+            }
+            #[cfg(feature = "rich-widgets")]
+            (PropertyKey::Value, WidgetKind::StatusBar { config }) => {
+                Some(PropertyValue::Int(i32::from(config.battery_percent)))
+            }
+            #[cfg(feature = "rich-widgets")]
+            (PropertyKey::State, WidgetKind::StatusBar { config }) => {
+                Some(PropertyValue::Bool(config.battery_charging))
+            }
             #[cfg(feature = "rich-widgets")]
             (PropertyKey::Value, WidgetKind::NumberPicker { value, .. }) => {
                 Some(PropertyValue::Int(*value))
@@ -1166,8 +1178,22 @@ impl<'a> WidgetNode<'a> {
                 Ok(())
             }
             #[cfg(feature = "rich-widgets")]
-            (PropertyKey::Text, WidgetKind::StatusBar { time }, PropertyValue::Str(s)) => {
-                *time = s;
+            (PropertyKey::Text, WidgetKind::StatusBar { config }, PropertyValue::Str(s)) => {
+                config.time.set(s);
+                Ok(())
+            }
+            #[cfg(feature = "rich-widgets")]
+            (PropertyKey::Value, WidgetKind::StatusBar { config }, PropertyValue::Int(v)) => {
+                config.battery_percent = v.clamp(0, 100) as u8;
+                Ok(())
+            }
+            #[cfg(feature = "rich-widgets")]
+            (
+                PropertyKey::State,
+                WidgetKind::StatusBar { config },
+                PropertyValue::Bool(charging),
+            ) => {
+                config.battery_charging = charging;
                 Ok(())
             }
             #[cfg(feature = "rich-widgets")]
@@ -1614,7 +1640,9 @@ impl<'a> WidgetNode<'a> {
             ),
             WidgetKind::Spinner { phase } => render_spinner(ctx, rect, phase, self.style, state),
             #[cfg(feature = "rich-widgets")]
-            WidgetKind::StatusBar { time } => render_status_bar(ctx, rect, time, self.style, state),
+            WidgetKind::StatusBar { config } => {
+                render_status_bar(ctx, rect, &config, self.style, state)
+            }
             #[cfg(feature = "rich-widgets")]
             WidgetKind::TimePicker {
                 hour,
@@ -2094,7 +2122,7 @@ where
 fn render_status_bar<D, C>(
     ctx: &mut RenderCtx<'_, D, C>,
     rect: Rect,
-    time: &str,
+    config: &StatusBarConfig,
     style: WidgetStyle,
     state: VisualState,
 ) -> Result<(), D::Error>
@@ -2103,15 +2131,14 @@ where
     C: Compositor<D>,
 {
     let resolved = style.resolve(state);
-    // The status bar owns its colours; the design's background, text and accent are mapped onto them so a
+    // The status bar owns its colours; the design's background and text are mapped onto them so a
     // configured style reaches the glass instead of being ignored.
     Block::styled(resolved).render(rect, ctx)?;
-    let mut bar = StatusBarWidget::new(time);
+    let mut bar = StatusBarWidget::configured(*config);
     if let Some(background) = resolved.background {
         bar.background_color = background;
     }
     bar.foreground_color = resolved.text;
-    bar.accent_color = resolved.accent;
     bar.font = resolved.font;
     // `StatusBarWidget::render` reports draw failures as its own `StatusBarError`, which the node's
     // `D::Error` return cannot carry; the background has already been painted by the time one can happen.
@@ -5280,7 +5307,11 @@ mod tests {
         let at = |x: i32, y: i32| buffer.pixel_at(x, y);
         // A square blit would paint the block's own cut-out corners red; a masked one leaves them to the
         // background (or the border), which is the whole point of the mask.
-        assert_ne!(at(0, 0), Some(Rgb565::RED), "the top-left corner is not drawn");
+        assert_ne!(
+            at(0, 0),
+            Some(Rgb565::RED),
+            "the top-left corner is not drawn"
+        );
         assert_ne!(at(15, 0), Some(Rgb565::RED), "nor the top-right one");
         assert_ne!(at(0, 15), Some(Rgb565::RED), "nor the bottom-left one");
         assert_eq!(

@@ -10,7 +10,8 @@ use crate::{
     widget::{FocusGroupId, StyleClassId, Widget, WidgetId},
     widgets::{KeypadWidget, 
         CarouselSpec, ChartMode, CheckboxLabelPosition, ClockWidget, CompositeIconSpec, KeyboardLayout,
-        MenuCell, NotificationLevel, RollerSelection, ScaleMode, SurfaceState, WidgetKind,
+        MenuCell, NotificationLevel, RollerSelection, ScaleMode, StatusBarConfig, StatusBarText,
+        SurfaceState, WidgetKind,
     },
 };
 use embedded_graphics_core::pixelcolor::{Rgb565, WebColors};
@@ -1082,7 +1083,25 @@ impl<'a, const NODES: usize, const EVENTS: usize, const DIRTY: usize>
     where
         S: Into<WidgetStyle>,
     {
-        self.add_widget(rect, WidgetKind::StatusBar { time }, style)
+        let config = StatusBarConfig {
+            time: StatusBarText::from_str(time),
+            ..StatusBarConfig::default()
+        };
+        self.add_status_bar_configured(rect, config, style)
+    }
+
+    /// A status bar with the design's own label, features, alignment, scale and colours.
+    #[cfg(feature = "rich-widgets")]
+    pub fn add_status_bar_configured<S>(
+        &mut self,
+        rect: Rect,
+        config: StatusBarConfig,
+        style: S,
+    ) -> Result<WidgetId, GuiError>
+    where
+        S: Into<WidgetStyle>,
+    {
+        self.add_widget(rect, WidgetKind::StatusBar { config }, style)
     }
 
     /// A 12- or 24-hour time picker.

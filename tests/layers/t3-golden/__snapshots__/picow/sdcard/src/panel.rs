@@ -315,3 +315,11 @@ pub fn init(p: Peripherals) -> (Hardware, Rest) {
     },
     )
 }
+/// Holds the wireless chip's power switch low, for a design that does not use it.
+///
+/// The pin comes back in `Rest` rather than being left in `Peripherals`: the network task is what
+/// normally drives it. This is the other owner -- the setup path when no task is started -- so the chip
+/// is held off instead of floating.
+pub fn wireless_off(rest: Rest) {
+    let _pwr = Output::new(rest.pin23, Level::Low);
+}

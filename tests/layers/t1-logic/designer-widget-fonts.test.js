@@ -141,6 +141,26 @@ test('a button\'s expression is still a WidgetStyle with the crate\'s own button
     contains(expression, 'style.font = FontId::Scaled6x10;');
 });
 
+test('a button keeps its font in every visual state, not only the normal one', () => {
+    // `with_normal` replaces the normal state alone: `WidgetStyle::button()` derives focused, pressed and
+    // disabled from `Style::button()`, whose face is `Medium4x7`. A font set only inside the block was
+    // therefore replaced by the built-in one the moment the button had focus -- and `add_button` gives the
+    // focus to the first focusable widget, so a design showed it before the button was ever touched.
+    // `with_font` writes all four states, which is what the emitted expression has to carry.
+    const builtIn = appearanceExpression({ tag: 'button', values: { font: 'Scaled6x10' } });
+    contains(builtIn, '.with_font(FontId::Scaled6x10)');
+
+    const declared = appearanceExpression({ tag: 'button', values: { font: 'my_bdf', declaredFont: true } });
+    contains(declared, '.with_font(FontId::Bitmap(&__FONT_MY_BDF))');
+});
+
+test('only a button writes its font onto the WidgetStyle', () => {
+    const noFont = appearanceExpression({ tag: 'button', values: { background: '#102030' } });
+    notOk(String(noFont).includes('.with_font('), 'a button that names no font emits what it always did');
+    const other = appearanceExpression({ tag: 'status_bar', values: { font: 'Scaled6x10' } });
+    notOk(String(other).includes('.with_font('), 'another widget carries its font in the Style itself');
+});
+
 test('ownStyleOf agrees with the emitter for every widget it knows', () => {
     // The same claim from the other end: the table `appearance.ts` consults is the emitter's fallback.
     for (const [variant, tag] of Object.entries(TAG_OF_VARIANT)) {
